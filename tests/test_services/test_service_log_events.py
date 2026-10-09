@@ -334,11 +334,18 @@ class TestTransferServiceLogging:
             xid = xfer.id
             with _LogCapture("app.services.transfer_service") as cap:
                 transfer_service.delete_transfer(xid, td["user"].id)
+            # No row names the deleted transfer: what the event's
+            # ``orphan_count`` self-check counted until plan step
+            # ``balance:X-bi-6-4d-3``, read directly (ruling R-BAL167 class 1;
+            # the database refuses such a row since, ruling R-BAL258).
+            assert db.session.query(Transaction).filter_by(
+                transfer_id=xid,
+            ).count() == 0
 
         record = cap.find(EVT_TRANSFER_HARD_DELETED)
         assert record is not None
         assert record.transfer_id == xid
-        assert record.orphan_count == 0
+        assert not hasattr(record, "orphan_count")
 
     def test_restore_transfer_emits_event(self, app, db, _transfer_setup):
         """restore_transfer emits ``transfer_restored`` after soft-delete."""

@@ -7,11 +7,11 @@ transfer OUT of a source no engine models one from (the composed loan-or-card
 set both doors call), load the owned/active
 :class:`~app.models.transfer.Transfer` with the live twin
 :class:`~app.models.transaction.Transaction` rows its mirrors write, and
-refuse a restore whose twins are not a pair.
+refuse a restore onto an archived account.
 Each is a precondition check the mutation entry points run before they touch
 any row, raising the project's domain exceptions
-(:class:`~app.exceptions.ValidationError` for a bad amount or a restore's
-broken pair, :class:`~app.exceptions.NotFoundError` for a missing or
+(:class:`~app.exceptions.ValidationError` for a bad amount or a restore onto
+an archived account, :class:`~app.exceptions.NotFoundError` for a missing or
 not-yours transfer -- with an identical message for both the "missing" and
 the "not yours" case, the project security-response rule -- no existence
 oracle).
@@ -42,8 +42,6 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from app import ref_cache
-from app.enums import TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services.account_projection import is_revolving
 from app.services.transfer_legs import TransferLeg, transfer_side_leg
@@ -77,8 +75,11 @@ class TransferRows:
     a side link), and no reader asks a twin for either.  What a twin still
     carries -- its pay period, category, due date, override flag, amount
     ownership, account and name -- is written by the arms of
-    ``_update`` and ``_endpoints`` over :attr:`shadows`, until plan step
-    ``X-bi-6-4d-3`` deletes the rows.  So the shape no longer insists on two:
+    ``_update`` and ``_endpoints`` over :attr:`shadows`.  Plan step
+    ``X-bi-6-4d-3`` deleted the rows and made the database refuse a new one
+    (ruling **R-BAL258**), so :attr:`shadows` is empty on every transfer, and
+    that step's second leaf deletes the arms with this attribute.  So the
+    shape no longer insists on two:
     a transfer whose twin was deleted behind the app's back (no door does
     it) settles like any other, which the developer ruled (**R-BAL235**,
     2026-10-08, "Offer and settle it": the state stops existing when the
@@ -149,8 +150,9 @@ def load_transfer_rows(transfer_id, user_id) -> TransferRows:
     transfer whose pair was broken, until plan step ``balance:X-bi-6-4d-2``:
     nothing reads a twin's status, day or figure any more, so a broken pair
     is no reason to refuse a settle, and the developer ruled that it is not
-    (**R-BAL235**, :class:`TransferRows`).  A restore still counts the twins
-    (:func:`assert_restorable`), because it un-deletes them.
+    (**R-BAL235**, :class:`TransferRows`).  A restore counted the twins
+    (:func:`assert_restorable`) until plan step ``balance:X-bi-6-4d-3``
+    deleted them.
 
     Args:
         transfer_id: The primary key of the transfer to load.
@@ -319,74 +321,44 @@ def _get_transfer_or_raise(transfer_id, user_id, allow_deleted=False):
     return xfer
 
 
-def assert_restorable(xfer, shadows, user_id):
+def assert_restorable(xfer, user_id):
     """Refuse a restore whose preconditions do not hold, before anything moves.
 
-    The three checks ``restore_transfer`` runs before it un-deletes a thing.
-    Extracted here at plan step X-aj1 (ruling **R-DO**) because they are
-    precondition checks on the rows a mutation operates on, which is this
-    module's single responsibility, and because gathering them made the caller's
-    own defect visible: it used to set ``is_deleted = False`` FIRST and then
-    hand-restore the flag on each failing branch -- a rollback written out three
-    times, with three chances for the next branch to forget it.  Validating
-    before mutating makes that class of miss structurally impossible, and the
-    three hand-rollbacks are deleted rather than extended to a fourth.
+    The check ``restore_transfer`` runs before it un-deletes a thing.
+    Extracted here at plan step X-aj1 (ruling **R-DO**) because it is a
+    precondition check on the rows a mutation operates on, which is this
+    module's single responsibility, and because gathering the checks made the
+    caller's own defect visible: it used to set ``is_deleted = False`` FIRST
+    and then hand-restore the flag on each failing branch -- a rollback written
+    out three times, with three chances for the next branch to forget it.
+    Validating before mutating makes that class of miss structurally
+    impossible.
 
-    The checks, in order, each refusing rather than repairing:
+    **Archived endpoints (F-164).**  The account FK is RESTRICT, so the rows
+    cannot be hard-deleted while the transfer references them; the only way an
+    endpoint goes away semantically is ``is_active = False``.  Restoring onto
+    one would resurrect entries against an account the user has withdrawn from
+    active projections, producing balance drift they have no UI affordance to
+    investigate.
 
-    1. **Shadow count.** Exactly two, or the pair is corrupt (Invariant 1).
-    2. **Type pairing.** One expense and one income, or the pair is corrupt.
-    3. **Archived endpoints (F-164).** The account FK is RESTRICT, so the rows
-       cannot be hard-deleted while the transfer references them; the only way
-       an endpoint goes away semantically is ``is_active = False``.  Restoring
-       onto one would resurrect entries against an account the user has
-       withdrawn from active projections, producing balance drift they have no
-       UI affordance to investigate.
-
-    A fourth, **unrepairable status drift** (ruling **R-DO**: a shadow whose
-    status could not legally reach the parent's), went at plan step
-    ``balance:X-bi-6-4d-2``: a shadow's status is no longer kept or read, so
-    the restore no longer repairs one.
+    Three more checks went with the twin rows they graded.  An **unrepairable
+    status drift** (ruling **R-DO**: a twin whose status could not legally reach
+    the parent's) went at plan step ``balance:X-bi-6-4d-2``, when a twin's
+    status stopped being kept or read; the **twin count** (exactly two) and the
+    **type pairing** (one expense, one income) went at ``balance:X-bi-6-4d-3``,
+    which deleted the twins and made the database refuse a new one (ruling
+    **R-BAL258**).
 
     Args:
         xfer: The soft-deleted :class:`~app.models.transfer.Transfer` being
             restored.  NOT mutated here.
-        shadows: Every :class:`~app.models.transaction.Transaction` linked to
-            it, loaded without an ``is_deleted`` filter.
         user_id: The owner, for the archived-endpoint refusal's structured log.
 
     Raises:
-        ValidationError: On any of the three, with a message naming what a human
-            has to fix.
+        ValidationError: When either endpoint is archived, with a message
+            naming what a human has to fix.
     """
     transfer_id = xfer.id
-    if len(shadows) != 2:
-        logger.error(
-            "Cannot restore transfer %d: expected 2 shadow transactions, "
-            "found %d.  Shadow IDs: %s.  Data integrity issue.",
-            transfer_id, len(shadows), [s.id for s in shadows],
-        )
-        raise ValidationError(
-            f"Transfer {transfer_id} has {len(shadows)} shadow "
-            f"transactions (expected 2).  Cannot restore -- data "
-            f"integrity issue requiring manual intervention."
-        )
-
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    type_ids = {s.transaction_type_id for s in shadows}
-    if type_ids != {expense_type_id, income_type_id}:
-        logger.error(
-            "Cannot restore transfer %d: shadow type pairing is invalid.  "
-            "Expected one expense and one income, found type_ids=%s.",
-            transfer_id, type_ids,
-        )
-        raise ValidationError(
-            f"Transfer {transfer_id} shadows do not have the expected "
-            f"expense/income type pairing.  Cannot restore -- data "
-            f"integrity issue requiring manual intervention."
-        )
-
     from_account = db.session.get(Account, xfer.from_account_id)
     to_account = db.session.get(Account, xfer.to_account_id)
     from_active = bool(from_account is not None and from_account.is_active)

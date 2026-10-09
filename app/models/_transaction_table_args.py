@@ -252,6 +252,19 @@ transaction_table_args = (
         "+ (credit_payback_for_id IS NOT NULL)::int = 1",
         name="ck_transactions_one_pricing_link",
     ),
+    # A TRANSACTION NEVER NAMES A TRANSFER (plan step ``balance:X-bi-6-4d-3``,
+    # ruling **R-BAL258**, "Database refuses").  Every transfer had two hidden
+    # twin rows here, one per account, which that step deleted (ruling
+    # **R-BAL166**): a transfer is one row, and each side's payment hangs off
+    # it by a side link on ``transaction_entries``.  So a row carrying
+    # ``transfer_id`` is a twin coming back, and the database refuses it at
+    # the write rather than leaving the create door's absence as the only
+    # guard.  The column, its keys and its term in the CHECK above go at plan
+    # step ``X-bi-6-5``, which drops this CHECK with them.
+    db.CheckConstraint(
+        "transfer_id IS NULL",
+        name="ck_transactions_names_no_transfer",
+    ),
     # A ROW OF A DEFINITION IS DATED (plan step **X-bv-2**, rulings
     # **R-BAL6** and **R-BAL17**, finding **BAL-463**).  Amount rule 3
     # prices a derived row from its definition's series *as of the row's own

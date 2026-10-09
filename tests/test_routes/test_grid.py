@@ -3885,14 +3885,18 @@ class TestTransactionNameRows:
     def test_grid_shadow_transactions_get_own_rows(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Shadow transactions from transfers produce their own grid rows
-        with the transaction name visible in the row header.
+        """A transfer produces its own grid row with its leg's name in the header.
+
+        It planted the transfer's expense TWIN beside it until plan step
+        ``balance:X-bi-6-4d-3`` made a twin unstorable (ruling **R-BAL258**);
+        the grid has drawn a transfer's row from the transfer itself since leaf
+        ``balance:X-bi-6-1``, so the transfer alone is the subject now
+        (re-expressed under ruling **R-BAL167** class 1).
         """
         with app.app_context():
             from app.models.transfer import Transfer
 
             projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
             # Create a savings account for the transfer destination.
@@ -3917,7 +3921,8 @@ class TestTransactionNameRows:
             db.session.add(out_cat)
             db.session.flush()
 
-            # Create transfer and shadow expense on checking.
+            # Create the transfer from checking, filed under the outgoing
+            # category its twin carried.
             transfer = Transfer(
                 user_id=seed_user["user"].id,
                 scenario_id=seed_user["scenario"].id,
@@ -3927,23 +3932,9 @@ class TestTransactionNameRows:
                 amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 from_account_id=seed_user["account"].id,
                 to_account_id=savings_acct.id,
+                category_id=out_cat.id,
             )
             db.session.add(transfer)
-            db.session.flush()
-
-            shadow = Transaction(
-                transfer_id=transfer.id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Transfer to Savings",
-                category_id=out_cat.id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-            )
-            db.session.add(shadow)
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")

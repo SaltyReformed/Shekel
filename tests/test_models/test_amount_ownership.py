@@ -694,6 +694,14 @@ class TestOnePricingLink:
         Two links means two candidate answers for "who prices this row", with
         only dispatch ORDER separating them -- which is the link-derived
         discriminator ruling R-FI refused, arriving as data instead of as code.
+
+        **Refused by ``ck_transactions_names_no_transfer`` since plan step
+        ``balance:X-bi-6-4d-3``** (ruling **R-BAL258**; re-expressed under
+        ruling **R-BAL167** class 2): a row may name no transfer at all, so
+        the row this plants is refused before the pricing-link count is
+        reached (PostgreSQL checks a table's CHECKs in name order).  The
+        pricing link's ``transfer_id`` term goes with the column at
+        ``X-bi-6-5``.
         """
         with app.app_context():
             data = seed_full_user_data
@@ -715,7 +723,7 @@ class TestOnePricingLink:
             )
             with pytest.raises(
                 sqlalchemy.exc.IntegrityError,
-                match="ck_transactions_one_pricing_link",
+                match="ck_transactions_names_no_transfer",
             ):
                 db.session.flush()
             db.session.rollback()

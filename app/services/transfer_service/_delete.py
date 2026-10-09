@@ -186,30 +186,19 @@ def delete_transfer(transfer_id, user_id, soft=False, *, press=None):
         )
         result = xfer
     else:
-        # Hard delete -- rely on ON DELETE CASCADE to remove shadows.
+        # Hard delete.  It counted the twins the ``transactions.transfer_id``
+        # CASCADE should have taken, and logged any left behind, until plan
+        # step ``balance:X-bi-6-4d-3`` deleted the twins and made the database
+        # refuse a new one (ruling **R-BAL258**): there is nothing left to
+        # orphan.
         db.session.delete(xfer)
         db.session.flush()
 
-        # Verify CASCADE removed the shadows.  If they still exist,
-        # the FK was misconfigured in Task 2.
-        orphan_count = (
-            db.session.query(Transaction)
-            .filter_by(transfer_id=transfer_id)
-            .count()
-        )
-        if orphan_count > 0:
-            logger.error(
-                "CASCADE delete failed: %d orphaned shadow transactions "
-                "remain for deleted transfer %d.",
-                orphan_count, transfer_id,
-            )
-
         log_event(
             logger, logging.INFO, EVT_TRANSFER_HARD_DELETED, BUSINESS,
-            "Transfer hard-deleted (CASCADE)",
+            "Transfer hard-deleted",
             user_id=user_id,
             transfer_id=transfer_id,
-            orphan_count=orphan_count,
         )
         result = None
 

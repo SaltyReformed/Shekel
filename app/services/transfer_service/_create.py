@@ -1,15 +1,19 @@
 """
 Shekel Budget App -- Transfer Service: the CREATE verb
 
-The one path that brings a transfer and its two shadow
-:class:`~app.models.transaction.Transaction` rows into existence, and the
-:class:`TransferSpec` value that describes one such request.  Transfer
-Invariants 1 and 3-5 are established here: the pair is created together, in
-the parent's period, scenario, status, category, amount and due date.
+The one path that brings a transfer into existence, and the
+:class:`TransferSpec` value that describes one such request.
 
-**This leaf is the ONE holder of the W9907 status allowlist entry.**  Both
-writes it makes are CONSTRUCTOR writes -- ``Transaction(status_id=...)`` in
-:func:`_build_shadow` and ``Transfer(status_id=...)`` in
+**A transfer is ONE row since plan step ``balance:X-bi-6-4d-3``** (ruling
+**R-BAL166**).  This door also built two twin
+:class:`~app.models.transaction.Transaction` rows per transfer, one on each
+account, until then; since ``X-bi-6-4d-2`` nothing read a twin's status or
+day, each side's payment hangs off the transfer by its side link
+(``transaction_entries.expense_transfer_id`` / ``income_transfer_id``), and
+that step's migration deleted the rows the door had built.
+
+**This leaf is the ONE holder of the W9907 status allowlist entry.**  The
+write it makes is a CONSTRUCTOR write -- ``Transfer(status_id=...)`` in
 :func:`create_transfer` -- which the status fence exempts by naming this
 module.  Every other status write in the package goes through
 :func:`app.services.status_seam.apply_status_change`
@@ -25,17 +29,14 @@ import logging
 from dataclasses import dataclass
 from datetime import date
 
-from app import ref_cache
-from app.enums import AmountSourceEnum, MovementFigureSourceEnum, TxnTypeEnum
+from app.enums import MovementFigureSourceEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
 from app.models.amount_ownership import AmountOwnership
 from app.models.ref import Status
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import posting_service
-from app.services.amount_ownership import declare_derived
 from app.services import status_seam
 from app.services.transfer_legs import leg_label
 from app.services.transfer_service._loan_posting import (
@@ -76,11 +77,12 @@ def shadow_names(
     composition lives with the LEG** since leaf ``X-bi-6-1``
     (:func:`app.services.transfer_legs.leg_label`): the grid draws a
     transfer's leg from the parent and labels it from the endpoints' current
-    names, and the two shadow rows carry the same pair for as long as they
-    exist.  This is the one writer of that pair onto a row -- here, beside the
-    constructor that first applies it, and called again by
-    :mod:`app.services.transfer_service._endpoints`, which re-derives both names
-    when a transfer moves between accounts.  Until plan step R10-b there was no
+    names, and the two shadow rows carried the same pair for as long as they
+    existed.  This was the one writer of that pair onto a row: the create door
+    applied it until plan step ``balance:X-bi-6-4d-3`` stopped building twins,
+    and :mod:`app.services.transfer_service._endpoints` still re-derives both
+    names when a transfer moves between accounts, over the twins that step
+    deleted, until its second leaf deletes that loop.  Until plan step R10-b there was no
     second writer, because there was no way to move a transfer's endpoints at
     all: the recurrence engine applied a definition's account change by DELETING
     every generated row and building replacements, which re-ran this rule by
@@ -114,84 +116,6 @@ def shadow_names(
         declares its legs.
     """
     return leg_label(from_account, to_account)
-
-
-def _build_shadow(
-    xfer: Transfer, account_id: int, name: str, transaction_type_id: int
-) -> Transaction:
-    """Construct one shadow ``Transaction`` mirroring the parent transfer.
-
-    Both shadows are transfer-generated (``template_id=None``,
-    ``credit_payback_for_id=None``, no independent ``notes``) and inherit
-    period / scenario / category / due_date from the just-created ``xfer``
-    (Transfer Invariants 1 and 5).  Only the per-side fields vary.  It is
-    written the transfer's status too, because the column is NOT NULL, but
-    since plan step ``balance:X-bi-6-4d-2`` no reader asks a twin for its
-    status or day and no writer keeps them in step: the transfer's status
-    is the one status, and each side's day is its payment record's.
-
-    **A shadow is BORN DERIVED and stores no figure at all, which is what makes
-    Transfer Invariant 3 STRUCTURAL rather than maintained** (plan step
-    X-au-g-2c-2, ruling **R-FI**).  It copied ``xfer.amount`` into
-    ``estimated_amount`` until this step, and two hand-written repairs existed
-    to keep that copy true -- ``_update``'s propagation and ``_restore``'s drift
-    corrector, which logged and rewrote the copies that got away.  A row that
-    READS its parent cannot drift from it, so both are gone and the invariant is
-    a property of the schema: ``ck_transactions_amount_ownership`` pairs the
-    empty figure with the declaration one-to-one.
-
-    **It declares the RELATION, not the rule, so a loan payment needs no special
-    case here** (ruling **R-FK**).  Every shadow names ``PARENT_TRANSFER``;
-    whether that parent is a loan payment -- and so whether the amount model
-    prices this row from the loan's own installment or from the parent's figure
-    -- is read live off the transfer's template at price time.  That is why
-    flipping a payment to auto-track
-    (``routes/loan/payment_transfer.track_payment``) rewrites no row: the
-    declaration it would otherwise have had to add is already there.
-
-    Args:
-        xfer: The parent :class:`Transfer`, already flushed so
-            ``xfer.id`` is set (the shadow's ``transfer_id`` FK).
-        account_id: The account this shadow lives in (``from_account``
-            for the expense side, ``to_account`` for the income side).
-        name: The shadow's display name.
-        transaction_type_id: ``ref.transaction_types.id`` for the side
-            (expense or income).
-
-    Returns:
-        An unsaved :class:`Transaction`; the caller adds it to the
-        session.
-    """
-    shadow = Transaction(
-        # A shadow is its PARENT TRANSFER's, and the transfer states its own
-        # owner (plan step ``pay_calendar:C13-a``).  Reading it off the parent
-        # rather than off ``account_id`` is what makes an endpoint on a
-        # stranger's account a refused INSERT instead of a row that agrees
-        # with itself and not with the transfer.
-        user_id=xfer.user_id,
-        account_id=account_id,
-        template_id=None,       # Shadows are transfer-generated, not template-generated.
-        transfer_id=xfer.id,
-        pay_period_id=xfer.pay_period_id,
-        scenario_id=xfer.scenario_id,
-        status_id=xfer.status_id,
-        name=name,
-        category_id=xfer.category_id,
-        transaction_type_id=transaction_type_id,
-        # The settle DAY and its basis are the ASSERTION, and a shadow is
-        # born asserting nothing: a born-SETTLED transfer's days are written
-        # by ``date_born_settled_pair`` below, through the seam, so this
-        # constructor never states one (plan step **X-az**).
-        settled_on=None,
-        settled_day_basis_id=None,
-        is_override=False,
-        is_deleted=False,
-        credit_payback_for_id=None,
-        notes=None,
-        due_date=xfer.due_date,
-    )
-    declare_derived(shadow, AmountSourceEnum.PARENT_TRANSFER)
-    return shadow
 
 
 @dataclass(frozen=True)
@@ -229,20 +153,15 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
             date.  It was a bare ``amount: Decimal`` until that step, which
             could express only the first: a create door that cannot say *this
             row is priced by its definition* has to write a figure and let a
-            later writer take it back, and the row is OWN in between.  Both
-            SHADOWS are born declaring their parent whatever this says
-            (:func:`_build_shadow`), which is what plan step X-au-g-2c-2 made
-            structural.
+            later writer take it back, and the row is OWN in between.
         status_id: Initial status (typically 'projected').
-        category_id: Optional spending category mirrored to both
-            shadows.  May be None.
-        notes: Optional notes on the transfer (not mirrored to shadows).
+        category_id: Optional spending category.  May be None.
+        notes: Optional notes on the transfer.
         transfer_template_id: Optional link to the generating transfer
             template (for recurrence).
         name: Optional display name.  If None, generated from the
             account names.
-        due_date: Optional due date stored on the transfer and mirrored
-            to both shadow transactions.
+        due_date: Optional due date stored on the transfer.
         side_days: The day the money moved on each account the caller knows,
             and HOW (:class:`~app.services.transfer_service._side_days.SideDay`,
             at most one per endpoint), for a transfer created ALREADY settled
@@ -259,10 +178,7 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
             own due date for a ONE-TIME transfer (the one-time branch of
             ``routes/transfers/_instances``, since plan step
             ``balance:X-ci-1``, ruling **R-BAL94**); ``None`` only for an
-            ad-hoc transfer, which no definition placed.  It is NOT mirrored
-            to the shadows: a shadow is created from its parent rather than
-            from an occurrence, and no generate pass asks a shadow whether an
-            occurrence has been written (plan step **R17**).
+            ad-hoc transfer, which no definition placed.
     """
 
     user_id: int
@@ -282,11 +198,10 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
 
 
 def create_transfer(spec: TransferSpec) -> Transfer:
-    """Create a transfer and its two shadow transactions atomically.
+    """Create a transfer, and for one born settled its sides' records.
 
     This is the ONLY code path that should create rows in
-    budget.transfers.  It enforces invariants 1-5 from design doc
-    section 4.5.
+    budget.transfers.
 
     Args:
         spec: The :class:`TransferSpec` carrying the owner, endpoints,
@@ -295,8 +210,7 @@ def create_transfer(spec: TransferSpec) -> Transfer:
             the transfer to create.
 
     Returns:
-        The created Transfer object (shadows accessible via
-        transfer.shadow_transactions backref).
+        The created, flushed :class:`Transfer`.
 
     Raises:
         ValidationError: If a stated amount is non-positive, if a
@@ -408,15 +322,8 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     )
     reject_stated_days_without_settle(spec.status_id, stated)
 
-    # ── Ref data lookups ───────────────────────────────────────────
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-
-    # ── Determine names ────────────────────────────────────────────
+    # ── Determine the name ─────────────────────────────────────────
     transfer_name = spec.name or f"{from_account.name} to {to_account.name}"
-    expense_shadow_name, income_shadow_name = shadow_names(
-        from_account, to_account,
-    )
 
     # ── Create transfer record ─────────────────────────────────────
     xfer = Transfer(
@@ -437,19 +344,9 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         is_deleted=False,
     )
     db.session.add(xfer)
-    # Flush to get transfer.id -- required before creating shadows
-    # that reference it via transfer_id FK.
-    db.session.flush()
-
-    # ── Create the two shadows (expense from_account, income to_account) ──
-    expense_shadow = _build_shadow(
-        xfer, spec.from_account_id, expense_shadow_name, expense_type_id
-    )
-    db.session.add(expense_shadow)
-    income_shadow = _build_shadow(
-        xfer, spec.to_account_id, income_shadow_name, income_type_id
-    )
-    db.session.add(income_shadow)
+    # Flush to get transfer.id: a born-settled transfer's side records link
+    # it (``transaction_entries.expense_transfer_id`` / ``income_transfer_id``)
+    # and the event below names it.
     db.session.flush()
 
     # ── Born-settled coherence (plan step E1a) ─────────────────────
@@ -494,7 +391,7 @@ def create_transfer(spec: TransferSpec) -> Transfer:
 
     log_event(
         logger, logging.INFO, EVT_TRANSFER_CREATED, BUSINESS,
-        "Transfer created with shadow transactions",
+        "Transfer created",
         user_id=spec.user_id,
         transfer_id=xfer.id,
         from_account_id=spec.from_account_id,
@@ -505,7 +402,5 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         status_id=spec.status_id,
         category_id=spec.category_id,
         transfer_template_id=spec.transfer_template_id,
-        expense_shadow_id=expense_shadow.id,
-        income_shadow_id=income_shadow.id,
     )
     return xfer

@@ -7,7 +7,8 @@ soft-deleted may have had a shadow drift out from under it, so every mirrored
 field is re-synced from the canonical parent on the way back.
 
 It refuses before it moves (:func:`assert_restorable`, ruling **R-DR**), so a
-corrupt pair leaves all three rows untouched rather than half-restored.
+restore onto an archived account leaves the transfer untouched rather than
+half-restored.
 
 Flask-isolated like the rest of the package: plain data in, ORM rows out, no
 ``request`` / ``session`` imports.  Flushes; does NOT commit.
@@ -70,12 +71,9 @@ def restore_transfer(transfer_id, user_id):
     Raises:
         NotFoundError: If the transfer does not exist or does not
             belong to user_id.
-        ValidationError: If shadow transactions are missing or have
-            an invalid type pairing, indicating data corruption that
-            cannot be automatically repaired; or if either the source
-            or destination account has been archived
-            (``is_active = False``) since the transfer was soft-deleted
-            (F-164).  Reactivate the account before restoring.
+        ValidationError: If either the source or destination account has
+            been archived (``is_active = False``) since the transfer was
+            soft-deleted (F-164).  Reactivate the account before restoring.
     """
     # Must allow deleted transfers since that is the expected input.
     xfer = _get_transfer_or_raise(transfer_id, user_id, allow_deleted=True)
@@ -99,12 +97,13 @@ def restore_transfer(transfer_id, user_id):
     )
 
     # ── Refuse before anything moves (X-aj1) ────────────────────────
-    # Shadow count, type pairing and archived endpoints (F-164).  Run BEFORE
+    # Archived endpoints (F-164); the twin count and type pairing went with
+    # the twins at plan step ``balance:X-bi-6-4d-3``.  Run BEFORE
     # the un-delete, which is a change from the code this replaced:
     # that version flipped ``is_deleted`` first and then hand-restored it on
     # each failing branch, so the rollback was written out three times and the
     # fourth check would have had to remember it too.
-    assert_restorable(xfer, shadows, user_id)
+    assert_restorable(xfer, user_id)
 
     xfer.is_deleted = False
 
