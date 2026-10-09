@@ -52,7 +52,7 @@ from tests._test_helpers import (
     open_owner_calendar,
     rebuild_calendar,
     start_test_pay_list,
-    EMPTY_TAX_LAW,
+    NO_TAX_LAW,
     bracket_set_law,
     state_and_fica_law,
 )
@@ -306,7 +306,7 @@ class TestProfileCreate:
         $26,000.00 here.  Every other case in this module is biweekly, where
         the derived count and the old constant agree.
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         with app.app_context():
             filing_status = db.session.query(FilingStatus).filter_by(
                 name="single",
@@ -4082,11 +4082,13 @@ class TestNetBiweeklyMismatchFixes:
     ):
         """Without tax configs, default_amount equals GROSS (no taxes to subtract).
 
-        This is correct behavior -- with no bracket set, federal tax is $0;
-        with no state config, state tax is $0; with no FICA config, FICA
-        is $0.  NET == GROSS when there are no taxes.
+        This is correct behavior -- the installed law's federal rules and
+        FICA price $0, and its North Carolina has no income tax, so state tax
+        is $0.  NET == GROSS when there are no taxes.  (It installed a law
+        with no year at all until plan step salary:X-at-3, whose engine
+        refuses a state the law does not list.)
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         with app.app_context():
             filing_status = db.session.query(FilingStatus).filter_by(
                 name="single"
@@ -4596,14 +4598,14 @@ class TestCockpitContext:
     def test_context_single_profile(self, app, auth_client, seed_user, seed_periods, tax_law):
         """Chips/composition are hand-correct for a no-tax $75,000 profile.
 
-        With no tax configs, every withholding is $0, so net == gross.
+        Under the no-tax law every withholding is $0, so net == gross.
         Gross biweekly = the one pay entry, 2884.62 ($75,000 / 26 =
         2884.6153..., half-up to cents).  Net == gross == 2884.62; annual
         salary (no raises) is the paycheck times the count (ruling
         R-SAL59): 2884.62 x 26 = 75000.12; take-home =
         2884.62/2884.62*100 = 100; net is 100.0% of gross.
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         with app.app_context():
             profile = _create_profile(seed_user)
 
@@ -5012,12 +5014,12 @@ class TestProjectionSummary:
     def test_projection_summary_values(self, app, auth_client, seed_user, seed_periods, tax_law):
         """yearly_nets sums the 10 no-tax periods; no future raise/third.
 
-        With no tax configs each of the 10 seeded periods nets its gross,
+        Under the no-tax law each of the 10 seeded periods nets its gross,
         round_money(75000 / 26) = 2884.62, so the 2026 total is
         2884.62 * 10 = 28846.20.  There are no raises and (after today
         2026-03-20) no remaining third paycheck in the seeded window.
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         with app.app_context():
             profile = _create_profile(seed_user)
 

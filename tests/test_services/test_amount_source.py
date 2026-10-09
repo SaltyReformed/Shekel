@@ -78,7 +78,7 @@ from app.services.cash_ledger._amount_source import (
     _RULE_ANSWERS,
     _TRANSFER_RULE_ANSWERS,
 )
-from tests._test_helpers import EMPTY_TAX_LAW
+from tests._test_helpers import NO_TAX_LAW
 from tests._test_helpers import (
     write_past_the_amount_seam,
     add_escrow_line,
@@ -469,7 +469,8 @@ def _declare_loan_payment_derived(xfer):
     read: the loan resolves through ``load_loan_context`` ->
     ``get_payment_history``, so the rule that prices the row routes back to the
     row.  That path was deleted at plan step X-au-g-1 --
-    ``_resolve_loan_basis`` reads the loan's terms alone -- leaving finding
+    ``_resolve_loan_basis`` read the loan's terms alone (and plan step
+    recurrence:R25 deleted it for the pass's ``LoanCalendars``) -- leaving finding
     N-266(a)'s conclusion standing on ONE UNROUTED READER, which is what
     X-au-g-2c routed.  Three weeks between the diagnosis and its true cause,
     which is why a finding's claim is re-measured before its remedy is built.
@@ -958,7 +959,7 @@ class TestWhatEachRuleAnswers:
         profile stores, where the test doubled the yearly salary the engine
         divided by 26.
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         template, profile = _salary_template(seed_user)
         txn = _template_row(seed_periods[0], template)
         assert txn.estimated_amount is None
@@ -1396,8 +1397,9 @@ class TestTheLoanPaymentRule:
     ):
         """No loan behind it, so its P&I has no answer and nothing substitutes.
 
-        The destination is an ordinary savings account, so
-        ``_resolve_loan_basis`` answers nothing.  A fallback here would publish
+        The destination is an ordinary savings account, so the loan calendar
+        (``loan_ledger.LoanCalendars.loan_calendar_of``, ``_resolve_loan_basis``
+        until plan step recurrence:R25) answers nothing.  A fallback here would publish
         the stored figure, which on a derive-mode payment is a snapshot of
         exactly the computation that just failed.
         """
@@ -1871,7 +1873,12 @@ class TestTheBasisIsOneDerivationPerReadPass:
             "pricing an ordinary expense row must not resolve the paycheck "
             f"derivation; got {touched}"
         )
-        assert not basis.loans._loans, (  # pylint: disable=protected-access -- likewise
+        # The loan derivation's memo is the pass's ``LoanCalendars`` since plan
+        # step recurrence:R25 (it was ``LoanPricing._loans``); its params memo
+        # is the first thing any loan price loads, and the calendar is built
+        # over it, so both empty is "no loan resolved".
+        terms = basis.loans._terms  # pylint: disable=protected-access -- likewise
+        assert not terms._params and not terms._calendars, (  # pylint: disable=protected-access -- likewise
             "pricing an ordinary expense row must not resolve the loan "
             f"derivation; got {touched}"
         )

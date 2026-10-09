@@ -6480,9 +6480,11 @@ class TestAmortizationSchedule:
         from app.services.amortization_engine import (  # pylint: disable=import-outside-toplevel
             PeriodTerms,
             ProjectionInputs,
-            advance_to_next_payment_date,
             calculate_monthly_payment,
             project_forward,
+        )
+        from app.services.installment_calendar import (  # pylint: disable=import-outside-toplevel
+            first_installment_date,
         )
 
         principal = Decimal("250000.00")
@@ -6493,7 +6495,7 @@ class TestAmortizationSchedule:
         # the whole contract: 360 installments, none overdue (see
         # ``test_schedule_has_correct_row_count``).
         origination_date = date(2026, 3, 1)
-        starting_date = advance_to_next_payment_date(origination_date, 1)
+        starting_date = first_installment_date(origination_date, 1)
         contractual = calculate_monthly_payment(principal, rate, term)
 
         schedule = project_forward(

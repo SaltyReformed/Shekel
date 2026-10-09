@@ -12,8 +12,11 @@ import dataclasses
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from app import ref_cache
 from app.enums import FilingStatusEnum
+from app.exceptions import UnsupportedStateError
 from app.extensions import db
 from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
@@ -272,21 +275,25 @@ class TestLoadTaxConfigsForYear:
             assert result["state_config"].flat_rate == Decimal("0.0399")
             assert result["state_config"] == _state_slice(year_2026)
 
-    def test_a_user_with_no_configuration_gets_none(self, app, db, seed_user, tax_law):
-        """An empty law is the ONLY way all three come back None.
+    def test_an_empty_law_refuses_every_profile(self, app, db, seed_user, tax_law):
+        """A law with no year lists no state, so it refuses the profile.
 
-        It is never merely because the REQUESTED year is missing, which is
-        what the retired current-year fallback produced every New Year.
+        Until plan step salary:X-at-3 this was the ONE way all three kinds
+        came back None -- never merely because the REQUESTED year is missing,
+        which is what the retired current-year fallback produced every New
+        Year.  The engine now refuses a state the law does not list (ruling
+        R-SAL78), and an empty law lists none, so it answers no profile at
+        all rather than three Nones.
         """
         tax_law(EMPTY_TAX_LAW)
         with app.app_context():
             profile = _make_profile(seed_user)
 
-            result = load_tax_configs_for_year(profile, date.today().year)
+            with pytest.raises(UnsupportedStateError) as refused:
+                load_tax_configs_for_year(profile, date.today().year)
 
-            assert result["bracket_set"] is None
-            assert result["state_config"] is None
-            assert result["fica_config"] is None
+            assert refused.value.supported == ()
+            assert refused.value.state_code == "NC"
 
     def test_the_resolution_does_not_move_with_the_calendar(
         self, app, db, seed_user, tax_law,

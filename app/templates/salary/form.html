@@ -111,12 +111,26 @@
                 {% endfor %}
               </select>
             </div>
+            {# The states the tax law lists, and no other (plan step
+               salary:X-at-3, ruling R-SAL78): both doors refuse any other.
+               It was a free text box that saved any two characters, so "nc"
+               -- shown upper-cased by the box, and not NC to the law --
+               priced the profile's state tax at $0.00.  Nothing is chosen
+               for the owner (the developer, 2026-10-08, "Choose your
+               state"): a new profile, or one whose stored state the law no
+               longer lists, opens on the placeholder.  An empty first option
+               of a "required" select is its placeholder label option, so the
+               browser holds the save until a listed state is picked; it is
+               not "disabled", because a browser submits nothing for a
+               disabled option and the requirement alone is the refusal. #}
             <div class="col-md-6">
               <label for="state_code" class="form-label">State</label>
-              <input type="text" id="state_code" name="state_code" class="form-control text-uppercase"
-                     maxlength="2" required
-                     value="{{ profile.state_code if profile else 'NC' }}"
-                     placeholder="NC">
+              <select id="state_code" name="state_code" class="form-select" required>
+                <option value="" {{ 'selected' if not profile or profile.state_code not in supported_states }}>Choose your state</option>
+                {% for code in supported_states %}
+                <option value="{{ code }}" {{ 'selected' if profile and profile.state_code == code }}>{{ code }}</option>
+                {% endfor %}
+              </select>
             </div>
           </div>
 

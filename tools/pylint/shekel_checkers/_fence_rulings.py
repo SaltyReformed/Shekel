@@ -361,6 +361,17 @@ _FENCED_MODULE_RULINGS = {
             # sides take it: the posting writer projects it into corrections, the
             # seam's read pass folds it.
             "walk_loan_ledger",
+            # A loan's CONTRACT TERMS, loaded (plan step recurrence:R25, ruling
+            # R-R105): ``build_loan_calendar`` returns the loan's
+            # ``LoanCalendar`` -- its origination, due day, rate periods and
+            # escrow lines -- and ``LoanCalendars`` is the read pass's memo of
+            # it, whose ``loan_params_of`` / ``loan_calendar_of`` methods hand
+            # back the loan's ``LoanParams`` row and that same calendar.  Terms, not a
+            # balance: nothing in them is a figure owed on any date, and the
+            # charges built from them are ``contract_charges``' ruling below.
+            "build_loan_calendar",
+            "loan_calendar_of",
+            "loan_params_of",
             # The CHARGE calendar (plan step X-au-g-2c-3b-1; the contract's
             # since recurrence:R16-c-2, ruling R-R100) -- the TIME half of a
             # walk, and it does not answer balance-at-T.  Its DATES

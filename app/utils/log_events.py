@@ -259,6 +259,15 @@ EVT_PAY_CALENDAR_UNDERIVABLE = _register(
     "broken invariant no write door produces.  Alert on the second.",
 )
 
+EVT_SALARY_STATE_UNSUPPORTED = _register(
+    "salary_state_unsupported", ERROR,
+    "A request priced a salary profile whose state the tax law does not list; "
+    "the fix-it page naming the profile (or 204 for a safe-method fragment) "
+    "was returned instead of a figure.  Both profile doors refuse such a state, so every "
+    "occurrence is a row older than a release that dropped a state or one "
+    "written around the doors -- alert on it.",
+)
+
 
 # ── Business events: existing call sites ───────────────────────────
 

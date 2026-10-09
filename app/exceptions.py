@@ -14,6 +14,8 @@ deciding it separately is the defect that ruling exists to end.
 
 from datetime import date
 
+from app.tax_law import name_states
+
 
 class ShekelError(Exception):
     """Base exception for all Shekel domain errors."""
@@ -216,6 +218,62 @@ class BaselineMissingError(ShekelError, ValueError):
         self.user_id = user_id
 
 
+class UnsupportedStateError(ShekelError, ValueError):
+    """A salary profile was priced in a state the tax law does not list.
+
+    Raised by :func:`app.services.tax_config_service.profile_tax_series`, the
+    one read that slices the law for a profile, so the paycheck engine and the
+    Taxes tab refuse the profile alike (plan step salary:X-at-3: "the engine
+    refuses a state the law lacks"; ruling **salary:R-SAL78**).  Until
+    that step the engine priced such a state's tax at ``$0.00`` -- or, for a
+    paycheck a pay stub prices, carried the stub's printed state tax unmoved by
+    any later pay change -- and said nothing (finding **salary:SAL-575**).
+
+    **It is a state no door can produce**: both profile doors refuse a state
+    the law does not list, and no profile held one when X-at-3 shipped (the
+    developer, 2026-10-08).  What remains is a row older than a release that
+    dropped a state, or one written around the doors.  The request cannot be
+    answered correctly, and answering ``$0.00`` is the defect, so it is
+    refused (ruling **salary:R-SAL130**).  **Unlike**
+    :class:`RequiredRecordMissing` it has a repair the owner can make on a
+    page: the profile's edit page prices nothing, so it opens, and its state
+    list offers only the states the law lists.  So ONE handler answers it
+    with a page naming the profile and linking there
+    (:func:`app.error_handlers.register_error_handlers`'s
+    ``salary_state_unsupported``; the developer, 2026-10-08, "One fix-it
+    page", amending R-SAL130's generic error page), and the log names the
+    profile and its state.
+
+    A ``ValueError`` as well as a :class:`ShekelError`, mirroring its
+    neighbours above.
+
+    Args:
+        profile_id: The profile's id, so the log names one row.
+        profile_name: The profile's name, as its owner knows it.
+        state_code: The state the profile holds, exactly as stored.
+        supported: The states the law lists, sorted.
+
+    Attributes:
+        profile_id, profile_name, state_code, supported: As above.
+    """
+
+    def __init__(
+        self, profile_id: int, profile_name: str, state_code: str,
+        supported: tuple[str, ...],
+    ) -> None:
+        """Name the profile, its state and the states the law lists."""
+        super().__init__(
+            f'Salary profile "{profile_name}" (id {profile_id}) is in '
+            f"{state_code!r}, which Shekel's tax law does not list (it lists "
+            f"{name_states(supported)}).  Choose a state the law lists on the "
+            f"profile's edit page."
+        )
+        self.profile_id = profile_id
+        self.profile_name = profile_name
+        self.state_code = state_code
+        self.supported = supported
+
+
 class RecurrenceWindowError(ShekelError):
     """A generate pass was handed a write window its owner's schedule lacks.
 
@@ -297,43 +355,37 @@ class PayPeriodLocked(ShekelError):
 
     Raised by truncate / regenerate when the window they would delete or
     rebuild contains a period that may never be removed -- it is
-    historical, holds a settled transaction, holds a row holding a payment
-    or purchase, or holds posted ledger entries
+    historical, holds a settled transaction, holds a row or transfer
+    holding a payment or purchase, or holds posted ledger entries
     (:class:`~app.services.pay_period_locks.PeriodLockReason`).  A hard lock
     is NOT overridable (unlike the discard gate); the operation deletes
     nothing.
 
-    **The message names each period locked for holding a movement** (plan
-    step ``credit_card:CC-5-4a-4``, ruling **R-CC66**: "the refusal names
-    the period: 'Pay period 9/10 holds a recorded payment or purchase;
-    delete it from its row first.'"), and counts the rest.  Its generic
-    sentence listed "an account anchor, or a recurrence anchor" until then:
-    two reasons deleted at plan steps X-f1c3c and R7b-4, which it went on
-    naming.
+    **The message is the caller's** (plan step ``pay_calendar:C22``):
+    ``pay_period_locks.locked_refusal`` words it and
+    ``pay_period_gates.gate_deletable_tail`` raises it -- per paycheck locked
+    for holding a movement, every payment and purchase it holds with its
+    amount and its row (ruling **R-PC116**: "The 2026-11-16 paycheck holds 2
+    payments or purchases you entered (Kroger, $87.43, in Groceries; Rent's
+    payment, $1,200.00). Remove or move them first."), then a count of the
+    rest.  The words are built beside the reader that finds the movements and
+    the one spelling of a paycheck the pay-period refusals share, which this
+    module cannot import.  Until C22 this class built the sentence itself
+    from the periods' start dates alone -- ruling **R-CC66**'s "Pay period
+    9/10 holds a recorded payment or purchase; delete it from its row
+    first.", which R-PC116 replaced -- and before plan step
+    ``credit_card:CC-5-4a-4`` its generic sentence listed "an account
+    anchor, or a recurrence anchor": two reasons deleted at plan steps
+    X-f1c3c and R7b-4, which it went on naming.
 
     Attributes:
         blocking: A dict mapping each blocking pay-period id to its
             :class:`~app.services.pay_period_locks.PeriodLockReason`.
-        holding_starts: The start dates of the blocking periods locked for
-            holding a payment or purchase, in schedule order.
     """
 
-    def __init__(self, blocking, holding_starts=()):
+    def __init__(self, blocking, message):
         self.blocking = blocking
-        self.holding_starts = list(holding_starts)
-        sentences = [
-            f"Pay period {start.month}/{start.day} holds a recorded payment "
-            "or purchase; delete it from its row first."
-            for start in self.holding_starts
-        ]
-        others = len(blocking) - len(self.holding_starts)
-        if others:
-            sentences.append(
-                f"Operation refused: {others} pay period(s) are locked (past, "
-                f"settled, or holding posted ledger entries) and cannot be "
-                f"deleted or rebuilt."
-            )
-        super().__init__(" ".join(sentences))
+        super().__init__(message)
 
 
 class PayPeriodDiscardRequired(ShekelError):

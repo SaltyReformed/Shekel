@@ -89,14 +89,26 @@ class TestWhatALawLacks:
         law = made_up_law((2025, {"NC": "0.0425"}), (2026, {}), (2027, {"NC": "0.0399"}))
         assert gaps(law, 2027) == (Gap(tax_year=2026, state="NC", fallback_year=2025),)
 
-    def test_a_state_added_later_is_owed_nothing_by_earlier_years(self):
-        """A state the app starts supporting in 2026 need not be written back into 2025."""
-        law = made_up_law((2025, {"NC": "0.0425"}), (2026, {"NC": "0.0399", "ZZ": "0.0500"}))
-        assert not gaps(law, 2026)
+    def test_a_state_first_listed_after_the_first_year_cannot_be_written(self):
+        """A state the app starts supporting in 2026 is written back into 2025 too.
 
-    def test_a_state_added_later_is_owed_by_every_year_after(self):
-        """Once listed, a state is listed in every later year."""
-        law = made_up_law((2025, {}), (2026, {"ZZ": "0.0500"}), (2027, {}))
+        Ruling R-SAL129 (plan step salary:X-at-3): a state is listed from the
+        law's first year, so no earlier year is priced on a later year's
+        rules.  Until X-at-3 this case read the opposite -- a state first
+        listed in 2026 owed nothing to 2025 -- and the alarms were silent
+        about it while the resolver reached forward.
+        """
+        with pytest.raises(ValueError, match="lists ZZ from 2026 but not in its first year, 2025"):
+            made_up_law((2025, {"NC": "0.0425"}), (2026, {"NC": "0.0399", "ZZ": "0.0500"}))
+
+    def test_a_listed_state_is_owed_by_every_year_after(self):
+        """Once listed, a state is listed in every later year.
+
+        Listed from the law's first year since plan step salary:X-at-3 (ruling
+        R-SAL129); it was first listed in 2026 of a law opening in 2025 until
+        then, which the law now refuses.
+        """
+        law = made_up_law((2025, {"ZZ": "0.0500"}), (2026, {"ZZ": "0.0500"}), (2027, {}))
         assert gaps(law, 2027) == (Gap(tax_year=2027, state="ZZ", fallback_year=2026),)
 
     def test_a_missing_year_and_a_missing_state_are_both_named(self):

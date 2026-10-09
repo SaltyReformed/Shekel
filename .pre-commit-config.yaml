@@ -131,8 +131,9 @@ repos:
         entry: pylint
         language: system
         types: [python]
-        # tools/ci/arcs.py too: the gate imports the arc list from there.
-        files: ^tools/(plan_gate/.*|ci/arcs)\.py$
+        # tools/ci/arcs.py and tools/ci/arc_steps.py too: the gate imports the
+        # arc table and an arc document's steps producer from there.
+        files: ^tools/(plan_gate/.*|ci/arcs|ci/arc_steps)\.py$
         pass_filenames: false
         # The plan gate was RUN by the pytest hook below and LINTED by nothing
         # -- not this file, not ci.yml (whose pylint step is `app/` only) --
@@ -225,7 +226,7 @@ repos:
         # folded scalar joins its lines with a SPACE, which puts a space inside
         # the alternation. It HAD been re-split, and bank_import's document
         # went ungated for as long as nobody re-read this comment.
-        files: ^(docs/plans/ledger\.md|docs/plans/steps\.md|docs/plans/rulings\.md|docs/plans/conventions\.md|docs/plans/verification\.md|docs/plans/lessons\.md|docs/audits/balance_architecture/README\.md|docs/plans/implementation_plan_recurrence_redesign\.md|docs/plans/implementation_plan_pay_calendar\.md|docs/plans/implementation_plan_credit_card\.md|docs/plans/implementation_plan_bank_import\.md|docs/plans/implementation_plan_salary\.md|tools/ci/arcs\.py|tools/plan_gate/.*\.py)$
+        files: ^(docs/plans/ledger\.md|docs/plans/steps\.md|docs/plans/rulings\.md|docs/plans/conventions\.md|docs/plans/verification\.md|docs/plans/lessons\.md|docs/audits/balance_architecture/README\.md|docs/plans/implementation_plan_recurrence_redesign\.md|docs/plans/implementation_plan_pay_calendar\.md|docs/plans/implementation_plan_credit_card\.md|docs/plans/implementation_plan_bank_import\.md|docs/plans/implementation_plan_salary\.md|tools/ci/arcs\.py|tools/ci/arc_steps\.py|tools/plan_gate/.*\.py)$
         pass_filenames: false
         args: [tools/plan_gate, -c, /dev/null, -q]
 

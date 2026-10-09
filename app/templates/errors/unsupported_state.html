@@ -1,0 +1,53 @@
+{#
+  The ONE answer to "this salary profile is in a state the tax law does not
+  list" (plan step salary:X-at-3; the developer, 2026-10-08, "One fix-it
+  page").  Rendered by the application-level ``UnsupportedStateError`` handler
+  for every full-page request and every MUTATING htmx request, whichever
+  surface priced the profile.  A SAFE-method htmx request gets 204 instead, so
+  a poll never swaps this card into a live region.
+
+  It carries the REPAIR: the profile's edit page prices nothing, so it opens,
+  and its state list offers only the states the law lists.  A COMPANION, who
+  may not open that page, reaches this one through the companion view once
+  the owner has made a paycheck visible to companions (the view prices the
+  rows it shows), and is told to ask the owner instead, with no button (the
+  developer, 2026-10-08, "Companion wording").  Deliberately no
+  figures: every paycheck of this profile is exactly what cannot be priced.
+
+  Required template variables:
+    error -- the raised app.exceptions.UnsupportedStateError (profile_id,
+             profile_name, state_code)
+#}
+{% extends "base.html" %}
+{% block title %}State Not Supported -- Shekel{% endblock title %}
+
+{% block content %}
+<div class="row justify-content-center mt-5">
+  <div class="col-md-6">
+    <div class="card shadow-sm">
+      <div class="card-body text-center">
+        <h3>
+          <i class="bi bi-geo-alt text-warning"></i>
+          State Not Supported
+        </h3>
+        {% if current_user.role_id == COMPANION_ROLE_ID %}
+        <p class="mt-3">
+          The budget owner's salary profile "{{ error.profile_name }}" is in
+          {{ error.state_code }}, which Shekel has no tax rules for. Ask the
+          owner to choose its state.
+        </p>
+        {% else %}
+        <p class="mt-3">
+          Your salary profile "{{ error.profile_name }}" is in {{ error.state_code }},
+          which Shekel has no tax rules for. Choose your state on its edit page.
+        </p>
+        <a href="{{ url_for('salary.edit_profile', profile_id=error.profile_id) }}"
+           class="btn btn-primary">
+          <i class="bi bi-pencil"></i> Edit "{{ error.profile_name }}"
+        </a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}

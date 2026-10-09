@@ -33,7 +33,9 @@ cell quoted.
 A steps section can contain a FENCED code block, so fenced regions are blanked
 before a section is carved out.  Otherwise a ``##``-prefixed line inside a fence
 truncates the section and every step after it vanishes -- the ticked-entry arm
-would then grade a document it has silently stopped reading.
+would then grade a document it has silently stopped reading.  The checkbox
+grammar, the fence rule and a step's entry live in :mod:`tools.ci.arc_steps`
+since X-cx's L7, which reads them too: one producer for both tools.
 
 The rule citations are module constants rather than :class:`PlanSpec` fields.
 They were per-document when each document stated its own rules; there is now
@@ -49,14 +51,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-#: A steps-section checkbox: ``- [ ] **X-h** ...`` or the decomposed-leaf
-#: spelling ``* [x] **X-g4a** ...``.  The bold run may carry more than the id
-#: (``**X-i1 THE MEMO**``), so only the leading id token is captured.
-#: Public because :mod:`_registry` scans the same checkboxes to reconcile
-#: ``steps.md`` against the arc documents, and two copies of this pattern would
-#: let the index and the specifications be read by two different grammars.
-CHECKBOX_RX = re.compile(
-    r"^\s*[-*]\s*\[(?P<tick>[ xX])\]\s*\*\*(?P<step>[A-Za-z0-9][A-Za-z0-9-]*)\b",
+from tools.ci.arc_steps import (
+    HeadingCountError,
+    blank_fenced_lines,
+    entries,
+    section_span,
 )
 
 #: Where a relocated defect, and where the standing rules, now live.  Named in
@@ -159,31 +158,6 @@ class PlanSpec:
         return self.path.read_text(encoding="utf-8")
 
 
-def _blank_fenced_regions(text: str) -> str:
-    """Return *text* with every fenced code block's contents blanked.
-
-    Both documents carry ``text`` fences inside their steps sections, so a
-    fence is not hypothetical.  Blanking rather than deleting keeps line
-    positions intact, and blanking rather than ignoring means a ``|`` row or a
-    ``- [ ]`` line inside a code sample is not mistaken for a table row or a
-    checkbox -- a code sample is an illustration, not a record.
-
-    Args:
-        text: The whole document.
-
-    Returns:
-        The document with fenced content replaced by empty lines.
-    """
-    out, inside = [], False
-    for line in text.splitlines():
-        if line.lstrip().startswith("```"):
-            inside = not inside
-            out.append("")
-            continue
-        out.append("" if inside else line)
-    return "\n".join(out)
-
-
 def split_owners(cell: str) -> list[str]:
     """Split an owner cell on ``" / "`` at parenthesis depth zero.
 
@@ -216,11 +190,27 @@ def split_owners(cell: str) -> list[str]:
     return parts
 
 
+def _heading_refusal(error: HeadingCountError, label: str) -> AssertionError:
+    """The gate's failure for a document whose heading is absent or doubled.
+
+    An ``AssertionError`` naming the document, so a restructured document fails
+    the gate loudly rather than being graded as an empty section.
+
+    Args:
+        error: What :func:`tools.ci.arc_steps.section_span` refused.
+        label: How to name the document in the failure message.
+
+    Returns:
+        The failure to raise.
+    """
+    return AssertionError(error.message(label))
+
+
 def _section(text: str, heading: str, *, label: str) -> str:
     """Return the body of the ``##`` section whose heading starts with *heading*.
 
-    Fenced regions are blanked first (:func:`_blank_fenced_regions`), so a
-    ``##``-prefixed line inside a code sample cannot end the section early.
+    Fenced lines are blanked first (:func:`tools.ci.arc_steps.blank_fenced_lines`),
+    so a ``##``-prefixed line inside a code sample cannot end the section early.
 
     Args:
         text: The whole document.
@@ -235,17 +225,11 @@ def _section(text: str, heading: str, *, label: str) -> str:
             document fails loudly here rather than silently reporting an empty
             section.
     """
-    lines = _blank_fenced_regions(text).splitlines()
-    starts = [i for i, line in enumerate(lines) if line.startswith(heading)]
-    assert len(starts) == 1, (
-        f"expected exactly one heading starting {heading!r} in {label}; "
-        f"found {len(starts)}"
-    )
-    start = starts[0]
-    for index in range(start + 1, len(lines)):
-        if lines[index].startswith("## "):
-            return "\n".join(lines[start:index])
-    return "\n".join(lines[start:])
+    try:
+        start, stop = section_span(text, heading)
+    except HeadingCountError as error:
+        raise _heading_refusal(error, label) from error
+    return "\n".join(blank_fenced_lines(text.splitlines())[start:stop])
 
 
 def arc_state_violation(text: str, spec: PlanSpec) -> str | None:
@@ -336,13 +320,13 @@ def line_count_violation(text: str, spec: PlanSpec) -> str | None:
 def step_entries(text: str, spec: PlanSpec) -> list[tuple[str, bool, str]]:
     """Return ``(step id, is ticked, entry body)`` for every step, in order.
 
-    A step's ENTRY runs from its checkbox line to the next checkbox, the next
-    ``###`` sub-heading, or the end of the steps section -- whichever comes
-    first.  The sub-heading arm is load-bearing rather than defensive: both
-    documents group steps under ``###`` headings (an umbrella over decomposed
-    leaves, a block of carried steps), and without it the last step before such
-    a heading absorbs the whole group's prose and is measured as far longer
-    than it is.
+    A step's ENTRY is :func:`tools.ci.arc_steps.entries`' span, the rule's one
+    home: from its checkbox line to the next checkbox, the next ``###``
+    sub-heading, or the end of the steps section.  The body is that span of the
+    FENCE-BLANKED text, joined and right-stripped, so its line count is the one
+    the ticked-entry cap has always measured: a span includes the blank line
+    before its boundary when there is one, so counting the span would charge an
+    entry at the cap for it.
 
     Args:
         text: The whole document.
@@ -350,22 +334,20 @@ def step_entries(text: str, spec: PlanSpec) -> list[tuple[str, bool, str]]:
 
     Returns:
         One triple per checkbox, in document order.
+
+    Raises:
+        AssertionError: The steps heading is absent or duplicated
+            (:func:`_heading_refusal`).
     """
-    lines = _section(text, spec.steps_heading, label=str(spec.path)).splitlines()
-    marks = [(i, m) for i, line in enumerate(lines) if (m := CHECKBOX_RX.match(line))]
-    entries = []
-    for position, (index, match) in enumerate(marks):
-        stop = marks[position + 1][0] if position + 1 < len(marks) else len(lines)
-        for scan in range(index + 1, stop):
-            if lines[scan].startswith("###"):
-                stop = scan
-                break
-        entries.append((
-            match.group("step"),
-            match.group("tick").lower() == "x",
-            "\n".join(lines[index:stop]).rstrip(),
-        ))
-    return entries
+    lines = blank_fenced_lines(text.splitlines())
+    try:
+        found = entries(text, spec.steps_heading)
+    except HeadingCountError as error:
+        raise _heading_refusal(error, str(spec.path)) from error
+    return [
+        (entry.step, entry.ticked, "\n".join(lines[entry.start:entry.stop]).rstrip())
+        for entry in found
+    ]
 
 
 def ticked_entry_violations(text: str, spec: PlanSpec) -> list[str]:

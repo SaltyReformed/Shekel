@@ -2,14 +2,16 @@
 Shekel Budget App -- application-level error handlers.
 
 Every response the application produces for a condition no single route owns:
-the five HTTP error pages, and the ONE answer to a user with no baseline
-scenario (plan step X-v, ruling R-BW).
+the six HTTP error pages, the ONE answer to a user with no baseline scenario
+(plan step X-v, ruling R-BW), to a pay calendar that cannot be derived (plan
+step pay_calendar:C4-b-2), and to a salary profile in a state the tax law does
+not list (plan step salary:X-at-3).
 
 **Its own module because the factory has a line ceiling and this is a
 concern, not plumbing.**  ``app/__init__.py`` already extracted its Jinja
 filters to :mod:`app.jinja_filters` for exactly that reason; the
 ``BaselineMissingError`` handler is what pushed the factory over 1,000 lines,
-and a registration helper that renders six responses is not the app factory's
+and a registration helper that renders nine responses is not the app factory's
 job.  ``create_app`` calls :func:`register_error_handlers` and owns nothing
 about what any of them says.
 """
@@ -17,9 +19,10 @@ about what any of them says.
 import logging
 
 from flask import current_app, render_template, request
+from flask.typing import ResponseReturnValue
 from flask_login import current_user
 
-from app.exceptions import BaselineMissingError
+from app.exceptions import BaselineMissingError, UnsupportedStateError
 from app.extensions import db
 from app.services.pay_calendar import PayCalendarError
 from app.utils.log_events import (
@@ -28,6 +31,7 @@ from app.utils.log_events import (
     EVT_BASELINE_MISSING,
     EVT_PAY_CALENDAR_UNDERIVABLE,
     EVT_RATE_LIMIT_EXCEEDED,
+    EVT_SALARY_STATE_UNSUPPORTED,
     log_event,
 )
 
@@ -43,13 +47,24 @@ _LOGGER = logging.getLogger(__name__)
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
-def _recovery_response(template_name: str):
+def _recovery_response(template_name: str, **context: object) -> ResponseReturnValue:
     """Answer a recoverable SETUP state, honouring what htmx will swap.
 
-    **The shared half of the two application-error handlers below**, extracted
-    when plan step ``pay_calendar:C4-b-2`` added the second one rather than
-    copying its three lines.  The rule it encodes belongs to the CLIENT, not
-    to either error: htmx swaps only 2xx responses and swaps them into
+    **The shared half of the three application-error handlers below**,
+    extracted when plan step ``pay_calendar:C4-b-2`` added the second one
+    rather than copying its three lines; plan step salary:X-at-3 added the
+    third.  **A safe-method htmx request is answered with nothing, a
+    background load and a USER's press alike**, because the request does not
+    say which it was: the Analytics page's first tab load (``hx-trigger=
+    "load"``) stays on its loading spinner, and a pressed tab pill
+    highlights while the previous tab's figures stay under it.  And the
+    MUTATING branch's "card" is the recovery template, which extends
+    ``base.html``, so htmx swaps a whole page's body -- its script tags
+    included, which run again and bind their listeners twice -- into the
+    target (unmeasured in a browser).  Ledger row salary:SAL-600 owns both,
+    for all three (the developer, 2026-10-08, "Keep the rule; file it").
+    The rule it encodes belongs to the CLIENT, not to any of the three
+    errors: htmx swaps only 2xx responses and swaps them into
     whatever target the request named, so both facts about the response are
     decided by what the request was rather than by which state was found.
 
@@ -71,6 +86,8 @@ def _recovery_response(template_name: str):
     Args:
         template_name: The recovery template to render for a full page or a
             mutating fragment.
+        **context: What the template names (the unsupported-state page names
+            the profile); none for the two pages that name nothing.
 
     Returns:
         ``("", 204)`` for a safe-method htmx request, else the rendered
@@ -78,7 +95,7 @@ def _recovery_response(template_name: str):
     """
     if request.headers.get("HX-Request") and request.method in _SAFE_METHODS:
         return "", 204
-    return render_template(template_name)
+    return render_template(template_name, **context)
 
 
 def register_error_handlers(app):
@@ -328,3 +345,58 @@ def register_error_handlers(app):
             detail=str(error),
         )
         return _recovery_response("errors/no_pay_calendar.html")
+
+    @app.errorhandler(UnsupportedStateError)
+    def salary_state_unsupported(error):
+        """Answer "this salary profile is in a state the tax law does not list" -- once.
+
+        **Plan step salary:X-at-3** (ruling **salary:R-SAL78**; the developer,
+        2026-10-08, "One fix-it page", amending R-SAL130).  The paycheck engine
+        refuses such a profile rather than pricing its state tax at ``$0.00``
+        (:func:`app.services.tax_config_service.profile_tax_series`), and every
+        full page that prices it -- the grid, the dashboards, the salary pages
+        -- would otherwise answer with the bare ``500`` page, whose one button
+        leads to another page that prices the same profile.  The repair is the
+        profile's own edit page, which prices nothing, so this page names the
+        profile and links there (a companion is told to ask the owner): the
+        shape of the two handlers above, and the reason the class is answered
+        here rather than left to the 500 page as
+        :class:`~app.exceptions.RequiredRecordMissing` is (that one has no
+        repair the owner can make on a page).  An htmx ``GET`` -- the
+        Analytics tabs, the Taxes tab among them -- is answered with nothing,
+        and a mutating htmx request with the whole page swapped into its
+        target, by :func:`_recovery_response`'s rule (ledger row
+        salary:SAL-600).
+
+        **Quiet on screen, loud in the log**, as the two above: both profile
+        doors refuse such a state, so an occurrence is a row older than a
+        release that dropped a state, or one written around the doors.  The
+        event names the profile and its state.
+
+        The rollback matches the handlers above: the raise may have left the
+        session in a failed transaction -- a profile edit whose regeneration
+        refused, say, which must not commit -- and the page's own context
+        processors query.
+
+        Args:
+            error: The raised :class:`~app.exceptions.UnsupportedStateError`,
+                which carries the profile's id, name and stored state.
+
+        Returns:
+            ``("", 204)`` for a safe-method htmx request, else the fix-it page
+            (:func:`_recovery_response`).
+        """
+        db.session.rollback()
+        log_event(
+            _LOGGER, logging.ERROR, EVT_SALARY_STATE_UNSUPPORTED, ERROR,
+            "A salary profile is in a state the tax law does not list",
+            # The same read, and the same reason for not importing
+            # ``auth_helpers._safe_user_id``, that ``baseline_missing`` gives.
+            user_id=getattr(current_user, "id", None),
+            profile_id=error.profile_id,
+            state_code=error.state_code,
+            path=request.path,
+            method=request.method,
+            detail=str(error),
+        )
+        return _recovery_response("errors/unsupported_state.html", error=error)

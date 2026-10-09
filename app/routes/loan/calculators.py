@@ -29,6 +29,7 @@ from app.routes.loan._helpers import (
 )
 from app.services import amortization_engine, balance_at, loan_resolver
 from app.services.amortization_engine import AmortizationSummary
+from app.services.installment_calendar import first_installment_date
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_templates,
 )
@@ -364,10 +365,10 @@ def _project_refinance(refi_principal, refi_rate, refi_term, payment_day):
     refi_monthly = amortization_engine.calculate_monthly_payment(
         refi_principal, refi_rate, refi_term,
     )
+    # The refinance is a new loan originating this month, so its first payment
+    # is that loan's first installment on the one calendar rule.
     schedule_start = date.today().replace(day=1)
-    starting_date = amortization_engine.advance_to_next_payment_date(
-        schedule_start, payment_day,
-    )
+    starting_date = first_installment_date(schedule_start, payment_day)
     refi_schedule = amortization_engine.project_forward(
         amortization_engine.ProjectionInputs(
             starting_balance=refi_principal,

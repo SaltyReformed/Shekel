@@ -183,10 +183,9 @@ from app.utils.amount_relationships import (
     transfer_pricing_load_options,
     valuation_load_options,
 )
-# The loan-pricing pair FIRST, because it is the bottom of this package's
+# The loan-pricing leaf FIRST, because it is the bottom of this package's
 # pricing line: ``_loan_installment`` -> ``_loan_pricing`` -> ``_amount_basis``
 # -> ``_amount_source``, and the block below reads in tier order.
-from ._loan_installment import _resolve_loan_basis
 from ._loan_pricing import (
     LoanPricing,
     loan_pricing,
@@ -342,19 +341,4 @@ __all__ = [
     "statement_coverage",
     "sum_projected",
     "walk_cash_ledger",
-    # Re-exported PRIVATE, deliberately, and it moved here whole with rule 4's
-    # producer at plan step X-au-g-2a.  The cycle-deletion controls
-    # (``test_loan_payment_service.TestALoansPriceDoesNotReadItsOwnPayments``
-    # and ``tests/manual/verify_loan_pricing_ignores_payment_feed.py``) assert
-    # that this producer reads the loan's TERMS and issues no statement against
-    # ``budget.transactions``.  Publishing the name here is the honest public
-    # path and keeps the leaf boundary intact; ``shekel-private-module-import``
-    # is what would forbid the direct ``._loan_installment`` import from
-    # ``app/`` or ``scripts/``.  *The sentence carried from the module this
-    # moved out of said that checker forbids it from a TEST, and it does not:
-    # ``tests/`` is linted for ``shekel-decimal-from-float`` alone
-    # (``.pre-commit-config.yaml``) and CI's pylint step covers ``app/`` and
-    # ``scripts/``.  In ``tests/`` it is a convention, not a gate -- worth
-    # keeping, worth not overstating.*
-    "_resolve_loan_basis",
 ]

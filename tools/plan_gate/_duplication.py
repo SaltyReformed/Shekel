@@ -34,7 +34,7 @@ commit the original moves.
 
 Scanning notes, each carrying a false positive it prevents:
 
-1. **Fenced regions are blanked** (:func:`_plan_gate._blank_fenced_regions`).
+1. **Fenced regions are blanked** (:func:`tools.ci.arc_steps.blank_fenced_regions`).
    The recurrence plan's section 0 holds a ``text`` fence listing step ids
    beside file counts, which is a MEASUREMENT and not a sequence.
 2. **A table row is split into CELLS.**  A signpost row holds a summary in one
@@ -55,9 +55,9 @@ from itertools import groupby
 from pathlib import Path
 
 from tools.ci import arcs
+from tools.ci.arc_steps import blank_fenced_regions
 from tools.plan_gate import _registry as registry
 from tools.plan_gate._tables import UNESCAPED_PIPE_RX, is_table_row
-from tools.plan_gate._plan_gate import _blank_fenced_regions
 
 def live_docs() -> dict[str, Path]:
     """Return every live planning document, by the name the arms report it under.
@@ -238,7 +238,7 @@ def _scannable(text: str) -> str:
         a quoted span replaced by spaces of its own length.
     """
     blocks: list[str] = []
-    lines = _blank_fenced_regions(text).split("\n")
+    lines = blank_fenced_regions(text).split("\n")
     for is_row, run in groupby(lines, key=is_table_row):
         if is_row:
             blocks.extend(_ROW_QUOTED_RX.sub(_blank_span, row) for row in run)

@@ -62,7 +62,7 @@ from app.services.loan_loaders import (
     load_loan_params,
     load_rate_changes,
 )
-from app.services.cash_ledger import _resolve_loan_basis
+from app.services.loan_ledger import LoanCalendars
 from app.services.loan_payment_service import load_loan_context
 from app.services.rate_period_engine import period_for_date
 from app.services.balance_at import BalanceContext
@@ -120,10 +120,12 @@ def main():
                     f"  account={account_id} feed={name:<14} "
                     f"n={len(feed):>3} monthly_pi={answers[name]}"
                 )
-            basis = _resolve_loan_basis(account_id)
+            basis = LoanCalendars().loan_calendar_of(account_id)
             # The basis holds the loan's PERIOD SET since plan step X-au-g-2b
             # (ruling R-IJ), so the figure this harness compares is the one
             # governing ``as_of`` -- the same date every other arm reads.
+            # It is the loan's calendar since plan step recurrence:R25, which
+            # deleted ``_resolve_loan_basis`` for the pass's LoanCalendars.
             new = None if basis is None else period_for_date(
                 basis.periods, as_of,
             ).period_pi

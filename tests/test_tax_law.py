@@ -110,10 +110,16 @@ class TestTheControlsLoad:
         assert year.states["ZZ"].flat_rate == Decimal("0.0400")
 
     def test_a_state_without_a_child_deduction_or_a_rate_loads(self):
-        """Empty tiers and no rate are how a state states it has neither."""
+        """Empty tiers and no rate are how a state states it has neither.
+
+        Its standard deduction is $0.00 since plan step salary:X-at-3 (it was
+        the builder's $10,000.00): a state with no income tax deducts nothing,
+        or the deduction would be a figure that prices nothing.
+        """
         state = _state(
             tax_type=TaxTypeEnum.NONE,
             flat_rate=None,
+            standard_deduction={status: Decimal("0.00") for status in FilingStatusEnum},
             child_deduction_tiers={status: () for status in FilingStatusEnum},
         )
         assert state.flat_rate is None
@@ -338,6 +344,63 @@ class TestStateYearLaw:
         with pytest.raises(ValueError, match="tax_type is a TaxTypeEnum"):
             _state(tax_type="flat")
 
+    def test_a_flat_state_with_no_rate_is_refused(self):
+        """A flat-rate state states its rate, or it would price $0.00 (plan step salary:X-at-3)."""
+        with pytest.raises(ValueError, match="a flat-rate state states its rate"):
+            _state(flat_rate=None)
+
+    def test_a_state_with_no_income_tax_stating_a_rate_is_refused(self):
+        """A rate beside "no income tax" contradicts it: which one priced the state?"""
+        with pytest.raises(
+            ValueError, match="a state with no income tax states no rate, not 0.0400",
+        ):
+            _state(tax_type=TaxTypeEnum.NONE)
+
+    def test_a_flat_state_at_zero_is_refused(self):
+        """0% flat is a second spelling of "no income tax", which has one: tax type NONE."""
+        with pytest.raises(
+            ValueError,
+            match=(
+                "a flat-rate state's rate is above zero: a state with no income "
+                "tax is written as one, tax type NONE"
+            ),
+        ):
+            _state(flat_rate=Decimal("0.0000"))
+
+    def test_a_state_with_no_income_tax_stating_a_deduction_is_refused(self):
+        """An untaxed state deducting $10,000.00 shows a figure that prices nothing."""
+        with pytest.raises(
+            ValueError,
+            match="a state with no income tax deducts nothing, not 10000.00 for single",
+        ):
+            _state(
+                tax_type=TaxTypeEnum.NONE, flat_rate=None,
+                child_deduction_tiers={status: () for status in FilingStatusEnum},
+            )
+
+    def test_a_state_with_no_income_tax_stating_child_tiers_is_refused(self):
+        """An untaxed state's child deduction would deduct from a tax of $0.00."""
+        with pytest.raises(
+            ValueError,
+            match="a state with no income tax has no child deduction, not tiers for single",
+        ):
+            _state(
+                tax_type=TaxTypeEnum.NONE, flat_rate=None,
+                standard_deduction={status: Decimal("0.00") for status in FilingStatusEnum},
+            )
+
+    @pytest.mark.parametrize("flat_rate", [None, Decimal("0.0400")])
+    def test_a_bracket_state_is_refused(self, flat_rate):
+        """No formula prices a state's ladder, so the law cannot list one, rate or none."""
+        with pytest.raises(
+            ValueError,
+            match=(
+                "a state taxed on a bracket ladder cannot be written: no formula "
+                r"in the app prices one, so it would price \$0.00"
+            ),
+        ):
+            _state(tax_type=TaxTypeEnum.BRACKET, flat_rate=flat_rate)
+
     def test_a_state_missing_a_filing_status_is_refused(self):
         """The state's deductions are per status, so every status is stated."""
         deduction = {status: Decimal("10000.00") for status in FilingStatusEnum}
@@ -474,6 +537,49 @@ class TestAYearIsCompleteOrDoesNotLoad:
             TaxLaw(years=(None,))
 
 
+class TestTheSupportedStates:
+    """The states the law lists are the states the app supports (plan step salary:X-at-3).
+
+    Ruling salary:R-SAL78: the profile form offers them, both doors refuse
+    any other, and the engine refuses a profile in any other.  Ruling
+    salary:R-SAL129: a state is listed from the law's first year.
+    """
+
+    def test_they_are_every_state_the_law_lists_alphabetically(self):
+        """Listed in dict order YY, AA; supported as AA, YY."""
+        law = TaxLaw(years=(
+            _year(2030, states={"YY": _state(), "AA": _state()}),
+            _year(2031, states={"YY": _state(), "AA": _state()}),
+        ))
+        assert law.supported_states == ("AA", "YY")
+
+    def test_a_new_year_shipping_before_its_state_still_supports_it(self):
+        """Ruling R-SAL86: 2031 ships without AA, and AA stays supported (its alarm names it)."""
+        law = TaxLaw(years=(
+            _year(2030, states={"AA": _state(), "YY": _state()}),
+            _year(2031, states={"YY": _state()}),
+        ))
+        assert law.supported_states == ("AA", "YY")
+
+    def test_a_law_with_no_year_supports_no_state(self):
+        """No year lists anything, so the engine refuses every profile under it."""
+        assert TaxLaw(years=()).supported_states == ()
+
+    def test_late_states_are_refused_and_named_alphabetically(self):
+        """Two states first listed in 2031 of a law opening in 2030: both named, in order."""
+        with pytest.raises(
+            ValueError,
+            match=(
+                "the tax law lists AA, BB from 2031 but not in its first year, "
+                "2030: a state is listed from the law's first year"
+            ),
+        ):
+            TaxLaw(years=(
+                _year(2030),
+                _year(2031, states={"ZZ": _state(), "BB": _state(), "AA": _state()}),
+            ))
+
+
 class TestTheLawCannotChangeOnceItLoads:
     """Every mapping in the law is a read-only view of a private copy.
 
@@ -516,6 +622,27 @@ class TestTheShippedLaw:
             assert set(year.federal) == set(FilingStatusEnum)
             assert isinstance(year.fica, FicaRules)
             assert year.sources
+
+    def test_a_second_state_waits_on_the_two_state_banner_wording(self):
+        """The shipped law lists ONE state until the developer rules the two-state wording.
+
+        Ruling salary:R-SAL91 worded the tax-law banner for ONE state priced on
+        an older year; its two-state form ("... and NC tax uses 2026's and SC
+        tax uses 2026's, ...", and the check script's "..., except NC on
+        2026's and SC on 2026's.") is extrapolated, pinned only by made-up
+        laws, and unruled.  Plan step salary:X-at-3 owed the developer that
+        question before a second state lands, and its ruling R-SAL128 lists
+        North Carolina alone, so the question is held HERE (ledger row
+        salary:SAL-599; the developer, 2026-10-08, "Failing test + ledger
+        row"): the release adding a second state fails this until it is asked.
+        It counts states and names none, so it is no second copy of the law.
+        """
+        assert len(LAW.supported_states) == 1, (
+            f"the shipped tax law now lists {', '.join(LAW.supported_states)}: "
+            "before a second state ships, put R-SAL91's two-state banner "
+            "wording to the developer (ledger row salary:SAL-599), then "
+            "retire this test"
+        )
 
     def test_every_state_year_states_every_filing_status(self):
         """A state's standard deduction and child tiers are read per status."""
