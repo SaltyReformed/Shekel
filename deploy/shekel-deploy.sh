@@ -27,6 +27,10 @@
 # assert which arrangement is in place -- it MEASURES it at startup
 # (`report_installed_copy`) and says so in its own output, because a comment
 # claiming "these are the same file" is exactly the claim that goes stale.
+# Since plan step balance:X-dm a working copy also needs
+# scripts/_container_lib.sh at ../scripts/ beside it (ruling R-BAL254), which
+# the symlink has by construction: a bare hand-copy refuses to start, naming
+# itself and the file it lacks, before this measurement could run.
 #
 # Accepted cost of the symlink, ruled: the CHECKED-OUT WORKING TREE becomes
 # the live deploy path.  A half-finished edit or a feature branch is live the
@@ -83,6 +87,25 @@
 
 set -euo pipefail
 
+# The file running, resolved once: /usr/local/bin/shekel-deploy reaches the
+# repository through symlinks.  `usage` reads its header from it and
+# `report_installed_copy` reports it.
+_self=$(readlink -f "${BASH_SOURCE[0]}")
+
+# "Is this container running?" has one home in the shell scripts, shared
+# with the backup scripts (plan step balance:X-dm, ruling R-BAL254), loaded
+# from THIS script's checkout, where scripts/_container_lib.sh sits beside
+# deploy/.  First, so a copy without it refuses to start, before it touches
+# anything (the ruling's words) -- and names itself, since the startup report
+# below does not run.
+_container_lib="${_self%/*}/../scripts/_container_lib.sh"
+# shellcheck source=../scripts/_container_lib.sh
+source "$_container_lib" || {
+    printf '[shekel-deploy] ERROR: %s cannot load %s,\n   the running-check it reads from its own checkout.  Run the repository copy\n   (see its header): a copy needs scripts/_container_lib.sh at ../scripts/.\n' \
+        "$_self" "$_container_lib" >&2
+    exit 1
+}
+
 # ── Configuration ──────────────────────────────────────────────────
 # Every value is overridable from the environment, defaulting to production.
 # That is not configurability for its own sake: R-F8's negative control has to
@@ -126,7 +149,7 @@ HEALTH_INTERVAL_S="${SHEKEL_HEALTH_INTERVAL_S:-5}"
 
 # ── Arg parsing ────────────────────────────────────────────────────
 usage() {
-    sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,/^$/p' "$_self" | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 
@@ -207,8 +230,7 @@ report_installed_copy() {
     # path was a symlink to the repo, and a stale hand-copy made that claim
     # false while reading as reassurance.  Printing the answer on every run is
     # what keeps it honest.
-    local running canonical canonical_real
-    running=$(readlink -f "$0")
+    local running="$_self" canonical canonical_real
     log "running: ${running}"
     canonical="${SHEKEL_CANONICAL_COPY:-/home/josh/projects/Shekel/deploy/shekel-deploy.sh}"
     [ -r "$canonical" ] || return 0
@@ -457,7 +479,8 @@ take_predeploy_dump() {
     DUMP_PART="${DUMP_PATH}.part"
 
     mkdir -p "$BACKUP_DIR" || die "cannot create backup directory $BACKUP_DIR."
-    if ! docker inspect --format='{{.State.Running}}' "$DB_CONTAINER" 2>/dev/null | grep -q true; then
+    # shellcheck disable=SC2310 ## boolean predicate; see image_listing_or_die.
+    if ! container_running "$DB_CONTAINER"; then
         die "database container '$DB_CONTAINER' is not running; no dump, no deploy."
     fi
 
@@ -772,11 +795,19 @@ else
     if ! docker pull -q "${IMAGE_REPO}:${MOVING_TAG}" >/dev/null; then
         die "docker pull ${IMAGE_REPO}:${MOVING_TAG} failed."
     fi
-    # Resolve the just-pulled tag's index/manifest digest.
-    new_digest=$(docker image inspect "${IMAGE_REPO}:${MOVING_TAG}" \
-        --format '{{range .RepoDigests}}{{println .}}{{end}}' \
-        | grep -oE 'sha256:[a-f0-9]{64}' | head -1)
-    [ -n "$new_digest" ] || die "could not resolve digest for ${IMAGE_REPO}:${MOVING_TAG}."
+    # Resolve the just-pulled tag's index/manifest digest: the first digest
+    # among its RepoDigests.  Captured, then matched in bash, with no pipe
+    # (plan step balance:X-dm).  `| grep -oE ... | head -1` under pipefail
+    # could kill grep once head had its line, and set -e then ended the run
+    # with no message of its own -- as it did for a failed inspect, and for
+    # an answer holding no digest, whose refusal below never ran.
+    if ! repo_digests=$(docker image inspect "${IMAGE_REPO}:${MOVING_TAG}" \
+        --format '{{range .RepoDigests}}{{println .}}{{end}}'); then
+        die "docker image inspect ${IMAGE_REPO}:${MOVING_TAG} failed."
+    fi
+    [[ "$repo_digests" =~ sha256:[a-f0-9]{64} ]] \
+        || die "could not resolve digest for ${IMAGE_REPO}:${MOVING_TAG}."
+    new_digest=${BASH_REMATCH[0]}
 fi
 
 # Short forms captured once, for the same reason as ``whoami_name`` above.

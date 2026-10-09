@@ -39,6 +39,7 @@ import hashlib
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import textwrap
 import threading
@@ -109,7 +110,11 @@ def _write_fake_docker(bin_dir: pathlib.Path) -> None:
                     exit 0
                 fi
             done
-            printf 'ghcr.io/saltyreformed/shekel@%s\\n' "$FAKE_LATEST_DIGEST"
+            # :latest's RepoDigests, from a FILE like the listings: the
+            # regression's list outgrows an environment string.
+            # FAKE_IMAGE_INSPECT_RC models an inspect that fails.
+            [ "$FAKE_IMAGE_INSPECT_RC" != "0" ] && exit "$FAKE_IMAGE_INSPECT_RC"
+            cat "$FAKE_REPO_DIGESTS_FILE"
             exit 0
             ;;
         run)
@@ -129,7 +134,12 @@ def _write_fake_docker(bin_dir: pathlib.Path) -> None:
             # image ID (an empty FAKE_CONTAINER_IMAGE_ID models no container).
             for arg in "$@"; do
                 case "$arg" in
-                *State.Running*) printf '%s\\n' "$FAKE_DB_RUNNING"; exit 0 ;;
+                *State.Running*)
+                    # FAKE_DB_INSPECT_RC models a container docker cannot find.
+                    [ "$FAKE_DB_INSPECT_RC" != "0" ] && exit "$FAKE_DB_INSPECT_RC"
+                    printf '%s\\n' "$FAKE_DB_RUNNING"
+                    exit 0
+                    ;;
                 *State.Health*)  printf '%s\\n' "$FAKE_HEALTH";     exit 0 ;;
                 '{{{{.Image}}}}')
                     [ -z "$FAKE_CONTAINER_IMAGE_ID" ] && exit 1
@@ -289,7 +299,13 @@ class _Stack:
             logs_rc: str = "0", container_image_id: str | None = None,
             target_image_id: str | None = None,
             stop_rc: str = "0",
-            stamp_reread_rc: str = "0") -> subprocess.CompletedProcess:
+            stamp_reread_rc: str = "0",
+            pull_latest: bool = False,
+            repo_digests: str | None = None,
+            image_inspect_rc: str = "0",
+            db_inspect_rc: str = "0",
+            script: pathlib.Path | None = None,
+            ) -> subprocess.CompletedProcess:
         """Run the real deploy script against this stack.
 
         Args:
@@ -318,14 +334,30 @@ class _Stack:
             stop_rc: Exit status for ``docker stop``.
             stamp_reread_rc: Exit status for every stamp read once the deploy
                 has run (non-zero: the re-read fails).
+            pull_latest: Pass NO digest, so the script pulls ``:latest`` and
+                resolves its digest from the RepoDigests.
+            repo_digests: What ``docker image inspect`` reports as the
+                RepoDigests of ``:latest``; defaults to the one line naming
+                *target* in the production repository.
+            image_inspect_rc: Exit status for that inspect.
+            db_inspect_rc: Exit status for the database container's
+                running-check (non-zero: docker cannot find it).
+            script: The script to run, a symlink or copy; defaults to the
+                repository's ``deploy/shekel-deploy.sh``.
 
         Returns:
-            The completed process, with stdout and stderr captured together.
+            The completed process, stdout and stderr captured separately.
         """
         old_listing = self.root / "old_migrations.txt"
         new_listing = self.root / "new_migrations.txt"
         old_listing.write_text(old_migrations, encoding="utf-8")
         new_listing.write_text(new_migrations, encoding="utf-8")
+        digests = self.root / "repo_digests.txt"
+        digests.write_text(
+            f"ghcr.io/saltyreformed/shekel@{target}\n" if repo_digests is None
+            else repo_digests,
+            encoding="utf-8",
+        )
         env = dict(os.environ)
         env.update({
             "PATH": f"{self.bin_dir}:{env['PATH']}",
@@ -338,7 +370,9 @@ class _Stack:
             "SHEKEL_HEALTH_INTERVAL_S": "1",
             "FAKE_LOG": str(self.log),
             "FAKE_BACKUP_DIR": str(self.backup_dir),
-            "FAKE_LATEST_DIGEST": target,
+            "FAKE_REPO_DIGESTS_FILE": str(digests),
+            "FAKE_IMAGE_INSPECT_RC": image_inspect_rc,
+            "FAKE_DB_INSPECT_RC": db_inspect_rc,
             "FAKE_OLD_MIGRATIONS_FILE": str(old_listing),
             "FAKE_NEW_MIGRATIONS_FILE": str(new_listing),
             "FAKE_HEALTH": health,
@@ -364,10 +398,11 @@ class _Stack:
             "FAKE_STOP_RC": stop_rc,
             "FAKE_STAMP_REREAD_RC": stamp_reread_rc,
         })
-        argv = ["bash", str(_DEPLOY_SCRIPT), "--no-verify"]
+        argv = ["bash", str(script or _DEPLOY_SCRIPT), "--no-verify"]
         if dry_run:
             argv.append("--dry-run")
-        argv.append(target)
+        if not pull_latest:
+            argv.append(target)
         return subprocess.run(
             argv, env=env, capture_output=True, text=True, timeout=120,
             check=False,
@@ -550,6 +585,28 @@ class TestNoDumpNoDeploy:
         assert result.returncode == 1
         assert "no dump, no deploy" in result.stdout + result.stderr
         assert stack.pin == _OLD
+
+    def test_a_database_container_docker_cannot_find_aborts_the_deploy(
+        self, stack,
+    ):
+        """docker cannot inspect it at all: not running, so no deploy.
+
+        Plan step balance:X-dm: the running-check is ``container_running``
+        in ``scripts/_container_lib.sh`` now (ruling R-BAL254), and a failed
+        inspect is its NO, as the replaced ``| grep -q true`` read it.
+        """
+        result = stack.run(db_inspect_rc="1", **_MIGRATION_BEARING)
+        calls = stack.invocations
+        assert result.returncode == 1, _said(result, calls)
+        assert (
+            "database container 'probe-db' is not running; no dump, no deploy"
+            in result.stdout + result.stderr
+        ), _said(result, calls)
+        assert stack.pin == _OLD, _said(result, calls)
+        assert stack.dumps == [], _said(result, calls)
+        assert not any(c.startswith("compose") for c in calls), (
+            _said(result, calls)
+        )
 
 
 class TestTheMigrationBearingReleaseIsNotRePinned:
@@ -990,9 +1047,9 @@ class TestTheRefusalSaysOnlyWhatTheStampShows:
 #: Filler that outgrows a pipe, C-sorted after every fixture revision (the
 #: script's ``comm`` needs C-sorted listings): 65,536 lines, 1,245,184 bytes.
 #: Measured 2026-10-09 (GNU grep 3.12, Linux 7.2, 4 KiB pages): before a
-#: ``grep -q`` matching line 1 exited, its writer got at most 131,072 bytes
-#: into the pipe over 300 trials -- grep's one 64 KiB read plus the 64 KiB pipe
-#: refilled behind it (grep itself read exactly 65,536 bytes, 300 of 300).
+#: ``grep -q`` matching line 1 exited, a writer filling its pipe in 4 KiB
+#: writes got at most 131,072 bytes in, over 300 trials.  This filler is over
+#: nine times that, so the writer is still writing when grep leaves.
 _PAST_A_PIPE = "".join(f"f{i:07d}_filler.py\n" for i in range(65536))
 
 
@@ -1053,6 +1110,150 @@ class TestAListingLargerThanAPipeIsReadWhole:
         assert "cannot resolve that revision either" not in refusal, (
             _said(result, calls)
         )
+
+
+class TestTheLatestTagResolvesToItsFirstDigest:
+    """The ``:latest`` path, where no digest is given: the first RepoDigest.
+
+    Plan step balance:X-dm.  It read ``docker image inspect ... | grep -oE
+    'sha256:...' | head -1`` under pipefail, and no test drove it, since
+    every other test passes a digest.  Once ``head`` had its line, ``grep``
+    could die writing the rest, and ``set -e`` then ended the run with no
+    message of the script's own; a failed inspect, or an answer holding no
+    digest, ended it the same way, so the refusal written for the second
+    case never ran.
+    """
+
+    def test_the_latest_tag_deploys_its_digest(self, stack):
+        """Pulled, resolved to its digest, and pinned."""
+        result = stack.run(pull_latest=True, health="healthy", **_NO_MIGRATIONS)
+        calls = stack.invocations
+        assert result.returncode == 0, _said(result, calls)
+        assert stack.pin == _NEW, _said(result, calls)
+        assert "pull -q ghcr.io/saltyreformed/shekel:latest" in calls, (
+            _said(result, calls)
+        )
+
+    def test_a_digest_list_larger_than_a_pipe_still_resolves(self, stack):
+        """The FIRST digest is taken, however long the list after it.
+
+        Every later line holds a digest too, so ``grep -oE`` had far more to
+        write than a pipe holds once ``head -1`` had left: the replaced
+        spelling failed this every run.
+        """
+        mirrors = "".join(
+            f"registry.example/mirror{i}@sha256:{i:064x}\n"
+            for i in range(20000)
+        )
+        result = stack.run(
+            pull_latest=True, health="healthy",
+            repo_digests=f"ghcr.io/saltyreformed/shekel@{_NEW}\n" + mirrors,
+            **_NO_MIGRATIONS,
+        )
+        calls = stack.invocations
+        assert result.returncode == 0, _said(result, calls)
+        assert stack.pin == _NEW, _said(result, calls)
+
+    def test_a_failed_inspect_is_refused_in_the_script_s_own_words(self, stack):
+        """Before the dump, the pin and any container."""
+        result = stack.run(
+            pull_latest=True, image_inspect_rc="1", **_NO_MIGRATIONS,
+        )
+        calls = stack.invocations
+        assert result.returncode == 1, _said(result, calls)
+        assert (
+            "docker image inspect ghcr.io/saltyreformed/shekel:latest failed"
+            in result.stdout + result.stderr
+        ), _said(result, calls)
+        assert stack.pin == _OLD, _said(result, calls)
+        assert stack.dumps == [], _said(result, calls)
+
+    def test_an_answer_with_no_digest_is_refused_in_the_script_s_own_words(
+        self, stack,
+    ):
+        """The refusal that ``set -e`` used to pre-empt now runs."""
+        result = stack.run(pull_latest=True, repo_digests="", **_NO_MIGRATIONS)
+        calls = stack.invocations
+        assert result.returncode == 1, _said(result, calls)
+        assert (
+            "could not resolve digest for ghcr.io/saltyreformed/shekel:latest"
+            in result.stdout + result.stderr
+        ), _said(result, calls)
+        assert stack.pin == _OLD, _said(result, calls)
+        assert stack.dumps == [], _said(result, calls)
+
+
+class TestTheRunningCheckIsReadFromTheScriptsCheckout:
+    """Ruling R-BAL254: one running-check, found beside the script's checkout.
+
+    ``scripts/_container_lib.sh`` holds it for this script and the backup
+    scripts alike.  Production runs ``/usr/local/bin/shekel-deploy``, a
+    chain of symlinks into the repository, so the script finds the helper
+    through ``readlink -f`` of itself.  Every other test here runs the
+    repository's copy in place, which is that path's end; these pin the
+    chain that starts it, and what a copy without the helper does.
+    """
+
+    def test_production_s_two_symlinks_find_the_helper(self, stack, tmp_path):
+        """Run through two symlinks, as production does, it deploys.
+
+        ``/usr/local/bin/shekel-deploy`` links to
+        ``/opt/docker/scripts/shekel-deploy.sh``, which links into the
+        repository: a script resolving only one hop would look for the
+        helper beside ``/opt/docker/scripts`` and stop.
+        """
+        hop = tmp_path / "opt-docker-scripts" / "shekel-deploy.sh"
+        hop.parent.mkdir()
+        hop.symlink_to(_DEPLOY_SCRIPT)
+        link = tmp_path / "usr-local-bin" / "shekel-deploy"
+        link.parent.mkdir()
+        link.symlink_to(hop)
+        result = stack.run(script=link, health="healthy", **_NO_MIGRATIONS)
+        calls = stack.invocations
+        assert result.returncode == 0, _said(result, calls)
+        assert stack.pin == _NEW, _said(result, calls)
+        assert f"running: {_DEPLOY_SCRIPT}\n" in result.stdout, (
+            f"the startup report did not name the file the chain resolves "
+            f"to.  {_said(result, calls)}"
+        )
+
+    def test_a_copy_without_the_helper_stops_before_touching_anything(
+        self, stack, tmp_path,
+    ):
+        """No helper beside it: it refuses to start, naming itself and the file.
+
+        The ruling's words: it "refuses to start, before it touches anything".
+        Nothing runs first -- not the startup report, not docker -- so the
+        refusal itself names the copy that is running.
+        """
+        copy = tmp_path / "hand-copy" / "deploy" / "shekel-deploy.sh"
+        copy.parent.mkdir(parents=True)
+        shutil.copy2(_DEPLOY_SCRIPT, copy)
+        result = stack.run(script=copy, health="healthy", **_NO_MIGRATIONS)
+        calls = stack.invocations
+        assert result.returncode == 1, _said(result, calls)
+        assert result.stdout == "", _said(result, calls)
+        assert (
+            f"ERROR: {copy} cannot load "
+            f"{copy.parent}/../scripts/_container_lib.sh" in result.stderr
+        ), _said(result, calls)
+        assert calls == [], (
+            f"the script ran docker before stopping.  {_said(result, calls)}"
+        )
+        assert stack.pin == _OLD, _said(result, calls)
+
+    def test_a_copy_that_carries_the_helper_deploys(self, stack, tmp_path):
+        """The control: the same copy, with the helper laid out beside it."""
+        copy = tmp_path / "carried" / "deploy" / "shekel-deploy.sh"
+        copy.parent.mkdir(parents=True)
+        shutil.copy2(_DEPLOY_SCRIPT, copy)
+        helper = copy.parents[1] / "scripts" / "_container_lib.sh"
+        helper.parent.mkdir()
+        shutil.copy2(_REPO_ROOT / "scripts" / "_container_lib.sh", helper)
+        result = stack.run(script=copy, health="healthy", **_NO_MIGRATIONS)
+        calls = stack.invocations
+        assert result.returncode == 0, _said(result, calls)
+        assert stack.pin == _NEW, _said(result, calls)
 
 
 class TestTheDowngradeCaseTheOldDesignCalledSAFE:
