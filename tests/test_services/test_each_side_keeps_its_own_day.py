@@ -30,6 +30,7 @@ from tests._test_helpers import (
     create_transfer,
     net_posted_by_day,
     open_books_before_the_first_assertion,
+    refused_by_database_rule,
     transfer_family_journal_filter,
     transfer_side_record,
     transfer_side_settle_day,
@@ -93,12 +94,6 @@ def _days(xfer):
         transfer_side_settle_day(db.session, xfer.id, xfer.from_account_id),
         transfer_side_settle_day(db.session, xfer.id, xfer.to_account_id),
     )
-
-
-def _movement(shadow):
-    """Return *shadow*'s covering movement, the record a side's day lives on."""
-    (movement,) = [m for m in shadow.entries if m.covers_settlement]
-    return movement
 
 
 class TestAPaidPress:
@@ -306,7 +301,9 @@ class TestAFigureCorrection:
 class TestASettleOverADriftedSide:
     """Ledger row BAL-578: a settle over a settled parent dates a drifted side on ITS day.
 
-    The day stated for that side, not the owner's today.
+    The day stated for that side, not the owner's today -- until plan step
+    ``balance:X-bi-6-4d-2``, when the drift became unstorable (the band rule)
+    and the repair went with it; the first case says what still holds.
     """
 
     def test_the_drifted_side_takes_the_stated_day_and_the_other_keeps_its_own(
@@ -319,6 +316,21 @@ class TestASettleOverADriftedSide:
         door writes it.  Until plan step ``balance:X-bi-6-4c-3`` the settle
         kept only its status over an already-settled parent, so the stated day
         was dropped and the repair dated the side on today.
+
+        **The drift is refused at COMMIT since plan step
+        ``balance:X-bi-6-4d-2``** (ruling **R-BAL167** class 2): the side's
+        day is its RECORD's, off the transfer, and a settled transfer holding
+        an un-dated record breaks the band rule; the shadow keeps no status or
+        day of its own, so its two writes below move nothing a reader reads
+        (class 3).  So the drift is planted and its commit refused, then
+        planted again and the settle run inside the save, which is all the
+        state can ever exist in.  The transfer still says Paid (the shadow's
+        status was asserted until then, class 1) and the Checking side keeps
+        its own day.  DROPPED: the Savings side on ``an_observed_day(
+        savings_day)``.  The repair that honoured a day stated for a drifted
+        side (ledger row BAL-578) went at that step with the state, and
+        inside the save the side borrows the Checking side's day instead
+        (measured).
         """
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3])
@@ -331,11 +343,27 @@ class TestASettleOverADriftedSide:
                 ),),
             )
             db.session.commit()
-            income = _sides(xfer)[1]
-            income.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            record_settle_day(income, None)
-            record_settle_day(_movement(income), None)
-            db.session.commit()
+
+            def _drift():
+                """Plant the drift, staged: the Savings side's record un-dated."""
+                income = _sides(xfer)[1]
+                income.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
+                record_settle_day(income, None)
+                record_settle_day(
+                    transfer_side_record(db.session, xfer.id, xfer.to_account_id),
+                    None,
+                )
+                db.session.flush()
+
+            _drift()
+            with refused_by_database_rule(
+                "is settled but its sides hold 1 dated and 1 un-dated",
+            ) as caught:
+                db.session.commit()
+            db.session.rollback()
+            assert f"transfer {xfer.id} " in str(caught.value)
+
+            _drift()
             savings_day = display_today() - timedelta(days=2)
 
             transfer_service.settle_transfer(
@@ -344,13 +372,10 @@ class TestASettleOverADriftedSide:
                     xfer.to_account_id, an_observed_day(savings_day),
                 ),),
             )
-            db.session.commit()
 
-            income = _sides(xfer)[1]
-            assert income.status.is_settled
-            assert _days(xfer) == (
-                an_observed_day(checking_day), an_observed_day(savings_day),
-            )
+            assert xfer.status.is_settled
+            assert _days(xfer)[0] == an_observed_day(checking_day)
+            db.session.rollback()
 
     def test_an_in_band_side_ignores_a_stated_day(
         self, app, seed_user, seed_periods_today,

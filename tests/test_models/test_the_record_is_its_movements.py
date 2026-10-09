@@ -24,7 +24,10 @@ Three locks land here:
   never settled -- and the rebuilt columns are read by SQL, because the ORM
   no longer maps them: each row takes what the seam below would have
   written for it, every reader's answer is byte-identical across the round
-  trip, and the second upgrade prints the same count.
+  trip, and the second upgrade prints the same count.  The transfer pair is
+  settled through the door and then put back into the shape this revision
+  reads by SQL (``TestTheRoundTrip._stage``), since plan step
+  ``balance:X-bi-6-4d-2`` files a side's record under the TRANSFER.
 
 * **Every refusal is DRIVEN** (``docs/plans/verification.md`` standard 4):
   the three fail-closed predicates of the upgrade and the one of the
@@ -232,7 +235,20 @@ class TestTheRoundTrip:
 
     @staticmethod
     def _stage(seed_user, seed_periods):
-        """Stage the seven shapes through the doors; return ``{name: id}``."""
+        """Stage the seven shapes through the doors; return ``{name: id}``.
+
+        **The transfer pair is planted in the pre-step shape by SQL** since
+        plan step ``balance:X-bi-6-4d-2``, which files each side's record
+        under the TRANSFER (``expense_transfer_id`` / ``income_transfer_id``)
+        and stops keeping a twin's status and day -- so no door writes the
+        shape this revision reads any more (each twin settled, holding its
+        covering movement).  The pair is settled through the door, then each
+        twin takes the transfer's status and its side record's day and basis
+        in ONE UPDATE, and both records are re-parented under their twins in
+        one statement (the shape the band rule admits as a ``$0.00`` close).
+        Setup only, approved by the developer 2026-10-09 (rule 5, ruling
+        R-BAL167): no assertion changed.
+        """
         period = seed_periods[0]
         resolved = _bill(seed_user, period, name="Resolved bill")
         _settle(resolved)
@@ -259,6 +275,26 @@ class TestTheRoundTrip:
         transfer = create_settled_transfer(
             seed_user, db.session, seed_user["account"], savings, period,
             amount=Decimal("200.00"),
+        )
+        db.session.commit()
+        _exec(
+            "UPDATE budget.transactions t SET status_id = x.status_id, "
+            "settled_on = e.settled_on, "
+            "settled_day_basis_id = e.settled_day_basis_id "
+            "FROM budget.transfers x, budget.transaction_entries e "
+            "WHERE x.id = :t AND t.transfer_id = x.id "
+            "  AND (e.expense_transfer_id = x.id OR e.income_transfer_id = x.id) "
+            "  AND e.account_id = t.account_id",
+            t=transfer.id,
+        )
+        _exec(
+            "UPDATE budget.transaction_entries e SET transaction_id = t.id, "
+            "expense_transfer_id = NULL, income_transfer_id = NULL "
+            "FROM budget.transactions t "
+            "WHERE t.transfer_id = :t "
+            "  AND (e.expense_transfer_id = :t OR e.income_transfer_id = :t) "
+            "  AND e.account_id = t.account_id",
+            t=transfer.id,
         )
         db.session.commit()
         legs = (

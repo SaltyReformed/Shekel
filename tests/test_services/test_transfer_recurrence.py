@@ -18,7 +18,6 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
-from app.models.account import AccountAnchorHistory
 from app.models.ref import TransactionType
 from app import ref_cache
 from app.enums import AmountSourceEnum, StatusEnum
@@ -34,7 +33,6 @@ from app.utils.log_events import (
     EVT_TRANSFER_RECURRENCE_REGENERATED,
     EVT_TRANSFER_UPDATED,
 )
-from app.utils.dates import display_today
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import calendar_for
@@ -42,7 +40,6 @@ from tests._test_helpers import (
     typed,
     record_paydays_across_a_hole,
     rhythm_of,
-    an_entered_day,
     create_account_of_type,
     last_covered_day,
     make_cadence_rule,
@@ -53,7 +50,6 @@ from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
     MONTHLY,
 )
-from app.services.settle_day import record_settle_day
 from app.services.amount_ownership import state_own_amount
 from tests._test_helpers import state_template_price
 from tests._test_helpers import transfer_amount
@@ -2114,83 +2110,6 @@ class TestTransferMaintain:
                 Decimal("321.45"), Decimal("321.45"),
             ]
 
-    def test_a_leg_carrying_a_STATEMENT_LINK_is_retained(
-        self, app, db, seed_user, seed_periods
-    ):
-        """A leg that records which statement showed its money holds its row.
-
-        ``reconciled_by_id`` is what a reconcile tick writes on the leg whose
-        account's statement was read (``transfer_service.record_clearing``,
-        ruling **R-FL**), and it is scoped BY ACCOUNT --
-        ``fk_transactions_reconciled_by`` is a composite over
-        ``(account_id, reconciled_by_id)``.  So a row carrying one may be
-        neither retired nor re-pointed at another account without destroying or
-        re-filing an observation the owner made.
-
-        **The retention predicate names the link as its own arm since plan
-        step ``balance:X-bi-4b-2``, and this is that arm's firing control.**
-        Through ``X-bi-4b-1`` it did not have to: two CHECKs chained a link
-        to a settle day to a ``settled_basis_id``, so the record arm caught
-        every linked leg (asked of PostgreSQL by a case that stood beside
-        this one, ``test_a_statement_link_cannot_exist_without_a_settlement_
-        record``, whose docstring named a dropped CHECK as the signal to put
-        the arm back).  X-bi-4b-2 dropped that CHECK with the column: a leg's
-        record is its covering movement, and a ``$0.00`` close holds none
-        (ruling **R-BAL82**) while a statement may still have shown it.  So
-        the plant here is exactly that leg -- drifted out of its parent's
-        status, carrying a settled day and a statement link and NO movement
-        -- and only the link arm retains it; an adversarial review of R10-b
-        measured the old plant green with the link deleted, because its
-        record retained the row, which is why this one carries none.
-
-        What the case pins is that the fullest state a MAINTAINABLE transfer
-        can reach -- a leg drifted out of its parent's status, while the
-        parent is still the rule's own row -- is retained rather than
-        retired.  Shadow status drift is a state ruling **R-DO** treats as
-        real; the plant writes the leg directly because no door produces it.
-        """
-        with app.app_context():
-            template, savings, rows = self._template_with_rows(
-                seed_user, seed_periods,
-            )
-            linked = rows[4]
-            statement = (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=savings.id)
-                .order_by(AccountAnchorHistory.id)
-                .first()
-            )
-            assert statement is not None, (
-                "setup: the savings account's opening assertion is the "
-                "statement this leg will name"
-            )
-            income = db.session.query(Transaction).filter_by(
-                transfer_id=linked.id, account_id=savings.id,
-            ).one()
-            income.status_id = ref_cache.status_id(StatusEnum.DONE)
-            record_settle_day(income, an_entered_day(display_today()))
-            income.reconciled_by_id = statement.id
-            db.session.flush()
-            assert income.covering_movements == [], (
-                "setup: the leg must hold no movement, so the link alone "
-                "retains it"
-            )
-            assert linked.status.is_immutable is False, (
-                "setup: the PARENT is still the rule's own row"
-            )
-            assert income.status_id != linked.status_id, (
-                "setup: the leg has DRIFTED out of its parent's status"
-            )
-
-            template.recurrence_rule = None
-            db.session.flush()
-            conflict = self._regenerate(template, seed_user, seed_periods)
-
-            assert conflict is not None
-            assert conflict.retained == [linked.id]
-            assert db.session.get(Transfer, linked.id) is not None
-            assert db.session.get(Transaction, income.id) is not None
-
     def test_an_endpoint_move_applies_to_a_row_holding_nothing(
         self, app, db, seed_user, seed_periods
     ):
@@ -2236,12 +2155,15 @@ class TestTransferMaintain:
     ):
         """A recorded figure is not re-filed against accounts nobody asserted.
 
-        A settled leg's ``settled_amount`` is what moved between the OLD pair of
-        accounts and its statement link is scoped BY account
-        (``fk_transactions_reconciled_by``), so applying an endpoint move to
-        such a row would re-attribute both.  The pass leaves it exactly as found
-        and asks -- while every row holding nothing follows the definition in
-        the same pass.
+        A side's record is what moved between the OLD pair of accounts, and
+        any statement link it carries is scoped BY account
+        (``fk_transaction_entries_reconciled_by``; the record hangs off the
+        TRANSFER since plan step ``balance:X-bi-6-4d-2``, ruling **R-BAL88**,
+        and held the link on its shadow, ``fk_transactions_reconciled_by``,
+        until then), so applying an endpoint move to such a row would
+        re-attribute both.  The pass leaves it exactly as found and asks --
+        while every row holding nothing follows the definition in the same
+        pass.
         """
         with app.app_context():
             template, savings, rows = self._template_with_rows(

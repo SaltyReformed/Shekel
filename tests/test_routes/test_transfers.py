@@ -67,12 +67,8 @@ from tests._test_helpers import (
     transfer_side_settle_day,
     typed,
 )
-from app.services.row_valuation import leg_settled_contribution, settled_figure
-from app.services.settle_day import (
-    SettleDay,
-    record_settle_day,
-    recorded_settle_day,
-)
+from app.services.row_valuation import leg_settled_contribution
+from app.services.settle_day import SettleDay, record_settle_day
 from app.models.amount_ownership import AmountOwnership
 from tests._test_helpers import rendered_transfer_amount
 from tests._test_helpers import transfer_amount
@@ -2480,14 +2476,37 @@ class TestTransferSettleDayEditDoor:
         ``balance:X-bi-6-4c-3``, where it read the pair off the income shadow).
         Drop the ``recorded`` argument at this route's ``settle_day_for_status``
         call and this fails.
+
+        **The transfer is paid ONE DAY EARLIER than the reconciled day**, so
+        the reconciled day really lands (a setup change only, approved by the
+        developer 2026-10-09 under rule 5): since plan step
+        ``balance:X-bi-6-4d-2`` each side's day lives on its payment RECORD
+        alone, and a reconciled day stated on the record's own day does not
+        replace an ``entered`` one (``_state_both``).  Paid on that day, the
+        record kept ``entered`` and this passed only by reading the twins,
+        which no reader reads (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-2).  Each side's record is read before the Save and
+        after it, both ``asserted`` on *day*.
         """
         with app.app_context():
             day = display_today() - timedelta(days=6)
             xfer = self._settled_transfer(
-                seed_user, seed_periods_today, day,
+                seed_user, seed_periods_today, day - timedelta(days=1),
             )
             self._state_both(xfer, seed_user["user"].id, an_asserted_day(day))
             db.session.commit()
+
+            def _bases():
+                """Return both sides' recorded days, freshly read."""
+                db.session.expire_all()
+                return {
+                    transfer_side_settle_day(db.session, xfer.id, account_id)
+                    for account_id in (xfer.from_account_id, xfer.to_account_id)
+                }
+
+            assert _bases() == {an_asserted_day(day)}, (
+                "fixture: the reconciled day did not land on both sides"
+            )
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
@@ -2497,14 +2516,7 @@ class TestTransferSettleDayEditDoor:
                 as_text=True,
             )[:300]
 
-            db.session.expire_all()
-            bases = {
-                recorded_settle_day(shadow)
-                for shadow in db.session.query(Transaction).filter_by(
-                    transfer_id=xfer.id, is_deleted=False,
-                )
-            }
-            assert bases == {an_asserted_day(day)}, (
+            assert _bases() == {an_asserted_day(day)}, (
                 "an untouched Save laundered the pair's BOUND into the owner's "
                 "own day"
             )
@@ -5698,7 +5710,7 @@ class TestTransferActualBox:
     def test_a_recordless_settled_pair_repairs_with_the_day_AND_the_figure(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """An undated pair holding no movement is a ``$0.00`` close: the day dates it, the box re-prices it.
+        """A ``$0.00`` close: a day alone is refused, and a figure with the day repairs it.
 
         A settled row carrying no settlement record predated the record
         entirely (finding **N-181**), and through plan step
@@ -5706,36 +5718,37 @@ class TestTransferActualBox:
         paired the day with the row's figure columns, so stating the DAY
         alone was a designed 400 and the repair needed both halves in one
         save.  The columns and the CHECK went at ``X-bi-4b-2``: a settled
-        leg holding no entry IS the ``$0.00`` record (ruling **R-BAL82**),
-        so the same pair is a close of nothing that happens to be undated.
-        Stating the day alone now DATES it -- an ordinary day correction on
-        a ``$0.00`` close, which writes no movement because a movement of
-        nothing is not one -- and the Actual box, which reads ``0`` for the
-        pair, is how the owner states what the bank really took.
+        leg holding no entry IS the ``$0.00`` record (ruling **R-BAL82**).
+        Since plan step ``balance:X-bi-6-4d-2`` a side's day lives on its
+        payment RECORD alone, so a ``$0.00`` close keeps no day at all
+        (ruling **R-BAL141**), and stating the day alone is REFUSED with the
+        sentence the developer picked (ruling **R-BAL230**, "Refuse, say
+        why"): nothing is stored and nothing is posted.  The Actual box,
+        which reads ``0`` for the pair, is how the owner states what the bank
+        really took, and a figure with the day dates both sides.
 
         The popover must RENDER for such a pair: a surface that refuses to
         draw cannot repair the row it is the only repair path for.  The
-        shape is staged with the covering movements gone -- with them
-        standing, the box would rightly prefill their ``$200.00`` -- and both
-        saves are graded on the movements they write.
+        ``$0.00`` close is built through the app -- a typed ``$0.00``
+        correction, which takes both sides' records off -- where it was
+        staged behind the seam's back on the twins, which hold no record
+        since that step (ruling R-BAL167, plan step balance:X-bi-6-4d-2; the
+        refused second save follows R-BAL230, a rule-5 re-expression the
+        developer approved 2026-10-09).  Each save is graded on the side
+        records it leaves.
         """
         with app.app_context():
             xfer = self._settled_transfer(
                 seed_user, seed_periods_today, _THREE_DAYS_AGO(),
             )
-            # The shape, reproduced the only way it can be: straight at the
-            # day pair and the movements, behind the seam's back.  A shadow's
-            # movement posts nowhere (ruling R-BAL45), so there is no leg to
-            # reverse before it goes.
-            for leg in self._legs(xfer.id):
-                record_settle_day(leg, None)
-                for movement in leg.covering_movements:
-                    # Deleted, THEN out of the list: the list no longer deletes (R-CC64;
-                    # rule-5 re-expression, developer-confirmed 2026-09-23).
-                    db.session.delete(movement)
-                    leg.entries.remove(movement)
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, figure=typed(Decimal("0")),
+            )
             db.session.commit()
             db.session.expire_all()
+            assert self._side_records(xfer.id) == (None, None), (
+                "fixture: the $0.00 close kept a side's record"
+            )
 
             body = auth_client.get(
                 f"/transfers/{xfer.id}/full-edit"
@@ -5759,29 +5772,31 @@ class TestTransferActualBox:
                 data={
                     # What the popover posts when the owner types the day
                     # into ONE box: the other is empty (neither side holds a
-                    # day), so it borrows the typed one.
+                    # day).
                     "settled_on_from": display_today().isoformat(),
                     "settled_on_to": "",
                     "version_id": str(version),
                 },
             )
-            assert day_only.status_code == 200, day_only.get_data(as_text=True)
+            assert day_only.status_code == 400, day_only.get_data(as_text=True)
+            assert (
+                "A $0.00 close moved no money, so it has no day. Type the "
+                "amount the bank took to date it."
+            ) in day_only.get_data(as_text=True)
             db.session.expire_all()
-            for leg in self._legs(xfer.id):
-                assert leg.settled_on == display_today(), (
-                    "the day alone did not date the $0.00 close"
-                )
-                assert leg.covering_movements == [], (
-                    "dating a close of nothing wrote a movement of nothing"
-                )
-                assert settled_figure(leg) == Decimal("0.00")
+            assert self._side_records(xfer.id) == (None, None), (
+                "the refused day wrote a record"
+            )
+            assert net_posted_by_day(
+                transfer_family_journal_filter(xfer.id),
+            ) == {}, "the refused day posted money"
 
             version = db.session.get(Transfer, xfer.id).version_id
             repair = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
-                    # The boxes as the popover now renders them: the typed
-                    # side prefilled, the borrowing side empty.
+                    # The boxes as the popover renders them: the typed side
+                    # filled in, the other empty.
                     "settled_on_from": display_today().isoformat(),
                     "settled_on_to": "",
                     "settled_amount": "200.00",
@@ -5794,12 +5809,17 @@ class TestTransferActualBox:
             typed_id = ref_cache.movement_figure_source_id(
                 MovementFigureSourceEnum.TYPED,
             )
-            for leg in self._legs(xfer.id):
-                assert leg.settled_on == display_today()
-                assert settled_figure(leg) == Decimal("200.00")
-                (movement,) = leg.covering_movements
-                assert movement.settled_on == display_today()
-                assert movement.figure_source_id == typed_id
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                record = transfer_side_record(db.session, xfer.id, account_id)
+                assert record is not None, (
+                    f"the repair left the side on account {account_id} "
+                    "holding no record"
+                )
+                assert record.settled_on == display_today()
+                assert transfer_side_figure(
+                    db.session, xfer.id, account_id,
+                ) == Decimal("200.00")
+                assert record.figure_source_id == typed_id
 
     def test_the_rebook_notice_shows_what_a_re_settle_will_book(
         self, app, auth_client, seed_user, seed_periods_today,

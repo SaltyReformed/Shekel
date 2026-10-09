@@ -151,31 +151,6 @@ def _drift_the_income_shadow(transfer, account, day, moved=None):
     db.session.expire_all()
 
 
-def _revert_the_income_twin_keeping_an_undated_movement(transfer, account):
-    """Leave *transfer* Paid while its income twin is Projected over a kept movement.
-
-    DRIFT B with a movement: the shape a revert of the twin ALONE would leave
-    -- the seam keeps a reverted row's covering movement and releases its day
-    (ruling R-BAL61) -- under a parent still Paid.  No door writes it: every
-    transaction door refuses a shadow, and a transfer's revert moves all three
-    rows.  Written by bulk update, as the refusal test in
-    ``test_loan_payment_service`` writes its broken day.
-    """
-    shadow = _income_shadow(transfer, account)
-    db.session.query(TransactionEntry).filter(
-        TransactionEntry.transaction_id == shadow.id,
-    ).update(
-        {"settled_on": None, "settled_day_basis_id": None},
-        synchronize_session=False,
-    )
-    shadow.settled_on = None
-    shadow.settled_day_basis_id = None
-    shadow.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
-    db.session.commit()
-    db.session.expire_all()
-    return shadow
-
-
 #: The status-band rule's two refusals (``app/side_band_infrastructure``), as
 #: the database words them.
 _UNSETTLED_DATED = r"is not settled but 1 of its payment records are dated"
@@ -827,17 +802,26 @@ class TestASettledPaymentWithAnUndatedRecordFailsLoud:
 
 
 class TestTheRefusalsRepairWorksThroughTheApp:
-    """The repair the refusal's message names, through the transfer's own door.
+    """The loan reads the days typed into the transfer's popover, through its own door.
 
     ``_visible._UNDATED_PAYMENT_CAUSE`` tells the reader of the log to type
     each account's day into that account's "Money moved on" box, and that a
     revert then Mark Paid would date the payment to the day of the click.
-    Those are claims a log line makes about another door, which no other case
-    grades, so each is held to it here: the drift is the refusal's, the
-    PATCH posts the popover's two day boxes as that door's own route tests
-    do, and the walk that refused reads the repaired day.  ``_CLOSED_ON``
-    (03-05) is the day the transfer was marked paid; the suite's frozen
-    clock is the day of the click.
+    What those doors do to a loan payment is graded here: the PATCH posts the
+    popover's two day boxes as that door's own route tests do, and the loan
+    walk reads the day each box states.  ``_CLOSED_ON`` (03-05) is the day
+    the transfer was marked paid; the suite's frozen clock is the day of the
+    click.  The class name is its history.
+
+    **Each case starts from the ordinary Paid payment** since plan step
+    ``balance:X-bi-6-4d-2``.  It started from the state the refusal
+    describes -- Paid, its loan side's record un-dated -- and asserted the
+    walk refused it first; the status-band rule refuses that state at
+    commit, and a request reads only what is committed, so no request can
+    meet it (developer answer 2026-10-09, "Rewrite from a Paid start": the
+    broken-state setup and its error check dropped, every checked day
+    unchanged).  The refusal's message is graded inside the save that stages
+    the state, in :class:`TestASettledPaymentWithAnUndatedRecordFailsLoud`.
 
     **What Checking's day does when only the loan's box is typed is not the
     message's claim and is not asserted**: today Checking's guessed day
@@ -848,8 +832,8 @@ class TestTheRefusalsRepairWorksThroughTheApp:
     """
 
     @staticmethod
-    def _refused_drift(seed_user, seed_periods):
-        """Paid 03-05, then the loan side's twin reverted alone: the walk refuses."""
+    def _paid_payment(seed_user, seed_periods):
+        """The $1,000.00 loan payment, Paid on 03-05 through the door."""
         loan = _loan(seed_user)
         transfer = create_settled_transfer(
             seed_user, db.session, seed_user["account"], loan,
@@ -857,9 +841,6 @@ class TestTheRefusalsRepairWorksThroughTheApp:
             settled_on=_CLOSED_ON, due_date=_DUE,
         )
         db.session.commit()
-        _revert_the_income_twin_keeping_an_undated_movement(transfer, loan)
-        with pytest.raises(UndatedSettleError):
-            walk_loan_ledger(loan.id, seed_user["scenario"].id)
         return loan, transfer.id
 
     @staticmethod
@@ -875,9 +856,9 @@ class TestTheRefusalsRepairWorksThroughTheApp:
     def test_a_day_typed_into_the_loan_box_dates_the_payment(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Only the loan's box typed, 03-09: the walk no longer refuses and dates the payment 03-09."""
+        """Only the loan's box typed, 03-09: the walk dates the payment 03-09."""
         with app.app_context():
-            loan, transfer_id = self._refused_drift(seed_user, seed_periods)
+            loan, transfer_id = self._paid_payment(seed_user, seed_periods)
             typed = date(2026, 3, 9)
 
             response = auth_client.patch(
@@ -898,7 +879,7 @@ class TestTheRefusalsRepairWorksThroughTheApp:
     ):
         """Checking's box 03-05, the loan's 03-09: each side keeps the day typed into its box."""
         with app.app_context():
-            loan, transfer_id = self._refused_drift(seed_user, seed_periods)
+            loan, transfer_id = self._paid_payment(seed_user, seed_periods)
             typed = date(2026, 3, 9)
 
             response = auth_client.patch(
@@ -919,9 +900,9 @@ class TestTheRefusalsRepairWorksThroughTheApp:
     def test_a_revert_then_mark_paid_dates_it_to_the_day_of_the_click(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Reverted, then Mark Paid: the walk no longer refuses, and both sides read the click's day."""
+        """Reverted, then Mark Paid: the walk and both sides read the click's day."""
         with app.app_context():
-            loan, transfer_id = self._refused_drift(seed_user, seed_periods)
+            loan, transfer_id = self._paid_payment(seed_user, seed_periods)
 
             reverted = auth_client.patch(
                 f"/transfers/instance/{transfer_id}",

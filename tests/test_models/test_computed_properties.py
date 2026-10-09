@@ -159,14 +159,31 @@ class TestTransactionEffectiveAmount:
         leaving any other row hidden while it holds its payment, and a row
         whose payment is gone records no figure for this branch to zero.
         This flagged a Paid $75.00 row hidden with its payment inside and
-        never committed.  A settled transfer's soft delete still hides its
-        legs holding their payments (finding **balance:BAL-532**, closed by
-        plan step ``balance:X-bi-6-4``).  Re-expressed under rule 5,
+        never committed.  A settled transfer's soft delete hid its legs
+        holding their payments (finding **balance:BAL-532**) until plan step
+        ``balance:X-bi-6-4d-2``.  Re-expressed under rule 5,
         developer-confirmed 2026-09-23.
+
+        **Since that step the state is STAGED inside the save and refused at
+        its commit** (ruling **R-BAL167** class 2): the delete door takes the
+        payments off (ruling **credit_card:R-CC75**) and the deleted-row
+        rule's transfer arm refuses a transfer hidden holding one, so the
+        transfer and its twins are hidden by SQL with the payments left on,
+        the Checking leg -- its transfer and its side's record, the twin
+        holding none since that step -- is valued inside the save
+        (``leg_settled_contribution``, the leg's twin of
+        ``settled_contribution``), and then the commit is refused.
         """
         # pylint: disable=import-outside-toplevel
-        from app.services import transfer_service
-        from tests._test_helpers import create_settled_transfer
+        from sqlalchemy import text
+
+        from app.models.transaction_entry import TransactionEntry
+        from app.services.row_valuation import leg_settled_contribution
+        from app.services.transfer_legs import TransferLeg
+        from tests._test_helpers import (
+            create_settled_transfer,
+            refused_by_database_rule,
+        )
 
         with app.app_context():
             savings = create_savings_account(
@@ -178,16 +195,35 @@ class TestTransactionEffectiveAmount:
                 settled_amount=Decimal("75.00"),
             )
             db.session.commit()
-            transfer_service.delete_transfer(
-                xfer.id, seed_user["user"].id, soft=True,
+            # Hidden the way the soft delete left it until the step: the
+            # transfer and both twins flagged, the payments in place.
+            db.session.execute(
+                text("UPDATE budget.transactions SET is_deleted = TRUE "
+                     "WHERE transfer_id = :t"),
+                {"t": xfer.id},
             )
-            db.session.commit()
-            txn = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id, account_id=seed_user["account"].id,
-            ).one()
-            assert txn.is_deleted and txn.status.is_settled and txn.entries
+            db.session.execute(
+                text("UPDATE budget.transfers SET is_deleted = TRUE WHERE id = :t"),
+                {"t": xfer.id},
+            )
+            db.session.expire_all()
+            leg = TransferLeg(
+                transfer=xfer, account_id=seed_user["account"].id,
+                is_income=False,
+                record=db.session.query(TransactionEntry).filter(
+                    TransactionEntry.expense_transfer_id == xfer.id,
+                ).one(),
+            )
+            assert leg.is_deleted and leg.status.is_settled and leg.covering_movements
 
-            assert settled_contribution(txn) == Decimal("0")
+            assert leg_settled_contribution(leg) == Decimal("0")
+
+            with refused_by_database_rule(
+                "was deleted while it still holds a recorded payment",
+            ) as caught:
+                db.session.commit()
+            db.session.rollback()
+            assert f"transfer {xfer.id} " in str(caught.value)
 
     def test_done_with_actual_returns_actual(self, app, db, seed_user, seed_periods):
         """A Paid row that recorded a human's CORRECTION is worth that figure."""

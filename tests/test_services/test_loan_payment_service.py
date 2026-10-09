@@ -38,6 +38,7 @@ from tests._test_helpers import (
     on_both_sides,
     one_off_row_of,
     open_books_before_the_first_assertion,
+    refused_by_database_rule,
     typed,
 )
 from app.services.balance_at import BalanceContext
@@ -509,6 +510,14 @@ class TestGetPaymentHistory:
         SHADOW's status to Paid under a still-Projected transfer, which the
         loan no longer reads -- that state is a status drift the plan half
         counts once (ruling R-BAL140).*
+
+        **The state is UNSTORABLE since plan step balance:X-bi-6-4d-2**: the
+        band rule (``app.side_band_infrastructure``) refuses, at COMMIT, a
+        settled transfer whose side holds an un-dated record.  So the
+        un-dating is STAGED inside the save, the walk is asked there, and the
+        commit is then refused and rolled back (ruling R-BAL167 class 2, plan
+        step balance:X-bi-6-4d-2).  The walk's refusal branch stays graded
+        here until plan step X-bi-6-5 deletes it (finding BAL-527).
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
@@ -519,18 +528,23 @@ class TestGetPaymentHistory:
             )
             db.session.commit()
 
+            # Staged, never committed: the bulk UPDATE runs in the open
+            # transaction, and the band rule is checked at COMMIT.
             db.session.query(TransactionEntry).filter(
                 TransactionEntry.account_id == loan.id,
             ).update(
                 {"settled_on": None, "settled_day_basis_id": None},
                 synchronize_session=False,
             )
-            db.session.commit()
 
             with pytest.raises(UndatedSettleError):
                 get_payment_history(
                     loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
                 )
+
+            with refused_by_database_rule("is settled but its sides hold"):
+                db.session.commit()
+            db.session.rollback()
 
     def test_ordered_by_pay_period_date(
         self, app, db, seed_user, seed_periods,
