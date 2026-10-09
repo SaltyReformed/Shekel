@@ -313,8 +313,9 @@ def reject_settlement_on_a_deleted_row(
     refuses the same arrival in the database.  Either row is told "was
     archived" where its recurring item is archived and "was deleted"
     otherwise, whichever act hid it (ruling **R-CC107**), by its name
-    (:meth:`~app.utils.hidden_row.HiddenRow.of`, which names a transfer with
-    no name of its own as every transfer screen does, finding **BAL-547**).
+    (:meth:`~app.utils.hidden_row.HiddenRow.of`, which names a transfer by
+    its from-side's leg label, never the nullable ``Transfer.name``, finding
+    **BAL-547**).
     The arm's door refuses a deleted transfer as "not found" first
     (``transfer_service._validation._get_transfer_or_raise``), so only a
     service caller that skipped it reaches this.  (A deleted SHADOW, which

@@ -29,12 +29,7 @@ from dataclasses import dataclass
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-
-#: What a hidden TRANSFER is called when it has no name of its own: the word
-#: every transfer screen titles one by (``xfer.name or 'Transfer'`` in the
-#: cell, quick-edit and full-edit templates).  ``Transfer.name`` is nullable,
-#: and a refusal printing ``None was deleted`` was finding **BAL-547**.
-UNNAMED_TRANSFER = "Transfer"
+from app.services.transfer_legs import leg_label
 
 
 @dataclass(frozen=True)
@@ -128,10 +123,18 @@ class HiddenRow:
         ``balance:X-bi-6-4d-2``, finding **BAL-547**): "was archived" when
         its recurring transfer is archived -- the archive hides its empty
         Projected transfers (``routes/transfers/lifecycle``) -- and by its
-        name, or :data:`UNNAMED_TRANSFER` when it has none.  The archive
-        writes ``TransferTemplate.is_active`` and soft-deletes through
-        ``transfer_service.delete_transfer``, which hands the status seam no
-        record, so no caller of this sees an archive it staged itself.
+        from-side's LEG LABEL ("Transfer to Savings",
+        ``transfer_legs.leg_label`` over its endpoints' current names), the
+        plan of record's wording, never the nullable ``Transfer.name``,
+        which would print "None was deleted".  The from-side's and not the
+        to-side's because the arm refuses the transfer once, before either
+        side is written, and the from-side comes first wherever the pair's
+        two sides yield one answer (``transfer_service._side_days
+        .repair_fallback``'s order).  The
+        archive writes ``TransferTemplate.is_active`` and soft-deletes
+        through ``transfer_service.delete_transfer``, which hands the status
+        seam no record, so no caller of this sees an archive it staged
+        itself.
 
         Args:
             row: A session-attached row the caller has found hidden: a
@@ -139,11 +142,15 @@ class HiddenRow:
                 Transfer arm, ``reject_settlement_on_a_deleted_row``).
 
         Returns:
-            The row's name, and whether its item is archived.
+            The row's name (a transfer's from-side leg label), and whether
+            its item is archived.
         """
         with db.session.no_autoflush:
             template = row.template
+            name = (
+                leg_label(row.from_account, row.to_account)[0]
+                if isinstance(row, Transfer) else row.name
+            )
             return cls(
-                row.name if row.name is not None else UNNAMED_TRANSFER,
-                archived=template is not None and not template.is_active,
+                name, archived=template is not None and not template.is_active,
             )

@@ -355,7 +355,13 @@ class TestTheArmRefusesEitherSideBeforeItWritesOne:
 
 
 class TestAHiddenTransferIsToldByItsName:
-    """Finding BAL-547: the arm's refusal of a hidden transfer, in the screens' words."""
+    """Finding BAL-547: the arm's refusal of a hidden transfer names its from-side's leg label.
+
+    The plan of record's wording (``docs/audits/balance_architecture/README.md``,
+    ``X-bi-6-4d``: "a hidden transfer named by its leg label, never the nullable
+    ``Transfer.name``"); cp2b named it by ``Transfer.name`` with a "Transfer"
+    fallback until cp2c (the cp2b-1 review's L-3).
+    """
 
     @staticmethod
     def _refusal(xfer):
@@ -376,8 +382,10 @@ class TestAHiddenTransferIsToldByItsName:
         db.session.rollback()
         return str(refused.value)
 
-    def test_a_nameless_deleted_transfer_is_called_transfer(self, app, seed_user):
-        """``Transfer.name`` is nullable: it printed "None was deleted"."""
+    def test_a_nameless_deleted_transfer_is_named_by_its_leg_label(
+        self, app, seed_user,
+    ):
+        """``Transfer.name`` is nullable: it would print "None was deleted"."""
         with app.app_context():
             xfer = _transfer(seed_user)
             xfer.name = None
@@ -385,10 +393,24 @@ class TestAHiddenTransferIsToldByItsName:
             db.session.commit()
 
             assert self._refusal(xfer) == (
-                "Transfer was deleted: a payment cannot be recorded under it.  "
-                "Reload the page."
+                "Transfer to Cp2b Savings was deleted: a payment cannot be "
+                "recorded under it.  Reload the page."
             )
             assert _records(xfer.id) == (None, None)
+
+    def test_a_named_deleted_transfer_is_named_by_its_leg_label_too(
+        self, app, seed_user,
+    ):
+        """The leg label, never the transfer's own name: one answer for every transfer."""
+        with app.app_context():
+            xfer = _transfer(seed_user)
+            xfer.name = "Emergency"
+            xfer.is_deleted = True
+            db.session.commit()
+
+            assert self._refusal(xfer).startswith(
+                "Transfer to Cp2b Savings was deleted: a payment cannot be",
+            )
 
     def test_a_transfer_hidden_by_its_definitions_archive_says_archived(
         self, app, seed_user,
@@ -403,7 +425,8 @@ class TestAHiddenTransferIsToldByItsName:
             db.session.commit()
 
             assert self._refusal(xfer).startswith(
-                f"{xfer.name} was archived: a payment cannot be recorded",
+                f"Transfer to {savings.name} was archived: a payment cannot "
+                "be recorded",
             )
 
 
