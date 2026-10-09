@@ -52,8 +52,8 @@ definition's, with the remedy that reaches it.  The unarchive leaves
 deleted, and names, a row the books already drop or hold (ruling
 **R-PC95**), so the refusal names none it would not restore -- save where
 the rule cannot be walked, and every hidden row is counted.  **Not covered**: an
-unarchive still restores a row deleted by hand ABOVE the books, and the
-conflict chooser's "use the template" un-deletes one without asking the walk
+unarchive still restores a row deleted by hand ABOVE the books, and so does
+the chooser's "use the template" (R-BAL253), whether or not the rule names it
 (ledger rows **REC-536** and **REC-535**, closed by plan step
 ``recurrence:R22``); a rule-less row, hand-added or left by a cleared rule,
 is bounded by the books at no door but the unarchive (ledger row **PC-519**).
@@ -554,8 +554,8 @@ def _planned_rows(model, template_fk, walk: DefinitionWalk) -> tuple:
     books, and never a row the unarchive would leave deleted (ruling
     **R-PC95**).  An ACTIVE definition's soft-deleted rows are its owner's
     own deletions, which no unarchive of it restores (the unarchive routes
-    refuse an active definition) and only the conflict chooser revives
-    (ledger row **REC-535**).
+    refuse an active definition) and only the conflict chooser revives,
+    never one its books hold (ruling **R-BAL253**, ledger row **REC-535**).
 
     Args:
         model: ``Transaction`` or ``Transfer``.

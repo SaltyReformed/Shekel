@@ -372,8 +372,8 @@ def return_to_plan(transfer: Transfer, *, took_off: bool) -> None:
     no balance, so it is no plan; where one could come back the books are
     asked again -- the unarchive leaves deleted, and names, a hidden row its
     books hold (:class:`~app.services.definition_unarchive.UnarchiveScope`,
-    rulings **R-PC95** and **R-PC99**), and the conflict chooser's restore
-    asks neither (ledger row **REC-535**).  The condition is written for
+    rulings **R-PC95** and **R-PC99**), and the conflict chooser's "use
+    the template" asks that scope (ruling **R-BAL253**).  The condition is written for
     any row, not for a transfer alone: no transaction door reaches a hidden
     row (``auth_helpers.is_not_found_to_transaction_doors``), so today this
     act is the one it serves, and the row set-back owed by ledger row

@@ -4087,7 +4087,7 @@ class TestACarriedForwardLeftoverRowIsDated:
 
             recurrence_engine.resolve_conflicts(
                 [fresh_id], action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -4211,7 +4211,7 @@ class TestACarriedForwardLeftoverRowIsDated:
 
             # The point of dating it: the hand-back now prices.
             recurrence_engine.resolve_conflicts(
-                [fresh.id], action="update", user_id=seed_user["user"].id,
+                [fresh.id], action="update", ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
             handed_back = db.session.get(Transaction, fresh.id)

@@ -780,7 +780,7 @@ class TestTransferResolveConflicts:
             # the row lands on it by reading its series.
             state_template_price(template, Decimal("999.99"))
             transfer_recurrence.resolve_conflicts(
-                [xfer.id], action="keep", user_id=seed_user["user"].id,
+                [xfer.id], action="keep", ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -825,7 +825,7 @@ class TestTransferResolveConflicts:
             state_template_price(template, Decimal("200.00"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -870,7 +870,7 @@ class TestTransferResolveConflicts:
             state_template_price(template, Decimal("999.99"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="update",
-                user_id=second_user["user"].id,
+                ctx=BalanceContext.build(second_user["user"].id),
             )
             db.session.flush()
 
@@ -905,7 +905,7 @@ class TestTransferResolveConflicts:
             state_template_price(template, Decimal("999.99"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="keep",
-                user_id=second_user["user"].id,
+                ctx=BalanceContext.build(second_user["user"].id),
             )
             db.session.flush()
 
@@ -939,7 +939,7 @@ class TestTransferResolveConflicts:
             state_template_price(template, Decimal("50.00"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -994,7 +994,7 @@ class TestTransferResolveConflicts:
             state_template_price(template_a, Decimal("50.00"))
             transfer_recurrence.resolve_conflicts(
                 [xfer_a.id, xfer_b.id], action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1441,7 +1441,7 @@ class TestShadowTransactionCreation:
             state_template_price(template, Decimal("175.00"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1526,7 +1526,7 @@ class TestResolveConflictsServiceRouting:
             state_template_price(template, Decimal("200.00"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1582,7 +1582,7 @@ class TestResolveConflictsServiceRouting:
             state_template_price(template, Decimal("300.00"))
             transfer_recurrence.resolve_conflicts(
                 [xfer_id], action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1628,7 +1628,7 @@ class TestResolveConflictsServiceRouting:
             state_template_price(template, Decimal("350.00"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="keep",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1663,7 +1663,7 @@ class TestResolveConflictsServiceRouting:
 
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1711,7 +1711,7 @@ class TestResolveConflictsServiceRouting:
             state_template_price(template, Decimal("250.00"))
             transfer_recurrence.resolve_conflicts(
                 ids, action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 

@@ -56,6 +56,7 @@ from app.extensions import db
 from app.models.amount_ownership import AmountOwnership
 from app.models.transfer import Transfer
 from app.services.amount_ownership import derived_ownership
+from app.services.definition_unarchive import restored_by_use
 from app.services._recurrence_common import (
     TemplateRowSelector,
     PlacedRow,
@@ -64,10 +65,12 @@ from app.services._recurrence_common import (
 )
 from app.services.recurrence import compute_due_date
 from app.services.recurrence_engine import (
+    ConflictReporting,
     MaintainActs,
     PassReporting,
     RegenerationPreview,
     create_for_unclaimed_occurrences,
+    log_use_resolved,
     preview_regeneration,
     regenerate_definition,
     resolve_generation_plan,
@@ -809,23 +812,39 @@ _PASS = MaintainActs(
 )
 
 
-def resolve_conflicts(transfer_ids, action, user_id):
+#: How this engine's resolution announces itself.
+_RESOLVED = ConflictReporting(
+    logger, EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED,
+    "Transfer recurrence conflicts resolved (update)",
+)
+
+
+def resolve_conflicts(transfer_ids, action, ctx):
     """Resolve override/delete conflicts after a regeneration.
 
     Routes all mutations through the transfer service so shadow
     transactions are updated atomically.  Soft-deleted transfers are
-    restored via ``transfer_service.restore_transfer`` before updating.
+    restored via ``transfer_service.restore_transfer`` before updating --
+    only those the template's unarchive would restore (ruling
+    **R-BAL253**): a deleted transfer its books hold stays deleted,
+    untouched, and is named.
 
     Each transfer is ownership-checked via its direct ``user_id`` column
-    before any modification -- transfers not owned by ``user_id`` are
+    before any modification -- transfers the pass's owner does not own are
     silently skipped (defense-in-depth against IDOR).
 
     Args:
         transfer_ids: List of Transfer IDs to resolve.
         action:       'update' -- hand the row back to its definition.
                       'keep' -- leave the transfer unchanged.
-        user_id:      The requesting user's ID.  Transfers not owned by
-                      this user are skipped.
+        ctx:          The edit's read pass; its ``user_id`` is the
+                      requesting owner's, and transfers it does not own
+                      are skipped.
+
+    Returns:
+        The sentence naming the picked transfers left deleted
+        (:attr:`~app.services.definition_unarchive.UseRestore.notice`), or
+        ``None`` when none is -- always ``None`` for "keep".
 
     **It took a ``new_amount`` until plan step X-au-f** (ruling **R-JD**), and
     the transaction twin lost the same parameter at X-au-e for the same reason.
@@ -834,20 +853,26 @@ def resolve_conflicts(transfer_ids, action, user_id):
     back to its definition* and the definition's own effective-dated series
     prices it as of the row's due date.  Passing a figure here would have
     re-declared the row OWN, which is the state this cutover deletes.
+
+    **It takes the edit's READ PASS rather than an owner id**, as its twin
+    does and for the same reason: which deleted rows come back is asked of
+    the books, the rule and the calendar the save leaves
+    (:func:`~app.services.definition_unarchive.restored_by_use`, the ONE rule
+    both engines ask), and the owner is that pass's.
     """
     if action == "keep":
         log_event(
             logger, logging.INFO,
             EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED, BUSINESS,
             "Transfer recurrence conflicts kept (no mutation)",
-            user_id=user_id, action=action,
+            user_id=ctx.user_id, action=action,
             transfer_id_count=len(transfer_ids),
         )
-        return
+        return None
 
     if action == "update":
-        resolved_count = 0
         skipped_count = 0
+        picked = []
         for xfer_id in transfer_ids:
             xfer = db.session.get(Transfer, xfer_id)
             if xfer is None:
@@ -855,22 +880,29 @@ def resolve_conflicts(transfer_ids, action, user_id):
                 continue
 
             # Ownership check: Transfer has a direct user_id column.
-            if xfer.user_id != user_id:
+            if xfer.user_id != ctx.user_id:
                 log_resource_access_denied(
                     logger,
-                    user_id=user_id,
+                    user_id=ctx.user_id,
                     model="Transfer",
                     pk=xfer_id,
                     owner_id=xfer.user_id,
                 )
                 skipped_count += 1
                 continue
+            picked.append(xfer)
 
+        # **What the unarchive would leave deleted, "use" leaves deleted**
+        # (ruling **R-BAL253**): asked once, of every picked transfer as it
+        # stands, through the one rule the transaction twin asks too.  A
+        # transfer the answer holds is left exactly as found.
+        use = restored_by_use(picked, ctx)
+        for xfer in use.handed_back:
             # Soft-deleted transfers must be restored before they can
             # be updated.  restore_transfer sets is_deleted=False on the
             # transfer and both shadows, and verifies invariants.
             if xfer.is_deleted:
-                transfer_service.restore_transfer(xfer_id, user_id)
+                transfer_service.restore_transfer(xfer.id, ctx.user_id)
 
             # The owner is handing the pair BACK to its definition, and since
             # ruling **R-BAL11** that is ONE statement rather than a flag plus
@@ -881,17 +913,11 @@ def resolve_conflicts(transfer_ids, action, user_id):
             # not the rule's* (plan step X-au-h) and this act clears exactly
             # that -- it no longer says anything about the amount.
             transfer_service.update_transfer(
-                xfer_id, user_id, is_override=False,
+                xfer.id, ctx.user_id, is_override=False,
                 amount_ownership=derived_ownership(AmountSourceEnum.TEMPLATE),
             )
-            resolved_count += 1
 
         db.session.flush()
-        log_event(
-            logger, logging.INFO,
-            EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED, BUSINESS,
-            "Transfer recurrence conflicts resolved (update)",
-            user_id=user_id, action=action,
-            resolved_count=resolved_count,
-            skipped_count=skipped_count,
-        )
+        log_use_resolved(_RESOLVED, ctx, use, skipped_count)
+        return use.notice
+    return None

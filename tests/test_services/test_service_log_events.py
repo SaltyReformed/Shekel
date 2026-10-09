@@ -888,7 +888,7 @@ class TestRecurrenceEngineLogging:
             "app.services.recurrence_engine",
         ) as cap:
             recurrence_engine.resolve_conflicts(
-                [], "keep", seed_user["user"].id,
+                [], "keep", BalanceContext.build(seed_user["user"].id),
             )
 
         record = cap.find(EVT_RECURRENCE_CONFLICTS_RESOLVED)
@@ -933,7 +933,7 @@ class TestRecurrenceEngineLogging:
             "app.services.recurrence_engine",
         ) as cap:
             recurrence_engine.resolve_conflicts(
-                [s2_txn.id], "update", seed_user["user"].id,
+                [s2_txn.id], "update", BalanceContext.build(seed_user["user"].id),
             )
 
         record = cap.find(EVT_ACCESS_DENIED_CROSS_USER)

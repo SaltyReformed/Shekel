@@ -3219,7 +3219,7 @@ class TestResolveConflicts:
 
             # Resolve as 'keep'.
             recurrence_engine.resolve_conflicts(
-                [txn.id], action="keep", user_id=seed_user["user"].id,
+                [txn.id], action="keep", ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -3263,7 +3263,7 @@ class TestResolveConflicts:
 
             recurrence_engine.resolve_conflicts(
                 [txn.id], action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -3321,7 +3321,7 @@ class TestResolveConflicts:
 
             recurrence_engine.resolve_conflicts(
                 [payback.id], action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
             db.session.refresh(payback)
@@ -3386,7 +3386,7 @@ class TestResolveConflicts:
 
             recurrence_engine.resolve_conflicts(
                 [txn.id], action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -3418,7 +3418,7 @@ class TestResolveConflicts:
             # Attempt resolve as second_user -- should be blocked.
             recurrence_engine.resolve_conflicts(
                 [txn.id], action="update",
-                user_id=second_user["user"].id,
+                ctx=BalanceContext.build(second_user["user"].id),
             )
             db.session.flush()
 
@@ -3449,7 +3449,7 @@ class TestResolveConflicts:
             # 'keep' with wrong user -- no-op by design (keep never modifies).
             recurrence_engine.resolve_conflicts(
                 [txn.id], action="keep",
-                user_id=second_user["user"].id,
+                ctx=BalanceContext.build(second_user["user"].id),
             )
             db.session.flush()
 
@@ -3479,7 +3479,7 @@ class TestResolveConflicts:
 
             recurrence_engine.resolve_conflicts(
                 [txn.id], action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -3536,7 +3536,7 @@ class TestResolveConflicts:
             # Resolve as user A -- only txn_a should be modified.
             recurrence_engine.resolve_conflicts(
                 [txn_a.id, txn_b.id], action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -3664,7 +3664,7 @@ class TestResolveConflictsShadowGuard:
                 recurrence_engine.resolve_conflicts(
                     [shadow_id],
                     action="update",
-                    user_id=seed_user["user"].id,
+                    ctx=BalanceContext.build(seed_user["user"].id),
                 )
 
             db.session.rollback()
@@ -3698,7 +3698,7 @@ class TestResolveConflictsShadowGuard:
             recurrence_engine.resolve_conflicts(
                 [shadow_id],
                 action="update",
-                user_id=second_user["user"].id,
+                ctx=BalanceContext.build(second_user["user"].id),
             )
             db.session.flush()
 
@@ -3756,7 +3756,7 @@ class TestResolveConflictsShadowGuard:
             recurrence_engine.resolve_conflicts(
                 [txn.id],
                 action="update",
-                user_id=seed_user["user"].id,
+                ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 

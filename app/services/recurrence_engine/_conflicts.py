@@ -6,7 +6,12 @@ the chooser a :class:`~app.exceptions.RecurrenceConflict` raised.
 
 **Nothing here deletes.**  "Keep" leaves the row untouched and "use" clears the
 override / soft-delete flags and hands the row back to its definition, so a row
-that reaches the chooser survives whichever branch the owner picks.
+that reaches the chooser survives whichever branch the owner picks.  **"Use"
+un-deletes only what the definition's unarchive would restore** (ruling
+**R-BAL253**, developer 2026-10-09): a deleted row its books hold is left
+deleted and untouched, and named
+(:func:`~app.services.definition_unarchive.restored_by_use`, the one rule the
+transfer twin asks too).
 
 **"Use" WRITES NO FIGURE, and that is plan step X-au-e** (ruling **R-JD**).
 Every generated transaction row is derived now, so "move this instance to the
@@ -51,6 +56,7 @@ took the only safe outcome.  The route reports them with
 retained id cannot reach this module even from a crafted form.
 """
 import logging
+from typing import NamedTuple
 
 from app.enums import AmountSourceEnum
 from app.extensions import db
@@ -59,6 +65,7 @@ from app.exceptions import ValidationError
 from app.services import posting_service
 from app.services.amount_ownership import declare_derived
 from app.services._recurrence_common import log_resource_access_denied
+from app.services.definition_unarchive import UseRestore, restored_by_use
 from app.utils.log_events import (
     BUSINESS,
     EVT_RECURRENCE_CONFLICTS_RESOLVED,
@@ -69,49 +76,121 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
+class ConflictReporting(NamedTuple):
+    """How ONE engine's "use" resolution announces itself.
 
-def resolve_conflicts(transaction_ids, action, user_id):
+    The logger and the two strings the event still differs by between the
+    engines -- the shape :class:`~app.services.recurrence_engine.PassReporting`
+    gives a regeneration -- so :func:`log_use_resolved` states what the event
+    REPORTS once.
+
+    Attributes:
+        logger: The ENGINE's own logger: the structured-log controls capture
+            by logger NAME (``tests/test_services/test_service_log_events.py``).
+        event: The ``EVT_*`` constant the engine's resolution emits.
+        message: The human sentence beside it.
+    """
+
+    logger: object
+    event: str
+    message: str
+
+
+def log_use_resolved(
+    reporting: ConflictReporting, ctx, use: UseRestore, skipped_count: int,
+) -> None:
+    """Emit one engine's resolution event for the owner's "use" picks.
+
+    **The ONE statement of what a resolution reports**, for both engines'
+    ``resolve_conflicts``: the rows handed back to their definition, the ids
+    skipped (gone, not the owner's, or refused a hand-back), and the deleted
+    rows left deleted because their books hold them (ruling **R-BAL253**).
+    The three sum to the ids picked.  Spelled in each resolver, the tail of
+    the two was one block -- pylint's ``duplicate-code`` measured it the
+    moment the second count arrived -- the lesson
+    :meth:`~app.services._recurrence_common.MaintainOutcome.after` records.
+
+    Args:
+        reporting: The engine's :class:`ConflictReporting`.
+        ctx: The edit's read pass; its ``user_id`` is logged.
+        use: The rule's answer
+            (:func:`~app.services.definition_unarchive.restored_by_use`).
+        skipped_count: The picked ids that never reached the rule.
+    """
+    log_event(
+        reporting.logger, logging.INFO, reporting.event, BUSINESS,
+        reporting.message,
+        user_id=ctx.user_id, action="update",
+        resolved_count=len(use.handed_back),
+        skipped_count=skipped_count,
+        kept_deleted_count=len(use.left_deleted),
+    )
+
+
+#: How this engine's resolution announces itself.
+_RESOLVED = ConflictReporting(
+    logger, EVT_RECURRENCE_CONFLICTS_RESOLVED,
+    "Recurrence conflicts resolved (update)",
+)
+
+
+def resolve_conflicts(transaction_ids, action, ctx):
     """Resolve override/delete conflicts after a regeneration.
 
     Called by the route layer after the user responds to the conflict prompt.
     Each transaction is ownership-checked against its own ``user_id`` column
-    before any modification -- transactions not owned by ``user_id`` are
-    silently skipped (defense-in-depth against IDOR).  It walked
+    before any modification -- transactions the pass's owner does not own
+    are silently skipped (defense-in-depth against IDOR).  It walked
     ``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``.
 
     **It took a ``new_amount`` until plan step X-au-e** (ruling **R-JD**), and
     the parameter is gone rather than defaulted: "use" hands the row back to
     its definition and the definition prices it, so there is no figure for a
     caller to supply and no arm left that would read one.  The transfer twin
-    ``transfer_recurrence.resolve_conflicts`` still takes one, because a
-    generated transfer still stores its amount until plan step X-au-f -- which
-    is why ``routes._recurrence_conflict_chooser.RecurrenceConflictKind`` asks
-    the KIND whether "use" states a figure rather than assuming both do.
+    ``transfer_recurrence.resolve_conflicts`` lost its own at plan step
+    X-au-f, so the two kinds take one shape.
+
+    **It takes the edit's READ PASS rather than an owner id** (ruling
+    **R-BAL253**): a deleted row is un-deleted only where its definition's
+    unarchive would restore it, which is asked of the books, the rule and the
+    calendar the save leaves -- the pass its regeneration resolved against
+    (:func:`~app.services.definition_unarchive.restored_by_use`) -- and the
+    owner is that pass's, never an id beside it (developer ruling
+    2026-08-16).  Every picked row is checked before any is changed, so the
+    books are asked once, of rows as they stand.
 
     Args:
         transaction_ids: List of Transaction IDs to resolve.
         action:          'update' -- clear override/delete and hand the row
-                         back to its definition.
+                         back to its definition; a deleted row its books
+                         hold stays deleted, untouched.
                          'keep' -- leave the transaction unchanged.
-        user_id:         The requesting user's ID.  Transactions not owned
-                         by this user are skipped.
+        ctx:             The edit's read pass; its ``user_id`` is the
+                         requesting owner's, and transactions it does not
+                         own are skipped.
+
+    Returns:
+        The sentence naming the picked rows left deleted
+        (:attr:`~app.services.definition_unarchive.UseRestore.notice`), or
+        ``None`` when none is -- always ``None`` for "keep".
+
+    Raises:
+        ValidationError: A transfer shadow's id was handed in; nothing is
+            changed.
     """
     if action == "keep":
         # Nothing to do -- the user wants to keep their overrides.
         log_event(
             logger, logging.INFO, EVT_RECURRENCE_CONFLICTS_RESOLVED, BUSINESS,
             "Recurrence conflicts kept (no mutation)",
-            user_id=user_id, action=action,
+            user_id=ctx.user_id, action=action,
             transaction_id_count=len(transaction_ids),
         )
-        return
+        return None
 
     if action == "update":
-        resolved_count = 0
         skipped_count = 0
-        # The rows this pass actually restored, collected so the ledger
-        # reconcile below runs over exactly them (see its comment).
-        restored = []
+        picked = []
         for txn_id in transaction_ids:
             txn = db.session.get(Transaction, txn_id)
             if txn is None:
@@ -121,14 +200,14 @@ def resolve_conflicts(transaction_ids, action, user_id):
             # Ownership check: the row's own ``user_id`` column.  It read
             # ``txn.pay_period.user_id`` -- Transaction -> PayPeriod ->
             # user_id -- until plan step ``pay_calendar:C13-b``.
-            if txn.user_id != user_id:
+            if txn.user_id != ctx.user_id:
                 # Cross-user request: emit the IDOR-detection event so
                 # SOC tooling sees the probe.  ACCESS-category is the
                 # right home for this -- the requester does not own
                 # the row even though we silently skip it.
                 log_resource_access_denied(
                     logger,
-                    user_id=user_id,
+                    user_id=ctx.user_id,
                     model="Transaction",
                     pk=txn_id,
                     owner_id=txn.user_id,
@@ -150,7 +229,7 @@ def resolve_conflicts(transaction_ids, action, user_id):
                     logger, logging.WARNING,
                     EVT_RESOLVE_CONFLICTS_SHADOW_REFUSED, BUSINESS,
                     "Refused to mutate transfer shadow via resolve_conflicts",
-                    user_id=user_id,
+                    user_id=ctx.user_id,
                     transaction_id=txn_id,
                     transfer_id=txn.transfer_id,
                     action=action,
@@ -187,7 +266,14 @@ def resolve_conflicts(transaction_ids, action, user_id):
             if txn.template_id is None:
                 skipped_count += 1
                 continue
+            picked.append(txn)
 
+        # **What the unarchive would leave deleted, "use" leaves deleted**
+        # (ruling **R-BAL253**): asked once, of every picked row as it stands,
+        # through the one rule the transfer twin asks too.  A row the answer
+        # holds is left exactly as found -- flags, figure and all.
+        use = restored_by_use(picked, ctx)
+        for txn in use.handed_back:
             txn.is_override = False
             txn.is_deleted = False
             # **The whole of "use the template's amount"** since plan step
@@ -198,8 +284,6 @@ def resolve_conflicts(transaction_ids, action, user_id):
             # definition take", so generation, the maintain splat and this
             # chooser cannot come to disagree (``CLAUDE.md`` rule 14).
             declare_derived(txn, AmountSourceEnum.TEMPLATE)
-            restored.append(txn)
-            resolved_count += 1
         db.session.flush()
         # **Restoring a row restores its purchases' cash legs** (plan step
         # X-f3b, ruling **R-FM**).  This loop un-deletes rows and may re-price
@@ -208,12 +292,8 @@ def resolve_conflicts(transaction_ids, action, user_id):
         # family on the way out, so without this the read fold re-acquires a
         # movement the ledger no longer holds.  Idempotent and empty-handed for
         # a row whose family never posted, which is every other row here.
-        for txn in restored:
+        for txn in use.handed_back:
             posting_service.sync_transaction_postings(txn)
-        log_event(
-            logger, logging.INFO, EVT_RECURRENCE_CONFLICTS_RESOLVED, BUSINESS,
-            "Recurrence conflicts resolved (update)",
-            user_id=user_id, action=action,
-            resolved_count=resolved_count,
-            skipped_count=skipped_count,
-        )
+        log_use_resolved(_RESOLVED, ctx, use, skipped_count)
+        return use.notice
+    return None
