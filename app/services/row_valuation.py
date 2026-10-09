@@ -534,8 +534,10 @@ def leg_settled_contribution(leg) -> Decimal:
     carries a DATED covering movement -- a status drift no door writes -- is a
     payment that happened, and it is worth what that movement moved, as the
     cash fold already counts it (``cash_ledger.movement_cash_leg``).  The
-    Spending report and the savings metric narrow to settled parents in SQL,
-    so that arm never reaches them.  A leg that is neither is still refused:
+    Spending report narrows to settled parents in SQL and the savings metric
+    to DATED records (plan step ``balance:X-bi-6-4d-2``, finding
+    **BAL-534**: equal, since a side's record is dated exactly while its
+    transfer is settled), so that arm never reaches them.  A leg that is neither is still refused:
     its money has not moved and there is nothing recorded to answer with.
 
     Args:

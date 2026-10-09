@@ -441,9 +441,10 @@ def transfer_side_boxes(
 ) -> "tuple[TransferSideBox, TransferSideBox]":
     """Return the popover's two date boxes, from-side then to-side.
 
-    Each side's day is read off its leg's RECORD -- its covering movement,
-    which the status seam keeps equal to its shadow -- in the caller's ONE
-    load (ledger row **BAL-530**).  The ONE producer both the popover's render
+    Each side's day is read off its leg's RECORD -- the payment record the
+    status seam's Transfer arm writes for that side (plan step
+    ``balance:X-bi-6-4d-2``) -- in the caller's ONE load (ledger row
+    **BAL-530**).  The ONE producer both the popover's render
     and the PATCH's grading read, so what a box was prefilled with and what
     its submission is graded against cannot part.
 
