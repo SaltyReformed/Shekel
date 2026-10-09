@@ -80,7 +80,6 @@ from app.models.account import AccountAnchorHistory
 from app.models.amount_ownership import AmountOwnership
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
     balance_at,
@@ -114,6 +113,7 @@ from app.services.reconcile_service._rows import wholly_spent_by
 from app.services.settle_day import SettleDay, recorded_settle_day
 from app.services.transaction_service._row_rules import settles_from_entries
 from app.services.transaction_service._settle import settle_from_entries
+from app.services.transfer_legs import TransferLeg
 from tests._test_helpers import (
     create_loan_account,
     create_savings_account,
@@ -170,7 +170,11 @@ def _revert(txn):
 
 
 def _only_movement(txn):
-    """Return the row's one covering movement, asserting there is exactly one."""
+    """Return the row's one covering movement, asserting there is exactly one.
+
+    *txn* is a plan row, or a transfer's leg as :func:`_legs_of` reads it,
+    whose ``covering_movements`` is the side's record.
+    """
     movements = txn.covering_movements
     assert len(movements) == 1, f"expected one covering movement, got {len(movements)}"
     return movements[0]
@@ -1127,13 +1131,54 @@ class TestAPaycheckIsCoveredInItsOwnDirection:
             assert ledger_net(db.session, cash.id, txn.scenario_id) == before
 
 
+def _side_record(xfer, *, is_income):
+    """Return the record *xfer*'s side holds, or ``None``, by its side link.
+
+    This file's own SQL, never the producer under test (ruling R-BAL167
+    class 4, plan step balance:X-bi-6-4d-2): a side's record hangs off the
+    TRANSFER since that step, where it hung off the side's shadow row.
+    """
+    link = (
+        TransactionEntry.income_transfer_id if is_income
+        else TransactionEntry.expense_transfer_id
+    )
+    return db.session.query(TransactionEntry).filter(
+        link == xfer.id,
+    ).one_or_none()
+
+
 def _legs_of(xfer):
-    """Return a transfer's ``(expense leg, income leg)``, by TYPE."""
-    legs = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-    assert len(legs) == 2, "the transfer has no shadow pair"
-    expense = next(leg for leg in legs if leg.is_expense)
-    income = next(leg for leg in legs if leg is not expense)
-    return expense, income
+    """Return a transfer's ``(expense leg, income leg)``, freshly read.
+
+    Each a :class:`~app.services.transfer_legs.TransferLeg` holding its side's
+    record as :func:`_side_record` reads it, so its status is the TRANSFER's
+    and its day its record's.  They were the transfer's two shadow rows, by
+    TYPE, until plan step balance:X-bi-6-4d-2 stopped keeping a shadow's
+    status and day (ruling R-BAL167 class 4).  A leg holds the record it was
+    read with, so a case reads the legs again after a door.
+    """
+    return tuple(
+        TransferLeg(
+            transfer=xfer,
+            account_id=xfer.to_account_id if is_income else xfer.from_account_id,
+            is_income=is_income,
+            record=_side_record(xfer, is_income=is_income),
+        )
+        for is_income in (False, True)
+    )
+
+
+def _leg_again(leg):
+    """Return *leg* read afresh: its transfer's same side, as :func:`_legs_of` reads it."""
+    expense, income = _legs_of(leg.transfer)
+    return income if leg.is_income else expense
+
+
+def _side_records_of(leg):
+    """The transfer's list of *leg*'s side records (``*_movements``), loaded by the read."""
+    if leg.is_income:
+        return leg.transfer.income_movements
+    return leg.transfer.expense_movements
 
 
 def _settled_pair(seed_user, period, *, to_account=None, amount="500.00"):
@@ -1166,17 +1211,20 @@ def _movement_entries(movement_ids):
 class TestATransferIsCoveredOnBothLegs:
     """Plan step X-bi-3c: each leg of a settled transfer holds its movement.
 
-    The transfer settle reaches the seam once per shadow through
-    ``transfer_service`` (Invariant 4), so both legs are covered by the ONE
-    writer a bill and a paycheck are (ruling **R-BAL41**); each movement moves
-    in its own leg's direction.  The posted ledger keeps booking the pair as
-    ONE transfer entry and a shadow's movement posts NOWHERE through the
-    interval (ruling **R-BAL45**: the ruled endpoint, one entry per movement
-    against a transfers-in-transit account, is ``X-bi-6``'s); the walk reads
-    each leg's movement and nothing of the leg (ruling **R-BAL80**), and
-    each leg is worth its movement (ruling **R-BAL81**), so the fold reads
-    nothing for a leg without one -- the control below.  Worked on
-    ``$500.00`` Checking -> Savings.
+    The transfer settle reaches the seam through ``transfer_service``
+    (Invariant 4), so both legs are covered by the ONE writer a bill and a
+    paycheck are (ruling **R-BAL41**); each movement moves in its own leg's
+    direction.  Each leg is read as its TRANSFER and its side's record, which
+    hangs off the transfer since plan step balance:X-bi-6-4d-2 (off the side's
+    shadow until then; ruling R-BAL167 classes 1 and 4, :func:`_legs_of`).
+    The posted ledger keeps booking the pair as ONE transfer entry and a
+    shadow's movement posts NOWHERE through the interval (ruling
+    **R-BAL45**: the ruled endpoint, one entry per movement against a
+    transfers-in-transit account, is ``X-bi-6``'s); the walk reads each
+    leg's movement and nothing of the leg (ruling **R-BAL80**), and each leg
+    is worth its movement (ruling **R-BAL81**), so the fold reads nothing for
+    a leg without one -- the control below.  Worked on ``$500.00`` Checking
+    -> Savings.
     """
 
     def test_each_leg_holds_one_movement_in_its_own_direction(
@@ -1192,29 +1240,36 @@ class TestATransferIsCoveredOnBothLegs:
                     MovementFigureSourceEnum.RESOLVED,
                 )
                 assert movement.description == leg.name
+                # The leg's day IS its record's (plan step balance:X-bi-6-4d-2,
+                # ruling R-BAL167 class 1): dated, its purchase day that day.
+                assert movement.settled_on is not None
                 assert movement.purchased_on == leg.settled_on
-                assert movement.settled_on == leg.settled_on
                 assert movement.account_id == leg.account_id
                 # The leg is worth what its movement moves (R-BAL81).
                 assert status_seam.covered_cash_leg(leg, leg.account_id) == (
                     cash_ledger.movement_cash_leg(leg, movement)
                 )
             facts = {
-                leg.id: [
+                leg.cell_key: [
                     fact for fact in settled_cash_facts(leg.account_id, leg.scenario_id)
                     if fact.entry_id == _only_movement(leg).id
                 ]
                 for leg in (expense, income)
             }
-            assert [fact.delta for fact in facts[expense.id]] == [Decimal("-500.00")]
-            assert [fact.is_income for fact in facts[expense.id]] == [False]
-            assert [fact.delta for fact in facts[income.id]] == [Decimal("500.00")]
-            assert [fact.is_income for fact in facts[income.id]] == [True]
+            assert [fact.delta for fact in facts[expense.cell_key]] == [Decimal("-500.00")]
+            assert [fact.is_income for fact in facts[expense.cell_key]] == [False]
+            assert [fact.delta for fact in facts[income.cell_key]] == [Decimal("500.00")]
+            assert [fact.is_income for fact in facts[income.cell_key]] == [True]
 
     def test_the_fold_reads_each_legs_movement_and_nothing_without_it(
         self, app, seed_user, seed_periods,
     ):
-        """The movement IS the fold on the from-account and the to-account (R-BAL80)."""
+        """The movement IS the fold on the from-account and the to-account (R-BAL80).
+
+        The control's state -- a settled transfer missing a side's record --
+        is refused at COMMIT since plan step balance:X-bi-6-4d-2 (the band
+        rule), so it lives inside the flush alone, as it always did here.
+        """
         with app.app_context():
             _, expense, income = _settled_pair(seed_user, seed_periods[0])
             expected = {expense: Decimal("-500.00"), income: Decimal("500.00")}
@@ -1223,12 +1278,16 @@ class TestATransferIsCoveredOnBothLegs:
                 with_movement = _per_day(settled_cash_facts(account_id, scenario_id))
                 assert with_movement[leg.settled_on] == figure
                 movement = _only_movement(leg)
+                side_records = _side_records_of(leg)
                 # Deleted, THEN out of the list: the list no longer deletes (R-CC64;
-                # rule-5 re-expression, developer-confirmed 2026-09-23).
+                # rule-5 re-expression, developer-confirmed 2026-09-23).  The list
+                # is the transfer's side list since plan step balance:X-bi-6-4d-2,
+                # the shadow's ``entries`` until then (R-BAL167 class 4).
                 db.session.delete(movement)
-                leg.entries.remove(movement)
+                side_records.remove(movement)
                 db.session.flush()
-                db.session.expire(leg)
+                db.session.expire(leg.transfer)
+                leg = _leg_again(leg)
                 assert status_seam.covered_cash_leg(leg, leg.account_id) == Decimal("0")
                 assert _per_day(settled_cash_facts(account_id, scenario_id)) == {}
 
@@ -1317,7 +1376,9 @@ class TestATransferIsCoveredOnBothLegs:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             )
             db.session.flush()
-            for leg, movement_id in zip((expense, income), movement_ids):
+            # The transfer says Projected and each side's record is kept
+            # un-dated (R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+            for leg, movement_id in zip(_legs_of(xfer), movement_ids):
                 assert not leg.status.is_settled
                 survivor = _only_movement(leg)
                 assert survivor.id == movement_id
@@ -1332,28 +1393,30 @@ class TestATransferIsCoveredOnBothLegs:
     def test_the_reconcile_ticks_link_reaches_the_leg_and_its_movement_alone(
         self, app, seed_user, seed_periods,
     ):
-        """``transfer_service.record_clearing`` links the leg AND its mirror.
+        """``transfer_service.record_leg_clearing`` links the leg's record alone.
 
-        The door delegates to ``status_seam.record_clearing`` since X-bi-3c;
-        with the one-column write it had, the movement's fact walked unlinked
-        (the gap 3a closed for bills).  Per leg, still: the sibling on the
-        other account and its movement take nothing.
+        The door delegates to the status seam since X-bi-3c; with the
+        one-column write it had, the movement's fact walked unlinked (the gap
+        3a closed for bills).  Per leg, still: the sibling on the other
+        account and its record take nothing.  It linked the leg's shadow AND
+        that shadow's movement (``record_clearing(shadow)``) until plan step
+        balance:X-bi-6-4d-2, which made the side's record the one home of the
+        link (ruling R-BAL167 class 1).
         """
         with app.app_context():
             _, expense, income = _settled_pair(seed_user, seed_periods[0])
             anchor = _latest_anchor(expense.account_id)
-            transfer_service.record_clearing(expense, anchor.id)
+            transfer_service.record_leg_clearing(expense, anchor.id)
             db.session.flush()
-            assert expense.reconciled_by_id == anchor.id
+            expense, income = _legs_of(expense.transfer)
             assert _only_movement(expense).reconciled_by_id == anchor.id
-            assert income.reconciled_by_id is None
             assert _only_movement(income).reconciled_by_id is None
 
     def test_a_settle_day_correction_moves_both_movements(
         self, app, seed_user, seed_periods,
     ):
         with app.app_context():
-            xfer, expense, income = _settled_pair(seed_user, seed_periods[0])
+            xfer, expense, _ = _settled_pair(seed_user, seed_periods[0])
             corrected = expense.settled_on - timedelta(days=3)
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
@@ -1363,7 +1426,9 @@ class TestATransferIsCoveredOnBothLegs:
                 ),
             )
             db.session.flush()
-            for leg in (expense, income):
+            # Each leg's day is its record's (R-BAL167 class 1, plan step
+            # balance:X-bi-6-4d-2), where it was its shadow's.
+            for leg in _legs_of(xfer):
                 assert leg.settled_on == corrected
                 movement = _only_movement(leg)
                 assert movement.settled_on == corrected
@@ -1392,10 +1457,12 @@ class TestATransferIsCoveredOnBothLegs:
             db.session.flush()
             expense, income = _legs_of(xfer)
             for leg in (expense, income):
+                # The transfer says Paid and its side's record is dated (R-BAL167
+                # class 1, plan step balance:X-bi-6-4d-2); the leg's day is that.
                 assert leg.status.is_settled
                 movement = _only_movement(leg)
                 assert movement.amount == Decimal("500.00")
-                assert movement.settled_on == leg.settled_on
+                assert movement.settled_on is not None
             assert status_seam.covered_cash_leg(expense, expense.account_id) == Decimal("-500.00")
             assert status_seam.covered_cash_leg(income, income.account_id) == Decimal("500.00")
 
@@ -1408,19 +1475,19 @@ class TestATransfersMovementsFollowItsLifecycle:
     ):
         with app.app_context():
             xfer, expense, income = _settled_pair(seed_user, seed_periods[0])
-            movement_ids = {leg.id: _only_movement(leg).id for leg in (expense, income)}
+            movement_ids = {leg.cell_key: _only_movement(leg).id for leg in (expense, income)}
             user_id = seed_user["user"].id
             transfer_service.delete_transfer(xfer.id, user_id, soft=True)
             db.session.flush()
             for leg in (expense, income):
-                movement = db.session.get(TransactionEntry, movement_ids[leg.id])
+                movement = db.session.get(TransactionEntry, movement_ids[leg.cell_key])
                 assert movement is not None
                 assert cash_ledger.movement_cash_leg(leg, movement) == Decimal("0.00")
                 assert settled_cash_facts(leg.account_id, leg.scenario_id) == []
             transfer_service.restore_transfer(xfer.id, user_id)
             db.session.flush()
             for leg, figure in ((expense, Decimal("-500.00")), (income, Decimal("500.00"))):
-                assert _only_movement(leg).id == movement_ids[leg.id]
+                assert _only_movement(leg).id == movement_ids[leg.cell_key]
                 assert _per_day(settled_cash_facts(leg.account_id, leg.scenario_id)) == {
                     leg.settled_on: figure,
                 }
@@ -1428,24 +1495,29 @@ class TestATransfersMovementsFollowItsLifecycle:
     def test_a_reverted_then_soft_deleted_then_restored_transfer_keeps_both_survivors(
         self, app, seed_user, seed_periods,
     ):
-        """The restore's identity pass moves nothing: same ids, un-dated, same labels."""
+        """The restore's identity pass moves nothing: same ids, un-dated, same labels.
+
+        Each side is read as its transfer and its kept record since plan step
+        balance:X-bi-6-4d-2, its shadow row until then (ruling R-BAL167
+        classes 1 and 4): the transfer says Projected, each record un-dated.
+        """
         with app.app_context():
-            xfer, expense, income = _settled_pair(seed_user, seed_periods[0])
+            xfer, _, _ = _settled_pair(seed_user, seed_periods[0])
             user_id = seed_user["user"].id
             transfer_service.update_transfer(
                 xfer.id, user_id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             )
             db.session.flush()
-            movement_ids = {leg.id: _only_movement(leg).id for leg in (expense, income)}
+            movement_ids = {leg.cell_key: _only_movement(leg).id for leg in _legs_of(xfer)}
             transfer_service.delete_transfer(xfer.id, user_id, soft=True)
             db.session.flush()
             transfer_service.restore_transfer(xfer.id, user_id)
             db.session.flush()
-            for leg in (expense, income):
+            for leg in _legs_of(xfer):
                 assert not leg.status.is_settled
                 survivor = _only_movement(leg)
-                assert survivor.id == movement_ids[leg.id]
+                assert survivor.id == movement_ids[leg.cell_key]
                 assert survivor.settled_on is None
                 assert survivor.reconciled_by_id is None
                 assert survivor.amount == Decimal("500.00")
@@ -1479,7 +1551,10 @@ class TestATransfersMovementsFollowItsLifecycle:
         re-points a leg's.  Both the session and the database are read here:
         the in-session object before any expire, the row after, and the walks
         of the vacated and the new account.  Delete the assignment and the
-        movement stays on the vacated account in all three.
+        movement stays on the vacated account in all three.  The leg is read
+        as its transfer's side and that side's record since plan step
+        balance:X-bi-6-4d-2 (its shadow row until then; ruling R-BAL167
+        class 4), read again after the move.
         """
         with app.app_context():
             savings = create_savings_account(
@@ -1496,6 +1571,7 @@ class TestATransfersMovementsFollowItsLifecycle:
                 xfer.id, seed_user["user"].id, to_account_id=other.id,
             )
             db.session.flush()
+            expense, income = _legs_of(xfer)
             assert income.account_id == other.id
             assert movement.account_id == other.id
             db.session.expire_all()
@@ -1511,10 +1587,12 @@ class TestALoanPaymentsLoanSideMovementIsItsRecord:
     """The loan replay prices a payment by its RECORD, and the record is the movement.
 
     A payment's income leg sits on the LOAN account and carries a covering
-    movement there; every loan reader values the leg through
-    ``row_valuation.settled_contribution``, which since plan step
-    ``balance:X-bi-4b-1`` sums the leg's entries (ruling **R-BAL80**) -- so
-    the movement is the whole of what the loan side reads of the payment.
+    movement there; every loan reader values the leg by its record
+    (``row_valuation.leg_settled_contribution``; since plan step
+    ``balance:X-bi-4b-1`` the record is the leg's movement, ruling
+    **R-BAL80**, and since ``balance:X-bi-6-4d-2`` it hangs off the transfer
+    by its side link, not off the leg's shadow) -- so the movement is the
+    whole of what the loan side reads of the payment.
     Through ``X-bi-4a`` the reader took the leg's own ``settled_amount`` and
     this class pinned the movement as INERT to it ("the seam's balance and
     the posted balance read identically with and without the movement");
@@ -1546,19 +1624,28 @@ class TestALoanPaymentsLoanSideMovementIsItsRecord:
                     posted_loan_balance_at(loan.id, scenario_id, as_of),
                 )
 
-            assert row_valuation.settled_contribution(income) == Decimal("1910.95")
+            assert row_valuation.leg_settled_contribution(income) == Decimal("1910.95")
             with_movement = _read()
             # Deleted, THEN out of the list: the list no longer deletes (R-CC64;
-            # rule-5 re-expression, developer-confirmed 2026-09-23).
-            db.session.delete(movement)
-            income.entries.remove(movement)
+            # rule-5 re-expression, developer-confirmed 2026-09-23).  The list
+            # is the transfer's side list since plan step balance:X-bi-6-4d-2.
+            # That step's band rule refuses COMMITTING a settled transfer that
+            # holds one side's record, so BOTH sides' records come off: the
+            # $0.00 close the rule admits, the storable shape of a loan side
+            # holding none (ruling R-BAL167 class 2).
+            for leg in _legs_of(xfer):
+                record = _only_movement(leg)
+                side_records = _side_records_of(leg)
+                db.session.delete(record)
+                side_records.remove(record)
             db.session.commit()
             db.session.expire_all()
             assert xfer.status.is_settled
             # The record IS the movement: without it the leg records $0.00
             # (R-BAL82's close of nothing), the loan's position moves, and the
             # posted ledger -- R-BAL45's one transfer entry -- is untouched.
-            assert row_valuation.settled_contribution(income) == Decimal("0")
+            income = _leg_again(income)
+            assert row_valuation.leg_settled_contribution(income) == Decimal("0")
             without_movement = _read()
             assert without_movement[0] != with_movement[0]
             assert without_movement[1] == with_movement[1]
@@ -1981,7 +2068,13 @@ class TestAKeptMovementIsNotAPurchase:
     def test_an_endpoint_move_carries_a_projected_shadows_survivor(
         self, app, seed_user, seed_periods,
     ):
-        """Ruling R-BAL72: the movement's account is assigned on every shadow."""
+        """Ruling R-BAL72: the movement's account is assigned on every side, settled or not.
+
+        Each side is read as its transfer and its record (:func:`_legs_of`)
+        since plan step balance:X-bi-6-4d-2, its shadow row until then
+        (ruling R-BAL167 classes 1 and 4): the transfer says Projected and
+        the to-side's kept record is un-dated.
+        """
         with app.app_context():
             savings = create_savings_account(
                 seed_user, db.session, "Savings", Decimal("0.00"),
@@ -1997,6 +2090,7 @@ class TestAKeptMovementIsNotAPurchase:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             )
             db.session.flush()
+            expense, income = _legs_of(xfer)
             survivor = _only_movement(income)
             assert not income.status.is_settled
             assert survivor.settled_on is None
@@ -2004,6 +2098,7 @@ class TestAKeptMovementIsNotAPurchase:
                 xfer.id, seed_user["user"].id, to_account_id=other.id,
             )
             db.session.flush()
+            expense, income = _legs_of(xfer)
             assert income.account_id == other.id
             assert survivor.account_id == other.id, "in-session, before any expire"
             db.session.expire_all()
@@ -2265,20 +2360,27 @@ class TestTheRetainedReadTakesTheSourceOffTheMovement:
     def test_both_legs_of_a_corrected_transfer_read_typed_off_their_movements(
         self, app, seed_user, seed_periods,
     ):
-        """The pair repair's read (``apply_status_to_all_three``) off a leg."""
+        """The retained read off each leg: its side's record, figure and source.
+
+        Read through ``status_seam.recorded_leg_settlement``, the leg-shaped
+        read the transfer settle takes its retained record by, since plan step
+        balance:X-bi-6-4d-2 hung each side's record off the transfer; it was
+        ``recorded_settlement`` off each shadow until then (ruling R-BAL167
+        class 4).
+        """
         with app.app_context():
-            xfer, expense, income = _settled_pair(seed_user, seed_periods[0])
+            xfer, _, _ = _settled_pair(seed_user, seed_periods[0])
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id, figure=typed(Decimal("480.00")),
             )
             db.session.flush()
-            for leg in (expense, income):
+            for leg in _legs_of(xfer):
                 movement = _only_movement(leg)
                 assert movement.amount == Decimal("480.00")
                 assert movement.figure_source_id == _source(
                     MovementFigureSourceEnum.TYPED,
                 )
-                retained = status_seam.recorded_settlement(leg)
+                retained = status_seam.recorded_leg_settlement(leg)
                 assert retained.amount == Decimal("480.00")
                 assert retained.source is MovementFigureSourceEnum.TYPED
 

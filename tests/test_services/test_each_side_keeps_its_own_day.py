@@ -20,8 +20,8 @@ from app.enums import SettledDayBasisEnum, StatusEnum
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
-from app.services import transfer_service
-from app.services.settle_day import SettleDay, record_settle_day, recorded_settle_day
+from app.services import transfer_legs, transfer_service
+from app.services.settle_day import SettleDay, record_settle_day
 from app.utils.dates import display_today
 from tests._test_helpers import (
     an_entered_day,
@@ -31,6 +31,8 @@ from tests._test_helpers import (
     net_posted_by_day,
     open_books_before_the_first_assertion,
     transfer_family_journal_filter,
+    transfer_side_record,
+    transfer_side_settle_day,
     typed,
 )
 
@@ -67,10 +69,30 @@ def _sides(xfer):
     return expense, income
 
 
+def _records(xfer):
+    """Return each side's payment record: ``(expense, income)``, freshly read.
+
+    Off the TRANSFER by its side links (ruling R-BAL167 class 4, plan step
+    balance:X-bi-6-4d-2); each record hung off its side's shadow until then.
+    """
+    db.session.expire_all()
+    return (
+        transfer_side_record(db.session, xfer.id, xfer.from_account_id),
+        transfer_side_record(db.session, xfer.id, xfer.to_account_id),
+    )
+
+
 def _days(xfer):
-    """Return each side's recorded day: ``(expense, income)``."""
-    expense, income = _sides(xfer)
-    return recorded_settle_day(expense), recorded_settle_day(income)
+    """Return each side's recorded day: ``(expense, income)``, off its record.
+
+    A side's day is its record's since plan step balance:X-bi-6-4d-2 (ruling
+    R-BAL167 class 4); it was read off each side's shadow until then.
+    """
+    db.session.expire_all()
+    return (
+        transfer_side_settle_day(db.session, xfer.id, xfer.from_account_id),
+        transfer_side_settle_day(db.session, xfer.id, xfer.to_account_id),
+    )
 
 
 def _movement(shadow):
@@ -85,7 +107,12 @@ class TestAPaidPress:
     def test_both_sides_borrow_the_day_paid_was_pressed(
         self, app, seed_user, seed_periods_today,
     ):
-        """Both ``borrowed`` on the owner's today, shadows and movements alike."""
+        """Both sides' records ``borrowed`` on the owner's today.
+
+        The shadows' days were asserted beside their movements' until plan
+        step balance:X-bi-6-4d-2; a side's day is its record's alone now
+        (ruling R-BAL167 class 1), which is what ``_days`` reads.
+        """
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3])
 
@@ -97,8 +124,6 @@ class TestAPaidPress:
 
             today = _borrowed(display_today())
             assert _days(xfer) == (today, today)
-            for shadow in _sides(xfer):
-                assert recorded_settle_day(_movement(shadow)) == today
 
     def test_a_revert_clears_both_and_a_second_press_borrows_again(
         self, app, seed_user, seed_periods_today,
@@ -191,13 +216,15 @@ class TestACorrection:
     def test_typing_the_borrowed_day_makes_it_the_sides_own_to_its_movement(
         self, app, seed_user, seed_periods_today,
     ):
-        """The same day, now the owner's: the movement's label RISES with its shadow's (D4).
+        """The same day, now the owner's: the side's record's label RISES (D4).
 
         Ruling **R-BAL164**: a borrowed side's box is empty, so any day typed
         there -- the borrowed one included -- is that side's own, ``entered``.
         The day does not move, so only the seam's equal-day arm can carry the
         new label onto the covering movement; it copies a raise, and a label
-        over a movement holding no evidence is one.
+        over a movement holding no evidence is one.  The shadow's label was
+        asserted beside the movement's until plan step balance:X-bi-6-4d-2;
+        the side's record is its one home now (ruling R-BAL167 class 1).
         """
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3])
@@ -210,7 +237,7 @@ class TestACorrection:
                 ),),
             )
             db.session.commit()
-            assert recorded_settle_day(_movement(_sides(xfer)[1])) == _borrowed(day)
+            assert _days(xfer)[1] == _borrowed(day)
 
             transfer_service.update_transfer(
                 xfer.id, owner,
@@ -220,9 +247,7 @@ class TestACorrection:
             )
             db.session.commit()
 
-            income = _sides(xfer)[1]
-            assert recorded_settle_day(income) == an_entered_day(day)
-            assert recorded_settle_day(_movement(income)) == an_entered_day(day)
+            assert _days(xfer)[1] == an_entered_day(day)
 
 
 class TestAFigureCorrection:
@@ -235,7 +260,10 @@ class TestAFigureCorrection:
 
         Until plan step ``balance:X-bi-6-4c-3`` a figure correction ran the
         pair-day repair, re-dating a leg whose day differed from its sibling's
-        and releasing its clearing link (finding **N-304**).
+        and releasing its clearing link (finding **N-304**).  The tick links
+        the Checking side's RECORD, its one home since plan step
+        balance:X-bi-6-4d-2, where it linked the side's shadow and its
+        movement until then (ruling R-BAL167 class 1).
         """
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3])
@@ -259,9 +287,12 @@ class TestAFigureCorrection:
                 .order_by(AccountAnchorHistory.id.desc())
                 .first()
             )
-            transfer_service.record_clearing(_sides(xfer)[0], anchor.id)
+            transfer_service.record_leg_clearing(
+                transfer_legs.grid_transfer_leg(xfer, xfer.from_account_id),
+                anchor.id,
+            )
             db.session.commit()
-            assert _sides(xfer)[0].reconciled_by_id == anchor.id
+            assert _records(xfer)[0].reconciled_by_id == anchor.id
 
             transfer_service.update_transfer(
                 xfer.id, owner, figure=typed(Decimal("310.00")),
@@ -269,7 +300,7 @@ class TestAFigureCorrection:
             db.session.commit()
 
             assert _days(xfer) == (an_observed_day(left), an_entered_day(arrived))
-            assert _sides(xfer)[0].reconciled_by_id == anchor.id
+            assert _records(xfer)[0].reconciled_by_id == anchor.id
 
 
 class TestASettleOverADriftedSide:

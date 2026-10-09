@@ -26,7 +26,7 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
-from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import transfer_service
 from app.services.transfer_legs import transfer_side_leg
@@ -76,10 +76,15 @@ class TestAMoveAndSettleHonoursTheRetainedCorrection:
     ):
         """$250.00 checking -> Rainy Day, corrected to $214.37, reverted, then moved and settled.
 
-        Both shadows' ``entries`` are loaded before the update, so no lazy
+        Both sides' record lists are loaded before the update, so no lazy
         load in the move autoflushes the re-pointed account.  The settle must
         still find the expense side's kept record and honour its typed
         $214.37 on both legs, the source side now booked on the new account.
+        The records hang off the TRANSFER by their side links since plan step
+        balance:X-bi-6-4d-2, so the lists loaded are the transfer's
+        (``expense_movements`` / ``income_movements``) and each side's record
+        is read back by its link; they were each shadow's ``entries`` until
+        then (ruling R-BAL167 class 4).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -104,13 +109,10 @@ class TestAMoveAndSettleHonoursTheRetainedCorrection:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             )
             db.session.commit()
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=transfer.id)
-                .all()
-            )
-            for shadow in shadows:
-                assert len(list(shadow.entries)) == 1
+            for side_records in (
+                transfer.expense_movements, transfer.income_movements,
+            ):
+                assert len(list(side_records)) == 1
 
             transfer_service.update_transfer(
                 transfer.id, user_id,
@@ -123,12 +125,14 @@ class TestAMoveAndSettleHonoursTheRetainedCorrection:
             moved = db.session.get(Transfer, transfer.id)
             assert moved.from_account_id == other.id
             records = {
-                shadow.account_id: shadow.covering_movements
-                for shadow in db.session.query(Transaction)
-                .filter_by(transfer_id=transfer.id)
+                record.account_id: record
+                for record in db.session.query(TransactionEntry).filter(
+                    (TransactionEntry.expense_transfer_id == transfer.id)
+                    | (TransactionEntry.income_transfer_id == transfer.id),
+                )
             }
             assert set(records) == {other.id, savings.id}
-            for account_id, (record,) in records.items():
-                assert record.account_id == account_id
+            assert records[other.id].expense_transfer_id == transfer.id
+            for record in records.values():
                 assert record.amount == Decimal("214.37")
                 assert record.settled_on is not None

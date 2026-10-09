@@ -112,6 +112,7 @@ from app.utils.dates import display_today
 from tests._test_helpers import (
     family_journal_filter,
     transfer_family_journal_filter,
+    transfer_side_record,
     transit_ledger_account,
     figure_source_columns,
     add_txn,
@@ -180,18 +181,17 @@ def _side_entries(transfer_id):
 
 
 def _covering_movement_of_side(transfer_id, account_id):
-    """Return the covering movement of the transfer's shadow on *account_id*."""
-    return (
-        _db.session.query(TransactionEntry)
-        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
-        .filter(
-            Transaction.transfer_id == transfer_id,
-            Transaction.account_id == account_id,
-            Transaction.is_deleted.is_(False),
-            TransactionEntry.covers_settlement.is_(True),
-        )
-        .one()
+    """Return the record of the transfer's side on *account_id*, refusing none.
+
+    Off the TRANSFER by its side link since plan step balance:X-bi-6-4d-2
+    (``transfer_side_record``, independent SQL; ruling R-BAL167 class 4),
+    where it was the covering movement under the side's live shadow.
+    """
+    record = transfer_side_record(_db.session, transfer_id, account_id)
+    assert record is not None, (
+        f"transfer {transfer_id}'s side on account {account_id} holds no record"
     )
+    return record
 
 
 def _legs_by_ledger(entry_id):
@@ -968,13 +968,16 @@ class TestTheDeployResyncReBooksTheLegacyShape:
             # (raw SQL, as every legacy forge in the suite: the ORM's
             # append-only guard is about the app's own writes) and book the
             # one entry the pre-6-3 writer wrote, dated at the settle day.
+            # Each side's record hangs off the transfer by its side link since
+            # plan step balance:X-bi-6-4d-2 (R-BAL167 class 4); this joined the
+            # records under the transfer's shadows until then.
             _db.session.execute(_db.text(
                 "DELETE FROM budget.journal_entries WHERE id IN ("
                 "  SELECT je.id FROM budget.journal_entries je"
                 "  JOIN budget.transaction_entries te"
                 "    ON te.id = je.transaction_entry_id"
-                "  JOIN budget.transactions sh ON sh.id = te.transaction_id"
-                "  WHERE sh.transfer_id = :t)"
+                "  WHERE te.expense_transfer_id = :t"
+                "     OR te.income_transfer_id = :t)"
             ), {"t": transfer.id})
             legacy = JournalEntry(
                 user_id=seed_user["user"].id,
@@ -1084,13 +1087,16 @@ class TestTheDeployResyncReBooksTheLegacyShape:
             savings_ledger = _ledger_id(savings)
             transit_ledger = _transit_ledger_id(seed_user)
             day = _covering_movement_of_side(transfer.id, checking.id).settled_on
+            # Each side's record hangs off the transfer by its side link since
+            # plan step balance:X-bi-6-4d-2 (R-BAL167 class 4); this joined the
+            # records under the transfer's shadows until then.
             _db.session.execute(_db.text(
                 "DELETE FROM budget.journal_entries WHERE id IN ("
                 "  SELECT je.id FROM budget.journal_entries je"
                 "  JOIN budget.transaction_entries te"
                 "    ON te.id = je.transaction_entry_id"
-                "  JOIN budget.transactions sh ON sh.id = te.transaction_id"
-                "  WHERE sh.transfer_id = :t)"
+                "  WHERE te.expense_transfer_id = :t"
+                "     OR te.income_transfer_id = :t)"
             ), {"t": transfer.id})
             legacy = JournalEntry(
                 user_id=seed_user["user"].id,
@@ -1121,14 +1127,19 @@ class TestTheDeployResyncReBooksTheLegacyShape:
             _db.session.execute(_db.text(
                 "DELETE FROM budget.ledger_accounts WHERE account_id = :a"
             ), {"a": unpaired.id})
+            # A side's record is on its side's endpoint since plan step
+            # balance:X-bi-6-4d-2 (``fk_transaction_entries_income_side``), so
+            # it is carried there by re-pointing the transfer's to-account,
+            # the key's ON UPDATE CASCADE moving it in the same statement; the
+            # record alone was re-pointed until then, a write the key now
+            # refuses (ruling R-BAL167 class 2).
+            to_side = _covering_movement_of_side(transfer.id, savings.id)
             _db.session.execute(_db.text(
-                "UPDATE budget.transaction_entries SET account_id = :u "
-                "WHERE id = :m"
-            ), {
-                "u": unpaired.id,
-                "m": _covering_movement_of_side(transfer.id, savings.id).id,
-            })
+                "UPDATE budget.transfers SET to_account_id = :u WHERE id = :t"
+            ), {"u": unpaired.id, "t": transfer.id})
             _db.session.commit()
+            _db.session.expire_all()
+            assert to_side.account_id == unpaired.id
 
             with pytest.raises(
                 PostingError,
@@ -1214,10 +1225,14 @@ class TestTheDeployResyncReBooksTheLegacyShape:
             _db.session.execute(_db.text(
                 "DELETE FROM budget.ledger_accounts WHERE account_id = :a"
             ), {"a": unpaired.id})
+            # The second record is the to-side's; it is carried onto the
+            # unpaired account by re-pointing the transfer's to-account, as in
+            # the case above (ruling R-BAL167 class 2, plan step
+            # balance:X-bi-6-4d-2: a side's record is on its side's endpoint).
+            assert second_id == _covering_movement_of_side(transfer.id, savings.id).id
             _db.session.execute(_db.text(
-                "UPDATE budget.transaction_entries SET account_id = :u "
-                "WHERE id = :m"
-            ), {"u": unpaired.id, "m": second_id})
+                "UPDATE budget.transfers SET to_account_id = :u WHERE id = :t"
+            ), {"u": unpaired.id, "t": transfer.id})
             _db.session.commit()
             _db.session.expire_all()
 
@@ -1267,12 +1282,14 @@ class TestTheDeployResyncReBooksTheLegacyShape:
             savings_ledger = _ledger_id(savings)
             day = _covering_movement_of_side(transfer.id, checking.id).settled_on
             earlier = day - timedelta(days=8)
+            # By the records' side links since plan step balance:X-bi-6-4d-2
+            # (R-BAL167 class 4), the records under the shadows until then.
             _db.session.execute(_db.text(
                 "DELETE FROM budget.journal_entries "
                 "WHERE transaction_entry_id IN ("
                 "  SELECT te.id FROM budget.transaction_entries te"
-                "  JOIN budget.transactions sh ON sh.id = te.transaction_id"
-                "  WHERE sh.transfer_id = :t)"
+                "  WHERE te.expense_transfer_id = :t"
+                "     OR te.income_transfer_id = :t)"
             ), {"t": transfer.id})
             transfer_kind = ref_cache.posting_kind_id(PostingKindEnum.TRANSFER)
             for entry_day, checking_leg in (
@@ -1303,14 +1320,19 @@ class TestTheDeployResyncReBooksTheLegacyShape:
             _db.session.execute(_db.text(
                 "DELETE FROM budget.ledger_accounts WHERE account_id = :a"
             ), {"a": unpaired.id})
+            # A side's record is on its side's endpoint since plan step
+            # balance:X-bi-6-4d-2 (``fk_transaction_entries_income_side``), so
+            # it is carried there by re-pointing the transfer's to-account,
+            # the key's ON UPDATE CASCADE moving it in the same statement; the
+            # record alone was re-pointed until then, a write the key now
+            # refuses (ruling R-BAL167 class 2).
+            to_side = _covering_movement_of_side(transfer.id, savings.id)
             _db.session.execute(_db.text(
-                "UPDATE budget.transaction_entries SET account_id = :u "
-                "WHERE id = :m"
-            ), {
-                "u": unpaired.id,
-                "m": _covering_movement_of_side(transfer.id, savings.id).id,
-            })
+                "UPDATE budget.transfers SET to_account_id = :u WHERE id = :t"
+            ), {"u": unpaired.id, "t": transfer.id})
             _db.session.commit()
+            _db.session.expire_all()
+            assert to_side.account_id == unpaired.id
 
             with pytest.raises(
                 PostingError,
@@ -2576,8 +2598,10 @@ class TestTransactionShadowFamily:
         link (``_posting_write.emit_typed_source_deltas``), so it must not.
 
         Planted by hand -- a balanced ``loan_payment`` entry of $30.00 linked
-        to the income shadow's covering movement, between the transit row and
-        the Savings row -- then the pair re-synced: the sync writes nothing
+        to the to-side's record (off the transfer by its side link since plan
+        step balance:X-bi-6-4d-2, the income shadow's covering movement until
+        then; ruling R-BAL167 class 4), between the transit row and the
+        Savings row -- then the pair re-synced: the sync writes nothing
         (the cash leg is at target and the split is not its concern) and the
         family holds exactly the three entries planted.  Mutation, observed
         to FIRE on 2026-09-21: with the kind term dropped from the filter the
