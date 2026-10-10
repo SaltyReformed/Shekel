@@ -139,10 +139,9 @@ def restore_transfer(transfer_id, user_id):
             shadow.pay_period_id = xfer.pay_period_id
 
         # Mirrored field: shadow category must match transfer category.
-        # create_transfer/_build_shadow and update_transfer mirror the
-        # parent category to both shadows so each account grid attributes
-        # the entry to the same user-selected category; a drifted shadow
-        # would surface under the wrong category in one grid.
+        # Dead upkeep since plan step X-bi-6-4d-3 (no transfer has a shadow
+        # left, and ck_transactions_names_no_transfer refuses a new one):
+        # leaf 3b deletes it with the other loops over shadows.
         if shadow.category_id != xfer.category_id:
             logger.warning(
                 "Correcting shadow %d category_id drift: %s -> %s "

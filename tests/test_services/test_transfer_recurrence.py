@@ -2741,15 +2741,17 @@ class TestRegenerateDeletionRoutedThroughService:
     def test_regen_delete_runs_orphan_verification(
         self, app, db, seed_user, seed_periods
     ):
-        """C34-2: no deleted transfer leaves a row naming it.
+        """C34-2: every retired transfer's hard delete is reported, once.
 
         The service path ran an orphan-verification self-check
         (``query(Transaction).filter_by(transfer_id=...).count()``) and
         surfaced it as the event's ``orphan_count`` until plan step
         ``balance:X-bi-6-4d-3``, which deleted the twins it counted and made
-        the database refuse a new one (ruling **R-BAL258**).  The check's
-        verdict is now read directly over every retired transfer, and the
-        event no longer carries the field (ruling **R-BAL167** class 1).
+        the database refuse a row naming a transfer (ruling **R-BAL258**,
+        graded by ``tests/test_models/test_a_transfer_is_one_row.py``), so no
+        count of such rows can fail here.  What the event still says -- one
+        hard delete per retired transfer -- is asserted (ruling **R-BAL167**
+        class 1).
 
         **RE-RULED at plan step R10-b**: see :meth:`_retire_every_row` for why
         the deletion is now caused rather than assumed.
@@ -2773,9 +2775,6 @@ class TestRegenerateDeletionRoutedThroughService:
                 "canonical service path."
             )
             assert {r.transfer_id for r in hard_delete_records} == retired_ids
-            assert db.session.query(Transaction).filter(
-                Transaction.transfer_id.in_(retired_ids),
-            ).count() == 0
 
     def test_regen_delete_leaves_no_orphan_shadows(
         self, app, db, seed_user, seed_periods

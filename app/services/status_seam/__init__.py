@@ -15,8 +15,9 @@ carry a SECOND implementation of this same seam for a transfer's rows, and that
 duplication is why the ``shekel-transaction-status-bypass`` checker (W9907)
 needed a two-module allowlist at all.  **Merging the seams does not by itself
 shrink that allowlist**, and saying so here matters because the obvious
-inference is wrong: ``transfer_service`` still writes a status through two
-CONSTRUCTORS (``_build_shadow`` and ``create_transfer``), which W9907's
+inference is wrong: ``transfer_service`` still writes a status through a
+CONSTRUCTOR (``create_transfer``'s; the shadow constructor went with the
+shadows at plan step X-bi-6-4d-3), which W9907's
 born-Projected rule refuses, so its entry survives until plan step X-aj2 replaces
 the write door.  What the merge did remove is the duplicate ATTRIBUTE writes --
 and three defects the duplicate had and this one did not:

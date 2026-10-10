@@ -31,8 +31,9 @@ from ._common import _called_name_in, _is_string_const, _module_in_allowlist
 # N-152 / N-156), and prefix matching would have silently extended this
 # exemption over all eight of its leaves -- an allowlist widening nobody
 # decided on, which is the failure mode a fence exists to prevent. ``_create``
-# holds both writes that need it (``Transaction(status_id=...)`` in
-# ``_build_shadow`` and ``Transfer(status_id=...)`` in ``create_transfer``);
+# holds the one write that needs it (``Transfer(status_id=...)`` in
+# ``create_transfer``; the shadow constructor went with the shadows at plan
+# step X-bi-6-4d-3);
 # every other leaf reaches the column through the seam. Plan step X-aj2 makes
 # the write door structural and deletes the entry.
 #

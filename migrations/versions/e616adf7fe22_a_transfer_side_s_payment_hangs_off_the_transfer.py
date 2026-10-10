@@ -104,8 +104,8 @@ revision wrote as agreeing**, so a downgrade straight after the upgrade, with
 no app write between, passes: each twin's status is its transfer's, and its
 day, basis and link are its side's record's (``NULL`` where it holds none) --
 save a ``$0.00`` close's twins, which that seam dated on the day the close was
-stated with no record beside them, and which are read for status and link
-alone (the cp2c review's M-1).  On the 2026-10-08 production dump it reads
+stated with no record beside them, and which are read for status alone (the
+cp2c review's M-1; the link too since ``X-bi-6-4d-3``'s cp1 review, as below).  On the 2026-10-08 production dump it reads
 zero before this revision and after the upgrade (358 twins, 102 of them
 deleted, 44 records; no ``$0.00`` close), and the downgrade through it is
 digest-identical to the pristine restore.
@@ -270,26 +270,31 @@ UPDATE budget.transaction_entries e
 #: app stops writing on a twin.  A LIVE twin is read against its side's record
 #: (the one the downgrade re-attaches under it; ``NULL`` when the side holds
 #: none) and a deleted twin against none, since a record goes back under its
-#: side's live twin only.  **A recordless twin of a SETTLED transfer is read
-#: for its status and link alone**: that is a ``$0.00`` close, and the seam
-#: below this revision dated both twins of one on the day it was stated while
-#: writing no record, so its day and basis are the close's own, which nothing
-#: at this revision holds (a ``$0.00`` close made AT this revision leaves its
-#: twins Projected, which the status reads).  ``(transfer id, twin id, the
-#: facts that differ)``.
+#: side's live twin only.  **A twin of a SETTLED transfer whose side holds no
+#: record at all is read for its status alone**: that is a ``$0.00`` close,
+#: and the seam below this revision dated both twins of one on the day it was
+#: stated while writing no record, so its day, basis and statement link are
+#: the close's own, which nothing at this revision holds and which a
+#: downgrade leaves on the twin where the code below reads them (a ``$0.00``
+#: close made AT this revision leaves its twins Projected, which the status
+#: reads).  Keyed on the SIDE holding no record, live or not, so a deleted
+#: twin whose side does hold one is still read against none (the cp1 review
+#: of ``X-bi-6-4d-3``, L-3 of ``X-bi-6-4d-2``'s cp5 review).  ``(transfer id,
+#: twin id, the facts that differ)``.
 _DRIFTED_TWINS_SQL = f"""
 SELECT transfer_id, twin_id, facts FROM (
 SELECT t.transfer_id, t.id AS twin_id,
        array_remove(ARRAY[
            CASE WHEN t.status_id <> x.status_id THEN 'status' END,
-           CASE WHEN (e.id IS NOT NULL OR NOT s.is_settled)
+           CASE WHEN NOT zero_close.is_one
                  AND t.settled_on IS DISTINCT FROM e.settled_on
                 THEN 'settle day' END,
-           CASE WHEN (e.id IS NOT NULL OR NOT s.is_settled)
+           CASE WHEN NOT zero_close.is_one
                  AND t.settled_day_basis_id
                      IS DISTINCT FROM e.settled_day_basis_id
                 THEN 'day basis' END,
-           CASE WHEN t.reconciled_by_id IS DISTINCT FROM e.reconciled_by_id
+           CASE WHEN NOT zero_close.is_one
+                 AND t.reconciled_by_id IS DISTINCT FROM e.reconciled_by_id
                 THEN 'statement link' END
        ], NULL) AS facts
   FROM budget.transactions t
@@ -300,6 +305,14 @@ SELECT t.transfer_id, t.id AS twin_id,
         AND CASE WHEN t.transaction_type_id = {_INCOME}
                  THEN e.income_transfer_id
                  ELSE e.expense_transfer_id END = t.transfer_id
+  CROSS JOIN LATERAL (
+        SELECT s.is_settled AND NOT EXISTS (
+                 SELECT 1 FROM budget.transaction_entries r
+                  WHERE CASE WHEN t.transaction_type_id = {_INCOME}
+                             THEN r.income_transfer_id
+                             ELSE r.expense_transfer_id END = t.transfer_id
+               ) AS is_one
+       ) zero_close
 ) twins
  WHERE cardinality(facts) > 0
  ORDER BY transfer_id, twin_id

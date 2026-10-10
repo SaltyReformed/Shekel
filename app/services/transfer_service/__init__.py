@@ -40,8 +40,9 @@ Two things follow from the package that a flat module could not have:
   ``app.services.transfer_service``, and :func:`_module_in_allowlist` matches a
   package prefix, so leaving it would have silently widened the fence over
   eight modules.  It now names :mod:`._create` alone -- the only leaf holding
-  the two CONSTRUCTOR writes (``_build_shadow`` and ``create_transfer``) that
-  hold it open, which plan step X-aj2 replaces.
+  the CONSTRUCTOR write (``create_transfer``'s; the second, the shadow
+  constructor, went with the shadows at plan step X-bi-6-4d-3) that holds it
+  open, which plan step X-aj2 replaces.
 
 **A transfer's SETTLE is a rule of this package, not of the doors that ask for
 one, and it has a NAME** (plan step X-f2-c3, ruling **R-FA**).  FOUR doors can

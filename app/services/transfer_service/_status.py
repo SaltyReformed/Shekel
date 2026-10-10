@@ -34,9 +34,10 @@ sanctioned door.  **The package move is where that sentence could have quietly s
 being true**: the fence's allowlist read ``app.services.transfer_service`` and
 :func:`_module_in_allowlist` matches a package PREFIX, so this leaf would have
 become exempt without anybody deciding it should be.  The entry now names
-:mod:`app.services.transfer_service._create` -- the one leaf holding the two
-CONSTRUCTORS that hold it open (``_build_shadow`` and ``create_transfer``),
-which plan step X-aj2 replaces.
+:mod:`app.services.transfer_service._create` -- the one leaf holding the
+CONSTRUCTOR that holds it open (``create_transfer``'s; the shadow constructor
+went with the shadows at plan step X-bi-6-4d-3), which plan step X-aj2
+replaces.
 
 Flask-isolated like the parent service: plain data and ORM rows in, mutations
 applied in place, no ``request`` / ``session`` imports, no flush or commit of
