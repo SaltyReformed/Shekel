@@ -19,13 +19,20 @@ link and nothing reads a twin, so this revision deletes them:
      named with the query that finds it: a twin any foreign key still names
      (every key into ``budget.transactions``, read from the catalog: a journal
      entry, a statement-match creation, a movement or a card payback at this
-     revision -- a delete would null, cascade or refuse each), or a transfer whose
+     revision -- a delete would null, cascade or refuse each); a transfer whose
      twins are not exactly one expense and one income (Transfer Invariant 1
-     broken; the kept copy could not then be restored as a pair).  Every count
-     is 0 where the transfer service wrote the rows.  A transfer holding NO
-     twin passes: it is already the shape this revision makes (the create door
-     at this revision, run against a database still at ``e616adf7fe22``,
-     writes one), and the downgrade builds its two.
+     broken; the kept copy could not then be restored as a pair); or a twin
+     whose MIRRORED fields (:data:`_MIRRORED_FIELDS`: ``user_id``, its side's
+     ``account_id``, ``pay_period_id``, ``scenario_id``, ``status_id``,
+     ``due_date``, ``is_override``, ``is_deleted``) are not its transfer's,
+     named as ``(transfer, twin, [fields])``.  The step's premise is that a
+     twin is a copy of its transfer, so deleting it loses nothing; a twin
+     that disagrees is no copy, and its delete would erase the last trace of
+     the disagreement unseen.  Every count is 0 where the transfer service
+     wrote the rows.  A transfer holding NO twin passes: it is already the
+     shape this revision makes (the create door at this revision, run against
+     a database still at ``e616adf7fe22``, writes one), and the downgrade
+     builds its two.
   2. **It keeps a copy of every twin** in ``system.transfer_twin_purge``: the
      whole row as ``jsonb`` (the shape ``b2d8f3a6c541``'s
      ``system.pre_origination_purge`` keeps), with its transfer's version
@@ -58,25 +65,29 @@ below).
 (ruling **R-BAL260**): a twin whose transfer was not written since the upgrade
 comes back with every column it was kept with -- its own id, creation and
 update times, version counter, type, name, category, figure and day -- so a
-downgrade straight after the upgrade reproduces column for column every twin
-that agreed with its transfer at the upgrade (Transfer Invariant 3), and an
-older revision's own downgrade that finds a twin by its id
-(``c4e91a7b2d38``'s ``system.loan_due_date_backfill``) still finds it.  Only
-what its transfer does not hold is read live: the side's payment record's day,
-basis and link when the side holds one now (a ``$0.00`` close kept with its
-day keeps it while its side still holds no record and its transfer is still in
-the settled status it was kept in).  The transfer's own mirrored fields --
-``user_id``, ``account_id``, ``pay_period_id``, ``scenario_id``, ``status_id``,
-``due_date``, ``is_override``, ``is_deleted`` -- are also re-read from it,
-which changes nothing for a twin that agreed with its unwritten transfer.  It
-corrects a twin that already DISAGREED with its transfer at the upgrade (a
-broken Invariant 3, which the upgrade does not refuse) and one whose transfer
-a raw statement changed without raising its counter: each comes back as its
-transfer says, which ``e616adf7fe22``'s census below requires, so the
-round trip is not exact for such a twin.  The kept day's two guards beside it
-(the twin was kept in its transfer's present status, and its side held no
-record then) answer only those same two states, since an app write that
-changes a status or a record raises the counter.
+downgrade straight after the upgrade reproduces every twin column for column
+(the upgrade let through only twins whose mirrored fields were their
+transfer's), and an older revision's own downgrade that finds a twin by its id
+(``c4e91a7b2d38``'s ``system.loan_due_date_backfill``) still finds it.  What
+the transfer and its side's record hold NOW is read live: the mirrored fields
+from the transfer, and the side's payment record's day, basis and link when
+the side holds one now (a ``$0.00`` close kept with its day keeps it while its
+side still holds no record and its transfer is still in the settled status it
+was kept in).  Each re-read changes nothing while the transfer and the record
+are as the upgrade left them.  It answers what the version counter below
+cannot see: a raw statement or a later revision that wrote the transfer
+without raising its counter, and the record, which is a row of its own.  Such
+a twin comes back saying what its transfer and record say now -- the code
+below this revision reads a twin for exactly that -- and the downgrade prints
+how many came back different from their kept row.  Only the mirrored fields
+answer a change of the transfer this way: its label, category and figure come
+back as kept.  The kept day's two guards (the twin was kept in its
+transfer's present status, and its side held no record then) answer only
+such changes: a raw statement on the transfer's status, and a record removed
+without writing its transfer.  The figure (``estimated_amount``,
+``amount_source_id``) is not a mirrored field: it is neither refused nor
+re-read, so an unwritten transfer's twins bring back exactly the figure the
+copy kept, whatever it was.
 
 **A twin whose transfer WAS written since is brought in line with it** by the
 ONE rule that also builds the twins of a transfer created since
@@ -113,19 +124,31 @@ with no day, basis or link; a kept statement link whose statement is gone
 comes back with none.  The downgrade prints how many twins came back so.
 
 ``e616adf7fe22``'s downgrade, which runs next, requires exactly this: every
-twin saying its transfer's status and its side's record's day, basis and link.
-A transfer created after the upgrade has no kept twins, so it gets two new ones
-by the same rule (new ids, version 1, created when the transfer was, updated at
-the downgrade).  A kept twin whose transfer was since hard-deleted is not
-restored: the code below this revision would have cascaded it away with its
-transfer.  The copy is dropped last.  A database built AT this revision
-(``scripts/init_database.py``: ``create_all``, then a stamp) never ran the
-upgrade and so holds no copy and no twin; the downgrade reads it as an empty
-copy -- restores none and builds two for every transfer -- so the undo finishes
-there too (ruling R-BAL261).
+twin saying its transfer's status, and its side's record's day, basis and link
+unless it is a twin of a settled transfer whose side holds no record (a
+``$0.00`` close, read for its status alone).  A transfer created after the
+upgrade has no kept twins, so it gets two new ones by the same rule (new ids,
+version 1, created when the transfer was, updated at the downgrade).  A kept
+twin whose transfer was since hard-deleted is not restored: the code below
+this revision would have cascaded it away with its transfer.  The copy is
+dropped last.
+
+**A missing copy is read as an empty one**: the downgrade restores none and
+builds two twins for every transfer, so the undo finishes (ruling R-BAL261).
+A database built AT this revision (``scripts/init_database.py``:
+``create_all``, then a stamp) never ran the upgrade and so holds no copy and
+no twin.  The downgrade cannot tell that database from one that ran the
+upgrade and LOST its copy since (dropped by hand, a partial restore, a later
+revision), so its print says only that no copy table was found.  **For plan
+step X-bi-6-5, which decides the copy's fate: dropping the copy turns this
+downgrade's exact restore into a rebuild of every twin, with no error** --
+new ids, the transfer's category, derived figures, no ``$0.00``-close day --
+and ``c4e91a7b2d38``'s downgrade, which writes old due dates back by the twin
+ids its backfill table names, then updates no twin.
 
 ``tests/test_models/test_a_transfer_is_one_row.py`` drives the shipped
-``upgrade`` / ``downgrade``, each refusal, the exact round trip, the rebuild of
+``upgrade`` / ``downgrade``, each refusal (the drift refusal field by field),
+the exact round trip, the live re-read of each mirrored field, the rebuild of
 a written transfer's twins and each value that no longer fits.
 """
 from alembic import op
@@ -333,12 +356,57 @@ SELECT x.id AS transfer_id, side.is_income, side.account_id, x.status_id,
                  ELSE e.expense_transfer_id END = x.id
 """
 
+#: The MIRRORED fields: the columns a twin copied from its transfer (its side's
+#: endpoint for ``account_id``), each as :data:`_BUILT_SQL` states it.  ONE
+#: list for both directions: the upgrade refuses a twin whose value of any of
+#: them is not its transfer's, and the downgrade re-reads every one of them
+#: from the transfer, so what the upgrade guarantees is exactly what the
+#: downgrade derives.
+_MIRRORED_FIELDS = (
+    "user_id", "account_id", "pay_period_id", "scenario_id", "status_id",
+    "due_date", "is_override", "is_deleted",
+)
+
+#: One arm per mirrored field: its name when the twin's value (``r.twin``) is
+#: not what the build rule says (``b.twin``).  Both are ``jsonb`` read the
+#: same way, so a ``NULL`` due date on both is no difference.
+_MIRROR_DRIFT_ARMS = ", ".join(
+    f"CASE WHEN r.twin->'{field}' IS DISTINCT FROM b.twin->'{field}' "
+    f"THEN '{field}' END"
+    for field in _MIRRORED_FIELDS
+)
+
+#: Every twin whose mirrored fields are not its transfer's, each compared with
+#: what the ONE build rule says that side's twin holds: ``(transfer id, twin
+#: id, the fields that differ)``, the fields in :data:`_MIRRORED_FIELDS`'
+#: order.
+_MIRROR_DRIFT_SQL = f"""
+SELECT transfer_id, twin_id, fields FROM (
+SELECT t.transfer_id, t.id AS twin_id,
+       array_remove(ARRAY[{_MIRROR_DRIFT_ARMS}], NULL) AS fields
+  FROM budget.transactions t
+  CROSS JOIN LATERAL (SELECT to_jsonb(t) AS twin) r
+  JOIN ({_BUILT_SQL}) b
+    ON b.transfer_id = t.transfer_id
+   AND b.is_income = (t.transaction_type_id = {_INCOME})
+) twins
+ WHERE cardinality(fields) > 0
+ ORDER BY transfer_id, twin_id
+"""
+
+#: The unwritten branch's re-read of every mirrored field from the build rule,
+#: as ``jsonb_build_object`` arguments.
+_MIRRORED_REREAD = ", ".join(
+    f"'{field}', b.twin->'{field}'" for field in _MIRRORED_FIELDS
+)
+
 #: Each kept twin whose transfer still exists, back into the table (the module
 #: docstring's rules), in ONE statement that also counts what it did:
-#: ``(restored, rebuilt because written since, came back as the transfer says
-#: because a kept value no longer fits)``.  ``gate`` asks "written since" once
-#: (the transfer's version counter against the kept one); ``kept`` reads the
-#: copy's values once; ``fit`` asks each of ruling R-BAL261's questions once.  A kept
+#: ``(restored, rebuilt because written since, of an unwritten transfer and
+#: different from its kept row, of those because a kept value no longer
+#: fits)``.  ``gate`` asks "written since" once (the transfer's version counter
+#: against the kept one); ``kept`` reads the copy's values once; ``fit`` asks
+#: each of ruling R-BAL261's questions once.  A kept
 #: ``$0.00``-close day fits while ``budget.books_hold`` admits it on its
 #: account (the comparison ``ck_movement_after_books_open`` asks at COMMIT),
 #: and a kept link while its statement still exists on that account (the pair
@@ -349,19 +417,12 @@ SELECT x.id AS transfer_id, side.is_income, side.account_id, x.status_id,
 #: count names only the twins a fallback actually changed.
 _RESTORE_KEPT_SQL = f"""
 WITH staged AS (
-    SELECT p.row_id, gate.written,
+    SELECT p.row_id, gate.written, p.row_data AS kept_row,
            fit.category_gone OR fit.day_unfit OR fit.link_gone AS unfit,
            p.row_data || CASE
                WHEN gate.written THEN b.twin
                ELSE jsonb_build_object(
-                   'user_id', b.twin->'user_id',
-                   'account_id', b.twin->'account_id',
-                   'pay_period_id', b.twin->'pay_period_id',
-                   'scenario_id', b.twin->'scenario_id',
-                   'status_id', b.twin->'status_id',
-                   'due_date', b.twin->'due_date',
-                   'is_override', b.twin->'is_override',
-                   'is_deleted', b.twin->'is_deleted',
+                   {_MIRRORED_REREAD},
                    'category_id', CASE WHEN fit.category_gone
                                        THEN b.twin->'category_id'
                                        ELSE p.row_data->'category_id' END,
@@ -427,37 +488,51 @@ WITH staged AS (
            ) fit
 ), restored AS (
     INSERT INTO budget.transactions
-    SELECT (jsonb_populate_record(NULL::budget.transactions, s.row_data)).*
+    SELECT r.*
       FROM staged s
+      CROSS JOIN LATERAL jsonb_populate_record(
+            NULL::budget.transactions, s.row_data
+           ) r
      ORDER BY s.row_id
     RETURNING 1
 )
 SELECT (SELECT count(*) FROM restored),
        count(*) FILTER (WHERE s.written),
+       count(*) FILTER (WHERE NOT s.written AND s.row_data <> s.kept_row),
        count(*) FILTER (WHERE s.unfit)
   FROM staged s
 """
 
 #: Two new twins for each transfer the copy holds none of (one created after
 #: the upgrade, or one the upgrade met holding none), by :data:`_BUILT_SQL`:
-#: new ids, version 1, created when the transfer was, updated now.
+#: new ids, version 1, created when the transfer was, updated now.  ``built``
+#: draws each id ONCE, in transfer-then-side order (PostgreSQL evaluates a
+#: volatile select-list call after the sort), and is materialized so the row
+#: expansion below cannot re-run it: ``(f(x)).*`` expands into one call of
+#: ``f`` per column, which drew 25 ids per twin.
 _BUILD_NEW_SQL = f"""
+WITH built AS MATERIALIZED (
+    SELECT b.twin, b.created_at,
+           nextval(pg_get_serial_sequence('budget.transactions', 'id')) AS id
+      FROM ({_BUILT_SQL}) b
+     WHERE NOT EXISTS (
+             SELECT 1 FROM system.transfer_twin_purge p
+              WHERE p.transfer_id = b.transfer_id
+           )
+     ORDER BY b.transfer_id, b.is_income
+)
 INSERT INTO budget.transactions
-SELECT (jsonb_populate_record(
-          NULL::budget.transactions,
-          b.twin || jsonb_build_object(
-            'id', nextval(pg_get_serial_sequence('budget.transactions', 'id')),
-            'created_at', b.created_at,
-            'updated_at', now(),
-            'version_id', 1
-          )
-        )).*
-  FROM ({_BUILT_SQL}) b
- WHERE NOT EXISTS (
-         SELECT 1 FROM system.transfer_twin_purge p
-          WHERE p.transfer_id = b.transfer_id
-       )
- ORDER BY b.transfer_id, b.is_income
+SELECT r.*
+  FROM built
+  CROSS JOIN LATERAL jsonb_populate_record(
+        NULL::budget.transactions,
+        built.twin || jsonb_build_object(
+          'id', built.id,
+          'created_at', built.created_at,
+          'updated_at', now(),
+          'version_id', 1
+        )
+       ) r
 """
 
 
@@ -477,6 +552,7 @@ def refuse_twins_that_cannot_go(bind) -> None:
     referenced_sql = referenced_twins_sql(bind)
     referenced = [tuple(row) for row in bind.execute(sa.text(referenced_sql))]
     unpaired = [tuple(row) for row in bind.execute(sa.text(_UNPAIRED_SQL))]
+    drifted = [tuple(row) for row in bind.execute(sa.text(_MIRROR_DRIFT_SQL))]
     problems = []
     if referenced:
         problems.append(
@@ -491,6 +567,13 @@ def refuse_twins_that_cannot_go(bind) -> None:
             f"income twin (transfer id, expense twins, income twins; first "
             f"{_NAMED_AT_MOST}: {unpaired[:_NAMED_AT_MOST]}; diagnose with: "
             f"{_UNPAIRED_SQL.strip()})"
+        )
+    if drifted:
+        problems.append(
+            f"{len(drifted)} twin(s) are not a copy of their transfer: a "
+            f"mirrored field differs (transfer id, twin id, the fields; first "
+            f"{_NAMED_AT_MOST}: {drifted[:_NAMED_AT_MOST]}; diagnose with: "
+            f"{_MIRROR_DRIFT_SQL.strip()})"
         )
     if problems:
         raise RuntimeError(
@@ -534,16 +617,18 @@ def downgrade():
         "ck_transactions_names_no_transfer", "transactions",
         schema="budget", type_="check",
     )
-    restored, rebuilt, unfit = bind.execute(
+    restored, rebuilt, changed, unfit = bind.execute(
         sa.text(_RESTORE_KEPT_SQL),
     ).one()
     built = bind.execute(sa.text(_BUILD_NEW_SQL)).rowcount
     op.execute("DROP TABLE system.transfer_twin_purge")
     print(
-        f"X-bi-6-4d-3 downgrade: {restored} kept twin(s) restored, {rebuilt} "
-        f"of them in line with a transfer written since; {unfit} came back "
-        "as the transfer says because a kept value no longer fits (ruling "
-        f"R-BAL261); {built} built new for transfers holding none"
-        + (" (no copy existed: a database built at this revision)."
+        f"X-bi-6-4d-3 downgrade: {restored} kept twin(s) restored: {rebuilt} "
+        f"in line with a transfer written since; {changed} of an unwritten "
+        "transfer differ from their kept row, saying what the transfer and "
+        f"its side's record say now ({unfit} of them because a kept value no "
+        "longer fits, ruling R-BAL261); the rest exactly as kept.  "
+        f"{built} built new for transfers holding none"
+        + (" (no copy table was found: none restored, every twin built new)."
            if copy_absent else ".")
     )
