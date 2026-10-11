@@ -23,7 +23,6 @@ from tools.quill._migrate_bodies import (
     build,
     census,
     differences,
-    holds_as_filed,
     masked,
 )
 from tools.quill._migrate_fake import BALANCE, COMMIT, FINDINGS, complete_input
@@ -313,17 +312,3 @@ def test_a_cards_text_is_compared_with_its_commit_left_out_and_nothing_else(corp
                        None) == ["body"]
     assert differences(question, question.title, question.body, None) == []
     assert differences(step, step.title, step.body, question.comment) == ["comment"]
-
-
-def test_every_card_the_migration_files_holds_its_as_filed_block(corpus):
-    """In its body, or a question's in its comment: what lets a run know a card it filed
-    whatever becomes of its title (review of B2a, M3)."""
-    built = build(_inputs(corpus))[0]
-    for item in read_source(corpus).items:
-        card = built[item.key]
-        if item.kind == "question":
-            assert holds_as_filed(card.comment) and not holds_as_filed(card.body), item.key
-        else:
-            assert holds_as_filed(card.body), item.key
-    assert not holds_as_filed("A card of the tracker's own, quoting `filed from: x`.")
-    assert holds_as_filed(built["balance:F-1"].body.replace("\n", "\r\n"))

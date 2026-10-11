@@ -74,8 +74,7 @@ REGISTRY = {"step": "steps.md", "finding": "ledger.md", "question": "ledger.md",
 _FENCE = "```"
 #: How an As filed block's first line opens; ``migrate verify`` (X-cx's B2) reads it.
 FILED_FROM = "filed from: "
-#: How every As filed block opens, the fence and its first line's start: the mark of a
-#: card the migration filed, whatever its title and labels say (:func:`holds_as_filed`).
+#: How every As filed block opens, the fence and its first line's start.
 AS_FILED_OPENING = f"{_FENCE}text\n{FILED_FROM}"
 #: An As filed block's first line, its commit apart (:func:`masked`).
 _FILED_LINE = re.compile(rf"^({re.escape(FILED_FROM)}\S+ at )\S+$", re.MULTILINE)
@@ -107,13 +106,6 @@ def as_filed(registry: str, commit: str, cells: Sequence[tuple[str, str]]) -> st
     lines = [f"{FILED_FROM}{registry} at {commit}",
              *(f"{column}: {value}" for column, value in cells)]
     return "\n".join([_FENCE + "text", *lines, _FENCE])
-
-
-def holds_as_filed(text: str) -> bool:
-    """Whether ``text`` -- a card's body or a comment, read as :func:`check.normalized` reads
-    it (a web form's CRLF as LF) -- holds an As filed block: the card is one the migration
-    filed, whatever has become of its title and labels."""
-    return AS_FILED_OPENING in normalized(text)
 
 
 def masked(text: str) -> str:
