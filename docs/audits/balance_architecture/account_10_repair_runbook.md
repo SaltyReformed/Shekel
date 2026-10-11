@@ -104,12 +104,14 @@ T=$(date +%F_%H%M%S)                   # names every file this run writes; the s
   run $R "$D/score_after_a1_$T.txt"   tests/manual/measure_cutover_against_bank.py --account 1 --bank "$S"
   run $R "$D/render_after_$T.txt"     tests/manual/verify_render_surfaces.py "$D/render_after_$T.json"
   run $R "$D/baseline_rehearsed_$T.txt" tests/manual/verify_balance_baseline.py "$D/baseline_rehearsed_$T.json"
+  run $R "$D/check_rehearsed_$T.txt"  tests/manual/rehearse_account_10_repair.py --check --clone $R --bank "$F" \
+        --residue "$RESIDUE"
   diff "$D/render_before_$T.json" "$D/render_after_$T.json" || true   # pages DO differ: read them
 )
 ```
 
-**The rehearsal must end `rehearsal complete` with exit 0, or the repair does not start.** It
-refuses BEFORE any write, naming every reason:
+**The rehearsal must end `rehearsal complete` with exit 0, and its check `check complete`, or the
+repair does not start.** It refuses BEFORE any write, naming every reason:
 
 * a target it was not pointed at, or one named `shekel` (the deployed database's name AND the
   shared dev runtime's);
@@ -166,6 +168,10 @@ these are the windows it closes, each measured act by act on the sheet's AFTER l
 * **Inside every row act 7 and act 9 create: finish all three saves before the next row.** Marking
   a row Paid or Received stamps TODAY, so between that save and the day correction the row counts
   in your balances on today's date for its full figure.
+* **If an Add goes through twice** (two new rows where you made one), remove the second with
+  **Delete this row** on its card while it is still unpaid. Never mark it Paid or Received, which
+  counts its money twice, and never Cancel it: a cancelled row has no cell, so no page reaches it
+  to delete it, and the check then fails and the repair is not finished (ruling **R-BAL262**).
 
 **A refused save wrote nothing, and every save before it stands. It shows one of four ways**, and
 each means stop and read it:
@@ -277,7 +283,8 @@ with a fingerprint of the posted ledger either side of each flip.
 **Step 2's flash is this act's only visible check of the restatement.** Measured: with step 2
 skipped and step 3 done, the twin still reads 0.00, but its whole asserted balance is booked as a
 loss of interest. The post-performance comparison catches it, as a balance difference on account
-2: such a difference means act 2's restatement did not happen.
+2 and as the check's line on account 2's corrections: either means act 2's restatement did not
+happen.
 
 *After:* the twin holds **0.00**, and its corrections and modelled interest are **0.00**: the first
 window is closed. This is the act whose effect is plainly visible on a balance.
@@ -482,17 +489,26 @@ not move. Asset and Equity move by the restatements, whose figures are the repai
   accounts' own pages, the grid and the savings page, and no others.
 
 **What the rehearsal also verifies, on the sheet's last section**: every class's move; the twin
-holds 0.00; the twin's and account 10's corrections and modelled interest total 0.00; transfer 1
-and its rows are Cancelled (the grey-button trap); both books open 2026-03-25 holding their banks'
-closes; all seven Fidelity sides record Fidelity's day as their own; account 10 reads Fidelity's
-close on 2026-03-26; and Checking reads SECU's close on 2026-03-26 apart by BAL-467's residue and
-nothing else, with every Checking movement before SECU's next posted day one the map names.
+holds 0.00, is archived, and its books open on their own day, 2026-03-26, holding 0.00; the
+twin's and account 10's corrections and modelled interest total 0.00; transfer 1 and its rows are
+Cancelled (the grey-button trap); category 33 is named *Income: Interest & Dividends* and its
+counted rows are exactly the five dividends, on account 10, named Dividend, each on the export's
+day for the export's amount; account 10 asserts Fidelity's close on 2026-07-31; both books open
+2026-03-25 holding their banks' closes; all seven Fidelity sides record Fidelity's day as their
+own; account 10 reads Fidelity's close on 2026-03-26; act 7's row is Checking's one *Family:
+Birthday* row on 2026-03-26 outside the map, named as ruled, moving the bank line's amount; each
+row acts 7 and 9 created is in the paycheck holding its day; no row those Adds made is left
+uncounted (a duplicate, or one never settled); and Checking reads SECU's close on 2026-03-26
+apart by BAL-467's residue and nothing else, with every Checking movement before SECU's next
+posted day one the map names. **Every one of these but the class moves is also the CHECK**
+(below): the same arms, run read-only on any copy.
 
 ### On production, after act 10 (the same day as the rehearsal)
 
 **The rehearsal cannot be re-run on production's copy**: it refuses a copy the repair has already
-touched. What grades the MONEY the human moved instead is a comparison of that copy with the
-rehearsal's own: two copies on which the same acts were performed hold the same balances.
+touched. Its verification can, as the CHECK (below). What grades the MONEY the human moved is a
+comparison of that copy with the rehearsal's own: two copies on which the same acts were performed
+hold the same balances.
 **Measured 2026-10-09: two rehearsals of these acts on one copy, through two different create
 paths, gave byte-identical dumps of every figure the balance seam answers, for every account; and
 before against after differed only on accounts 1, 2 and 10.** The rehearsal block wrote its dump
@@ -503,47 +519,77 @@ not still hold it, set `T` to the stamp in the rehearsal's sheet name, then past
 ```bash
 T=STAMP                                # from the sheet name of the rehearsal: sheet_STAMP.md
 ( set -e                               # compares against FILES that rehearsal wrote, never a live copy
-  for f in sheet_$T.md score_after_a10_$T.txt score_after_a1_$T.txt baseline_rehearsed_$T.json; do
+  for f in sheet_$T.md score_after_a10_$T.txt score_after_a1_$T.txt baseline_rehearsed_$T.json \
+           check_rehearsed_$T.txt; do
     [ -f "$D/$f" ] || { echo "STOPPED: no $f in $D"; exit 1; }; done
+  [ "$(tail -n 1 "$D/check_rehearsed_$T.txt")" = "check complete" ] ||
+    { echo "STOPPED: check_rehearsed_$T.txt does not end 'check complete'"; exit 1; }
   dump_prod "$D/prod_after_$T.dump"
   restore $P "$D/prod_after_$T.dump"     # rebuilds $P only
   run $P "$D/score_performed_a10_$T.txt" tests/manual/measure_cutover_against_bank.py --account 10 --format fidelity --bank "$F"
   run $P "$D/score_performed_a1_$T.txt"  tests/manual/measure_cutover_against_bank.py --account 1 --bank "$S"
   run $P "$D/baseline_performed_$T.txt"  tests/manual/verify_balance_baseline.py "$D/baseline_performed_$T.json"
+  run $P "$D/check_performed_$T.txt"     tests/manual/rehearse_account_10_repair.py --check --clone $P --bank "$F" \
+        --residue "$RESIDUE" || true     # a failing check still reaches the comparison below
   for a in a10 a1; do
     if diff "$D/score_after_${a}_$T.txt" "$D/score_performed_${a}_$T.txt"; then echo "SCORE $a AS REHEARSED"
     else echo "SCORE $a DIFFERS (above)"; fi
   done
   if cmp "$D/baseline_rehearsed_$T.json" "$D/baseline_performed_$T.json"; then echo "EVERY BALANCE AS REHEARSED"
   else echo "BALANCES DIFFER: compare the two JSON files"; fi
+  if diff "$D/check_rehearsed_$T.txt" "$D/check_performed_$T.txt"; then echo "CHECK AS REHEARSED"
+  else echo "CHECK DIFFERS (above)"; fi
 )
 ```
 
-**All three "AS REHEARSED" lines should print.** A difference names the account and the figure
+**All four "AS REHEARSED" lines should print.** A difference names the account and the figure
 where the money departed from the rehearsal (a mistyped amount or day, a skipped act, the grey
 Cancel), or a change made in the app after the dump was taken; it is read before anything else is
 done. The two balance dumps are compared on the day they are both taken, since a few of their
 figures are valued at today.
 
-**What that comparison CANNOT see, because it moves no balance, is checked on screen.** Measured:
-a twin left unarchived and dividends filed under another income category both pass all three
-lines. So, after them:
+**The CHECK grades what moves no balance.** Measured 2026-10-09: a twin left unarchived and
+dividends filed under another income category both pass the score and balance lines. The check is
+the rehearsal run with `--check`: it opens the copy READ-ONLY (it boots the app with production's
+configuration, which writes nothing at boot, and every connection refuses a write), refuses a copy
+no act has touched, and runs the rehearsal's
+own verification (the list above, all but the class moves) on it, reporting EVERY arm that fails
+rather than the first. What only the state before the acts can grade, it PRINTS: the posted
+ledger's total for each account class, and Settings > General > Default Grid Account (act 10 puts
+the owner's own back). Its output names no database, no time and no id of a row an act created, so
+on two copies of the same acts it is identical, and the line above compares the performed copy's
+with the rehearsed copy's. Reading `CHECK DIFFERS`:
 
-* **every Fidelity side carries its own day** (act 5's account-10 box and act 8): from Checking's
-  grid, each of transfers 102, 155, 156, 154, 157, 346 and 409 opens (columns in acts 5 and 8)
-  with account 10's Money moved on box FILLED with its day. An EMPTY box with the day only in a
-  caption under it is still borrowing Checking's day (R-BAL256 not applied): type it and Save;
-* **account 2 is archived again** (it is in the Accounts page's archived region);
-* **act 7's row sits on Checking's grid under Family: Birthday**, named as the sheet gives;
-* **the five dividends sit under Income: Interest & Dividends**, named Dividend, one per column of
-  act 9's table: point the grid at account 10 once more to look (Settings > General > Default Grid
-  Account), then back;
-* **Settings > General > Default Grid Account is back** on the account the sheet names.
+* a `- FAILS:` line names the act that did not land: act 1 (transfer 1 not Cancelled: the grey
+  Cancel); act 2 (the twin not archived, its books not opening on their own day at 0.00, or its
+  corrections not zero); acts 3 and 4 (an opening mistyped); act 3 or act 5 (account 10's books
+  off Fidelity's close on 2026-03-26); act 5 or act 8 (a Fidelity side still borrowing Checking's
+  day); act 6 (a row not re-dated shows only on Checking's 2026-03-26 line, as a movement the map
+  does not name there and a gap beyond the residue); act 7 (its row's category, name or figure);
+  act 9 (the category, or the dividends); act 7 or act 9 (a new row in the wrong paycheck, or a
+  row left uncounted: the line says whether it is an unfinished row or a duplicate, and a
+  CANCELLED one means stop, ruling **R-BAL262**); act 10;
+* a differing class total or Default Grid Account line, with no `FAILS:` line, is money or a
+  setting the post-state cannot grade alone: read it beside the score and balance lines.
 
-The acts assert each of these as they go in the rehearsal, and its verification checks the
-Fidelity days; none of them can yet be checked on a performed copy by any instrument. A check mode
-of the rehearsal that runs its own verification on the performed copy is owed by this step
-(`balance:X-f3c-2b-2c`) and would replace this list.
+**A FAILS line is read before anything else is done, and one remedy is rehearsed**: a duplicate's
+**Delete this row** (measured 2026-10-10, below). For any other, stop and report it. Performing the
+missed act now and pasting the POST block again (it rebuilds `$P` from a fresh dump) is the likely
+remedy, but it is not rehearsed, and some acts have an order the late one would break.
+
+**Measured 2026-10-10**, on copies of the 2026-10-09 dump: fourteen copies on which the acts were
+performed with ONE act wrong (act 8 skipped; act 5's account-10 box left; the twin left unarchived;
+the twin restated onto 2026-03-25; the dividends under *Income: Other Income*; the grey Cancel;
+act 2's restatement skipped; act 10 skipped; act 7 under *Family: Subscriptions*; act 7's row, and
+then the 2026-05-29 dividend, filed one paycheck late; act 7's Add, and then a dividend's,
+submitted twice with the copy left unpaid; a dividend's copy Cancelled) each failed the check on
+that act's own line and passed every other, except two: act 2's restatement skipped fails both
+of act 2's lines it touches (the twin's opening, and its corrections), and act 7's wrong category
+also fails Checking's boundary census, where its row is counted. Only act 2's restatement skipped
+moved a class total. A copy whose dividend Add went through twice and whose copy was then removed
+with **Delete this row** gave the same check output as the clean rehearsal. So did a rehearsal on
+a copy whose every id sequence was first moved on by 1000, so that act 7's row was created under
+another id: the output names no id an act creates. An unperformed copy was refused.
 
 **Five of Fidelity's days are never compared.** 2026-01-30, 02-24, 02-26, 02-27 and 03-12 fall on
 or before the books' opening and are inside the opening equity (R-HG); the scorer prints their
@@ -584,6 +630,7 @@ Act 9's category group is also supplied, because the page sets that field by scr
 
 * `tests/manual/rehearse_account_10_repair.py`: reconciles the map, performs the acts, verifies
   the post-state and writes the sheet. No production figure or payee is written in it (R-BAL249).
+  With `--check` it writes nothing and runs the same post-state verification on a performed copy.
 * `tests/manual/measure_cutover_against_bank.py`: scores an account against its bank's export.
 * `tests/manual/verify_render_surfaces.py`: renders every authenticated page, before and after.
 * `tests/manual/verify_balance_baseline.py`: dumps every balance figure, to compare two copies.

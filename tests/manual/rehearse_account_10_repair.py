@@ -72,12 +72,27 @@ Then score both accounts against their banks::
         --bank <the Fidelity history CSV>
     ... python tests/manual/measure_cutover_against_bank.py \\
         --account 1 --bank ~/Downloads/checking/2026_ytd_daily_balances.csv
+
+**``--check`` grades a copy the repair was PERFORMED on, and writes nothing**
+(:func:`_check`).  It runs the rehearsal's own post-state verification
+(:func:`_verify_post_state`, the one set of arms both modes call) on a copy
+opened READ-ONLY, refuses a copy no act has touched, and prints what only a
+comparison can grade -- the posted ledger's class totals and the Default Grid
+Account -- so the runbook diffs its output on production's performed copy
+against its output on the rehearsed one::
+
+    ... python tests/manual/rehearse_account_10_repair.py --check \\
+        --clone shekel_performed \\
+        --bank <the Fidelity history CSV> \\
+        --residue <the payroll residue ledger row BAL-467 states>
 """
 
 import argparse
 import csv
 import hashlib
+import os
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
@@ -102,6 +117,7 @@ from app.services.balance_at import BalanceContext, balance_at, cash_balance_at
 from app.services.row_valuation import settled_figure
 from app.services.settle_day import SettleDay, is_evidence, recorded_settle_day
 from app.utils.archive_helpers import category_has_usage
+from app.utils.balance_predicates import is_cancelled
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 
 _ZERO_MONEY = Decimal("0.00")
@@ -126,6 +142,14 @@ TWIN_ACCOUNT = 2
 
 #: The day the twin's own balance is superseded to zero (ruling **R-HK**).
 TWIN_ASSERTED_ON = date(2026, 4, 6)
+
+#: The day the twin's books open, which act 2 KEEPS while it zeroes the
+#: equity.  STATED rather than read at act 2, because once act 2 has written
+#: its row a performed copy no longer says which day that row superseded, and
+#: a twin restated onto another day moves no balance any comparison sees
+#: (measured by adversarial review 2026-10-10).  Reconciled against the
+#: governing opening before any write (:func:`_reconcile`).
+TWIN_OPENED_ON = date(2026, 3, 26)
 
 #: Ruling **R-BAL3**: ONE real ACH left Checking and reached Fidelity on
 #: BOUNDARY_DAY, and the app records it twice.  Transfer 102 (Checking ->
@@ -167,6 +191,10 @@ BOUNDARY_LINES = (
     _BoundaryLine(132, rows=(1069,)),
     _BoundaryLine(134, transfer_id=KEPT_TRANSFER),
 )
+
+#: Every Checking row :data:`BOUNDARY_LINES` re-dates: the one set the
+#: reconciliation's census, act 7's search and Checking's boundary arm read.
+MAPPED_ROWS = frozenset(row for entry in BOUNDARY_LINES for row in entry.rows)
 
 #: The one line whose answer is KNOWN to fall short of it (BAL-467).
 _RESIDUE_LINE = next(entry for entry in BOUNDARY_LINES if entry.residue)
@@ -776,11 +804,12 @@ class _Sheet:
     landed before it.
     """
 
-    def __init__(self, path: Path):
+    def __init__(self, path: "Path | None"):
         """Hold the sheet's destination.
 
         Args:
             path: Where to write it; outside every checkout (:func:`_sheet_path`).
+                ``None`` for ``--check``, which prints and saves nothing.
         """
         self.path = path
         self.lines: "list[str]" = []
@@ -866,21 +895,20 @@ def _sheet_path(raw: str) -> Path:
     return path
 
 
-def _require_unrepaired() -> None:
-    """Refuse a clone the repair has already been performed on.
+def _repair_markers() -> "list[str]":
+    """Return every pre-repair MARKER that has moved on this copy.
 
-    **What these catch is a PARTIALLY repaired clone**, because nothing in the
+    **What these catch is a PARTIALLY repaired copy**, because nothing in the
     acts is idempotent and refusing at act zero is the only safe answer: act 1
     trips the transfer marker (and every act after it runs after act 1), acts
     3 and 4 trip the opening markers, and act 9 the category markers.  These
     are MARKERS, not a proof of the whole pre-repair state -- act 0 trips none
-    of them and is not idempotent.  It doubles as the
-    safety rail a name check cannot be: a database this repair has touched is
-    refused whatever it is called.
+    of them and is not idempotent.  One list read both ways:
+    :func:`_require_unrepaired` refuses a copy on which ANY has moved, and
+    :func:`_require_repaired` one on which NONE has.
 
-    Raises:
-        SystemExit: When the clone is not in the pre-repair state, naming every
-            precondition that failed rather than the first.
+    Returns:
+        One sentence per moved marker, empty on an unrepaired copy.
     """
     problems = []
     for account_id in (CHECKING_ACCOUNT, SUBJECT_ACCOUNT):
@@ -924,6 +952,20 @@ def _require_unrepaired() -> None:
             f"category {DIVIDEND_CATEGORY_ID} is not the owner's empty "
             f"{DIVIDEND_CATEGORY_WAS[0]}: {DIVIDEND_CATEGORY_WAS[1]}"
         )
+    return problems
+
+
+def _require_unrepaired() -> None:
+    """Refuse a clone the repair has already been performed on.
+
+    It doubles as the safety rail a name check cannot be: a database this
+    repair has touched is refused whatever it is called.
+
+    Raises:
+        SystemExit: When any marker of :func:`_repair_markers` has moved,
+            naming every one rather than the first.
+    """
+    problems = _repair_markers()
     if problems:
         raise SystemExit(
             "this clone is not in the pre-repair state:\n  "
@@ -931,6 +973,30 @@ def _require_unrepaired() -> None:
             + "\nRestore it from an unrepaired snapshot and run again."
         )
     print("precondition: the clone is unrepaired")
+
+
+def _require_repaired() -> None:
+    """Refuse a copy no act of the repair has touched (``--check``).
+
+    **An unrepaired copy is refused rather than graded**, because grading it
+    fails every arm and names none of the cause: a copy of production taken
+    BEFORE the acts, or the rehearsal's untouched copy, is the likeliest
+    wrong target, and this says so.  A PARTIALLY repaired copy passes here
+    and fails the arms its missing acts own, which is the check's job.
+
+    Raises:
+        SystemExit: When no marker of :func:`_repair_markers` has moved.
+    """
+    moved = _repair_markers()
+    if not moved:
+        raise SystemExit(
+            "this copy is UNREPAIRED: no marker of the repair has moved. "
+            "--check grades a copy taken AFTER the acts; was the dump taken "
+            "before them, or is this the copy no act touches?"
+        )
+    print("precondition: the repair's markers have moved on this copy:")
+    for marker in moved:
+        print(f"  {marker}")
 
 
 def _facts(account_id: int) -> list:
@@ -1067,7 +1133,7 @@ def _next_bank_day() -> date:
     Checking's rows the repair moves sit between BOUNDARY_DAY and this day
     today (the app dated them a day late), and nothing else may, so it bounds
     the census in :func:`_checking_problems` and the verification in
-    :func:`_verify_checking_boundary`.
+    :func:`_grade_checking_boundary`.
 
     Returns:
         The day.
@@ -1266,8 +1332,9 @@ def _checking_problems() -> "tuple[list[str], Decimal]":
     rows, transfers = _moved_by(facts)
     next_day = _next_bank_day()
     in_window = {_movement_key(f) for f in facts if f.settled_on < next_day}
-    mapped = {row for entry in BOUNDARY_LINES for row in entry.rows}
-    expected = {("row", row) for row in mapped} | {("transfer", DROPPED_TRANSFER)}
+    expected = {("row", row) for row in MAPPED_ROWS} | {
+        ("transfer", DROPPED_TRANSFER),
+    }
     if in_window != expected:
         problems.append(
             f"Checking's movements before {next_day} are {sorted(in_window)}; "
@@ -1275,7 +1342,7 @@ def _checking_problems() -> "tuple[list[str], Decimal]":
         )
     problems.extend(
         f"transaction {row} holds {rows[row].movements} movements, not one"
-        for row in mapped if row in rows and rows[row].movements != 1
+        for row in MAPPED_ROWS if row in rows and rows[row].movements != 1
     )
 
     line_problems, residue = _line_problems(posted, rows, transfers)
@@ -1320,7 +1387,7 @@ def _reconcile(export: _Export, sheet: _Sheet, stated: Decimal) -> Decimal:
         stated: The residue ledger row BAL-467 states, books less bank.
 
     Returns:
-        BAL-467's residue, for :func:`_verify_checking_boundary`.
+        BAL-467's residue, for :func:`_grade_checking_boundary`.
 
     Raises:
         SystemExit: On any disagreement, naming the day and both figures.
@@ -1332,6 +1399,12 @@ def _reconcile(export: _Export, sheet: _Sheet, stated: Decimal) -> Decimal:
         problems.append(
             f"the payroll residue on bank line {_RESIDUE_LINE.line_id} measures "
             f"{residue}, and ledger row BAL-467 states {stated}"
+        )
+    twin_opens = cash_ledger.governing_account_opening(TWIN_ACCOUNT).opened_on
+    if twin_opens != TWIN_OPENED_ON:
+        problems.append(
+            f"account {TWIN_ACCOUNT}'s books open {twin_opens}, and act 2 is "
+            f"stated to keep {TWIN_OPENED_ON}"
         )
     if problems:
         raise SystemExit(
@@ -1727,14 +1800,27 @@ def _set_grid_account(op: _Operator, account_id: "int | None") -> None:
         AssertionError: When the setting does not then hold *account_id*.
     """
     form = op.form_posting_to("/settings?section=general", "/settings")
-    named = "Auto (first checking account)" if account_id is None else \
-        db.session.get(Account, account_id).name
-    op.sheet.typed("Settings > General > Default Grid Account", named)
+    op.sheet.typed("Settings > General > Default Grid Account",
+                   _grid_choice(account_id))
     op.submit(form, {
         "default_grid_account_id": "" if account_id is None else str(account_id),
     })
     assert _grid_account(op.user_id) == account_id, \
         f"the Default Grid Account is not {account_id}"
+
+
+def _grid_choice(account_id: "int | None") -> str:
+    """Return how Settings > General names one Default Grid Account choice.
+
+    Args:
+        account_id: The account, or ``None`` for the page's "Auto" choice.
+
+    Returns:
+        The choice as the operator reads it.
+    """
+    if account_id is None:
+        return "Auto (first checking account)"
+    return db.session.get(Account, account_id).name
 
 
 def _grid_account(user_id: int) -> "int | None":
@@ -2004,7 +2090,7 @@ def _drop_transfer(op: _Operator, transfer_id: int) -> None:
     so every FORWARD projection of Checking and the twin is off by transfer
     1's amount while a valuation at any past day reads unchanged (measured by
     adversarial review 2026-10-09); the check mark moves it again, on today's
-    date.  That is why :func:`_verify_ledger` asserts Cancelled.  What
+    date.  That is why :func:`_grade_dropped_transfer` asserts Cancelled.  What
     the owner sees on success is the cell DISAPPEARING from Checking's grid,
     since a cancelled item has no grid row (``grid_view_service``; the same
     review counted two cells before and none after).  Between the save and
@@ -2166,8 +2252,7 @@ def _consolidate_twin(op: _Operator) -> None:
         op: The owner's session, which carries the performance sheet.
     """
     _set_archived(op, TWIN_ACCOUNT, archived=False)
-    opened_on = cash_ledger.governing_account_opening(TWIN_ACCOUNT).opened_on
-    _restate_opening(op, TWIN_ACCOUNT, opened_on, _ZERO_MONEY)
+    _restate_opening(op, TWIN_ACCOUNT, TWIN_OPENED_ON, _ZERO_MONEY)
     _assert_balance(op, TWIN_ACCOUNT, _ZERO_MONEY, TWIN_ASSERTED_ON)
     _set_archived(op, TWIN_ACCOUNT, archived=True)
 
@@ -2249,9 +2334,7 @@ def _equities(export: _Export) -> "dict[int, Decimal]":
     }
 
 
-def _perform(
-    op: _Operator, export: _Export, earlier: int,
-) -> "tuple[int, dict[int, Decimal]]":
+def _perform(op: _Operator, export: _Export, earlier: int) -> int:
     """Perform the repair in ruling R-BAL3's order, as amended.
 
     **The order is FORCED at two points, not chosen.**  The books boundary
@@ -2277,7 +2360,9 @@ def _perform(
             it.
 
     Returns:
-        ``(the id act 7 created, {account id: the equity it opened with})``.
+        The id act 7 created.  The equities the acts typed are not returned:
+        :func:`_verify_post_state` derives them again from the same records,
+        which is what lets a performed copy be graded on them too.
 
     Raises:
         SystemExit: From :func:`_equities`.
@@ -2384,7 +2469,7 @@ def _perform(
     _assert_balance(op, SUBJECT_ACCOUNT, export.closings[last], last)
     _set_grid_account(op, owners_grid)
     _snapshot(export, op.sheet)
-    return created, equities
+    return created
 
 
 def _verify_class_moves(
@@ -2424,12 +2509,18 @@ def _verify_ledger(
     export: _Export, sheet: _Sheet, before: "dict[str, Decimal]",
     modelled_before: Decimal,
 ) -> None:
-    """Assert what the acts did to the posted ledger, and record it.
+    """Assert how the acts moved the posted ledger's classes: the PRE-state arm.
 
-    Neither this nor :func:`_verify_boundary` is the day-by-day comparison with
-    the banks -- that is ``measure_cutover_against_bank.py``'s question, asked
-    of both accounts by the commands this file's docstring names.  What they
-    ask is whether the ACTS landed.
+    **The one arm that needs the state BEFORE the acts, and so the
+    rehearsal's alone.**  A copy graded after a human performed the repair has
+    no before; ``--check`` PRINTS the class totals instead, and the runbook
+    compares them with the rehearsed copy's, whose before was the same dump.
+    Every other arm is :func:`_verify_post_state`'s, which both modes run.
+
+    Neither this nor :func:`_verify_post_state` is the day-by-day comparison
+    with the banks -- that is ``measure_cutover_against_bank.py``'s question,
+    asked of both accounts by the commands this file's docstring names.  What
+    they ask is whether the ACTS landed.
 
     Args:
         export: The parsed export.
@@ -2439,9 +2530,7 @@ def _verify_ledger(
             totals before the first act, summed.
 
     Raises:
-        AssertionError: On the class moves, the twin's balance, either
-            account's corrections or modelled interest, or the dropped
-            transfer's state.
+        AssertionError: When a class the inputs derive moved by anything else.
     """
     db.session.expire_all()
     recorded_expense = -db.session.get(BankStatementLine, UNRECORDED_LINE).amount
@@ -2451,92 +2540,511 @@ def _verify_ledger(
         sheet, before,
         _expected_class_moves(export, modelled_before, recorded_expense),
     )
+
+
+class _Arms:
+    """The post-state's arms, graded one by one and ALL reported.
+
+    **Every arm runs and every failure is named**, rather than the first one
+    raising.  A copy a human performed the repair on is graded once, after
+    the fact, and an operator told one failure per run would re-run the check
+    once per mistake.  It is also what makes each negative control measure
+    ONE arm: a variant with act 8 skipped must fail the Fidelity-sides arm
+    and pass every other.
+    """
+
+    def __init__(self, sheet: _Sheet):
+        """Start with nothing failed.
+
+        Args:
+            sheet: Where each arm's line goes.
+        """
+        self.sheet = sheet
+        self.failed: "list[str]" = []
+
+    def fail(self, failure: str) -> None:
+        """Record one failed arm.
+
+        Args:
+            failure: The sentence naming what failed.
+        """
+        self.failed.append(failure)
+        self.sheet.say(f"- FAILS: {failure}")
+
+    def grade(self, holds: bool, said: str, failure: str) -> None:
+        """Record one arm: its line when it holds, its failure when not.
+
+        Args:
+            holds: Whether the arm holds.
+            said: The sheet's line for a holding arm.
+            failure: The sentence naming what failed.
+        """
+        if holds:
+            self.sheet.say(f"- {said}")
+        else:
+            self.fail(failure)
+
+
+def _verify_post_state(
+    export: _Export, sheet: _Sheet, residue: Decimal,
+) -> "int | None":
+    """Grade every arm the post-state answers alone: what BOTH modes run.
+
+    The rehearsal runs it after its acts and ``--check`` on a copy a human
+    performed the repair on, so the two cannot grade different things: ONE set
+    of arms, called by both (rule 14).  None needs the state before the acts,
+    which is why a performed copy can answer them; the one that does is
+    :func:`_verify_ledger`'s.
+
+    **Four of the arms were asserted only INSIDE the acts until plan step
+    X-f3c-2b-2c's check mode** -- the twin archived again, category 33
+    renamed, the dividends filed there, act 7's row -- and so graded a
+    rehearsal and never a performance.  A twin left unarchived and dividends
+    filed under another income category each passed every money comparison
+    the runbook made (measured 2026-10-09).  **Act 10's assertion is graded
+    here for the same reason**: after act 9 every correction is already
+    zero, so no other arm sees act 10 skipped.  **So are the twin's opening
+    day, and what an Add types beyond a day and a figure** -- the paycheck a
+    new row is filed in, and a duplicate or unfinished row left behind -- all
+    three found passing every other arm and both scores by the review of
+    2026-10-10 (:func:`_grade_twin`, :func:`_grade_paychecks`,
+    :func:`_grade_leftovers`).
+
+    Args:
+        export: The parsed export.
+        sheet: Where each arm's line goes.
+        residue: BAL-467's residue, books less bank: the figure
+            :func:`_reconcile` measured in the rehearsal, the figure the ledger
+            row states in ``--check``.
+
+    Returns:
+        Act 7's row as :func:`_unrecorded_row` FOUND it, which the rehearsal
+        compares with the row it created; ``None`` when no single row answers.
+
+    Raises:
+        AssertionError: Naming EVERY arm that failed.
+    """
+    arms = _Arms(sheet)
+    db.session.expire_all()
     subject = db.session.get(Account, SUBJECT_ACCOUNT)
     last = export.named[-1]
     context = BalanceContext.build(user_id=subject.user_id, as_of=last)
-    twin = balance_at(db.session.get(Account, TWIN_ACCOUNT), context, last)
-    assert twin == _ZERO_MONEY, f"the twin still holds {twin}"
-    sheet.say(f"- account {TWIN_ACCOUNT} holds {twin}")
+    _grade_twin(arms, context, last)
+    _grade_dropped_transfer(arms)
+    accepted = _grade_dividends(arms, export, subject.user_id)
+    _grade_last_close(arms, export)
+    _grade_openings(arms, export)
+    _grade_fidelity_sides(arms)
+    subject_books = cash_balance_at(subject, context, BOUNDARY_DAY)
+    arms.grade(
+        subject_books == export.closing_on(BOUNDARY_DAY),
+        f"account {SUBJECT_ACCOUNT} on {BOUNDARY_DAY}: books {subject_books}, "
+        f"Fidelity {export.closing_on(BOUNDARY_DAY)}",
+        f"account {SUBJECT_ACCOUNT}'s books read {subject_books} on "
+        f"{BOUNDARY_DAY}, Fidelity {export.closing_on(BOUNDARY_DAY)}",
+    )
+    created = _unrecorded_row(arms)
+    if created is not None:
+        accepted.append((created, BOUNDARY_DAY))
+    _grade_paychecks(arms, accepted)
+    _grade_leftovers(arms)
+    _grade_checking_boundary(arms, context, residue, created)
+    if arms.failed:
+        raise AssertionError(
+            f"{len(arms.failed)} arm(s) of the post-state fail:\n  "
+            + "\n  ".join(arms.failed)
+        )
+    return created
+
+
+def _grade_twin(arms: _Arms, context: BalanceContext, last: date) -> None:
+    """Grade act 2: the twin zeroed and archived, and both windows closed.
+
+    Args:
+        arms: The arms so far.
+        context: The verification's read pass.
+        last: The export's last day, the valuation day.
+    """
+    twin_account = db.session.get(Account, TWIN_ACCOUNT)
+    twin = balance_at(twin_account, context, last)
+    arms.grade(twin == _ZERO_MONEY, f"account {TWIN_ACCOUNT} holds {twin}",
+               f"the twin still holds {twin}")
+    arms.grade(
+        not twin_account.is_active, f"account {TWIN_ACCOUNT} is archived",
+        f"account {TWIN_ACCOUNT} is not archived: act 2 ends by archiving it",
+    )
+    opening = cash_ledger.governing_account_opening(TWIN_ACCOUNT)
+    arms.grade(
+        (opening.opened_on, opening.opening_equity)
+        == (TWIN_OPENED_ON, _ZERO_MONEY),
+        f"account {TWIN_ACCOUNT}'s books open {opening.opened_on} holding "
+        f"{opening.opening_equity}",
+        f"account {TWIN_ACCOUNT} opens {opening.opened_on} at "
+        f"{opening.opening_equity}, where act 2 restates it to "
+        f"{_ZERO_MONEY} on its own day, {TWIN_OPENED_ON}",
+    )
     for account_id in (TWIN_ACCOUNT, SUBJECT_ACCOUNT):
         corrections = _account_trueup_total(account_id)
         modelled = _interest_income_total(account_id)
-        assert (corrections, modelled) == (_ZERO_MONEY, _ZERO_MONEY), (
+        arms.grade(
+            (corrections, modelled) == (_ZERO_MONEY, _ZERO_MONEY),
+            f"account {account_id}'s corrections total {corrections}, its "
+            f"modelled interest row {modelled}",
             f"account {account_id}'s posted corrections total {corrections} "
             f"and its modelled interest row {modelled}: an assertion is not "
-            "explained by the records"
+            "explained by the records",
         )
-        sheet.say(f"- account {account_id}'s corrections total {corrections}, "
-                  f"its modelled interest row {modelled}")
+
+
+def _grade_dropped_transfer(arms: _Arms) -> None:
+    """Grade act 1: the dropped transfer and its rows Cancelled.
+
+    Args:
+        arms: The arms so far.
+    """
     cancelled = ref_cache.status_id(StatusEnum.CANCELLED)
     states = {db.session.get(Transfer, DROPPED_TRANSFER).status_id} | {
         row.status_id for row in db.session.query(Transaction).filter_by(
             transfer_id=DROPPED_TRANSFER, is_deleted=False,
         )
     }
-    assert states == {cancelled}, (
+    arms.grade(
+        states == {cancelled},
+        f"transfer {DROPPED_TRANSFER} and its rows are Cancelled",
         f"transfer {DROPPED_TRANSFER} and its rows hold statuses "
-        f"{sorted(states)}, not Cancelled: was the card's grey Cancel pressed?"
+        f"{sorted(states)}, not Cancelled: was the card's grey Cancel pressed?",
     )
-    sheet.say(f"- transfer {DROPPED_TRANSFER} and its rows are Cancelled")
 
 
-def _verify_boundary(
-    export: _Export, sheet: _Sheet, residue: Decimal, created: int,
-    equities: "dict[int, Decimal]",
-) -> None:
-    """Assert both books open where the banks close, and record it.
+def _grade_dividends(
+    arms: _Arms, export: _Export, user_id: int,
+) -> "list[tuple[int, date]]":
+    """Grade act 9: category 33 renamed, and the export's dividends filed there.
 
-    Account 10 reads Fidelity's own close on BOUNDARY_DAY and every Fidelity
-    side carries Fidelity's day as its own (ruling **R-BAL256**); Checking is
-    :func:`_verify_checking_boundary`.  **The opening figure itself cannot
-    fail here** -- the act typed it from the same record this compares against.
-    After a HUMAN performs the repair, what grades the typing is the scorer,
-    ``measure_cutover_against_bank.py``, which prints each account's opening
-    day against its bank on a line of its own.
+    **A census of the CATEGORY, not of account 10**: every live row filed in
+    category 33 that a cash fold COUNTS, on any account, against the export's
+    dividends, each one's day and figure read off its own account's fold.  So
+    a dividend filed under another category is missing here, one on another
+    account holds the wrong fact, and a stray counted row is one too many.  A
+    row the fold does not count -- an Add never settled, or a duplicate one --
+    is :func:`_grade_leftovers`' to name, so that one slip fails one line.
 
     Args:
+        arms: The arms so far.
         export: The parsed export.
-        sheet: The performance sheet.
-        residue: BAL-467's residue, from :func:`_reconcile`.
-        created: The transaction act 7 created.
-        equities: What each restated account opened with.
+        user_id: The owner.
 
-    Raises:
-        AssertionError: On any arm.
+    Returns:
+        ``(transaction id, day)`` for each row the census ACCEPTED, for
+        :func:`_grade_paychecks`; a row the census rejects is graded here
+        only.
     """
-    for account_id, equity in equities.items():
+    category = db.session.get(Category, DIVIDEND_CATEGORY_ID)
+    named = None if category is None or category.user_id != user_id else (
+        category.group_name, category.item_name,
+    )
+    arms.grade(
+        named == DIVIDEND_CATEGORY,
+        f"category {DIVIDEND_CATEGORY_ID} is named {DIVIDEND_CATEGORY[0]}: "
+        f"{DIVIDEND_CATEGORY[1]}",
+        f"category {DIVIDEND_CATEGORY_ID} is {named}, not the owner's "
+        f"{DIVIDEND_CATEGORY[0]}: {DIVIDEND_CATEGORY[1]}: act 9 renames it",
+    )
+    filed = []
+    held: "dict[tuple, list[int]]" = {}
+    for txn, moved in _counted(
+        db.session.query(Transaction).filter_by(
+            category_id=DIVIDEND_CATEGORY_ID, is_deleted=False,
+        ).all()
+    ):
+        if moved is None:
+            continue
+        key = (moved.day, txn.account_id, txn.name, moved.delta)
+        filed.append(key)
+        held.setdefault(key, []).append(txn.id)
+    wanted = [
+        (day, SUBJECT_ACCOUNT, DIVIDEND_NAME, amount)
+        for day, amount in export.recorded_dividends()
+    ]
+
+    def listed(entries: list) -> str:
+        """Name each ``(day, account, name, amount)`` for the failure line."""
+        return "; ".join(sorted(
+            f"{day} {amount} {name!r} on account {account}"
+            for day, account, name, amount in entries
+        )) or "nothing"
+
+    arms.grade(
+        Counter(filed) == Counter(wanted),
+        f"the {len(wanted)} dividends are filed in category "
+        f"{DIVIDEND_CATEGORY_ID} on account {SUBJECT_ACCOUNT}, named "
+        f"{DIVIDEND_NAME}, each on the export's day for the export's amount",
+        f"category {DIVIDEND_CATEGORY_ID}'s counted rows are {listed(filed)}; "
+        f"the export's dividends are {listed(wanted)}",
+    )
+    owed = Counter(wanted)
+    return [
+        (txn_id, key[0])
+        for key, ids in held.items() for txn_id in ids[:owed[key]]
+    ]
+
+
+def _counted(txns: list) -> "list[tuple[Transaction, _Moved | None]]":
+    """Pair each row with what its own account's cash fold counts for it.
+
+    Args:
+        txns: Transactions, on any accounts.
+
+    Returns:
+        ``(transaction, _Moved)`` per row, ``None`` where the fold counts no
+        movement for it; each account's fold is walked once.
+    """
+    folds: "dict[int, dict]" = {}
+    paired = []
+    for txn in txns:
+        if txn.account_id not in folds:
+            folds[txn.account_id], _ = _moved_by(_facts(txn.account_id))
+        paired.append((txn, folds[txn.account_id].get(txn.id)))
+    return paired
+
+
+def _grade_paychecks(arms: _Arms, rows: "list[tuple[int, date]]") -> None:
+    """Grade acts 7 and 9's Pay Period: each new row in its day's paycheck.
+
+    **The one value those Adds type that no other arm reads**: a row filed
+    one paycheck early or late moves its money on the right day, so every
+    other arm and both scores pass it, and only the balance dump differs, in
+    the grid's columns, naming no act (measured by adversarial review
+    2026-10-10).  Graded only on rows the other arms ACCEPTED, so a row whose
+    day or figure is wrong fails there and not here too.  No other act types
+    a paycheck: re-dating moves a day and not a column.
+
+    Args:
+        arms: The arms so far.
+        rows: ``(transaction id, the day its money moved)`` for act 7's row
+            and each accepted dividend.
+    """
+    astray = []
+    for txn_id, day in rows:
+        txn = db.session.get(Transaction, txn_id)
+        holding = _period_holding(txn.account_id, day)
+        if txn.pay_period_id != holding.period_id:
+            filed = _period_holding(txn.account_id, txn.pay_period.start_date)
+            astray.append(
+                f"{txn.name!r} of {day} on account {txn.account_id} is in the "
+                f"paycheck {filed.label}, where {day} is in {holding.label}"
+            )
+    arms.grade(
+        not astray,
+        f"the {len(rows)} rows acts 7 and 9 created are each in the paycheck "
+        "holding its day",
+        "; ".join(astray) + ": the Add's Pay Period was not the one the sheet "
+        "names",
+    )
+
+
+def _grade_leftovers(arms: _Arms) -> None:
+    """Grade acts 7 and 9's Adds: no row they made is left uncounted.
+
+    **A double-submitted Add leaves a second, Projected row**, which the fold
+    does not count today and which every forward projection does: measured
+    by adversarial review 2026-10-10 on act 7, it passed every other arm and
+    both scores.  The rows an Add of these acts makes are every live row in
+    category 33, which held nothing before act 9 (:func:`_repair_markers`),
+    and every live row on Checking in act 7's category that carries act 7's
+    name and does not RECUR: the owner's own birthday rows in that category
+    include a recurring item of that very name, whose Projected rows are
+    plans, not leftovers.  **Asked of ``Transaction.recurs``, not of
+    ``template_id``**: the Add modal gives every row it makes a one-off
+    definition of its own, so "has no template" matched nothing, act 7's own
+    row included, and a duplicate passed (measured 2026-10-10).  A row an
+    Add made that the fold does not count is either an unfinished row or a
+    duplicate, and the failure says which remedy is which.
+
+    **A CANCELLED one fails too and is not the operator's to remove** (ruling
+    **R-BAL262**, 2026-10-10): it moves no money but states an expected row
+    that did not come, and no page draws a cancelled row, so its card --
+    and its Delete -- cannot be reached by clicking.
+
+    Args:
+        arms: The arms so far.
+    """
+    made = [
+        txn for txn in db.session.query(Transaction).filter(
+            Transaction.is_deleted.is_(False),
+            db.or_(
+                Transaction.category_id == DIVIDEND_CATEGORY_ID,
+                db.and_(
+                    Transaction.account_id == CHECKING_ACCOUNT,
+                    Transaction.category_id == UNRECORDED_CATEGORY,
+                    Transaction.name == UNRECORDED_NAME,
+                ),
+            ),
+        ).all()
+        if not txn.recurs
+    ]
+    left = sorted(
+        (
+            txn.category_id, txn.account_id, txn.name, is_cancelled(txn),
+            _period_holding(txn.account_id, txn.pay_period.start_date).label,
+        )
+        for txn, moved in _counted(made) if moved is None
+    )
+    dead = {row[3] for row in left}
+    remedies = []
+    if False in dead:
+        remedies.append(
+            "an uncounted row is the one an Add made unfinished when a line "
+            "above names that row missing (finish its saves), and otherwise "
+            "a duplicate Add: press 'Delete this row' on its card, and never "
+            "settle it, which counts its money twice"
+        )
+    if True in dead:
+        remedies.append(
+            "a Cancelled one moves no money but no page reaches it: STOP and "
+            "report it; the repair is not finished (ruling R-BAL262)"
+        )
+    arms.grade(
+        not left,
+        f"no row acts 7 and 9 created is left uncounted in category "
+        f"{UNRECORDED_CATEGORY} on account {CHECKING_ACCOUNT} or in category "
+        f"{DIVIDEND_CATEGORY_ID}",
+        "; ".join(
+            f"{name!r} on account {account} in category {category}, in the "
+            f"paycheck {column}, {'Cancelled' if cancelled else 'not settled'}"
+            ", counted by no cash fold"
+            for category, account, name, cancelled, column in left
+        ) + ": " + "; ".join(remedies),
+    )
+
+
+def _grade_last_close(arms: _Arms, export: _Export) -> None:
+    """Grade act 10: account 10 asserts Fidelity's close on the export's last day.
+
+    Args:
+        arms: The arms so far.
+        export: The parsed export.
+    """
+    last = export.named[-1]
+    governing = cash_ledger.governing_anchor_on(SUBJECT_ACCOUNT, last)
+    held = None if governing is None else (
+        governing.balance, governing.observed_on,
+    )
+    arms.grade(
+        held == (export.closings[last], last),
+        f"account {SUBJECT_ACCOUNT} asserts Fidelity's close "
+        f"{export.closings[last]} on {last}",
+        f"account {SUBJECT_ACCOUNT}'s assertion governing {last} is "
+        f"{'none' if held is None else f'{held[0]} on {held[1]}'}, not "
+        f"Fidelity's close {export.closings[last]} that day: act 10 asserts it",
+    )
+
+
+def _grade_openings(arms: _Arms, export: _Export) -> None:
+    """Grade acts 3 and 4: both books open on BOOKS_OPEN at their banks' closes.
+
+    **On a performed copy this grades the TYPING.**  In the rehearsal it
+    cannot fail -- the act typed each figure from the same records
+    :func:`_equities` derives it from again here -- but an owner typing from
+    the sheet can mistype, and this is the arm that says so.
+
+    Args:
+        arms: The arms so far.
+        export: The parsed export.
+    """
+    for account_id, equity in _equities(export).items():
         opening = cash_ledger.governing_account_opening(account_id)
-        assert (opening.opened_on, opening.opening_equity) == (BOOKS_OPEN, equity), \
-            f"account {account_id} opens {opening.opened_on} at {opening.opening_equity}"
-        sheet.say(f"- account {account_id}'s books open {opening.opened_on} "
-                  f"holding {opening.opening_equity}")
+        arms.grade(
+            (opening.opened_on, opening.opening_equity) == (BOOKS_OPEN, equity),
+            f"account {account_id}'s books open {opening.opened_on} holding "
+            f"{opening.opening_equity}",
+            f"account {account_id} opens {opening.opened_on} at "
+            f"{opening.opening_equity}, where its bank closed {BOOKS_OPEN} at "
+            f"{equity}",
+        )
+
+
+def _grade_fidelity_sides(arms: _Arms) -> None:
+    """Grade acts 5 and 8: every Fidelity side records Fidelity's day as its own.
+
+    Args:
+        arms: The arms so far.
+    """
+    astray = {}
     for transfer_id, day in FIDELITY_DAYS.items():
         side = _side_day(transfer_id, SUBJECT_ACCOUNT)
-        assert side is not None and side.day == day and is_evidence(side), \
-            f"transfer {transfer_id}'s Fidelity side records {side}, not {day}"
-    sheet.say(f"- all {len(FIDELITY_DAYS)} Fidelity sides record Fidelity's "
-              "day as their own")
-    subject = db.session.get(Account, SUBJECT_ACCOUNT)
-    context = BalanceContext.build(
-        user_id=subject.user_id, as_of=export.named[-1],
+        if not (side is not None and side.day == day and is_evidence(side)):
+            astray[transfer_id] = side
+    arms.grade(
+        not astray,
+        f"all {len(FIDELITY_DAYS)} Fidelity sides record Fidelity's day as "
+        "their own",
+        "; ".join(
+            f"transfer {transfer_id}'s Fidelity side records "
+            + ("no movement" if side is None
+               else f"{side.day} as {side.basis.value!r}")
+            + f", not {FIDELITY_DAYS[transfer_id]} as its own"
+            for transfer_id, side in astray.items()
+        ),
     )
-    subject_books = cash_balance_at(subject, context, BOUNDARY_DAY)
-    assert subject_books == export.closing_on(BOUNDARY_DAY), (
-        f"account {SUBJECT_ACCOUNT}'s books read {subject_books} on "
-        f"{BOUNDARY_DAY}, Fidelity {export.closing_on(BOUNDARY_DAY)}"
-    )
-    sheet.say(f"- account {SUBJECT_ACCOUNT} on {BOUNDARY_DAY}: books "
-              f"{subject_books}, Fidelity {export.closing_on(BOUNDARY_DAY)}")
-    _verify_checking_boundary(sheet, context, residue, created)
 
 
-def _verify_checking_boundary(
-    sheet: _Sheet, context: BalanceContext, residue: Decimal, created: int,
+def _unrecorded_row(arms: _Arms) -> "int | None":
+    """Find and grade act 7's row: Checking's one new row on BOUNDARY_DAY.
+
+    **Found, not told**, because a performed copy's row was made by a human
+    and its id is not known to anybody: it is the one row Checking holds in
+    act 7's category that the cash fold counts on BOUNDARY_DAY and that is not
+    one of the map's own rows.  That much finds it; the arm then grades its
+    name, its figure against the bank line's, and that it is one movement.
+
+    Args:
+        arms: The arms so far.
+
+    Returns:
+        The row, or ``None`` when not exactly one is found (an arm fails).
+    """
+    rows, _ = _moved_by(_facts(CHECKING_ACCOUNT))
+    filed = set(db.session.execute(
+        db.select(Transaction.id).filter_by(
+            account_id=CHECKING_ACCOUNT, category_id=UNRECORDED_CATEGORY,
+        )
+    ).scalars())
+    found = sorted(
+        txn for txn in filed - MAPPED_ROWS
+        if txn in rows and rows[txn].day == BOUNDARY_DAY
+    )
+    if len(found) != 1:
+        arms.fail(
+            f"Checking holds {len(found)} rows in category "
+            f"{UNRECORDED_CATEGORY} counted on {BOUNDARY_DAY} outside the map, "
+            "where act 7 records exactly one"
+        )
+        return None
+    txn = db.session.get(Transaction, found[0])
+    moved = rows[txn.id]
+    line = db.session.get(BankStatementLine, UNRECORDED_LINE)
+    arms.grade(
+        (txn.name, moved.delta, moved.movements) == (UNRECORDED_NAME, line.amount, 1),
+        f"act 7's row is Checking's one row in category {UNRECORDED_CATEGORY} "
+        f"on {BOUNDARY_DAY} outside the map: named {UNRECORDED_NAME}, moving "
+        f"bank line {UNRECORDED_LINE}'s {line.amount}",
+        f"act 7's row on {BOUNDARY_DAY} is named {txn.name!r} and moves "
+        f"{moved.delta} in {moved.movements} movement(s), where it is named "
+        f"{UNRECORDED_NAME!r} and moves bank line {UNRECORDED_LINE}'s "
+        f"{line.amount} once",
+    )
+    return txn.id
+
+
+def _grade_checking_boundary(
+    arms: _Arms, context: BalanceContext, residue: Decimal,
+    created: "int | None",
 ) -> None:
-    """Assert Checking's boundary holds exactly what the map names.
+    """Grade acts 4 to 7: Checking's boundary holds exactly what the map names.
 
     Every Checking movement dated before the next day SECU posted anything is
-    a mapped row, the row act 7 created, or the kept transfer's side -- all on
+    a mapped row, act 7's row, or the kept transfer's side -- all on
     BOUNDARY_DAY -- and on BOUNDARY_DAY the books stand off SECU's close by
     BAL-467's residue and nothing else.  The census half is what makes the
     residue mean something: a row left behind, or one moved in from another
@@ -2553,45 +3061,51 @@ def _verify_checking_boundary(
     transfer's side as the kept one's (adversarial review, 2026-10-09).
 
     Args:
-        sheet: The performance sheet.
+        arms: The arms so far.
         context: The verification's read pass.
-        residue: BAL-467's residue, from :func:`_reconcile`.
-        created: The transaction act 7 created.
-
-    Raises:
-        AssertionError: When the stretch holds any other movement, or the
-            books stand off SECU's close by anything but the residue.
+        residue: BAL-467's residue, books less bank.
+        created: Act 7's row, or ``None`` when :func:`_unrecorded_row` found
+            no single one -- the census then names whatever stands there.
     """
     next_day = _next_bank_day()
     in_window = {
         (_movement_key(fact), fact.settled_on)
         for fact in _facts(CHECKING_ACCOUNT) if fact.settled_on < next_day
     }
-    rows = {row for entry in BOUNDARY_LINES for row in entry.rows} | {created}
+    rows = set(MAPPED_ROWS)
+    if created is not None:
+        rows.add(created)
     wanted = {(("row", txn), BOUNDARY_DAY) for txn in rows} | {
         (("transfer", KEPT_TRANSFER), BOUNDARY_DAY),
     }
-    assert in_window == wanted, (
-        f"Checking's movements before {next_day} are {sorted(in_window)}; the "
-        f"map names {sorted(wanted)}"
-    )
     books = cash_balance_at(
         db.session.get(Account, CHECKING_ACCOUNT), context, BOUNDARY_DAY,
     )
     bank = statement_import.fold_bank_balances(
         CHECKING_ACCOUNT, [BOUNDARY_DAY],
     ).balances[BOUNDARY_DAY]
-    assert books - bank == residue, (
-        f"Checking's books read {books} on {BOUNDARY_DAY} against SECU's "
-        f"{bank}: {books - bank}, where BAL-467's residue is {residue}"
+    problems = []
+    if in_window != wanted:
+        problems.append(
+            f"Checking's movements before {next_day} are {sorted(in_window)}; "
+            f"the map names {sorted(wanted)}"
+        )
+    if books - bank != residue:
+        problems.append(
+            f"Checking's books read {books} on {BOUNDARY_DAY} against SECU's "
+            f"{bank}: {books - bank}, where BAL-467's residue is {residue}"
+        )
+    arms.grade(
+        not problems,
+        f"Checking on {BOUNDARY_DAY}: books {books}, SECU {bank}, apart by "
+        f"BAL-467's residue {residue} and nothing else; every Checking "
+        f"movement before {next_day} is one of the {len(wanted)} the map "
+        "names",
+        "; ".join(problems),
     )
-    sheet.say(f"- Checking on {BOUNDARY_DAY}: books {books}, SECU {bank}, "
-              f"apart by BAL-467's residue {residue} and nothing else; every "
-              f"Checking movement before {next_day} is one of the "
-              f"{len(wanted)} the map names")
 
 
-def _connect(clone: str):
+def _connect(clone: str, config_name: "str | None" = None):
     """Build an app pointed at *clone*, refusing anything it is not.
 
     **A money-moving harness names its own target.**  ``DATABASE_URL`` is an
@@ -2609,6 +3123,8 @@ def _connect(clone: str):
 
     Args:
         clone: The database this rehearsal is for.
+        config_name: The app configuration, ``None`` for the environment's
+            default (:func:`app.create_app`).
 
     Returns:
         The configured Flask application.
@@ -2622,7 +3138,7 @@ def _connect(clone: str):
             "'shekel' is the deployed database AND the shared dev runtime; "
             "clone one and rehearse against the copy"
         )
-    app = create_app()
+    app = create_app(config_name)
     # CSRF and strong session protection are both disabled for the rehearsal
     # and neither is under test: this forges a session because it has no
     # password for the database it is pointed at, exactly as
@@ -2641,38 +3157,87 @@ def _connect(clone: str):
     return app
 
 
-def main() -> None:
-    """Reconcile the map, perform the repair, verify, and write the sheet."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--clone", required=True,
-        help="the throwaway database this rehearsal writes to",
+#: What every connection of a ``--check`` run is opened with.
+_READ_ONLY = "-c default_transaction_read_only=on"
+
+
+def _connect_read_only(clone: str):
+    """Build an app whose every connection is READ-ONLY, for ``--check``.
+
+    **The SERVER enforces it, not this file**: libpq hands ``PGOPTIONS`` to
+    the server at connect, and the server then refuses any write in any
+    transaction of the session that does not itself ask for ``READ WRITE`` --
+    which no app code does (``app/db_transaction.py`` only ever asks for
+    ``READ ONLY``; grepped 2026-10-10) -- so a check that wrote would RAISE
+    rather than write.  It is set in this process's environment before the
+    app opens its engine, appended after anything the shell already set so it
+    wins, and
+    then READ BACK on the app's own session: a setting nobody reads back is a
+    claim, and one a later ``-c`` overrode would be a false one.
+
+    **The app is built with production's CONFIGURATION, because the
+    development build WRITES at boot** -- the configuration only: it connects
+    as whatever role ``DATABASE_URL`` names, and runs no entrypoint.
+    ``create_app`` creates the schemas and seeds the
+    reference tables for the development and testing configurations, and the
+    first read-only run of this check was refused there, at
+    ``CREATE SCHEMA IF NOT EXISTS`` (2026-10-10).  Those writes are idempotent
+    on a seeded copy, but "idempotent" is a claim about the copy and
+    read-only is a property of the run; production's build leaves both to its
+    deploy and writes nothing.
+
+    Args:
+        clone: The copy to grade.
+
+    Returns:
+        The configured Flask application, every connection read-only.
+
+    Raises:
+        SystemExit: From :func:`_connect`, or when the session it opened is
+            not read-only after all.
+    """
+    os.environ["PGOPTIONS"] = " ".join(
+        part for part in (os.environ.get("PGOPTIONS"), _READ_ONLY) if part
     )
-    parser.add_argument(
-        "--bank", required=True,
-        help="path to the Fidelity history CSV export",
-    )
-    parser.add_argument(
-        "--sheet", required=True,
-        help="where to write the performance sheet (outside every checkout)",
-    )
-    parser.add_argument(
-        "--residue", required=True, type=Decimal,
-        help="the payroll residue ledger row BAL-467 states, books less bank",
-    )
-    parser.add_argument(
-        "--add-earlier-paychecks", type=int, default=0, metavar="N",
-        help="perform 'Add earlier paychecks' for N first (act 0; measured)",
-    )
-    args = parser.parse_args()
+    app = _connect(clone, "production")
+    with app.app_context():
+        mode = db.session.execute(
+            db.text("show transaction_read_only")
+        ).scalar_one()
+    if mode != "on":
+        raise SystemExit(
+            f"--check opened {clone} with transaction_read_only {mode!r}; it "
+            "grades a copy only read-only"
+        )
+    return app
+
+
+def _export_summary(export: _Export) -> str:
+    """Return the line naming the export, which both modes print second.
+
+    Args:
+        export: The parsed export.
+
+    Returns:
+        Its span and how many dividends the repair records.
+    """
+    return (f"Fidelity export: {len(export.named)} days, {export.named[0]} "
+            f"to {export.named[-1]}; {len(export.recorded_dividends())} "
+            "dividends recorded by this repair")
+
+
+def _rehearse(args: argparse.Namespace) -> None:
+    """Reconcile the map, perform the repair, verify, and write the sheet.
+
+    Args:
+        args: The parsed command line.
+    """
     sheet = _Sheet(_sheet_path(args.sheet))
     export = _Export.read(args.bank)
     app = _connect(args.clone)
     sheet.say(f"# Account-10 repair: performance sheet ({args.clone}, "
               f"written {datetime.now():%Y-%m-%d %H:%M})")
-    sheet.say(f"Fidelity export: {len(export.named)} days, {export.named[0]} "
-              f"to {export.named[-1]}; {len(export.recorded_dividends())} "
-              "dividends recorded by this repair")
+    sheet.say(_export_summary(export))
     # **A run that ends early still records why.**  A refusal raised as one of
     # the two kinds this file raises is written with its sentence; anything
     # else leaves the STOPPED line below, and its traceback is on the console.
@@ -2687,13 +3252,15 @@ def main() -> None:
                 _ZERO_MONEY,
             )
             operator = _Operator(app, sheet)
-            created, equities = _perform(
-                operator, export, args.add_earlier_paychecks,
-            )
+            created = _perform(operator, export, args.add_earlier_paychecks)
             sheet.say("")
             sheet.say(f"{operator.acts} door submissions performed; verifying")
             _verify_ledger(export, sheet, before, modelled_before)
-            _verify_boundary(export, sheet, residue, created, equities)
+            found = _verify_post_state(export, sheet, residue)
+            assert found == created, (
+                f"the verification found act 7's row as transaction {found}, "
+                f"and act 7 created transaction {created}"
+            )
         sheet.say("")
         sheet.say("rehearsal complete")
         completed = True
@@ -2706,6 +3273,118 @@ def main() -> None:
             sheet.say("")
             sheet.say("STOPPED before the end: the console shows why")
         sheet.save()
+
+
+def _check(args: argparse.Namespace) -> None:
+    """Grade a copy the repair was PERFORMED on, writing nothing: ``--check``.
+
+    **One instrument for the performance, not a list read off the screen.**
+    The runbook's post-performance block compared only MONEY -- the scores and
+    the balance dumps -- and a twin left unarchived or dividends filed under
+    another income category each passed every one of those comparisons
+    (measured 2026-10-09).  A skipped act 8, or act 5's account-10 box left
+    alone, passes them too by REASONING, not measurement: each leaves a
+    Fidelity side on the day it borrows from Checking, which the map already
+    requires to be Fidelity's own, so no figure moves.  This runs the
+    rehearsal's own post-state arms (:func:`_verify_post_state`) on the copy
+    instead.
+
+    **What only the state BEFORE the acts can grade is PRINTED, not
+    asserted**: the posted ledger's class totals (the rehearsal asserts their
+    moves) and the Default Grid Account (act 10 puts back the owner's own,
+    which no post-state knows).  The runbook diffs this output on the
+    performed copy against the same mode's output on the rehearsed copy, so
+    nothing printed may vary between two copies on which the same acts were
+    performed: no database name, no clock, and no id of a row the acts
+    created.
+
+    **It writes nothing, and that is measured twice**: every connection is
+    read-only at the server (:func:`_connect_read_only`), and the posted
+    ledger's fingerprint is equal before and after.  It refuses the name
+    ``shekel`` (:func:`_connect`) and a copy no act has touched
+    (:func:`_require_repaired`).
+
+    Args:
+        args: The parsed command line.
+
+    Raises:
+        SystemExit: On a refusal (with its sentence), or ``1`` when an arm
+            fails -- every failed arm is then on the output, above the
+            ``CHECK FAILED`` line.
+    """
+    sheet = _Sheet(None)
+    export = _Export.read(args.bank)
+    app = _connect_read_only(args.clone)
+    sheet.say("# Account-10 repair: check of a repaired copy (read-only)")
+    sheet.say(_export_summary(export))
+    failure = None
+    with app.app_context():
+        _require_repaired()
+        fingerprint = _postings_fingerprint()
+        owner = db.session.get(Account, SUBJECT_ACCOUNT).user_id
+        sheet.say("")
+        sheet.say("## What the copy holds")
+        sheet.say("- posted ledger, by class (printed, not asserted: the "
+                  "rehearsed copy's check is what grades them):")
+        for name, total in sorted(_class_totals().items()):
+            sheet.say(f"  - {name}: {total}")
+        sheet.say("- Settings > General > Default Grid Account: "
+                  f"{_grid_choice(_grid_account(owner))}")
+        try:
+            _verify_post_state(export, sheet, args.residue)
+        except AssertionError as error:
+            failure = error
+        if _postings_fingerprint() != fingerprint:
+            raise SystemExit("the check MOVED the posted ledger")
+    sheet.say("- the check wrote nothing: its session was read-only and the "
+              "posted ledger is unchanged")
+    sheet.say("")
+    if failure is not None:
+        sheet.say(f"CHECK FAILED: {failure}")
+        raise SystemExit(1)
+    sheet.say("check complete")
+
+
+def main() -> None:
+    """Rehearse the repair on a clone, or ``--check`` a repaired copy."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--clone", required=True,
+        help="the copy this run is pointed at: a throwaway clone the "
+        "rehearsal writes to, or the repaired copy --check reads",
+    )
+    parser.add_argument(
+        "--bank", required=True,
+        help="path to the Fidelity history CSV export",
+    )
+    parser.add_argument(
+        "--sheet",
+        help="where to write the performance sheet (outside every checkout); "
+        "the rehearsal's, never --check's",
+    )
+    parser.add_argument(
+        "--residue", required=True, type=Decimal,
+        help="the payroll residue ledger row BAL-467 states, books less bank",
+    )
+    parser.add_argument(
+        "--add-earlier-paychecks", type=int, default=0, metavar="N",
+        help="perform 'Add earlier paychecks' for N first (act 0; measured)",
+    )
+    parser.add_argument(
+        "--check", action="store_true",
+        help="grade a copy the repair was PERFORMED on, read-only, instead of "
+        "rehearsing it",
+    )
+    args = parser.parse_args()
+    if args.check:
+        if args.sheet is not None or args.add_earlier_paychecks:
+            parser.error("--check writes nothing: no --sheet, no "
+                         "--add-earlier-paychecks")
+        _check(args)
+    else:
+        if args.sheet is None:
+            parser.error("the rehearsal needs --sheet")
+        _rehearse(args)
 
 
 if __name__ == "__main__":
