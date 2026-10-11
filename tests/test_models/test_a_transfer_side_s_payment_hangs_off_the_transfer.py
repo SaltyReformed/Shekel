@@ -119,8 +119,8 @@ def _has_side_links():
 #: none of: the deleted-row rule's transfer arm and the band rule's four.
 #: Spelled here, not read off the modules.  A refused upgrade reads none of
 #: them, which a renamed attachment would read too, so each case asserts all
-#: five exist once its final upgrade has run: that is where a rename fails
-#: (the cp1f review's L-3).
+#: five exist once this revision's last upgrade in it has run, before the
+#: step above's: that is where a rename fails (the cp1f review's L-3).
 _RULE_TRIGGERS = (
     "ck_hidden_transfer_holds_nothing",
     "ck_side_record_band_on_insert", "ck_side_record_band_on_update",
