@@ -16,9 +16,9 @@ side.**  Until now each side's record hung off its twin
 (``transaction_entries.transaction_id`` = the twin's id), so every reader of a
 transfer's money walked a row whose only job was to copy the transfer.  After
 this revision every STORED record names its transfer by one of two SIDE LINKS,
-and no twin holds one.  **No figure, day, account or statement link moves**: the
-same 44 rows keep their ids, amounts, days, bases, accounts, matches and
-postings, and only the column that says what they are filed under changes.
+and no twin holds one.  **No figure, day, account or statement link moves**:
+every record keeps its id, amount, day, basis, account, matches and postings,
+and only the column that says what it is filed under changes.
 
   1. **``budget.transfers``** gains the superkeys ``uq_transfers_id_from_account``
      / ``uq_transfers_id_to_account`` and the owner keys
@@ -63,13 +63,13 @@ before either rule is installed, it refuses the same way while a transfer's
 records break the band rule (step 5).  Every count is 0 where the transfer
 service wrote the rows.
 
-**Measured on the 2026-10-08 14:34 EDT production dump** (at ``1f431fec6547``):
-179 transfers, 358 twins, 44 movements under a twin -- 22 per side, every one a
-dated settlement record on its side's endpoint, under a live twin of a live
-Paid transfer; 0 transfers naming another owner's account; 19 statement match
-members naming one of the 44 (they key by the movement's id and account, which
-do not change).  0 refused.  The migration prints its own counts so the operator
-compares them with the rehearsal's.
+**Measured on a production dump** (at ``1f431fec6547``; the figures stay in
+the lane's handoff record, ruling **R-BAL132**): every movement under a twin
+is a dated settlement record on its side's endpoint, under a live twin of a
+live Paid transfer, the two sides equal in number; no transfer names another
+owner's account; the statement match members naming one of them key by the
+movement's id and account, which do not change.  None refused.  The migration
+prints its own counts so the operator compares them with the rehearsal's.
 
 **The downgrade re-attaches each record to its side's LIVE twin** (a transfer
 has at most one per side, ``uq_transactions_transfer_type_active``) and
@@ -105,10 +105,10 @@ no app write between, passes: each twin's status is its transfer's, and its
 day, basis and link are its side's record's (``NULL`` where it holds none) --
 save a ``$0.00`` close's twins, which that seam dated on the day the close was
 stated with no record beside them, and which are read for status alone (the
-cp2c review's M-1; the link too since ``X-bi-6-4d-3``'s cp1 review, as below).  On the 2026-10-08 production dump it reads
-zero before this revision and after the upgrade (358 twins, 102 of them
-deleted, 44 records; no ``$0.00`` close), and the downgrade through it is
-digest-identical to the pristine restore.
+cp2c review's M-1; the link too since ``X-bi-6-4d-2``'s cp5 review, L-3, as
+below).  On a production dump (holding deleted twins and records, and no
+``$0.00`` close) it reads zero before this revision and after the upgrade, and
+the downgrade through it is digest-identical to the pristine restore.
 
 **What a ``$0.00`` close's day becomes.**  Ruling **R-BAL230** gives a
 ``$0.00`` close no day at this revision ("a $0.00 close moved no money, so it
@@ -278,8 +278,8 @@ UPDATE budget.transaction_entries e
 #: downgrade leaves on the twin where the code below reads them (a ``$0.00``
 #: close made AT this revision leaves its twins Projected, which the status
 #: reads).  Keyed on the SIDE holding no record, live or not, so a deleted
-#: twin whose side does hold one is still read against none (the cp1 review
-#: of ``X-bi-6-4d-3``, L-3 of ``X-bi-6-4d-2``'s cp5 review).  ``(transfer id,
+#: twin whose side does hold one is still read against none (L-3 of
+#: ``X-bi-6-4d-2``'s cp5 review, built at ``X-bi-6-4d-3``).  ``(transfer id,
 #: twin id, the facts that differ)``.
 _DRIFTED_TWINS_SQL = f"""
 SELECT transfer_id, twin_id, facts FROM (

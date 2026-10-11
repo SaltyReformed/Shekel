@@ -41,8 +41,10 @@ link and nothing reads a twin, so this revision deletes them:
 **No money moves.**  No balance reads a twin (Transfer Invariant 5: a
 projected leg is drawn off its transfer and a settled one is its side's dated
 movement), and a twin held no record (``e616adf7fe22`` moved every one onto
-its side link) and no statement link of its own that its side's record does
-not also carry; the deletes write audit rows, as any delete does.  A twin's
+its side link).  A ``$0.00`` close's twins alone held that close's day, basis
+and statement link, which no reader at this revision reads (the close is its
+transfer's settled status and no movement) and which the copy keeps for the
+downgrade.  The deletes write audit rows, as any delete does.  A twin's
 FIGURE was its transfer's: each was born declaring ``parent_transfer`` and
 storing none, and the update below this revision wrote a figure the owner
 typed onto both legs as well (``_amount.apply_amount_ownership``).  The
@@ -56,8 +58,9 @@ below).
 (ruling **R-BAL260**): a twin whose transfer was not written since the upgrade
 comes back with every column it was kept with -- its own id, creation and
 update times, version counter, type, name, category, figure and day -- so a
-downgrade straight after the upgrade reproduces every twin column for column,
-and an older revision's own downgrade that finds a twin by its id
+downgrade straight after the upgrade reproduces column for column every twin
+that agreed with its transfer at the upgrade (Transfer Invariant 3), and an
+older revision's own downgrade that finds a twin by its id
 (``c4e91a7b2d38``'s ``system.loan_due_date_backfill``) still finds it.  Only
 what its transfer does not hold is read live: the side's payment record's day,
 basis and link when the side holds one now (a ``$0.00`` close kept with its
@@ -65,8 +68,15 @@ day keeps it while its side still holds no record and its transfer is still in
 the settled status it was kept in).  The transfer's own mirrored fields --
 ``user_id``, ``account_id``, ``pay_period_id``, ``scenario_id``, ``status_id``,
 ``due_date``, ``is_override``, ``is_deleted`` -- are also re-read from it,
-which changes nothing for an unwritten transfer and corrects a twin whose
-transfer a raw statement changed without raising its counter.
+which changes nothing for a twin that agreed with its unwritten transfer.  It
+corrects a twin that already DISAGREED with its transfer at the upgrade (a
+broken Invariant 3, which the upgrade does not refuse) and one whose transfer
+a raw statement changed without raising its counter: each comes back as its
+transfer says, which ``e616adf7fe22``'s census below requires, so the
+round trip is not exact for such a twin.  The kept day's two guards beside it
+(the twin was kept in its transfer's present status, and its side held no
+record then) answer only those same two states, since an app write that
+changes a status or a record raises the counter.
 
 **A twin whose transfer WAS written since is brought in line with it** by the
 ONE rule that also builds the twins of a transfer created since
@@ -88,10 +98,10 @@ disagree with it; a ``$0.00`` close made after the upgrade has no day anywhere
 (ruling **R-BAL230**), so its twins come back settled with no day, the
 dateless settled pair the code below calls legacy (finding **N-181**).  **Such
 a twin keeps its kept id, creation and update times and version counter while
-its content changes.**  That is safe because no door below this revision
-edits a twin (Transfer Invariant 4: the transaction doors refuse a row naming
-a transfer, and every mutation goes through the transfer service), so no form
-can be holding a twin's counter to compare against.
+its content changes.**  That is safe because no form below this revision
+pins a TWIN's counter: the transaction doors refuse a row naming a transfer
+(Transfer Invariant 4), and the transfer popovers pin the TRANSFER's counter,
+so no stale twin counter can be compared against the rebuilt row.
 
 **A kept value that no longer fits comes back as the transfer says** (ruling
 **R-BAL261**, "Use the transfer's").  The upgrade releases what the twins held
@@ -108,7 +118,11 @@ A transfer created after the upgrade has no kept twins, so it gets two new ones
 by the same rule (new ids, version 1, created when the transfer was, updated at
 the downgrade).  A kept twin whose transfer was since hard-deleted is not
 restored: the code below this revision would have cascaded it away with its
-transfer.  The copy is dropped last.
+transfer.  The copy is dropped last.  A database built AT this revision
+(``scripts/init_database.py``: ``create_all``, then a stamp) never ran the
+upgrade and so holds no copy and no twin; the downgrade reads it as an empty
+copy -- restores none and builds two for every transfer -- so the undo finishes
+there too (ruling R-BAL261).
 
 ``tests/test_models/test_a_transfer_is_one_row.py`` drives the shipped
 ``upgrade`` / ``downgrade``, each refusal, the exact round trip, the rebuild of
@@ -147,9 +161,11 @@ _NAMED_AT_MOST = 20
 #: or be refused, so a twin any of them names refuses the upgrade instead.
 #: Read rather than listed so a key the schema gains is covered without a
 #: second list to keep in step with it; a composite key contributes the column
-#: paired with ``id``.
+#: paired with ``id``.  DISTINCT because one column can carry two keys
+#: (``transaction_entries.transaction_id`` holds a single-column key and the
+#: composite owner key), and one reference is one reference.
 _FOREIGN_KEYS_INTO_TRANSACTIONS_SQL = """
-SELECT quote_ident(n.nspname) || '.' || quote_ident(cl.relname),
+SELECT DISTINCT quote_ident(n.nspname) || '.' || quote_ident(cl.relname),
        quote_ident(a.attname)
   FROM pg_constraint c
   JOIN pg_class cl ON cl.oid = c.conrelid
@@ -264,6 +280,11 @@ SELECT t.id, t.transfer_id, to_jsonb(t), x.version_id,
 
 _DELETE_TWINS_SQL = "DELETE FROM budget.transactions WHERE transfer_id IS NOT NULL"
 
+#: Whether the copy is missing: a database built AT this revision by
+#: ``scripts/init_database.py`` never ran the upgrade that creates it (the
+#: module docstring's last paragraph).
+_COPY_ABSENT_SQL = "SELECT to_regclass('system.transfer_twin_purge') IS NULL"
+
 #: THE ONE RULE for a twin the downgrade writes from its transfer: each side of
 #: each transfer as the create door below this revision built it, with the
 #: side's record's day, basis and link (``e616adf7fe22``'s contract).  Both
@@ -321,7 +342,11 @@ SELECT x.id AS transfer_id, side.is_income, side.account_id, x.status_id,
 #: ``$0.00``-close day fits while ``budget.books_hold`` admits it on its
 #: account (the comparison ``ck_movement_after_books_open`` asks at COMMIT),
 #: and a kept link while its statement still exists on that account (the pair
-#: ``fk_transactions_reconciled_by`` names).
+#: ``fk_transactions_reconciled_by`` names; a statement never changes
+#: accounts, so the account term only states the key's own question).  A
+#: written transfer's twins take the transfer's category whatever the kept one
+#: was, so ``category_gone`` is asked of an unwritten one alone and the printed
+#: count names only the twins a fallback actually changed.
 _RESTORE_KEPT_SQL = f"""
 WITH staged AS (
     SELECT p.row_id, gate.written,
@@ -502,6 +527,9 @@ def upgrade():
 def downgrade():
     """Restore every kept twin, build the missing ones, drop the copy."""
     bind = op.get_bind()
+    copy_absent = bind.execute(sa.text(_COPY_ABSENT_SQL)).scalar_one()
+    if copy_absent:
+        op.execute(_CREATE_COPY_SQL)
     op.drop_constraint(
         "ck_transactions_names_no_transfer", "transactions",
         schema="budget", type_="check",
@@ -515,5 +543,7 @@ def downgrade():
         f"X-bi-6-4d-3 downgrade: {restored} kept twin(s) restored, {rebuilt} "
         f"of them in line with a transfer written since; {unfit} came back "
         "as the transfer says because a kept value no longer fits (ruling "
-        f"R-BAL261); {built} built new for transfers holding none."
+        f"R-BAL261); {built} built new for transfers holding none"
+        + (" (no copy existed: a database built at this revision)."
+           if copy_absent else ".")
     )
