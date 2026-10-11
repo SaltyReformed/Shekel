@@ -6550,8 +6550,7 @@ def assert_pay_period_invariants(db_session, user_id):
 
       1. Every account carries at least one balance ASSERTION, so a producer
          can resolve a balance for it.
-      2. Every transfer has exactly two shadow transactions, both in the
-         transfer's (still-existing) period.
+      2. Every transfer is in one of the user's (still-existing) periods.
       3. No transaction references a pay period that no longer exists.
 
     **FOUR invariants were DELETED at plan step ``pay_calendar:C4-c``, and
@@ -6607,24 +6606,17 @@ def assert_pay_period_invariants(db_session, user_id):
             "assertion, so no producer can resolve a balance for it"
         )
 
-    # 2. Transfer invariant: exactly two shadows, both in the transfer's
-    #    own (surviving) period.
+    # 2. Every transfer is in one of the user's own (surviving) periods.  It
+    #    also counted two shadows per transfer, each in the transfer's period,
+    #    until plan step balance:X-bi-6-4d-3 (ruling R-BAL167 class 4): a
+    #    transfer is one row there and ck_transactions_names_no_transfer
+    #    refuses a row naming one, so its legs are drawn off the transfer
+    #    itself and have no period of their own to disagree with.
     for transfer in db_session.query(Transfer).filter_by(user_id=user_id):
-        shadows = transfer.shadow_transactions
-        assert len(shadows) == 2, (
-            f"user {user_id}: transfer {transfer.id} has {len(shadows)} "
-            f"shadow transactions, expected exactly 2"
-        )
         assert transfer.pay_period_id in period_ids, (
             f"user {user_id}: transfer {transfer.id} is in period "
             f"{transfer.pay_period_id}, not among the user's periods"
         )
-        for shadow in shadows:
-            assert shadow.pay_period_id == transfer.pay_period_id, (
-                f"user {user_id}: shadow {shadow.id} of transfer "
-                f"{transfer.id} is in period {shadow.pay_period_id}, not the "
-                f"transfer's period {transfer.pay_period_id}"
-            )
 
     # 3. No transaction (scoped via its account) references a period that
     #    no longer exists -- the CASCADE FK enforces this; re-checking
