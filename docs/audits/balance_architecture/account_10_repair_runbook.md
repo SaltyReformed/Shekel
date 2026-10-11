@@ -170,8 +170,9 @@ these are the windows it closes, each measured act by act on the sheet's AFTER l
   in your balances on today's date for its full figure.
 * **If an Add goes through twice** (two new rows where you made one), remove the second with
   **Delete this row** on its card while it is still unpaid. Never mark it Paid or Received, which
-  counts its money twice, and never Cancel it: a cancelled row has no cell, so no page reaches it
-  to delete it, and the check then fails and the repair is not finished (ruling **R-BAL262**).
+  counts its money twice (the check fails on it, and that remedy is not rehearsed), and never
+  Cancel it: a cancelled row has no cell, so no page reaches it to delete it, and the check then
+  fails and the repair is not finished (ruling **R-BAL262**).
 
 **A refused save wrote nothing, and every save before it stands. It shows one of four ways**, and
 each means stop and read it:
@@ -282,9 +283,11 @@ with a fingerprint of the posted ledger either side of each flip.
 
 **Step 2's flash is this act's only visible check of the restatement.** Measured: with step 2
 skipped and step 3 done, the twin still reads 0.00, but its whole asserted balance is booked as a
-loss of interest. The post-performance comparison catches it, as a balance difference on account
-2 and as the check's line on account 2's corrections: either means act 2's restatement did not
-happen.
+loss of interest. The post-performance check names it, on its lines for account 2's opening and
+account 2's corrections. **Step 3's day is checked only there too**: the 0.00 typed as of another
+day leaves the old figure governing 2026-04-06 and moves no later balance, and the check's line
+beginning "act 2, step 3" names it. A balance difference on account 2 is read beside those lines,
+never alone.
 
 *After:* the twin holds **0.00**, and its corrections and modelled interest are **0.00**: the first
 window is closed. This is the act whose effect is plainly visible on a balance.
@@ -489,14 +492,16 @@ not move. Asset and Equity move by the restatements, whose figures are the repai
   accounts' own pages, the grid and the savings page, and no others.
 
 **What the rehearsal also verifies, on the sheet's last section**: every class's move; the twin
-holds 0.00, is archived, and its books open on their own day, 2026-03-26, holding 0.00; the
+holds 0.00, is archived, and its books open on their own day, 2026-03-26, holding 0.00; its 0.00
+is the assertion governing 2026-04-06; the
 twin's and account 10's corrections and modelled interest total 0.00; transfer 1 and its rows are
 Cancelled (the grey-button trap); category 33 is named *Income: Interest & Dividends* and its
 counted rows are exactly the five dividends, on account 10, named Dividend, each on the export's
 day for the export's amount; account 10 asserts Fidelity's close on 2026-07-31; both books open
 2026-03-25 holding their banks' closes; all seven Fidelity sides record Fidelity's day as their
 own; account 10 reads Fidelity's close on 2026-03-26; act 7's row is Checking's one *Family:
-Birthday* row on 2026-03-26 outside the map, named as ruled, moving the bank line's amount; each
+Birthday* row on 2026-03-26 outside the map, named as ruled, moving the bank line's amount; no
+second row of that name in that category is counted on any day; each
 row acts 7 and 9 created is in the paycheck holding its day; no row those Adds made is left
 uncounted (a duplicate, or one never settled); and Checking reads SECU's close on 2026-03-26
 apart by BAL-467's residue and nothing else, with every Checking movement before SECU's next
@@ -556,40 +561,53 @@ no act has touched, and runs the rehearsal's
 own verification (the list above, all but the class moves) on it, reporting EVERY arm that fails
 rather than the first. What only the state before the acts can grade, it PRINTS: the posted
 ledger's total for each account class, and Settings > General > Default Grid Account (act 10 puts
-the owner's own back). Its output names no database, no time and no id of a row an act created, so
-on two copies of the same acts it is identical, and the line above compares the performed copy's
-with the rehearsed copy's. Reading `CHECK DIFFERS`:
+the owner's own back). A PASSING check's output names no database, no time and no id of a row an
+act created, so on two copies of the same acts it is identical, and the line above compares the
+performed copy's with the rehearsed copy's; a `FAILS:` line may name such an id. Reading
+`CHECK DIFFERS`:
 
 * a `- FAILS:` line names the act that did not land: act 1 (transfer 1 not Cancelled: the grey
   Cancel); act 2 (the twin not archived, its books not opening on their own day at 0.00, or its
-  corrections not zero); acts 3 and 4 (an opening mistyped); act 3 or act 5 (account 10's books
-  off Fidelity's close on 2026-03-26); act 5 or act 8 (a Fidelity side still borrowing Checking's
-  day); act 6 (a row not re-dated shows only on Checking's 2026-03-26 line, as a movement the map
-  does not name there and a gap beyond the residue); act 7 (its row's category, name or figure);
-  act 9 (the category, or the dividends); act 7 or act 9 (a new row in the wrong paycheck, or a
-  row left uncounted: the line says whether it is an unfinished row or a duplicate, and a
-  CANCELLED one means stop, ruling **R-BAL262**); act 10;
+  corrections not zero; the line beginning "act 2, step 3" is its 0.00 typed as of another day);
+  acts 3 and 4 (an opening mistyped); act 3 or act 5 (account 10's books off Fidelity's close on
+  2026-03-26); act 5 or act 8 (a Fidelity side still borrowing Checking's day); act 6 (a row not
+  re-dated shows only on Checking's 2026-03-26 line, as a movement the map does not name there and
+  a gap beyond the residue); act 7 (its row's category, name or figure; or a second row of its name
+  COUNTED, a duplicate Add marked Paid: stop and report it); act 9 (the category; the dividends;
+  account 10's corrections not zero, which a dividend missing or left unfinished fails as well);
+  act 7 or act 9 (a new row in the wrong paycheck, or a row left uncounted: the line says whether
+  it is an unfinished row or a duplicate, and a CANCELLED one means stop, ruling **R-BAL262**); the
+  line beginning "act 10";
 * a differing class total or Default Grid Account line, with no `FAILS:` line, is money or a
   setting the post-state cannot grade alone: read it beside the score and balance lines.
 
-**A FAILS line is read before anything else is done, and one remedy is rehearsed**: a duplicate's
-**Delete this row** (measured 2026-10-10, below). For any other, stop and report it. Performing the
-missed act now and pasting the POST block again (it rebuilds `$P` from a fresh dump) is the likely
-remedy, but it is not rehearsed, and some acts have an order the late one would break.
+**A FAILS line is read before anything else is done, and two remedies are measured** (2026-10-10,
+below): an unpaid duplicate's **Delete this row**, and the two remaining saves of a row an Add made
+and left unsettled, performed when the check names it, after act 10 if that is when. For any
+other, stop and report it. Performing the missed act now and pasting the POST block again (it
+rebuilds `$P` from a fresh dump) is the likely remedy, but it is not rehearsed, and some acts have
+an order the late one would break.
 
-**Measured 2026-10-10**, on copies of the 2026-10-09 dump: fourteen copies on which the acts were
-performed with ONE act wrong (act 8 skipped; act 5's account-10 box left; the twin left unarchived;
-the twin restated onto 2026-03-25; the dividends under *Income: Other Income*; the grey Cancel;
-act 2's restatement skipped; act 10 skipped; act 7 under *Family: Subscriptions*; act 7's row, and
-then the 2026-05-29 dividend, filed one paycheck late; act 7's Add, and then a dividend's,
-submitted twice with the copy left unpaid; a dividend's copy Cancelled) each failed the check on
-that act's own line and passed every other, except two: act 2's restatement skipped fails both
-of act 2's lines it touches (the twin's opening, and its corrections), and act 7's wrong category
-also fails Checking's boundary census, where its row is counted. Only act 2's restatement skipped
-moved a class total. A copy whose dividend Add went through twice and whose copy was then removed
-with **Delete this row** gave the same check output as the clean rehearsal. So did a rehearsal on
-a copy whose every id sequence was first moved on by 1000, so that act 7's row was created under
-another id: the output names no id an act creates. An unperformed copy was refused.
+**Measured 2026-10-10**, on copies of that evening's dump: eighteen copies on which the acts were
+performed with ONE act wrong (act 8 skipped; act 5's account-10 box left; the twin left
+unarchived; the twin restated onto 2026-03-25; the twin's 0.00 asserted as of 2026-04-07, and as
+of 2026-07-31; the dividends under *Income: Other Income*; the grey Cancel; act 2's restatement
+skipped; act 10 skipped; act 7 under *Family: Subscriptions*; act 7's row, and then the 2026-05-29
+dividend, filed one paycheck late; act 7's Add, and then a dividend's, submitted twice with the
+copy left unpaid; act 7's copy marked Paid, dated today, and dated 2026-04-02; a dividend's copy
+Cancelled) each failed the check on that act's own line and passed every other, except two: act
+2's restatement skipped fails both of act 2's lines it touches (the twin's opening, and its
+corrections), and act 7's wrong category also fails Checking's boundary census, where its row is
+counted. Three moved a class total: act 2's restatement skipped, and act 7's copy marked Paid on
+either day. Two copies whose Add went through twice, act 7's and a dividend's, and whose copy was
+then removed with **Delete this row**, gave the same check output as the clean rehearsal. So did
+three on which one row an Add made was left unsettled (act 7's, the 2026-05-29 dividend, the
+2026-07-31 dividend) and its two remaining saves were made after act 10; left unsettled, each
+failed three lines (act 7's: its row's, the leftover line and Checking's 2026-03-26 gap; a
+dividend's: account 10's corrections, the dividend census and the leftover line). So did a
+rehearsal on a copy whose every id sequence was first moved on by 1000, so that act 7's row was
+created under another id: a passing check names no id an act creates. An unperformed copy was
+refused.
 
 **Five of Fidelity's days are never compared.** 2026-01-30, 02-24, 02-26, 02-27 and 03-12 fall on
 or before the books' opening and are inside the opening equity (R-HG); the scorer prints their

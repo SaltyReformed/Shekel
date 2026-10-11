@@ -2608,7 +2608,10 @@ def _verify_post_state(
     new row is filed in, and a duplicate or unfinished row left behind -- all
     three found passing every other arm and both scores by the review of
     2026-10-10 (:func:`_grade_twin`, :func:`_grade_paychecks`,
-    :func:`_grade_leftovers`).
+    :func:`_grade_leftovers`).  The second review that day found two more
+    passing every other arm, each now its own line: the DAY of the twin's
+    0.00 assertion (:func:`_grade_assertion`), and a duplicate of act 7's
+    row marked Paid (:func:`_grade_act7_copies`).
 
     Args:
         export: The parsed export.
@@ -2632,7 +2635,10 @@ def _verify_post_state(
     _grade_twin(arms, context, last)
     _grade_dropped_transfer(arms)
     accepted = _grade_dividends(arms, export, subject.user_id)
-    _grade_last_close(arms, export)
+    _grade_assertion(
+        arms, SUBJECT_ACCOUNT, export.closings[last], last,
+        "act 10, Fidelity's close",
+    )
     _grade_openings(arms, export)
     _grade_fidelity_sides(arms)
     subject_books = cash_balance_at(subject, context, BOUNDARY_DAY)
@@ -2647,6 +2653,7 @@ def _verify_post_state(
     if created is not None:
         accepted.append((created, BOUNDARY_DAY))
     _grade_paychecks(arms, accepted)
+    _grade_act7_copies(arms)
     _grade_leftovers(arms)
     _grade_checking_boundary(arms, context, residue, created)
     if arms.failed:
@@ -2658,7 +2665,7 @@ def _verify_post_state(
 
 
 def _grade_twin(arms: _Arms, context: BalanceContext, last: date) -> None:
-    """Grade act 2: the twin zeroed and archived, and both windows closed.
+    """Grade act 2: the twin zeroed on its own days, archived, windows closed.
 
     Args:
         arms: The arms so far.
@@ -2682,6 +2689,9 @@ def _grade_twin(arms: _Arms, context: BalanceContext, last: date) -> None:
         f"account {TWIN_ACCOUNT} opens {opening.opened_on} at "
         f"{opening.opening_equity}, where act 2 restates it to "
         f"{_ZERO_MONEY} on its own day, {TWIN_OPENED_ON}",
+    )
+    _grade_assertion(
+        arms, TWIN_ACCOUNT, _ZERO_MONEY, TWIN_ASSERTED_ON, "act 2, step 3",
     )
     for account_id in (TWIN_ACCOUNT, SUBJECT_ACCOUNT):
         corrections = _account_trueup_total(account_id)
@@ -2727,7 +2737,9 @@ def _grade_dividends(
     a dividend filed under another category is missing here, one on another
     account holds the wrong fact, and a stray counted row is one too many.  A
     row the fold does not count -- an Add never settled, or a duplicate one --
-    is :func:`_grade_leftovers`' to name, so that one slip fails one line.
+    is :func:`_grade_leftovers`' to name, so a duplicate left unpaid fails
+    that line alone; a dividend left unfinished is also MISSING here, and
+    its absence leaves account 10's corrections nonzero, so it fails three.
 
     Args:
         arms: The arms so far.
@@ -2815,14 +2827,17 @@ def _grade_paychecks(arms: _Arms, rows: "list[tuple[int, date]]") -> None:
     one paycheck early or late moves its money on the right day, so every
     other arm and both scores pass it, and only the balance dump differs, in
     the grid's columns, naming no act (measured by adversarial review
-    2026-10-10).  Graded only on rows the other arms ACCEPTED, so a row whose
-    day or figure is wrong fails there and not here too.  No other act types
-    a paycheck: re-dating moves a day and not a column.
+    2026-10-10).  **Graded only on rows whose DAY another arm has already
+    established**: each dividend the census accepted, and act 7's row as
+    :func:`_unrecorded_row` found it -- on BOUNDARY_DAY, whatever its name or
+    figure, which that arm grades -- so a row on the wrong day fails there
+    and not here too.  No other act types a paycheck: re-dating moves a day
+    and not a column.
 
     Args:
         arms: The arms so far.
         rows: ``(transaction id, the day its money moved)`` for act 7's row
-            and each accepted dividend.
+            as found and each accepted dividend.
     """
     astray = []
     for txn_id, day in rows:
@@ -2843,6 +2858,68 @@ def _grade_paychecks(arms: _Arms, rows: "list[tuple[int, date]]") -> None:
     )
 
 
+def _act7_rows() -> "list[Transaction]":
+    """Return every live row an Add of act 7 can have made.
+
+    Every live row on Checking in act 7's category that carries act 7's name
+    and does not RECUR: the owner's own birthday rows in that category
+    include a recurring item of that very name, whose Projected rows are
+    plans, not an Add's.  **Asked of ``Transaction.recurs``, not of
+    ``template_id``**: the Add modal gives every row it makes a one-off
+    definition of its own, so "has no template" matched nothing, act 7's own
+    row included, and a duplicate passed (measured 2026-10-10).  **Keyed on
+    the NAME because the category is not empty**: the copies of 2026-10-10
+    hold a settled one-off there under another name, and none under this one
+    before act 7.  A copy that held one would fail its own rehearsal on
+    :func:`_grade_act7_copies` or :func:`_grade_leftovers`, so the premise
+    is graded on every copy the repair starts from.
+
+    Returns:
+        The rows, any status, any day.
+    """
+    return [
+        txn for txn in db.session.query(Transaction).filter_by(
+            account_id=CHECKING_ACCOUNT, category_id=UNRECORDED_CATEGORY,
+            name=UNRECORDED_NAME, is_deleted=False,
+        ).all()
+        if not txn.recurs
+    ]
+
+
+def _grade_act7_copies(arms: _Arms) -> None:
+    """Grade act 7's Add: no second copy of its row is COUNTED, on any day.
+
+    **A duplicate Add marked Paid passed every other arm** (adversarial
+    review 2026-10-10, dated today and dated 2026-04-02): :func:`_unrecorded_row`
+    looks only on BOUNDARY_DAY, Checking's boundary census ends at SECU's next
+    posted day, and :func:`_grade_leftovers` names only rows no fold counts.
+    Act 9's rows have no such gap, because :func:`_grade_dividends` counts
+    its category whole; this counts act 7's rows whole.  **At most ONE, not
+    exactly one**: a row missing or on the wrong day is :func:`_unrecorded_row`'s
+    and the boundary census's to name, and an uncounted one is
+    :func:`_grade_leftovers`', so none of those slips fails this line too.
+    The remedy for a copy marked Paid is not rehearsed, so the line says
+    stop.
+
+    Args:
+        arms: The arms so far.
+    """
+    counted = sorted(
+        (moved.day, moved.delta)
+        for _, moved in _counted(_act7_rows()) if moved is not None
+    )
+    arms.grade(
+        len(counted) <= 1,
+        f"Checking counts no second row named {UNRECORDED_NAME} in category "
+        f"{UNRECORDED_CATEGORY}",
+        f"Checking counts {len(counted)} rows named {UNRECORDED_NAME!r} in "
+        f"category {UNRECORDED_CATEGORY}, "
+        + "; ".join(f"{delta} on {day}" for day, delta in counted)
+        + ", where act 7 records one: a duplicate Add marked Paid counts its "
+        "money twice. STOP and report it; removing it is not rehearsed",
+    )
+
+
 def _grade_leftovers(arms: _Arms) -> None:
     """Grade acts 7 and 9's Adds: no row they made is left uncounted.
 
@@ -2851,15 +2928,11 @@ def _grade_leftovers(arms: _Arms) -> None:
     by adversarial review 2026-10-10 on act 7, it passed every other arm and
     both scores.  The rows an Add of these acts makes are every live row in
     category 33, which held nothing before act 9 (:func:`_repair_markers`),
-    and every live row on Checking in act 7's category that carries act 7's
-    name and does not RECUR: the owner's own birthday rows in that category
-    include a recurring item of that very name, whose Projected rows are
-    plans, not leftovers.  **Asked of ``Transaction.recurs``, not of
-    ``template_id``**: the Add modal gives every row it makes a one-off
-    definition of its own, so "has no template" matched nothing, act 7's own
-    row included, and a duplicate passed (measured 2026-10-10).  A row an
-    Add made that the fold does not count is either an unfinished row or a
-    duplicate, and the failure says which remedy is which.
+    and :func:`_act7_rows`.  A row an Add made that the fold does not count
+    is either an unfinished row or a duplicate, and the failure says which
+    remedy is which.  Finishing a row's two remaining saves late, after act
+    10, leaves the same check as a clean rehearsal: measured 2026-10-10 on
+    act 7's row and on the 2026-05-29 and 2026-07-31 dividends.
 
     **A CANCELLED one fails too and is not the operator's to remove** (ruling
     **R-BAL262**, 2026-10-10): it moves no money but states an expected row
@@ -2870,19 +2943,11 @@ def _grade_leftovers(arms: _Arms) -> None:
         arms: The arms so far.
     """
     made = [
-        txn for txn in db.session.query(Transaction).filter(
-            Transaction.is_deleted.is_(False),
-            db.or_(
-                Transaction.category_id == DIVIDEND_CATEGORY_ID,
-                db.and_(
-                    Transaction.account_id == CHECKING_ACCOUNT,
-                    Transaction.category_id == UNRECORDED_CATEGORY,
-                    Transaction.name == UNRECORDED_NAME,
-                ),
-            ),
+        txn for txn in db.session.query(Transaction).filter_by(
+            category_id=DIVIDEND_CATEGORY_ID, is_deleted=False,
         ).all()
         if not txn.recurs
-    ]
+    ] + _act7_rows()
     left = sorted(
         (
             txn.category_id, txn.account_id, txn.name, is_cancelled(txn),
@@ -2918,25 +2983,39 @@ def _grade_leftovers(arms: _Arms) -> None:
     )
 
 
-def _grade_last_close(arms: _Arms, export: _Export) -> None:
-    """Grade act 10: account 10 asserts Fidelity's close on the export's last day.
+def _grade_assertion(
+    arms: _Arms, account_id: int, balance: Decimal, observed_on: date,
+    act: str,
+) -> None:
+    """Grade one assertion an act makes: the one GOVERNING its day holds it.
+
+    Acts 2 and 10 each assert a balance on a stated day.  **Asked of the
+    assertion governing THAT day**, so the same figure typed under another
+    day fails: the older assertion still governs the stated one.  For the
+    twin's zero typed as of a LATER day no other arm sees it, because the
+    zero governs every day after either way (a one-digit slip measured
+    passing every line and both scores by adversarial review 2026-10-10);
+    for act 10, after act 9 every correction is already zero, so no other
+    arm sees the act at all.
 
     Args:
         arms: The arms so far.
-        export: The parsed export.
+        account_id: The account asserted on.
+        balance: What the act asserts.
+        observed_on: The day it asserts it for.
+        act: The act that asserts it, and what the figure is; it leads the
+            line.
     """
-    last = export.named[-1]
-    governing = cash_ledger.governing_anchor_on(SUBJECT_ACCOUNT, last)
+    governing = cash_ledger.governing_anchor_on(account_id, observed_on)
     held = None if governing is None else (
         governing.balance, governing.observed_on,
     )
     arms.grade(
-        held == (export.closings[last], last),
-        f"account {SUBJECT_ACCOUNT} asserts Fidelity's close "
-        f"{export.closings[last]} on {last}",
-        f"account {SUBJECT_ACCOUNT}'s assertion governing {last} is "
+        held == (balance, observed_on),
+        f"{act}: account {account_id} asserts {balance} on {observed_on}",
+        f"{act}: account {account_id}'s assertion governing {observed_on} is "
         f"{'none' if held is None else f'{held[0]} on {held[1]}'}, not "
-        f"Fidelity's close {export.closings[last]} that day: act 10 asserts it",
+        f"{balance} on that day",
     )
 
 
@@ -3294,9 +3373,10 @@ def _check(args: argparse.Namespace) -> None:
     moves) and the Default Grid Account (act 10 puts back the owner's own,
     which no post-state knows).  The runbook diffs this output on the
     performed copy against the same mode's output on the rehearsed copy, so
-    nothing printed may vary between two copies on which the same acts were
-    performed: no database name, no clock, and no id of a row the acts
-    created.
+    nothing a PASSING check prints may vary between two copies on which the
+    same acts were performed: no database name, no clock, and no id of a row
+    the acts created.  A failing line may name such an id -- the boundary
+    census lists the movements it found -- and is a difference anyway.
 
     **It writes nothing, and that is measured twice**: every connection is
     read-only at the server (:func:`_connect_read_only`), and the posted
