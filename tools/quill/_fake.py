@@ -37,7 +37,9 @@ from tools.quill._tracker import (
     ClaimTaken,
     Comment,
     Edit,
+    Milestone,
     NumberState,
+    TrackerError,
     WholeCard,
 )
 from tools.quill.setup_tracker import FILING, PLAN
@@ -87,15 +89,16 @@ class FakeBoard:
 class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-attributes
     """The tracker in memory: cards, bodies, comments, claims, its board, and every write.
 
-    Pylint: ``too-many-public-methods`` (26/20) -- it stands in for
-    :class:`_tracker.Tracker`, so it has each of that class's 25 reads and
+    Pylint: ``too-many-public-methods`` (29/20) -- it stands in for
+    :class:`_tracker.Tracker`, so it has each of that class's 28 reads and
     writes (its own disable says why there are so many), and ``add``, which
-    puts a card in.  ``too-many-instance-attributes`` (9/7) -- **one per kind
-    of fact it keeps**: eight a command reads back (cards, bodies, saved
+    puts a card in.  ``too-many-instance-attributes`` (11/7) -- **one per kind
+    of fact it keeps**: ten a command reads back (cards, bodies, saved
     versions, comments, claims, merged pull requests, the board, the deleted
-    numbers) and the log of writes the tests read; the comments ``show`` reads
-    (X-cx leaf B) made the eighth and the numbering X-cx's migration reads
-    (L7) the ninth.
+    numbers, the milestones, and each card's milestone) and the log of writes
+    the tests read; the comments ``show`` reads (X-cx leaf B) made the eighth,
+    the numbering X-cx's migration reads (L7) the ninth, and its milestones the
+    tenth and eleventh.
     """
 
     app_login = "shekel-quill"
@@ -110,6 +113,8 @@ class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-
         self.held: dict[int, Claim] = {}
         self.pulls: dict[str, set[str]] = {}
         self.gone: set[int] = set()
+        self.milestones_by_number: dict[int, Milestone] = {}
+        self.milestone_of: dict[int, int] = {}
         self.writes: list[tuple] = []
         self.board = FakeBoard(self.writes)
 
@@ -156,9 +161,18 @@ class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-
         return {n: self._view(n) for n in numbers if n in self.cards_by_number}
 
     def all_cards(self):
-        """Every card, open and closed, with its body and its comments."""
-        return {n: WholeCard(self._view(n), self.bodies[n], tuple(self.notes.get(n, ())))
+        """Every card, open and closed, with its body, its comments and its milestone."""
+        return {n: WholeCard(self._view(n), self.bodies[n], tuple(self.notes.get(n, ())),
+                             self.milestone_of.get(n))
                 for n in self.cards_by_number}
+
+    def milestones(self):
+        """Every milestone, by title; two of one title refused, as
+        :meth:`_tracker.Tracker.milestones` refuses them."""
+        titles = [held.title for held in self.milestones_by_number.values()]
+        if len(set(titles)) != len(titles):
+            raise TrackerError(f"two milestones share a title among {sorted(titles)}")
+        return {held.title: held for held in self.milestones_by_number.values()}
 
     def number_state(self, number):
         """What a read by number finds: a card, a deleted number, or nothing filed."""
@@ -193,13 +207,27 @@ class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-
         return self.pulls.get(sha, set())
 
     # -- writes
-    def create(self, kind, title, body, labels):
+    def create(self, kind, title, body, labels, milestone=None):
         """File a card at the next number, marked :data:`setup_tracker.FILING` beside
-        ``labels``, as :meth:`_tracker.Tracker.create` files every card."""
+        ``labels``, as :meth:`_tracker.Tracker.create` files every card, in ``milestone``
+        when one is given.  One the tracker lacks is a write the tool must never send, so it
+        fails loudly rather than guess GitHub's answer."""
         number = max({*self.cards_by_number, *self.gone}, default=0) + 1
         labels = tuple(sorted({*labels, FILING}))
-        self.writes.append(("create", number, kind, title, labels))
+        assert milestone is None or milestone in self.milestones_by_number, (
+            f"no milestone #{milestone} to file plan#{number} in")
+        self.writes.append(("create", number, kind, title, labels)
+                           + (() if milestone is None else (milestone,)))
         self.add(number, kind, body, on_board=False, title=title, labels=labels)
+        if milestone is not None:
+            self.milestone_of[number] = milestone
+        return number
+
+    def create_milestone(self, title, description):
+        """Make a milestone at the next number."""
+        number = max(self.milestones_by_number, default=0) + 1
+        self.writes.append(("create_milestone", number, title))
+        self.milestones_by_number[number] = Milestone(number, title, description)
         return number
 
     def retype(self, number, kind):
@@ -252,6 +280,14 @@ class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-
                                    '{"message":"Label does not exist"}')
         self.writes.append(("unmark", number))
         self._set(number, labels=tuple(label for label in labels if label != FILING))
+
+    def close_unmarked(self, number, labels):
+        """Close a card as completed and set its labels to ``labels`` without the mark, in
+        one write, as the tool."""
+        kept = tuple(sorted(set(labels) - {FILING}))
+        self.writes.append(("close_unmarked", number, kept))
+        self._set(number, is_open=False, state_reason="COMPLETED", closed_by_tool=True,
+                  touched_by_hand=False, labels=kept)
 
     def add_child(self, parent, child):
         """Make ``child`` a sub-issue of ``parent``; the tool never re-parents a card, in the
