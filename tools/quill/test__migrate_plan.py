@@ -1,7 +1,8 @@
 """X-cx's migration plan (:mod:`_migrate_plan`): the writes still to make, and what it refuses,
 on the small corpus (:mod:`_migrate_fake`) and the in-memory tracker (:mod:`_migrate_plan_fake`).
-Which cards the tracker may hold besides the items' cards, and how a card filed already is
-graded, are :mod:`test__migrate_plan_cards`'s.
+Which cards the tracker may hold besides the items' cards, and a card filed already (card #1)
+graded a case per check, are :mod:`test__migrate_plan_cards`'s; five of card #1's tests stay
+here: its links alone, the tracker lacking it, its milestone, its mark, its board place.
 
 Each test builds a tracker state by hand -- empty, wholly filed, or a run cut short at some
 write -- and reads what the plan says of it.  Executing the writes is X-cx's B2b; nothing

@@ -1,8 +1,8 @@
 """X-cx's migration plan (:mod:`_migrate_plan`): which cards the tracker may hold besides
 the items' cards -- the cards filed already, and the tracker's own below them, told by their
-NUMBER -- and how a card filed already (card #1) is graded, on the small corpus
-(:mod:`_migrate_fake`) and the in-memory tracker (:mod:`_migrate_plan_fake`).  Nothing here
-writes.
+NUMBER -- and a card filed already (card #1) graded a case per check, on the small corpus
+(:mod:`_migrate_fake`) and the in-memory tracker (:mod:`_migrate_plan_fake`); five more of
+card #1's tests are :mod:`test__migrate_plan`'s.  Nothing here writes.
 """
 from __future__ import annotations
 
@@ -31,10 +31,13 @@ def _rekeyed(number, title, first=2):
     """How the plan refuses card ``number``, titled ``title``, that no item claims, numbered
     after ``first``, the migration's first card (A-2's, #2 in
     :func:`_migrate_plan_fake.filed_tracker`'s numbering)."""
-    return (f"plan#{number} ({title!r}) is no item's card, and it was filed after plan#{first}, "
-            "the migration's first card, so it is the migration's: its title or arc label was "
-            "changed by hand, or its item left the registries (or it was filed natively inside "
-            "the freeze); settle it before the run")
+    return (f"plan#{number} ({title!r}) is no item's card, and it is numbered above "
+            f"plan#{first}, the lowest card an item's key names, so it reads as the migration's.  "
+            f"FIRST, if plan#{first} is a card of the tracker's own given an item's key by hand "
+            "(refused besides), settle that one: this refusal goes with it, and this card is not "
+            "to be deleted for it.  Else it is the migration's card with its title or arc label "
+            "changed by hand, or its item left the registries, or it was filed natively inside "
+            "the freeze; settle it before the run")
 
 
 def _outside(number, title):
@@ -42,9 +45,10 @@ def _outside(number, title):
     lower than every card an item's key names and under no card filed already."""
     return (f"plan#{number} ({title!r}) is no item's card, numbered lower than every card an "
             "item's key names (a card filed already apart) and under no card filed already: a "
-            "card filed outside X-cx before the migration, or one of the migration's first "
-            "cards with its title or arc label changed by hand or its item gone from the "
-            "registries; settle it before the run")
+            "card filed outside X-cx before the migration, an X-cx leaf unlinked from a card "
+            "filed already by hand, or one of the migration's first cards with its title or arc "
+            "label changed by hand or its item gone from the registries; settle it before the "
+            "run")
 
 
 # -- a card whose key was changed by hand (review of B2a, M3; its delta review) ----
@@ -402,7 +406,7 @@ def test_the_migrations_lowest_card_rekeyed_is_refused_naming_both_causes(corpus
     """A-2's card, #2, the lowest the migration filed, retitled by hand: the first card an
     item's key names is #3 now, so #2 reads as numbered below it -- refused, naming the
     migration's first cards rekeyed beside a card filed outside X-cx (review of the #549
-    fix, LOW-1)."""
+    fix, LOW-1) and an X-cx leaf unlinked by hand (review of the fix itself, LOW-2)."""
     tracker, numbers = filed_tracker(corpus)
     with_change(tracker, numbers["balance:A-2"], title="Fixed a typo by hand")
     found = corpus_plan(corpus, tracker)

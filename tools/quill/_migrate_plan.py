@@ -77,14 +77,22 @@ tracker held before the migration carries an item's key (an X-cx leaf's ``[X-cx 
 alias is no registry id), and the freeze holds from the migration's first create to its
 last run, gaps between runs included.  Broken, each fails closed: a card of the tracker's
 own retitled to an item's key is refused as that item's card, and the tracker's own cards
-numbered above it are refused as the migration's too; a card filed natively between runs
-is refused as the migration's.  Refused: a card no item claims numbered above the first
-card, wherever it sits and whatever it holds -- the migration's card with its title or arc
-label changed by hand, or one whose item left the registries (or a card filed natively
-inside the freeze); and one numbered below it outside every card filed already (filed
-outside X-cx before the migration, an X-cx leaf quill unlinked when it was dropped while
-marked, R-BAL205, or one of the migration's first cards with its key changed by hand or its
-item gone from the registries, which numbers the first card above it).
+numbered above it are refused as the migration's too, each refusal naming that card as
+the one to settle FIRST (it leads, because it cannot tell the two cases apart); a card filed
+natively between runs is refused as the migration's.  Refused: a card no item claims
+numbered above the first card, wherever it sits and whatever it holds -- the migration's
+card with its title or arc label changed by hand, or one whose item left the registries
+(or a card filed natively inside the freeze); and one numbered below it outside every card
+filed already (filed outside X-cx before the migration, an X-cx leaf quill unlinked when it
+was dropped while marked, R-BAL205, or that a person unlinked by hand, or one of the
+migration's first cards with its key changed by hand or its item gone from the registries,
+which numbers the first card above it).
+**Where the freeze ends in code** (the second premise's bound): at L8's deleting pull
+request, which removes the registries, the read-only door :mod:`_migrate_source` imports
+(``tools/plan_gate/registries.py``, R-BAL244) and the migration's own modules, so nothing
+is left to call :func:`plan` once natively filed cards are allowed again.  A run between
+``migrate verify`` and that merge is inside the freeze still, and refuses every card filed
+natively (fail closed).
 What this cannot see: a card of the migration's numbered lower than every card that still
 carries an item's key (a card filed already apart), sitting below a card filed already,
 where it reads as the tracker's own.  That takes every card the migration filed before it
@@ -286,9 +294,10 @@ def _unclaimed(keys: set[str], tracked: Tracked,
                first: int | None) -> list[tuple[int, str]]:
     """Each card no item claims that is not the tracker's own, with its refusal: one
     numbered above ``first``, the migration's first card (None: it has filed none), wherever
-    it sits; one numbered below it outside every card filed already, dropped while marked or
-    not.  Below a card filed already, a card numbered below it is the tracker's own, of any
-    kind (the module docstring says why, and what this cannot see)."""
+    it sits; one numbered below it outside every card filed already, its filing ended
+    (dropped while marked, or a ruling withdrawn) or not.  Below a card filed already, a
+    card numbered below it is the tracker's own, of any kind (the module docstring says why,
+    and what this cannot see)."""
     mapped = set(MAPPED.values())
     found = []
     for number, whole in sorted(tracked.cards.items()):
@@ -296,11 +305,14 @@ def _unclaimed(keys: set[str], tracked: Tracked,
             continue
         label = f"plan#{number} ({whole.card.title[:60]!r})"
         if first is not None and number > first:
-            found.append((number, f"{label} is no item's card, and it was filed after plan#"
-                          f"{first}, the migration's first card, so it is the migration's: "
-                          "its title or arc label was changed by hand, or its item left the "
-                          "registries (or it was filed natively inside the freeze); settle it "
-                          "before the run"))
+            found.append((number, f"{label} is no item's card, and it is numbered above plan#"
+                          f"{first}, the lowest card an item's key names, so it reads as the "
+                          f"migration's.  FIRST, if plan#{first} is a card of the tracker's own "
+                          "given an item's key by hand (refused besides), settle that one: "
+                          "this refusal goes with it, and this card is not to be deleted for "
+                          "it.  Else it is the migration's card with its title or arc label "
+                          "changed by hand, or its item left the registries, or it was filed "
+                          "natively inside the freeze; settle it before the run"))
         elif _ancestor(number, mapped, tracked.cards) is not None:
             continue
         elif filing_ended(whole.card):
@@ -315,10 +327,10 @@ def _unclaimed(keys: set[str], tracked: Tracked,
         else:
             found.append((number, f"{label} is no item's card, numbered lower than every card "
                           "an item's key names (a card filed already apart) and under no card "
-                          "filed already: a card filed outside X-cx before the migration, or "
-                          "one of the migration's first cards with its title or arc label "
-                          "changed by hand or its item gone from the registries; settle it "
-                          "before the run"))
+                          "filed already: a card filed outside X-cx before the migration, an "
+                          "X-cx leaf unlinked from a card filed already by hand, or one of the "
+                          "migration's first cards with its title or arc label changed by hand "
+                          "or its item gone from the registries; settle it before the run"))
     return found
 
 
