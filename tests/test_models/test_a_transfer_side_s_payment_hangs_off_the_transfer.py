@@ -117,7 +117,10 @@ def _has_side_links():
 
 #: The triggers this revision's two rules attach and the revision below holds
 #: none of: the deleted-row rule's transfer arm and the band rule's four.
-#: Spelled here, not read off the modules, so an attachment renamed fails here.
+#: Spelled here, not read off the modules.  A refused upgrade reads none of
+#: them, which a renamed attachment would read too, so each case asserts all
+#: five exist once its final upgrade has run: that is where a rename fails
+#: (the cp1f review's L-3).
 _RULE_TRIGGERS = (
     "ck_hidden_transfer_holds_nothing",
     "ck_side_record_band_on_insert", "ck_side_record_band_on_update",
@@ -614,6 +617,7 @@ class TestTheUpgradeRefusesADriftedTwin:
         _db.session.commit()
         run_migration_callable(_MIGRATION.upgrade, _db.session)
         assert _has_side_links()
+        assert _rule_triggers() == sorted(_RULE_TRIGGERS)
         run_migration_callable(_STEP_ABOVE.upgrade, _db.session)
 
 

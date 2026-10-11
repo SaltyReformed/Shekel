@@ -21,9 +21,11 @@ link and nothing reads a twin, so this revision deletes them:
      entry, a statement-match creation, a movement or a card payback at this
      revision -- a delete would null, cascade or refuse each); a transfer whose
      twins are not exactly one expense and one income (Transfer Invariant 1
-     broken; the kept copy could not then be restored as a pair); or a twin
+     broken; the kept copy could not then be restored as a pair); a twin
      whose COPIED fields (:data:`_COPIED_FIELDS`) are not its transfer's,
-     named as ``(transfer, twin, [fields])``.  The step's premise is that a
+     named as ``(transfer, twin, [fields])``; or a twin filed under a
+     category that is not its owner's, named as ``(transfer, twin,
+     category, that category's owner)`` (below).  The step's premise is that a
      twin is a copy of its transfer, so deleting it loses nothing; a twin
      that disagrees is no copy, and its delete would erase the last trace of
      the disagreement unseen.  A field is refused only where the app at
@@ -63,6 +65,26 @@ link and nothing reads a twin, so this revision deletes them:
      already the shape this revision makes (the create door at this
      revision, run against a database still at ``e616adf7fe22``, writes
      one), and the downgrade builds its two.
+
+     **A twin filed under a category that is not its owner's is refused**
+     because no door writes one, so it too is a disagreement its delete
+     would carry into the copy unseen.  At ``5f46d6973``: every door naming
+     a transfer's category refuses one that is not the owner's
+     (``_get_owned_category``, ``_ownership.py:149``, asked by the create
+     door, ``_create.py:363``, and by the update's
+     ``_reject_unowned_references``, ``_update.py:386``); the twins took
+     their transfer's category (``_create.py:179``, ``_update.py:334-338``,
+     ``_restore.py:147-154``) or, before the create door copied it, their
+     owner's own "Transfers: Incoming" (commit ``0fea29962``, finding
+     BAL-575); and a category's owner is written only when it is created
+     (``app/routes/categories.py:88``, ``app/routes/salary/profiles.py:182``,
+     ``app/services/registration_service.py:499``,
+     ``app/services/credit_workflow.py:600``), its edit writing the names
+     alone (``app/routes/categories.py:157-158``).  Refused here, a kept
+     category that is not its twin's owner's at the downgrade is one where
+     something CHANGED since (ruling R-BAL261, below).  The category is not
+     otherwise compared with the transfer's: those older income twins name
+     one their transfer does not, so it is no copied field.
   2. **It keeps a copy of every twin** in ``system.transfer_twin_purge``: the
      whole row as ``jsonb`` (the shape ``b2d8f3a6c541``'s
      ``system.pre_origination_purge`` keeps), with its transfer's version
@@ -105,14 +127,21 @@ production's release runs the two upgrades in one transaction -- a downgrade
 straight after the upgrade reproduces every twin column for column:
 ``e616adf7fe22``'s upgrade let through only twins whose status, day, basis and
 link were their transfer's and their record's, and this one only twins whose
-copied fields were their transfer's; and an older revision's own downgrade that
+copied fields were their transfer's and whose category was their owner's; and
+an older revision's own downgrade that
 finds a twin by its id (``c4e91a7b2d38``'s ``system.loan_due_date_backfill``)
 still finds it.  On a database the app DID write at ``e616adf7fe22``, a twin of
-a transfer it settled, reverted or cancelled there, or whose side's record it
-re-dated or linked to a statement there, comes back different from its kept
-row: a settle, revert or cancel made there wrote the transfer and its side's
-records and never the twin, and a day correction or a statement link the
-record alone.  The live read also answers what the version
+a transfer it settled, reverted or cancelled there, or soft-deleted there
+while settled, or whose side's record it re-dated, re-stated on a better day
+basis or linked to a statement there, comes back different from its kept row:
+a settle, revert or cancel made there wrote the transfer and its side's
+records and never the twin; a soft delete of a settled transfer took its
+sides' records off and returned the transfer alone to Projected
+(``_delete.py:160-178`` at ``5f46d6973``, ruling R-BAL246); and a day
+correction, a basis-only re-statement (``status_seam/_side.py:252-253,
+291-293``; an endpoint move's moved side among them, whose day becomes
+``borrowed``, ``_endpoints.py:280-284, 311-329``) or a statement link wrote
+the record alone.  The live read also answers what the version
 counter below cannot see: a raw statement or a later revision that wrote the
 transfer without raising its counter, and the record, which is a row of its
 own.  Such a twin comes back saying what its transfer and record say now -- the
@@ -156,18 +185,20 @@ so no stale twin counter can be compared against the rebuilt row.
 **A kept value that no longer fits comes back as the transfer says** (ruling
 **R-BAL261**, "Use the transfer's").  The upgrade releases what the twins held
 in place, so an ordinary act can leave a kept value pointing at nothing.  A
-kept category no longer fits, and comes back as the transfer's category, by
-either of two reaches: the category screen has since deleted it, or its
-twin's owner MOVED since the upgrade and it is not the new owner's (the owner
-the mirrored fields re-read, moved only by a raw statement: no door moves a
-transfer between users, and no key on a row's category asks its owner).  A
-kept category that was already another user's when it was kept has not
-changed since, so where the owner has not moved it comes back as kept.  A
-kept ``$0.00``-close day that now falls on or before its account's books
-opening (an opening restated after the upgrade) comes back with no day, basis
-or link; a
-kept statement link whose statement is gone comes back with none.  The
-downgrade prints how many twins came back so.
+kept category no longer fits, and comes back as the transfer's category, when
+it is gone (the category screen has since deleted it) or is not its twin's
+owner's now.  The upgrade refused every twin whose category was not its
+owner's, so the second is reached only where something CHANGED since: the
+twin's owner (the mirrored fields re-read it from the transfer) or the
+category's own owner, each moved only by a raw statement (no door moves a
+transfer between users or writes a category's owner after its create, and no
+key on a row's category asks its owner).  Where neither changed it comes back
+as kept.  A kept ``$0.00``-close day that now falls on or before its
+account's books opening (an opening restated after the upgrade) comes back
+with no day, basis or link; a kept statement link whose statement is gone
+comes back with none.  The downgrade prints how many twins came back so,
+counting a twin only where the fallback changed its value: the transfer's
+category can be the very one kept.
 
 ``e616adf7fe22``'s downgrade, which runs next, requires exactly this: every
 twin saying its transfer's status, and its side's record's day, basis and link
@@ -194,11 +225,10 @@ ids its backfill table names, then updates no twin.
 
 ``tests/test_models/test_a_transfer_is_one_row.py`` drives the shipped
 ``upgrade`` / ``downgrade``, each refusal (the drift refusal field by field,
-on each side), a database the app wrote at ``e616adf7fe22`` taking that
-revision's documented way down,
-the exact round trip, the live re-read of each mirrored field, the rebuild of
-a written transfer's twins, each value that no longer fits, and a kept
-category already another user's coming back as kept.
+and the category refusal, each on each side), a database the app wrote at
+``e616adf7fe22`` taking that revision's documented way down, the exact round
+trip, the live re-read of each mirrored field, the rebuild of a written
+transfer's twins, and each value that no longer fits.
 """
 from alembic import op
 import sqlalchemy as sa
@@ -413,8 +443,10 @@ SELECT x.id AS transfer_id, side.is_income, side.account_id, x.status_id,
 #: app writes it on both twins too (``_create.py:179``, ``_update.py:334-338``,
 #: ``_restore.py:147-154`` at ``5f46d6973``), but older income twins carry
 #: "Transfers: Incoming" in place of their transfer's (finding BAL-575), so on
-#: production it is no copy, and refusing it would refuse production; ruling
-#: R-BAL261 (the module docstring) says when a kept one comes back otherwise.
+#: production it is no copy, and refusing its difference would refuse
+#: production: the upgrade asks only that it be its owner's
+#: (:data:`_FOREIGN_CATEGORY_SQL`), and ruling R-BAL261 (the module docstring)
+#: says when a kept one comes back otherwise.
 _COPIED_FIELDS = (
     "user_id", "account_id", "pay_period_id", "scenario_id", "due_date",
     "is_override", "is_deleted",
@@ -458,6 +490,19 @@ SELECT t.transfer_id, t.id AS twin_id,
  ORDER BY transfer_id, twin_id
 """
 
+#: Every twin filed under a category that is not its owner's: ``(transfer id,
+#: twin id, the category, that category's owner)``.  No door writes one (the
+#: module docstring, item 1).  A twin with no category names none, and
+#: ``transactions_category_id_fkey`` makes the join total over the rest.
+_FOREIGN_CATEGORY_SQL = """
+SELECT t.transfer_id, t.id, t.category_id, c.user_id
+  FROM budget.transactions t
+  JOIN budget.categories c ON c.id = t.category_id
+ WHERE t.transfer_id IS NOT NULL
+   AND c.user_id <> t.user_id
+ ORDER BY t.transfer_id, t.id
+"""
+
 #: The unwritten branch's re-read of every mirrored field from the build rule,
 #: as ``jsonb_build_object`` arguments.
 _MIRRORED_REREAD = ", ".join(
@@ -471,24 +516,28 @@ _MIRRORED_REREAD = ", ".join(
 #: fits)``.  ``gate`` asks "written since" once (the transfer's version counter
 #: against the kept one); ``kept`` reads the copy's values once; ``fit`` asks
 #: each of ruling R-BAL261's questions once.  A kept category fits while it
-#: exists and, where its twin's owner MOVED since the upgrade (the kept
-#: ``user_id`` is not the owner the build rule states, which the unwritten
-#: branch re-reads), is the new owner's; one already another user's when kept
-#: has not changed, so it fits while its owner has not moved.  A kept
+#: exists and is its twin's owner's (the owner the build rule states, which
+#: the unwritten branch re-reads); the upgrade refused one that was not, so
+#: one unfit now is one whose category or owner changed since.  A kept
 #: ``$0.00``-close day fits while ``budget.books_hold`` admits it on its
 #: account (the comparison ``ck_movement_after_books_open`` asks at COMMIT),
 #: and a kept link while its statement still exists on that account (the pair
 #: ``fk_transactions_reconciled_by`` names; a statement never changes
 #: accounts, so the account term only states the key's own question).  A
 #: written transfer's twins take the transfer's category whatever the kept one
-#: was, so ``category_unfit`` is asked of an unwritten one alone, and every
-#: twin the print counts as unfit is one it counts as different from its kept
-#: row: a gone category, an unfit day or a gone link comes back as another
-#: value, and a moved owner comes back moved.
+#: was, so ``category_unfit`` is asked of an unwritten one alone.  ``unfit``
+#: counts a twin only where a fallback CHANGED its value, so the printed count
+#: names only the twins a fallback actually changed: an unfit day and a gone
+#: link always come back ``NULL`` over a kept value, but the transfer's
+#: category can be the very one kept (a transfer moved to another user with
+#: its own category left the old owner's), so the category arm counts only
+#: where the two differ.
 _RESTORE_KEPT_SQL = f"""
 WITH staged AS (
     SELECT p.row_id, gate.written, p.row_data AS kept_row,
-           fit.category_unfit OR fit.day_unfit OR fit.link_gone AS unfit,
+           (fit.category_unfit
+            AND b.twin->'category_id' IS DISTINCT FROM p.row_data->'category_id')
+           OR fit.day_unfit OR fit.link_gone AS unfit,
            p.row_data || CASE
                WHEN gate.written THEN b.twin
                ELSE jsonb_build_object(
@@ -527,7 +576,6 @@ WITH staged AS (
                     AND (p.row_data->>'status_id')::integer = b.status_id)
                    AS day_applies,
                    (p.row_data->>'category_id')::integer AS category_id,
-                   (p.row_data->>'user_id')::integer AS user_id,
                    (p.row_data->>'settled_on')::date AS settled_on,
                    (p.row_data->>'reconciled_by_id')::integer
                    AS reconciled_by_id
@@ -535,17 +583,11 @@ WITH staged AS (
       CROSS JOIN LATERAL (
             SELECT NOT gate.written
                    AND kept.category_id IS NOT NULL
-                   AND (NOT EXISTS (
-                          SELECT 1 FROM budget.categories c
-                           WHERE c.id = kept.category_id
-                        )
-                        OR (kept.user_id <> (b.twin->>'user_id')::integer
-                            AND NOT EXISTS (
-                                  SELECT 1 FROM budget.categories c
-                                   WHERE c.id = kept.category_id
-                                     AND c.user_id
-                                         = (b.twin->>'user_id')::integer
-                                ))) AS category_unfit,
+                   AND NOT EXISTS (
+                         SELECT 1 FROM budget.categories c
+                          WHERE c.id = kept.category_id
+                            AND c.user_id = (b.twin->>'user_id')::integer
+                       ) AS category_unfit,
                    kept.day_applies
                    AND kept.settled_on IS NOT NULL
                    AND NOT COALESCE(budget.books_hold(
@@ -635,6 +677,9 @@ def refuse_twins_that_cannot_go(bind) -> None:
     referenced = [tuple(row) for row in bind.execute(sa.text(referenced_sql))]
     unpaired = [tuple(row) for row in bind.execute(sa.text(_UNPAIRED_SQL))]
     drifted = [tuple(row) for row in bind.execute(sa.text(_MIRROR_DRIFT_SQL))]
+    foreign = [
+        tuple(row) for row in bind.execute(sa.text(_FOREIGN_CATEGORY_SQL))
+    ]
     problems = []
     if referenced:
         problems.append(
@@ -656,6 +701,14 @@ def refuse_twins_that_cannot_go(bind) -> None:
             f"copied field differs (transfer id, twin id, the fields; first "
             f"{_NAMED_AT_MOST}: {drifted[:_NAMED_AT_MOST]}; diagnose with: "
             f"{_MIRROR_DRIFT_SQL.strip()})"
+        )
+    if foreign:
+        problems.append(
+            f"{len(foreign)} twin(s) are filed under a category that is not "
+            f"their owner's (transfer id, twin id, category id, that "
+            f"category's owner id; first {_NAMED_AT_MOST}: "
+            f"{foreign[:_NAMED_AT_MOST]}; diagnose with: "
+            f"{_FOREIGN_CATEGORY_SQL.strip()})"
         )
     if problems:
         raise RuntimeError(
