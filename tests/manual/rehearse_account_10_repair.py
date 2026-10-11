@@ -63,7 +63,8 @@ own requirement)::
         --clone shekel_rehearsal \\
         --bank <the Fidelity history CSV> \\
         --residue <the payroll residue ledger row BAL-467 states> \\
-        --sheet <handoff folder>/performance_sheet.md
+        --sheet <handoff folder>/performance_sheet.md \\
+        --snapshot <handoff folder>/snapshot.json
 
 Then score both accounts against their banks::
 
@@ -79,17 +80,21 @@ Then score both accounts against their banks::
 opened READ-ONLY, refuses a copy no act has touched, and prints what only a
 comparison can grade -- the posted ledger's class totals and the Default Grid
 Account -- so the runbook diffs its output on production's performed copy
-against its output on the rehearsed one::
+against its output on the rehearsed one.  It reads the snapshot the rehearsal
+wrote of the same dump before its first act (:class:`_Snapshot`), which is
+what every row the acts created is told apart by::
 
     ... python tests/manual/rehearse_account_10_repair.py --check \\
         --clone shekel_performed \\
         --bank <the Fidelity history CSV> \\
-        --residue <the payroll residue ledger row BAL-467 states>
+        --residue <the payroll residue ledger row BAL-467 states> \\
+        --snapshot <handoff folder>/snapshot.json
 """
 
 import argparse
 import csv
 import hashlib
+import json
 import os
 import re
 from collections import Counter
@@ -105,6 +110,7 @@ from app.enums import SettledDayBasisEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db, login_manager
 from app.models.account import Account
 from app.models.category import Category
+from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatchMember
@@ -808,7 +814,7 @@ class _Sheet:
         """Hold the sheet's destination.
 
         Args:
-            path: Where to write it; outside every checkout (:func:`_sheet_path`).
+            path: Where to write it; outside every checkout (:func:`_new_file`).
                 ``None`` for ``--check``, which prints and saves nothing.
         """
         self.path = path
@@ -849,8 +855,8 @@ class _Sheet:
         self.path.write_text("\n".join(self.lines) + "\n", encoding="utf-8")
 
 
-def _sheet_path(raw: str) -> Path:
-    """Return where the performance sheet goes, refusing any git checkout.
+def _new_file(raw: str, flag: str) -> Path:
+    """Return where a file the rehearsal writes goes, refusing any git checkout.
 
     **Any checkout, not only this one**: the harness is run from worktrees, and
     a sheet written into the main checkout or a sibling worktree is as much one
@@ -860,17 +866,22 @@ def _sheet_path(raw: str) -> Path:
     **And the file must NOT exist**: the sheet is saved even when a run stops,
     so a re-run naming an earlier run's sheet would replace the page a repair
     is performed from with a STOPPED one (adversarial review, 2026-10-09).
+    The snapshot (:class:`_Snapshot`) is held to the same three rules: it is
+    a record of a production copy, and the check of a performed copy reads
+    the one this run wrote of the same dump, never an earlier run's.
 
     Args:
-        raw: The ``--sheet`` argument.
+        raw: The argument's value.
+        flag: The argument, ``--sheet`` or ``--snapshot``, for the refusals.
 
     Returns:
         The resolved path.
 
     Raises:
-        SystemExit: When the path is inside a git checkout, where the real
-            figures the sheet carries do not belong (ruling **R-BAL249**), its
-            folder does not exist, or a file is already there.
+        SystemExit: When the path is inside a git checkout, where what a run
+            records of a production copy does not belong (ruling
+            **R-BAL249**), its folder does not exist, or a file is already
+            there.
     """
     path = Path(raw).expanduser().resolve()
     checkouts = [
@@ -878,19 +889,19 @@ def _sheet_path(raw: str) -> Path:
     ]
     if checkouts:
         raise SystemExit(
-            f"--sheet {path} is inside the git checkout {checkouts[0]}; the "
-            "sheet carries real figures and belongs in the handoff folder "
+            f"{flag} {path} is inside the git checkout {checkouts[0]}; what a "
+            "run records of a production copy belongs in the handoff folder "
             "(ruling R-BAL249)"
         )
     if path.is_dir() or not path.parent.is_dir():
         raise SystemExit(
-            f"--sheet {path} is a folder, or its folder does not exist; it "
-            "names the sheet FILE"
+            f"{flag} {path} is a folder, or its folder does not exist; it "
+            "names a FILE"
         )
     if path.exists():
         raise SystemExit(
-            f"--sheet {path} already exists; every run writes a sheet of its "
-            "own, and an earlier one is never overwritten"
+            f"{flag} {path} already exists; every run writes its own, and an "
+            "earlier one is never overwritten"
         )
     return path
 
@@ -997,6 +1008,68 @@ def _require_repaired() -> None:
     print("precondition: the repair's markers have moved on this copy:")
     for marker in moved:
         print(f"  {marker}")
+
+
+class _Snapshot(NamedTuple):
+    """Every row and paycheck id a copy held before the first act.
+
+    **What the acts CREATED is the difference against this, and nothing an
+    operator types decides it** (:func:`_grade_created_rows`).  The rehearsal
+    takes it of its own copy before act 1 -- a copy restored from the dump and
+    touched by nothing yet, so it IS the dump's -- and writes it beside the
+    sheet (``--snapshot``), and ``--check`` reads that file, so a performed
+    copy of the same dump is measured against the same ids.  **A file, not
+    the untouched copy ``$B``**: the runbook renders every page against
+    ``$B``, and on a dump taken before the owner's first grid or dashboard
+    load after a payday that render tops up the pay-period window and
+    creates rows there (measured 2026-10-10: a paycheck and its rows),
+    so ``$B`` is the dump's state only on days it happens to be.
+
+    Attributes:
+        transactions: Every ``budget.transactions`` id, deleted rows too.
+        pay_periods: Every ``budget.pay_periods`` id.
+    """
+
+    transactions: frozenset
+    pay_periods: frozenset
+
+    @classmethod
+    def capture(cls) -> "_Snapshot":
+        """Read this copy's ids now.
+
+        Returns:
+            The snapshot.
+        """
+        return cls(
+            frozenset(db.session.execute(db.select(Transaction.id)).scalars()),
+            frozenset(db.session.execute(db.select(PayPeriod.id)).scalars()),
+        )
+
+    @classmethod
+    def read(cls, path: str) -> "_Snapshot":
+        """Read the snapshot a rehearsal wrote.
+
+        Args:
+            path: The ``--snapshot`` file.
+
+        Returns:
+            The snapshot.
+        """
+        held = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+        return cls(
+            frozenset(held["transactions"]), frozenset(held["pay_periods"]),
+        )
+
+    def write(self, path: Path) -> None:
+        """Write it for ``--check`` to read.
+
+        Args:
+            path: Where, from :func:`_new_file`.
+        """
+        path.write_text(json.dumps({
+            "transactions": sorted(self.transactions),
+            "pay_periods": sorted(self.pay_periods),
+        }) + "\n", encoding="utf-8")
 
 
 def _facts(account_id: int) -> list:
@@ -1881,6 +1954,33 @@ class _NewRow:
     name: str
 
 
+def _new_rows(export: _Export) -> "list[_NewRow]":
+    """Return the six rows the repair records: act 7's, then act 9's dividends.
+
+    **One list, read by the acts and by the check**: :func:`_perform` types
+    exactly these, and :func:`_grade_created_rows` expects exactly these on
+    the copy, so what a rehearsal records and what a performance is graded
+    against cannot come apart.
+
+    Args:
+        export: The parsed export, which states each dividend.
+
+    Returns:
+        Act 7's row first, then each dividend in day order.
+    """
+    unrecorded = db.session.get(BankStatementLine, UNRECORDED_LINE)
+    return [_NewRow(
+        CHECKING_ACCOUNT, UNRECORDED_CATEGORY, TxnTypeEnum.EXPENSE,
+        unrecorded.posted_on, -unrecorded.amount, UNRECORDED_NAME,
+    )] + [
+        _NewRow(
+            SUBJECT_ACCOUNT, DIVIDEND_CATEGORY_ID, TxnTypeEnum.INCOME, day,
+            amount, DIVIDEND_NAME,
+        )
+        for day, amount in export.recorded_dividends()
+    ]
+
+
 def _record(op: _Operator, row: _NewRow) -> int:
     """Create *row*, settle it, then correct the day -- the owner's own path.
 
@@ -2257,12 +2357,12 @@ def _consolidate_twin(op: _Operator) -> None:
     _set_archived(op, TWIN_ACCOUNT, archived=True)
 
 
-def _record_dividends(op: _Operator, export: _Export) -> None:
+def _record_dividends(op: _Operator, dividends: "list[_NewRow]") -> None:
     """Rename the empty category into R-HL's, then record every dividend.
 
     Args:
         op: The owner's session, which carries the performance sheet.
-        export: The parsed export.
+        dividends: :func:`_new_rows`' dividends, in day order.
     """
     # The group control is a hidden input that SCRIPT keeps in step with a
     # select carrying no name of its own; the page renders it holding the
@@ -2285,12 +2385,9 @@ def _record_dividends(op: _Operator, export: _Export) -> None:
     category_id = _category_id(op.user_id, *DIVIDEND_CATEGORY)
     assert category_id == DIVIDEND_CATEGORY_ID, \
         f"the dividends' category is {category_id}, not the renamed one"
-    for day, amount in export.recorded_dividends():
-        op.sheet.say(f"- dividend of {day}, account {SUBJECT_ACCOUNT}:")
-        _record(op, _NewRow(
-            SUBJECT_ACCOUNT, category_id, TxnTypeEnum.INCOME, day, amount,
-            DIVIDEND_NAME,
-        ))
+    for row in dividends:
+        op.sheet.say(f"- dividend of {row.day}, account {row.account_id}:")
+        _record(op, row)
 
 
 #: What the operator must hold to, on the sheet as well as here.
@@ -2368,7 +2465,7 @@ def _perform(op: _Operator, export: _Export, earlier: int) -> int:
         SystemExit: From :func:`_equities`.
     """
     equities = _equities(export)
-    unrecorded = db.session.get(BankStatementLine, UNRECORDED_LINE)
+    unrecorded, *dividends = _new_rows(export)
     lines = {
         entry.line_id: db.session.get(BankStatementLine, entry.line_id)
         for entry in BOUNDARY_LINES
@@ -2434,10 +2531,7 @@ def _perform(op: _Operator, export: _Export, earlier: int) -> int:
     op.sheet.act(7, f"record bank line {UNRECORDED_LINE}, which no row answers "
                  "(BAL-468)", "Checking's grid: Add Transaction; then the new "
                  "row's card: settle; reopen it: correct the day")
-    created = _record(op, _NewRow(
-        CHECKING_ACCOUNT, UNRECORDED_CATEGORY, TxnTypeEnum.EXPENSE,
-        unrecorded.posted_on, -unrecorded.amount, UNRECORDED_NAME,
-    ))
+    created = _record(op, unrecorded)
     op.sheet.say(f"- created transaction {created}")
     _snapshot(export, op.sheet)
 
@@ -2459,7 +2553,7 @@ def _perform(op: _Operator, export: _Export, earlier: int) -> int:
                  f"Settings > Categories > category {DIVIDEND_CATEGORY_ID}'s "
                  f"pencil; then account {SUBJECT_ACCOUNT}'s grid: Add "
                  "Transaction per dividend, settle, correct the day")
-    _record_dividends(op, export)
+    _record_dividends(op, dividends)
     _snapshot(export, op.sheet)
 
     last = export.named[-1]
@@ -2586,7 +2680,7 @@ class _Arms:
 
 
 def _verify_post_state(
-    export: _Export, sheet: _Sheet, residue: Decimal,
+    export: _Export, sheet: _Sheet, residue: Decimal, snapshot: _Snapshot,
 ) -> "int | None":
     """Grade every arm the post-state answers alone: what BOTH modes run.
 
@@ -2604,14 +2698,12 @@ def _verify_post_state(
     the runbook made (measured 2026-10-09).  **Act 10's assertion is graded
     here for the same reason**: after act 9 every correction is already
     zero, so no other arm sees act 10 skipped.  **So are the twin's opening
-    day, and what an Add types beyond a day and a figure** -- the paycheck a
-    new row is filed in, and a duplicate or unfinished row left behind -- all
-    three found passing every other arm and both scores by the review of
-    2026-10-10 (:func:`_grade_twin`, :func:`_grade_paychecks`,
-    :func:`_grade_leftovers`).  The second review that day found two more
-    passing every other arm, each now its own line: the DAY of the twin's
-    0.00 assertion (:func:`_grade_assertion`), and a duplicate of act 7's
-    row marked Paid (:func:`_grade_act7_copies`).
+    day and the DAY of its 0.00 assertion** (:func:`_grade_twin`,
+    :func:`_grade_assertion`), each found passing every other arm and both
+    scores by the reviews of 2026-10-10.  **And every row the acts CREATED is
+    one census** (:func:`_grade_created_rows`): those reviews found, three
+    rounds running, a duplicate or leftover row passing every arm, each time
+    because an arm found the Adds' rows by a field the operator types.
 
     Args:
         export: The parsed export.
@@ -2619,10 +2711,12 @@ def _verify_post_state(
         residue: BAL-467's residue, books less bank: the figure
             :func:`_reconcile` measured in the rehearsal, the figure the ledger
             row states in ``--check``.
+        snapshot: The copy's ids before the first act.
 
     Returns:
-        Act 7's row as :func:`_unrecorded_row` FOUND it, which the rehearsal
-        compares with the row it created; ``None`` when no single row answers.
+        Act 7's row as :func:`_grade_created_rows` FOUND it, which the
+        rehearsal compares with the row it created; ``None`` when no created
+        row matches it.
 
     Raises:
         AssertionError: Naming EVERY arm that failed.
@@ -2634,7 +2728,7 @@ def _verify_post_state(
     context = BalanceContext.build(user_id=subject.user_id, as_of=last)
     _grade_twin(arms, context, last)
     _grade_dropped_transfer(arms)
-    accepted = _grade_dividends(arms, export, subject.user_id)
+    _grade_category(arms, snapshot, subject.user_id)
     _grade_assertion(
         arms, SUBJECT_ACCOUNT, export.closings[last], last,
         "act 10, Fidelity's close",
@@ -2649,12 +2743,7 @@ def _verify_post_state(
         f"account {SUBJECT_ACCOUNT}'s books read {subject_books} on "
         f"{BOUNDARY_DAY}, Fidelity {export.closing_on(BOUNDARY_DAY)}",
     )
-    created = _unrecorded_row(arms)
-    if created is not None:
-        accepted.append((created, BOUNDARY_DAY))
-    _grade_paychecks(arms, accepted)
-    _grade_act7_copies(arms)
-    _grade_leftovers(arms)
+    created = _grade_created_rows(arms, export, snapshot, context)
     _grade_checking_boundary(arms, context, residue, created)
     if arms.failed:
         raise AssertionError(
@@ -2726,30 +2815,20 @@ def _grade_dropped_transfer(arms: _Arms) -> None:
     )
 
 
-def _grade_dividends(
-    arms: _Arms, export: _Export, user_id: int,
-) -> "list[tuple[int, date]]":
-    """Grade act 9: category 33 renamed, and the export's dividends filed there.
+def _grade_category(arms: _Arms, snapshot: _Snapshot, user_id: int) -> None:
+    """Grade act 9's rename: category 33 renamed, and no older row moved in.
 
-    **A census of the CATEGORY, not of account 10**: every live row filed in
-    category 33 that a cash fold COUNTS, on any account, against the export's
-    dividends, each one's day and figure read off its own account's fold.  So
-    a dividend filed under another category is missing here, one on another
-    account holds the wrong fact, and a stray counted row is one too many.  A
-    row the fold does not count -- an Add never settled, or a duplicate one --
-    is :func:`_grade_leftovers`' to name, so a duplicate left unpaid fails
-    that line alone; a dividend left unfinished is also MISSING here, and
-    its absence leaves account 10's corrections nonzero, so it fails three.
+    **The rows act 9 CREATED are :func:`_grade_created_rows`', graded there
+    once.**  What is left for the category is its name and the rows the copy
+    already held: category 33 held nothing before act 9 (the rehearsal of the
+    same dump refuses to start otherwise, :func:`_repair_markers`), so a row
+    the snapshot holds that is filed there now was moved in by an edit, which
+    no act makes -- a category picked by mistake on a card an act opens.
 
     Args:
         arms: The arms so far.
-        export: The parsed export.
+        snapshot: The copy's ids before the first act.
         user_id: The owner.
-
-    Returns:
-        ``(transaction id, day)`` for each row the census ACCEPTED, for
-        :func:`_grade_paychecks`; a row the census rejects is graded here
-        only.
     """
     category = db.session.get(Category, DIVIDEND_CATEGORY_ID)
     named = None if category is None or category.user_id != user_id else (
@@ -2762,43 +2841,21 @@ def _grade_dividends(
         f"category {DIVIDEND_CATEGORY_ID} is {named}, not the owner's "
         f"{DIVIDEND_CATEGORY[0]}: {DIVIDEND_CATEGORY[1]}: act 9 renames it",
     )
-    filed = []
-    held: "dict[tuple, list[int]]" = {}
-    for txn, moved in _counted(
-        db.session.query(Transaction).filter_by(
-            category_id=DIVIDEND_CATEGORY_ID, is_deleted=False,
-        ).all()
-    ):
-        if moved is None:
-            continue
-        key = (moved.day, txn.account_id, txn.name, moved.delta)
-        filed.append(key)
-        held.setdefault(key, []).append(txn.id)
-    wanted = [
-        (day, SUBJECT_ACCOUNT, DIVIDEND_NAME, amount)
-        for day, amount in export.recorded_dividends()
-    ]
-
-    def listed(entries: list) -> str:
-        """Name each ``(day, account, name, amount)`` for the failure line."""
-        return "; ".join(sorted(
-            f"{day} {amount} {name!r} on account {account}"
-            for day, account, name, amount in entries
-        )) or "nothing"
-
+    moved_in = sorted(db.session.execute(
+        db.select(Transaction.id).filter(
+            Transaction.category_id == DIVIDEND_CATEGORY_ID,
+            Transaction.is_deleted.is_(False),
+            Transaction.id.in_(snapshot.transactions),
+        )
+    ).scalars())
     arms.grade(
-        Counter(filed) == Counter(wanted),
-        f"the {len(wanted)} dividends are filed in category "
-        f"{DIVIDEND_CATEGORY_ID} on account {SUBJECT_ACCOUNT}, named "
-        f"{DIVIDEND_NAME}, each on the export's day for the export's amount",
-        f"category {DIVIDEND_CATEGORY_ID}'s counted rows are {listed(filed)}; "
-        f"the export's dividends are {listed(wanted)}",
+        not moved_in,
+        f"category {DIVIDEND_CATEGORY_ID} holds no row the copy held before "
+        "act 1",
+        f"category {DIVIDEND_CATEGORY_ID} holds transactions {moved_in}, which "
+        "the copy held before act 1, when it held nothing: an edit moved them "
+        "in, and no act does. STOP and report it",
     )
-    owed = Counter(wanted)
-    return [
-        (txn_id, key[0])
-        for key, ids in held.items() for txn_id in ids[:owed[key]]
-    ]
 
 
 def _counted(txns: list) -> "list[tuple[Transaction, _Moved | None]]":
@@ -2820,167 +2877,229 @@ def _counted(txns: list) -> "list[tuple[Transaction, _Moved | None]]":
     return paired
 
 
-def _grade_paychecks(arms: _Arms, rows: "list[tuple[int, date]]") -> None:
-    """Grade acts 7 and 9's Pay Period: each new row in its day's paycheck.
+class _Slot(NamedTuple):
+    """One row :func:`_new_rows` names, as the census expects to find it.
 
-    **The one value those Adds type that no other arm reads**: a row filed
-    one paycheck early or late moves its money on the right day, so every
-    other arm and both scores pass it, and only the balance dump differs, in
-    the grid's columns, naming no act (measured by adversarial review
-    2026-10-10).  **Graded only on rows whose DAY another arm has already
-    established**: each dividend the census accepted, and act 7's row as
-    :func:`_unrecorded_row` found it -- on BOUNDARY_DAY, whatever its name or
-    figure, which that arm grades -- so a row on the wrong day fails there
-    and not here too.  No other act types a paycheck: re-dating moves a day
-    and not a column.
+    Attributes:
+        name: How a failure names it: act 7's row, or a dividend by its day.
+        row: The row.
+        period: The paycheck holding its day, which it is filed in.
+        counted: What a settled row of it holds -- account, category, name,
+            paycheck, and its account's fold's day, figure and movement count.
+        typed: What an unsettled row of it holds -- account, category, name,
+            paycheck, type and amount.
+    """
+
+    name: str
+    row: _NewRow
+    period: object
+    counted: tuple
+    typed: tuple
+
+
+def _slots(export: _Export) -> "list[_Slot]":
+    """Return :func:`_new_rows` as the census expects each, act 7's first.
 
     Args:
-        arms: The arms so far.
-        rows: ``(transaction id, the day its money moved)`` for act 7's row
-            as found and each accepted dividend.
-    """
-    astray = []
-    for txn_id, day in rows:
-        txn = db.session.get(Transaction, txn_id)
-        holding = _period_holding(txn.account_id, day)
-        if txn.pay_period_id != holding.period_id:
-            filed = _period_holding(txn.account_id, txn.pay_period.start_date)
-            astray.append(
-                f"{txn.name!r} of {day} on account {txn.account_id} is in the "
-                f"paycheck {filed.label}, where {day} is in {holding.label}"
-            )
-    arms.grade(
-        not astray,
-        f"the {len(rows)} rows acts 7 and 9 created are each in the paycheck "
-        "holding its day",
-        "; ".join(astray) + ": the Add's Pay Period was not the one the sheet "
-        "names",
-    )
-
-
-def _act7_rows() -> "list[Transaction]":
-    """Return every live row an Add of act 7 can have made.
-
-    Every live row on Checking in act 7's category that carries act 7's name
-    and does not RECUR: the owner's own birthday rows in that category
-    include a recurring item of that very name, whose Projected rows are
-    plans, not an Add's.  **Asked of ``Transaction.recurs``, not of
-    ``template_id``**: the Add modal gives every row it makes a one-off
-    definition of its own, so "has no template" matched nothing, act 7's own
-    row included, and a duplicate passed (measured 2026-10-10).  **Keyed on
-    the NAME because the category is not empty**: the copies of 2026-10-10
-    hold a settled one-off there under another name, and none under this one
-    before act 7.  A copy that held one would fail its own rehearsal on
-    :func:`_grade_act7_copies` or :func:`_grade_leftovers`, so the premise
-    is graded on every copy the repair starts from.
+        export: The parsed export.
 
     Returns:
-        The rows, any status, any day.
+        One slot per row.
     """
-    return [
-        txn for txn in db.session.query(Transaction).filter_by(
-            account_id=CHECKING_ACCOUNT, category_id=UNRECORDED_CATEGORY,
-            name=UNRECORDED_NAME, is_deleted=False,
-        ).all()
-        if not txn.recurs
+    slots = []
+    for index, row in enumerate(_new_rows(export)):
+        period = _period_holding(row.account_id, row.day)
+        same = (row.account_id, row.category_id, row.name, period.period_id)
+        slots.append(_Slot(
+            "act 7's row" if index == 0 else f"act 9's dividend of {row.day}",
+            row, period,
+            same + (
+                row.day,
+                row.amount if row.kind is TxnTypeEnum.INCOME else -row.amount,
+                1,
+            ),
+            same + (ref_cache.txn_type_id(row.kind), row.amount),
+        ))
+    return slots
+
+
+def _created_rows(snapshot: _Snapshot) -> "tuple[list[Transaction], int]":
+    """Return the live rows the snapshot does not hold, less the window's.
+
+    **The pay-period window's rows are told apart by what MADE them**: a row
+    filed in a paycheck the snapshot does not hold, from a RECURRING
+    definition -- its own, or for a transfer's side its transfer's.  The
+    rolling window tops up on the owner's first grid or dashboard load after a
+    payday and fills only the paychecks it appends
+    (``routes/_period_population.py``), so these appear when the dump was
+    taken before that load: measured 2026-10-10 on a copy one paycheck short,
+    rows from the owner's recurring items, one transfer's two sides among
+    them.  The Add modal gives each row a one-off definition of its own, so
+    no typed row is set aside here, whatever paycheck it is filed in.
+
+    Args:
+        snapshot: The copy's ids before the first act.
+
+    Returns:
+        Every other created row, by id; and how many the window made.
+    """
+    created = db.session.query(Transaction).filter(
+        Transaction.is_deleted.is_(False),
+        Transaction.id.not_in(snapshot.transactions),
+    ).order_by(Transaction.id).all()
+    typed = [
+        txn for txn in created
+        if txn.pay_period_id in snapshot.pay_periods or not (
+            txn.recurs or (txn.transfer is not None and txn.transfer.recurs)
+        )
     ]
+    return typed, len(created) - len(typed)
 
 
-def _grade_act7_copies(arms: _Arms) -> None:
-    """Grade act 7's Add: no second copy of its row is COUNTED, on any day.
-
-    **A duplicate Add marked Paid passed every other arm** (adversarial
-    review 2026-10-10, dated today and dated 2026-04-02): :func:`_unrecorded_row`
-    looks only on BOUNDARY_DAY, Checking's boundary census ends at SECU's next
-    posted day, and :func:`_grade_leftovers` names only rows no fold counts.
-    Act 9's rows have no such gap, because :func:`_grade_dividends` counts
-    its category whole; this counts act 7's rows whole.  **At most ONE, not
-    exactly one**: a row missing or on the wrong day is :func:`_unrecorded_row`'s
-    and the boundary census's to name, and an uncounted one is
-    :func:`_grade_leftovers`', so none of those slips fails this line too.
-    The remedy for a copy marked Paid is not rehearsed, so the line says
-    stop.
+def _match(
+    slots: "list[_Slot]", typed: "list[Transaction]",
+) -> "tuple[dict[tuple, int], list[tuple[Transaction, _Moved | None]]]":
+    """Match each created row to the slot its fold and fields fill, once.
 
     Args:
-        arms: The arms so far.
+        slots: :func:`_slots`.
+        typed: :func:`_created_rows`' rows, by id.
+
+    Returns:
+        ``{slot's counted key: the first row that fills it}``, and every row
+        that fills none, with what its fold counts for it.
     """
-    counted = sorted(
-        (moved.day, moved.delta)
-        for _, moved in _counted(_act7_rows()) if moved is not None
-    )
-    arms.grade(
-        len(counted) <= 1,
-        f"Checking counts no second row named {UNRECORDED_NAME} in category "
-        f"{UNRECORDED_CATEGORY}",
-        f"Checking counts {len(counted)} rows named {UNRECORDED_NAME!r} in "
-        f"category {UNRECORDED_CATEGORY}, "
-        + "; ".join(f"{delta} on {day}" for day, delta in counted)
-        + ", where act 7 records one: a duplicate Add marked Paid counts its "
-        "money twice. STOP and report it; removing it is not rehearsed",
-    )
+    owed = Counter(slot.counted for slot in slots)
+    matched: "dict[tuple, int]" = {}
+    stray = []
+    for txn, moved in _counted(typed):
+        held = None if moved is None else (
+            txn.account_id, txn.category_id, txn.name, txn.pay_period_id,
+            moved.day, moved.delta, moved.movements,
+        )
+        if held is not None and owed[held]:
+            owed[held] -= 1
+            matched.setdefault(held, txn.id)
+        else:
+            stray.append((txn, moved))
+    return matched, stray
 
 
-def _grade_leftovers(arms: _Arms) -> None:
-    """Grade acts 7 and 9's Adds: no row they made is left uncounted.
-
-    **A double-submitted Add leaves a second, Projected row**, which the fold
-    does not count today and which every forward projection does: measured
-    by adversarial review 2026-10-10 on act 7, it passed every other arm and
-    both scores.  The rows an Add of these acts makes are every live row in
-    category 33, which held nothing before act 9 (:func:`_repair_markers`),
-    and :func:`_act7_rows`.  A row an Add made that the fold does not count
-    is either an unfinished row or a duplicate, and the failure says which
-    remedy is which.  Finishing a row's two remaining saves late, after act
-    10, leaves the same check as a clean rehearsal: measured 2026-10-10 on
-    act 7's row and on the 2026-05-29 and 2026-07-31 dividends.
-
-    **A CANCELLED one fails too and is not the operator's to remove** (ruling
-    **R-BAL262**, 2026-10-10): it moves no money but states an expected row
-    that did not come, and no page draws a cancelled row, so its card --
-    and its Delete -- cannot be reached by clicking.
+def _stray_line(
+    txn: Transaction, moved: "_Moved | None", unfinished: "dict[tuple, _Slot]",
+    context: BalanceContext,
+) -> str:
+    """Name one created row no slot matched, and its remedy.
 
     Args:
-        arms: The arms so far.
+        txn: The row.
+        moved: What its account's fold counts for it, ``None`` for nothing.
+        unfinished: The missing slots by :attr:`_Slot.typed`; a row that
+            fills one is POPPED from it, so one slot excuses one row.
+        context: The verification's read pass, which prices an unsettled
+            row: an Add's row stores no amount of its own, its one-off
+            definition does (``estimated_amount`` reads ``None`` on it,
+            measured 2026-10-10), so its amount is what the app resolves.
+
+    Returns:
+        The failure's sentence for it.
     """
-    made = [
-        txn for txn in db.session.query(Transaction).filter_by(
-            category_id=DIVIDEND_CATEGORY_ID, is_deleted=False,
-        ).all()
-        if not txn.recurs
-    ] + _act7_rows()
-    left = sorted(
-        (
-            txn.category_id, txn.account_id, txn.name, is_cancelled(txn),
-            _period_holding(txn.account_id, txn.pay_period.start_date).label,
+    if moved is not None:
+        state = f"counted for {moved.delta} on {moved.day}" + (
+            "" if moved.movements == 1 else f" in {moved.movements} movements"
         )
-        for txn, moved in _counted(made) if moved is None
-    )
-    dead = {row[3] for row in left}
-    remedies = []
-    if False in dead:
-        remedies.append(
-            "an uncounted row is the one an Add made unfinished when a line "
-            "above names that row missing (finish its saves), and otherwise "
-            "a duplicate Add: press 'Delete this row' on its card, and never "
-            "settle it, which counts its money twice"
+        remedy = (
+            "it counts and the sheet does not name it (a duplicate marked Paid "
+            "or Received, or a field typed otherwise): STOP and report it; "
+            "removing it is not rehearsed"
         )
-    if True in dead:
-        remedies.append(
-            "a Cancelled one moves no money but no page reaches it: STOP and "
+    elif is_cancelled(txn):
+        state = "Cancelled"
+        remedy = (
+            "a Cancelled row moves no money but no page reaches it: STOP and "
             "report it; the repair is not finished (ruling R-BAL262)"
         )
-    arms.grade(
-        not left,
-        f"no row acts 7 and 9 created is left uncounted in category "
-        f"{UNRECORDED_CATEGORY} on account {CHECKING_ACCOUNT} or in category "
-        f"{DIVIDEND_CATEGORY_ID}",
-        "; ".join(
-            f"{name!r} on account {account} in category {category}, in the "
-            f"paycheck {column}, {'Cancelled' if cancelled else 'not settled'}"
-            ", counted by no cash fold"
-            for category, account, name, cancelled, column in left
-        ) + ": " + "; ".join(remedies),
+    else:
+        state = "not settled"
+        slot = unfinished.pop((
+            txn.account_id, txn.category_id, txn.name, txn.pay_period_id,
+            txn.transaction_type_id,
+            cash_ledger.resolve_transaction_amount(txn, context.amounts()),
+        ), None)
+        remedy = (
+            "a duplicate Add: press 'Delete this row' on its card, and never "
+            "settle it, which counts its money twice" if slot is None else
+            f"{slot.name} left unfinished: finish its two saves on its card "
+            "(Status, then Money moved on)"
+        )
+    column = _period_holding(txn.account_id, txn.pay_period.start_date)
+    return (
+        f"{txn.name!r} on account {txn.account_id} in category "
+        f"{txn.category_id}, in the paycheck {column.label}, {state}: {remedy}"
     )
+
+
+def _grade_created_rows(
+    arms: _Arms, export: _Export, snapshot: _Snapshot, context: BalanceContext,
+) -> "int | None":
+    """Grade acts 7 and 9's Adds: EVERY row the snapshot does not hold.
+
+    **An exact census of what the acts created, keyed on the copy before act
+    1 and on nothing typed** (:class:`_Snapshot`).  Three rounds of review on
+    2026-10-10 each found a duplicate or leftover row passing every arm,
+    because the arms found the Adds' rows by a field the operator TYPES -- a
+    name, a category, a status -- and a copy with that one field typed
+    otherwise was found by none of them (act 7's name with a curly
+    apostrophe, a dividend under another income category, each left unpaid
+    or settled).  Every live row the snapshot does not hold is the
+    pay-period window's (:func:`_created_rows`), one of the six the sheet
+    names, matched on everything :attr:`_Slot.counted` holds and each at most
+    once, or NAMED with its remedy (:func:`_stray_line`).  A row no fold
+    counts that holds a missing slot's every typed field is that row left
+    unfinished, whose two remaining saves finish it; any other uncounted row
+    is a duplicate Add, which **Delete this row** removes.  A counted one --
+    a duplicate marked Paid or Received, or a row typed otherwise than the
+    sheet -- has no rehearsed remedy, and a Cancelled one is not the
+    operator's to remove (ruling **R-BAL262**: it moves no money, but no page
+    reaches its card); both say stop.
+
+    Args:
+        arms: The arms so far.
+        export: The parsed export.
+        snapshot: The copy's ids before the first act.
+        context: The verification's read pass.
+
+    Returns:
+        Act 7's row as matched, for the boundary census and the rehearsal's
+        own comparison; ``None`` when no created row matches it.
+    """
+    typed, generated = _created_rows(snapshot)
+    slots = _slots(export)
+    matched, stray = _match(slots, typed)
+    missing = [slot for slot in slots if slot.counted not in matched]
+    unfinished = {slot.typed: slot for slot in missing}
+    excusable = {slot.name for slot in unfinished.values()}
+    problems = [
+        _stray_line(txn, moved, unfinished, context) for txn, moved in stray
+    ]
+    excused = excusable - {slot.name for slot in unfinished.values()}
+    problems.extend(
+        f"{slot.name} is missing: {slot.row.name!r} on account "
+        f"{slot.row.account_id} in category {slot.row.category_id}, in the "
+        f"paycheck {slot.period.label}, counted once for {slot.counted[5]} on "
+        f"{slot.row.day}"
+        for slot in missing if slot.name not in excused
+    )
+    arms.grade(
+        not problems,
+        "every row the snapshot before act 1 does not hold is accounted for: "
+        f"the {len(slots)} the sheet names (act 7's and {len(slots) - 1} "
+        "dividends), each in its account, category, name and paycheck, "
+        f"counted once on its day for its figure; and {generated} the "
+        "pay-period window filled into paychecks it added",
+        "rows the snapshot before act 1 does not hold: " + "; ".join(problems),
+    )
+    return matched.get(slots[0].counted)
 
 
 def _grade_assertion(
@@ -3068,54 +3187,6 @@ def _grade_fidelity_sides(arms: _Arms) -> None:
     )
 
 
-def _unrecorded_row(arms: _Arms) -> "int | None":
-    """Find and grade act 7's row: Checking's one new row on BOUNDARY_DAY.
-
-    **Found, not told**, because a performed copy's row was made by a human
-    and its id is not known to anybody: it is the one row Checking holds in
-    act 7's category that the cash fold counts on BOUNDARY_DAY and that is not
-    one of the map's own rows.  That much finds it; the arm then grades its
-    name, its figure against the bank line's, and that it is one movement.
-
-    Args:
-        arms: The arms so far.
-
-    Returns:
-        The row, or ``None`` when not exactly one is found (an arm fails).
-    """
-    rows, _ = _moved_by(_facts(CHECKING_ACCOUNT))
-    filed = set(db.session.execute(
-        db.select(Transaction.id).filter_by(
-            account_id=CHECKING_ACCOUNT, category_id=UNRECORDED_CATEGORY,
-        )
-    ).scalars())
-    found = sorted(
-        txn for txn in filed - MAPPED_ROWS
-        if txn in rows and rows[txn].day == BOUNDARY_DAY
-    )
-    if len(found) != 1:
-        arms.fail(
-            f"Checking holds {len(found)} rows in category "
-            f"{UNRECORDED_CATEGORY} counted on {BOUNDARY_DAY} outside the map, "
-            "where act 7 records exactly one"
-        )
-        return None
-    txn = db.session.get(Transaction, found[0])
-    moved = rows[txn.id]
-    line = db.session.get(BankStatementLine, UNRECORDED_LINE)
-    arms.grade(
-        (txn.name, moved.delta, moved.movements) == (UNRECORDED_NAME, line.amount, 1),
-        f"act 7's row is Checking's one row in category {UNRECORDED_CATEGORY} "
-        f"on {BOUNDARY_DAY} outside the map: named {UNRECORDED_NAME}, moving "
-        f"bank line {UNRECORDED_LINE}'s {line.amount}",
-        f"act 7's row on {BOUNDARY_DAY} is named {txn.name!r} and moves "
-        f"{moved.delta} in {moved.movements} movement(s), where it is named "
-        f"{UNRECORDED_NAME!r} and moves bank line {UNRECORDED_LINE}'s "
-        f"{line.amount} once",
-    )
-    return txn.id
-
-
 def _grade_checking_boundary(
     arms: _Arms, context: BalanceContext, residue: Decimal,
     created: "int | None",
@@ -3143,8 +3214,8 @@ def _grade_checking_boundary(
         arms: The arms so far.
         context: The verification's read pass.
         residue: BAL-467's residue, books less bank.
-        created: Act 7's row, or ``None`` when :func:`_unrecorded_row` found
-            no single one -- the census then names whatever stands there.
+        created: Act 7's row, or ``None`` when :func:`_grade_created_rows`
+            matched none -- the census then names whatever stands there.
     """
     next_day = _next_bank_day()
     in_window = {
@@ -3311,7 +3382,8 @@ def _rehearse(args: argparse.Namespace) -> None:
     Args:
         args: The parsed command line.
     """
-    sheet = _Sheet(_sheet_path(args.sheet))
+    sheet = _Sheet(_new_file(args.sheet, "--sheet"))
+    snapshot_path = _new_file(args.snapshot, "--snapshot")
     export = _Export.read(args.bank)
     app = _connect(args.clone)
     sheet.say(f"# Account-10 repair: performance sheet ({args.clone}, "
@@ -3324,6 +3396,8 @@ def _rehearse(args: argparse.Namespace) -> None:
     try:
         with app.app_context():
             _require_unrepaired()
+            snapshot = _Snapshot.capture()
+            snapshot.write(snapshot_path)
             residue = _reconcile(export, sheet, args.residue)
             before = _class_totals()
             modelled_before = sum(
@@ -3335,7 +3409,7 @@ def _rehearse(args: argparse.Namespace) -> None:
             sheet.say("")
             sheet.say(f"{operator.acts} door submissions performed; verifying")
             _verify_ledger(export, sheet, before, modelled_before)
-            found = _verify_post_state(export, sheet, residue)
+            found = _verify_post_state(export, sheet, residue, snapshot)
             assert found == created, (
                 f"the verification found act 7's row as transaction {found}, "
                 f"and act 7 created transaction {created}"
@@ -3377,6 +3451,10 @@ def _check(args: argparse.Namespace) -> None:
     same acts were performed: no database name, no clock, and no id of a row
     the acts created.  A failing line may name such an id -- the boundary
     census lists the movements it found -- and is a difference anyway.
+    **What the acts created is told apart by the SNAPSHOT the rehearsal wrote
+    of the same dump before its first act** (``--snapshot``,
+    :class:`_Snapshot`), which is why the rehearsed copy and the performed
+    one are graded against one set of ids.
 
     **It writes nothing, and that is measured twice**: every connection is
     read-only at the server (:func:`_connect_read_only`), and the posted
@@ -3394,6 +3472,7 @@ def _check(args: argparse.Namespace) -> None:
     """
     sheet = _Sheet(None)
     export = _Export.read(args.bank)
+    snapshot = _Snapshot.read(args.snapshot)
     app = _connect_read_only(args.clone)
     sheet.say("# Account-10 repair: check of a repaired copy (read-only)")
     sheet.say(_export_summary(export))
@@ -3411,7 +3490,7 @@ def _check(args: argparse.Namespace) -> None:
         sheet.say("- Settings > General > Default Grid Account: "
                   f"{_grid_choice(_grid_account(owner))}")
         try:
-            _verify_post_state(export, sheet, args.residue)
+            _verify_post_state(export, sheet, args.residue, snapshot)
         except AssertionError as error:
             failure = error
         if _postings_fingerprint() != fingerprint:
@@ -3445,6 +3524,12 @@ def main() -> None:
     parser.add_argument(
         "--residue", required=True, type=Decimal,
         help="the payroll residue ledger row BAL-467 states, books less bank",
+    )
+    parser.add_argument(
+        "--snapshot", required=True,
+        help="the copy's row and paycheck ids before act 1: the rehearsal "
+        "WRITES it (a new file outside every checkout), --check READS the one "
+        "the rehearsal of the same dump wrote",
     )
     parser.add_argument(
         "--add-earlier-paychecks", type=int, default=0, metavar="N",
