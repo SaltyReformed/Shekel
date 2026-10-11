@@ -3,7 +3,7 @@
 # coordinator session (developer ruling 2026-09-02: any session may push to
 # back up work; PRs and merges are coordinated when several sessions run).
 #
-# Mechanism: guard-migrations.sh's proven "ask" pattern -- the harness pauses
+# Mechanism: a PreToolUse "ask" decision -- the harness pauses
 # the command and puts the decision in front of the developer, rather than
 # hard-denying. The session the developer designates as coordinator exports
 # SHEKEL_PR_COORDINATOR=1 and is never prompted. This is an advisory control,
