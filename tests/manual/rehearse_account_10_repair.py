@@ -108,7 +108,8 @@ from typing import NamedTuple
 from app import create_app, ref_cache
 from app.enums import SettledDayBasisEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db, login_manager
-from app.models.account import Account
+from app.models.account import Account, AccountAnchorHistory
+from app.models.account_opening import AccountOpening
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
@@ -867,8 +868,10 @@ def _new_file(raw: str, flag: str) -> Path:
     so a re-run naming an earlier run's sheet would replace the page a repair
     is performed from with a STOPPED one (adversarial review, 2026-10-09).
     The snapshot (:class:`_Snapshot`) is held to the same three rules: it is
-    a record of a production copy, and the check of a performed copy reads
-    the one this run wrote of the same dump, never an earlier run's.
+    a record of a production copy, and a run never overwrites an earlier
+    run's.  Which snapshot a check is handed is the operator's typing; what
+    the census does with one that is not of the copy's dump is
+    :func:`_performance_span`'s.
 
     Args:
         raw: The argument's value.
@@ -1025,13 +1028,28 @@ class _Snapshot(NamedTuple):
     creates rows there (measured 2026-10-10: a paycheck and its rows),
     so ``$B`` is the dump's state only on days it happens to be.
 
+    **Nothing in the file says which dump it is of, so the census does not
+    trust it to be this copy's**: it carries the DATABASE's clock at capture,
+    and :func:`_grade_created_rows` names a row with a remedy only when the
+    row was created inside the performance that clock and the acts' own
+    appended rows bound (:func:`_performance_span`).  A snapshot of an
+    earlier dump leaves the owner's newer rows outside it, and the census
+    then stops rather than prescribing a Delete for one of them (adversarial
+    review 2026-10-10: it told the operator to delete the owner's newest row).
+
     Attributes:
         transactions: Every ``budget.transactions`` id, deleted rows too.
         pay_periods: Every ``budget.pay_periods`` id.
+        deleted: The ``transactions`` already soft-deleted, so the rest are
+            the rows the copy held LIVE, which no act deletes
+            (:func:`_grade_deleted_rows`).
+        captured_at: The database's ``now()`` when it was taken.
     """
 
     transactions: frozenset
     pay_periods: frozenset
+    deleted: frozenset
+    captured_at: datetime
 
     @classmethod
     def capture(cls) -> "_Snapshot":
@@ -1043,6 +1061,10 @@ class _Snapshot(NamedTuple):
         return cls(
             frozenset(db.session.execute(db.select(Transaction.id)).scalars()),
             frozenset(db.session.execute(db.select(PayPeriod.id)).scalars()),
+            frozenset(db.session.execute(
+                db.select(Transaction.id).filter(Transaction.is_deleted.is_(True))
+            ).scalars()),
+            db.session.execute(db.select(db.func.now())).scalar_one(),
         )
 
     @classmethod
@@ -1054,10 +1076,26 @@ class _Snapshot(NamedTuple):
 
         Returns:
             The snapshot.
+
+        Raises:
+            SystemExit: When the file lacks a field this file writes: it was
+                written by an older version of this file, whose snapshot
+                cannot bound the acts (:func:`_performance_span`).
         """
         held = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+        absent = sorted(
+            {"transactions", "pay_periods", "deleted", "captured_at"} - set(held)
+        )
+        if absent:
+            raise SystemExit(
+                f"--snapshot {path} carries no {', '.join(absent)}: it was "
+                "written by an older version of this file; rehearse again from "
+                "this checkout and check against the snapshot that writes"
+            )
         return cls(
             frozenset(held["transactions"]), frozenset(held["pay_periods"]),
+            frozenset(held["deleted"]),
+            datetime.fromisoformat(held["captured_at"]),
         )
 
     def write(self, path: Path) -> None:
@@ -1069,6 +1107,8 @@ class _Snapshot(NamedTuple):
         path.write_text(json.dumps({
             "transactions": sorted(self.transactions),
             "pay_periods": sorted(self.pay_periods),
+            "deleted": sorted(self.deleted),
+            "captured_at": self.captured_at.isoformat(),
         }) + "\n", encoding="utf-8")
 
 
@@ -1225,6 +1265,39 @@ def _next_bank_day() -> date:
     return day
 
 
+def _checking_sides_astray() -> "dict[int, SettleDay | None]":
+    """Return each mapped transfer whose Checking side is not SECU's observed day.
+
+    **The one statement of the rule, read before the acts and after them.**
+    Every mapped transfer but the kept one carries its Checking side on the
+    day SECU's import OBSERVED, and that is the day the map gives Fidelity's:
+    these ACHs post at both banks the same day (ruling R-BAL3 for the two in
+    March; the six this reads measured so on 2026-10-09).  The rehearsal
+    refuses to start unless it holds (:func:`_subject_problems`), and the
+    post-state requires that it STILL holds (:func:`_grade_checking_sides`):
+    act 8 opens each of these cards and types account 10's box only, and
+    Checking's box typed another day there passed every other arm (measured
+    by adversarial review 2026-10-10).  The kept transfer's Checking side is
+    act 5's to type and the boundary census's to grade.
+
+    Returns:
+        ``{transfer id: the side's SettleDay, or None for no movement}``, one
+        entry per transfer whose side is not its mapped day as observed;
+        empty when every side holds.
+    """
+    astray = {}
+    for transfer_id, day in FIDELITY_DAYS.items():
+        if transfer_id == KEPT_TRANSFER:
+            continue
+        side = _side_day(transfer_id, CHECKING_ACCOUNT)
+        if (
+            side is None or side.day != day
+            or side.basis is not SettledDayBasisEnum.OBSERVED
+        ):
+            astray[transfer_id] = side
+    return astray
+
+
 def _subject_problems(export: _Export) -> "list[str]":
     """Return every disagreement between the Fidelity map and the records.
 
@@ -1233,11 +1306,9 @@ def _subject_problems(export: _Export) -> "list[str]":
     move on it -- zero on a day only a dividend answers, so a transfer line on
     a dividend day is caught.  **Each transfer**: it has a settled movement on
     account 10, is mapped to a day the export names, and no two claim one day.
-    **Each Checking side**: every mapped transfer but the kept one carries its
-    Checking side on the day SECU's import OBSERVED, and that is the day the
-    map gives Fidelity's -- these ACHs post at both banks the same day
-    (ruling R-BAL3 for the two in March; the six this arm grades measured so
-    on 2026-10-09).  It is the arm that separates transfers of EQUAL amounts.
+    **Each Checking side**: on SECU's observed day, which is the map's day for
+    Fidelity's (:func:`_checking_sides_astray`).  It is the arm that
+    separates transfers of EQUAL amounts.
     **Each movement**: every one accounts 2 and 10 hold, on or before the
     export's last day, is a mapped transfer's or the dropped one's.
 
@@ -1266,17 +1337,11 @@ def _subject_problems(export: _Export) -> "list[str]":
                 f"transfers {claimed[day]} and {transfer_id} both claim {day}"
             )
         claimed[day] = transfer_id
-        if transfer_id == KEPT_TRANSFER:
-            continue  # nothing observed its Checking side; act 5 types it
-        side = _side_day(transfer_id, CHECKING_ACCOUNT)
-        if (
-            side is None or side.day != day
-            or side.basis is not SettledDayBasisEnum.OBSERVED
-        ):
-            problems.append(
-                f"transfer {transfer_id} is mapped to Fidelity's {day}, and "
-                f"its Checking side records {side}"
-            )
+    problems.extend(
+        f"transfer {transfer_id} is mapped to Fidelity's "
+        f"{FIDELITY_DAYS[transfer_id]}, and its Checking side records {side}"
+        for transfer_id, side in _checking_sides_astray().items()
+    )
 
     dividends = {day for day, _ in export.recorded_dividends()}
     for day in export.named:
@@ -2703,7 +2768,12 @@ def _verify_post_state(
     scores by the reviews of 2026-10-10.  **And every row the acts CREATED is
     one census** (:func:`_grade_created_rows`): those reviews found, three
     rounds running, a duplicate or leftover row passing every arm, each time
-    because an arm found the Adds' rows by a field the operator types.
+    because an arm found the Adds' rows by a field the operator types.  **So
+    are the six Checking sides act 8's cards render and the rows the copy
+    already held** (:func:`_grade_checking_sides`,
+    :func:`_grade_deleted_rows`): Checking's box typed another day, and a
+    Delete on a row no act made, each moved money and was named by no line
+    until the round that answered review 4 (2026-10-11).
 
     Args:
         export: The parsed export.
@@ -2735,6 +2805,7 @@ def _verify_post_state(
     )
     _grade_openings(arms, export)
     _grade_fidelity_sides(arms)
+    _grade_checking_sides(arms)
     subject_books = cash_balance_at(subject, context, BOUNDARY_DAY)
     arms.grade(
         subject_books == export.closing_on(BOUNDARY_DAY),
@@ -2744,6 +2815,7 @@ def _verify_post_state(
         f"{BOUNDARY_DAY}, Fidelity {export.closing_on(BOUNDARY_DAY)}",
     )
     created = _grade_created_rows(arms, export, snapshot, context)
+    _grade_deleted_rows(arms, snapshot)
     _grade_checking_boundary(arms, context, residue, created)
     if arms.failed:
         raise AssertionError(
@@ -2985,11 +3057,36 @@ def _match(
     return matched, stray
 
 
+def _described(txn: Transaction) -> str:
+    """Return how a failing line names one row: what the operator can find.
+
+    Args:
+        txn: The row.
+
+    Returns:
+        Its name, account, category and the paycheck it is filed in.
+    """
+    column = _period_holding(txn.account_id, txn.pay_period.start_date)
+    return (
+        f"{txn.name!r} on account {txn.account_id} in category "
+        f"{txn.category_id}, in the paycheck {column.label}"
+    )
+
+
 def _stray_line(
     txn: Transaction, moved: "_Moved | None", unfinished: "dict[tuple, _Slot]",
     context: BalanceContext,
-) -> str:
+) -> "tuple[str, bool]":
     """Name one created row no slot matched, and its remedy.
+
+    **Only a PROJECTED row is given a remedy to perform**, because the two
+    that are prescribed -- **Delete this row**, and a row's two remaining
+    saves -- were each measured from Projected (2026-10-10).  A row the fold
+    does not count is not therefore unsettled: marked Credit, which act 7's
+    Projected card offers, it holds no movement on its own account, and the
+    unsettled remedy told the operator to finish saves the card no longer
+    offers (adversarial review 2026-10-10).  Every status but Projected and
+    Cancelled is named and stops.
 
     Args:
         txn: The row.
@@ -3002,8 +3099,10 @@ def _stray_line(
             measured 2026-10-10), so its amount is what the app resolves.
 
     Returns:
-        The failure's sentence for it.
+        The failure's sentence for it, and whether that sentence says stop
+        rather than giving a remedy.
     """
+    stops = True
     if moved is not None:
         state = f"counted for {moved.delta} on {moved.day}" + (
             "" if moved.movements == 1 else f" in {moved.movements} movements"
@@ -3019,7 +3118,15 @@ def _stray_line(
             "a Cancelled row moves no money but no page reaches it: STOP and "
             "report it; the repair is not finished (ruling R-BAL262)"
         )
+    elif txn.status_id != ref_cache.status_id(StatusEnum.PROJECTED):
+        state = (f"marked {txn.status.name} and counted on no movement of "
+                 f"account {txn.account_id}")
+        remedy = (
+            "no act leaves a row so (marked Credit, for one), and no remedy is "
+            "rehearsed: STOP and report it"
+        )
     else:
+        stops = False
         state = "not settled"
         slot = unfinished.pop((
             txn.account_id, txn.category_id, txn.name, txn.pay_period_id,
@@ -3027,16 +3134,67 @@ def _stray_line(
             cash_ledger.resolve_transaction_amount(txn, context.amounts()),
         ), None)
         remedy = (
-            "a duplicate Add: press 'Delete this row' on its card, and never "
-            "settle it, which counts its money twice" if slot is None else
+            "not one of the six rows the sheet names: if it is a second Add "
+            "you made in act 7 or act 9, press 'Delete this row' on its card "
+            "and never settle it, which counts its money twice; if you did "
+            "not make it, STOP and report it"
+            if slot is None else
             f"{slot.name} left unfinished: finish its two saves on its card "
             "(Status, then Money moved on)"
         )
-    column = _period_holding(txn.account_id, txn.pay_period.start_date)
-    return (
-        f"{txn.name!r} on account {txn.account_id} in category "
-        f"{txn.category_id}, in the paycheck {column.label}, {state}: {remedy}"
+    return f"{_described(txn)}, {state}: {remedy}", stops
+
+
+def _performance_span(
+    snapshot: _Snapshot, last: date,
+) -> "tuple[datetime, datetime]":
+    """Return when this copy's acts 4 to 10 ran, by the database's own clock.
+
+    **An Add is made between the restatements and act 10, and both ends are
+    rows the acts APPEND.**  Acts 2 to 4 each append a restatement
+    (``budget.account_openings``) and act 10 an assertion
+    (``budget.account_anchor_history``); both tables are append-only, and
+    the database stamps each row's ``created_at``.  So the span opens at the
+    newest restatement of the three accounts -- act 4's, which act 7's Add
+    follows -- and closes at the assertion governing the export's last day,
+    act 10's.  **The snapshot's capture is a floor**, so a copy on which no
+    restatement was made is still bounded by the rehearsal of its dump.
+
+    **A row created outside the span is not an Add's, whatever it holds**:
+    it was there before the acts and the snapshot does not hold it (a
+    snapshot of an earlier dump, or a row typed between the dump and act 4),
+    or it was made after act 10.  :func:`_grade_created_rows` gives such a
+    row no remedy, because the remedies it gives are an Add's.  A
+    restatement made again later moves the opening later, which only puts
+    more rows outside; act 10 asserted again later moves the close later,
+    which lets in a row made between the two assertions: it is then named
+    as an Add's row would be, and the remedy for a Projected row asks the
+    operator whether they made it as a second Add.
+
+    Args:
+        snapshot: The copy's ids before the first act, and when.
+        last: The export's last day, which act 10 asserts.
+
+    Returns:
+        ``(opened, closed)``.  When no assertion governs *last*, ``closed``
+        is ``opened`` and no row is inside.
+    """
+    opened = max(
+        snapshot.captured_at,
+        db.session.execute(
+            db.select(db.func.max(AccountOpening.created_at)).filter(
+                AccountOpening.account_id.in_(
+                    (CHECKING_ACCOUNT, TWIN_ACCOUNT, SUBJECT_ACCOUNT),
+                ),
+            )
+        ).scalar_one(),
     )
+    governing = cash_ledger.governing_anchor_on(SUBJECT_ACCOUNT, last)
+    if governing is None:
+        return opened, opened
+    return opened, db.session.get(
+        AccountAnchorHistory, governing.anchor_id,
+    ).created_at
 
 
 def _grade_created_rows(
@@ -3054,14 +3212,24 @@ def _grade_created_rows(
     or settled).  Every live row the snapshot does not hold is the
     pay-period window's (:func:`_created_rows`), one of the six the sheet
     names, matched on everything :attr:`_Slot.counted` holds and each at most
-    once, or NAMED with its remedy (:func:`_stray_line`).  A row no fold
-    counts that holds a missing slot's every typed field is that row left
-    unfinished, whose two remaining saves finish it; any other uncounted row
-    is a duplicate Add, which **Delete this row** removes.  A counted one --
-    a duplicate marked Paid or Received, or a row typed otherwise than the
-    sheet -- has no rehearsed remedy, and a Cancelled one is not the
-    operator's to remove (ruling **R-BAL262**: it moves no money, but no page
-    reaches its card); both say stop.
+    once, or NAMED (:func:`_stray_line`).
+
+    **A remedy is printed only for a row an Add can have made**: one created
+    inside :func:`_performance_span`.  If ANY row to be named was created
+    outside it, the line is ONE stop naming those rows and no remedy at all,
+    because then the snapshot is not of this copy's dump or the app was
+    changed outside the acts, and a remedy read off it would be aimed at the
+    owner's own row (adversarial review 2026-10-10: a snapshot one row short
+    named the owner's newest row a duplicate Add to delete).  Inside the
+    span, a Projected row holding a missing slot's every typed field is that
+    row left unfinished, whose two remaining saves finish it; any other
+    Projected row is not one of the six, and is removed by **Delete this
+    row** only when the operator made it as a second Add, which the line
+    asks them, since an owner's row typed mid-repair is the same shape
+    (adversarial review 2026-10-11) -- both remedies measured.  A counted
+    one, a Cancelled one (ruling
+    **R-BAL262**) and one in any other status have no rehearsed remedy, and
+    say stop.
 
     Args:
         arms: The arms so far.
@@ -3076,20 +3244,21 @@ def _grade_created_rows(
     typed, generated = _created_rows(snapshot)
     slots = _slots(export)
     matched, stray = _match(slots, typed)
-    missing = [slot for slot in slots if slot.counted not in matched]
-    unfinished = {slot.typed: slot for slot in missing}
-    excusable = {slot.name for slot in unfinished.values()}
-    problems = [
-        _stray_line(txn, moved, unfinished, context) for txn, moved in stray
-    ]
-    excused = excusable - {slot.name for slot in unfinished.values()}
-    problems.extend(
-        f"{slot.name} is missing: {slot.row.name!r} on account "
-        f"{slot.row.account_id} in category {slot.row.category_id}, in the "
-        f"paycheck {slot.period.label}, counted once for {slot.counted[5]} on "
-        f"{slot.row.day}"
-        for slot in missing if slot.name not in excused
-    )
+    opened, closed = _performance_span(snapshot, export.named[-1])
+    outside = [txn.id for txn, _ in stray if not opened < txn.created_at < closed]
+    if outside:
+        problems = [
+            f"transactions {outside} were created outside the acts' span "
+            "(before the newest restatement of acts 2 to 4, or after act "
+            "10's assertion), where no Add of the acts as ruled is made: the "
+            "snapshot is not of the dump this copy was taken from, the app "
+            "was changed outside the acts, act 10 was skipped, an opening was "
+            "restated again after an Add, or an Add was made out of order. "
+            "STOP and report it; delete or settle NOTHING on the strength of "
+            "this line"
+        ]
+    else:
+        problems = _stray_problems(slots, matched, stray, context)
     arms.grade(
         not problems,
         "every row the snapshot before act 1 does not hold is accounted for: "
@@ -3100,6 +3269,95 @@ def _grade_created_rows(
         "rows the snapshot before act 1 does not hold: " + "; ".join(problems),
     )
     return matched.get(slots[0].counted)
+
+
+def _stray_problems(
+    slots: "list[_Slot]", matched: "dict[tuple, int]",
+    stray: "list[tuple[Transaction, _Moved | None]]", context: BalanceContext,
+) -> "list[str]":
+    """Name every created row no slot matched, and every slot none filled.
+
+    A slot whose row is named unfinished is not named missing as well: one
+    line, and its remedy, per row.  **A remedy is not to be performed beside
+    a stop**: with a dividend settled onto the wrong day (stop) and a
+    Projected copy of it left (finish its saves), the finish would count that
+    dividend twice.  So when any row says stop and another gives a remedy,
+    the line ends by withholding every remedy on it.
+
+    Args:
+        slots: :func:`_slots`.
+        matched: :func:`_match`'s filled slots.
+        stray: :func:`_match`'s unmatched rows, each created inside the
+            performance (:func:`_performance_span`).
+        context: The verification's read pass.
+
+    Returns:
+        One sentence per row or slot, empty when every slot is filled once
+        and no row is left.
+    """
+    missing = [slot for slot in slots if slot.counted not in matched]
+    unfinished = {slot.typed: slot for slot in missing}
+    excusable = {slot.name for slot in unfinished.values()}
+    named = [
+        _stray_line(txn, moved, unfinished, context) for txn, moved in stray
+    ]
+    problems = [sentence for sentence, _ in named]
+    if len({stops for _, stops in named}) == 2:
+        problems.append(
+            "a row on this line says STOP, so perform NONE of the remedies on "
+            "it: stop and report it"
+        )
+    excused = excusable - {slot.name for slot in unfinished.values()}
+    problems.extend(
+        f"{slot.name} is missing: {slot.row.name!r} on account "
+        f"{slot.row.account_id} in category {slot.row.category_id}, in the "
+        f"paycheck {slot.period.label}, counted once for {slot.counted[5]} on "
+        f"{slot.row.day}"
+        for slot in missing if slot.name not in excused
+    )
+    return problems
+
+
+def _grade_deleted_rows(arms: _Arms, snapshot: _Snapshot) -> None:
+    """Grade that every row the copy held live before act 1 is live still.
+
+    **No act deletes a row the copy already held** (measured 2026-10-11 on a
+    whole rehearsal: none of the dump's live rows was deleted), so one that
+    is gone was deleted by a press no act makes -- a **Delete this row**
+    aimed at the wrong card.  That moves money, and before this arm the only
+    sign of it was an unnamed ``BALANCES DIFFER``.  A one-off's Delete
+    removes the row and a recurring occurrence's marks it deleted, so both
+    are read.
+
+    Args:
+        arms: The arms so far.
+        snapshot: The copy's ids before the first act.
+    """
+    held = snapshot.transactions - snapshot.deleted
+    live = set(db.session.execute(
+        db.select(Transaction.id).filter(
+            Transaction.id.in_(held), Transaction.is_deleted.is_(False),
+        )
+    ).scalars())
+    lost = sorted(held - live)
+    still = {
+        txn.id: txn for txn in db.session.query(Transaction).filter(
+            Transaction.id.in_(lost),
+        )
+    }
+    arms.grade(
+        not lost,
+        "every row the copy held before act 1 is still there: no act deletes "
+        "one",
+        "rows the copy held before act 1 are deleted: " + "; ".join(
+            f"transaction {txn_id}, " + (
+                _described(still[txn_id]) if txn_id in still
+                else "no longer in the copy"
+            )
+            for txn_id in lost
+        ) + ". No act deletes a row the copy already held, so a Delete was "
+        "pressed on one, which moves money: STOP and report it",
+    )
 
 
 def _grade_assertion(
@@ -3182,6 +3440,29 @@ def _grade_fidelity_sides(arms: _Arms) -> None:
             + ("no movement" if side is None
                else f"{side.day} as {side.basis.value!r}")
             + f", not {FIDELITY_DAYS[transfer_id]} as its own"
+            for transfer_id, side in astray.items()
+        ),
+    )
+
+
+def _grade_checking_sides(arms: _Arms) -> None:
+    """Grade act 8's other box: every Checking side still on SECU's day.
+
+    Args:
+        arms: The arms so far.
+    """
+    astray = _checking_sides_astray()
+    arms.grade(
+        not astray,
+        f"the {len(FIDELITY_DAYS) - 1} other transfers' Checking sides still "
+        "record the day SECU's import observed",
+        "; ".join(
+            f"transfer {transfer_id}'s Checking side records "
+            + ("no movement" if side is None
+               else f"{side.day} as {side.basis.value!r}")
+            + f", not {FIDELITY_DAYS[transfer_id]} as SECU's import observed "
+            "it: act 8 types account 10's box only and leaves Checking's as "
+            "rendered"
             for transfer_id, side in astray.items()
         ),
     )
@@ -3528,8 +3809,11 @@ def main() -> None:
     parser.add_argument(
         "--snapshot", required=True,
         help="the copy's row and paycheck ids before act 1: the rehearsal "
-        "WRITES it (a new file outside every checkout), --check READS the one "
-        "the rehearsal of the same dump wrote",
+        "WRITES it (a new file outside every checkout), --check READS it. "
+        "Hand --check the one the rehearsal of the copy's own dump wrote: "
+        "given another dump's, a row the copy holds and it does not is named "
+        "as made outside the acts, with no remedy, and a row it holds that "
+        "the copy lacks is named as deleted",
     )
     parser.add_argument(
         "--add-earlier-paychecks", type=int, default=0, metavar="N",

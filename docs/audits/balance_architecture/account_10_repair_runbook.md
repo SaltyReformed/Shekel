@@ -126,8 +126,9 @@ repair does not start.** It refuses BEFORE any write, naming every reason:
 
 Then it refuses AFTER the acts if any verification fails (the sheet's last section). Before its
 first act it writes `snapshot_$T.json`: the id of every row and every paycheck its copy holds,
-which is the dump's, and no figure. The check reads it, on the rehearsed copy and on production's,
-to tell every row the acts created from the rows that were already there.
+which is the dump's, which of those rows were already deleted, and when it was taken; no figure.
+The check reads it, on the rehearsed copy and on production's, to tell every row the acts created
+from the rows that were already there, and to name any of those a Delete removed.
 
 **3. Work in ONE browser tab.** Log out everywhere else first. A second tab holds pages rendered
 before an act, and a save from one would post what it rendered.
@@ -504,11 +505,13 @@ twin's and account 10's corrections and modelled interest total 0.00; transfer 1
 Cancelled (the grey-button trap); category 33 is named *Income: Interest & Dividends* and holds no
 row the copy held before act 1; account 10 asserts Fidelity's close on 2026-07-31; both books open
 2026-03-25 holding their banks' closes; all seven Fidelity sides record Fidelity's day as their
-own; account 10 reads Fidelity's close on 2026-03-26; **every row the snapshot does not hold is
+own, and the other six transfers' Checking sides still record the day SECU's import observed;
+account 10 reads Fidelity's close on 2026-03-26; **every row the snapshot does not hold is
 accounted for**: the six the sheet names (act 7's and the five dividends), each in the account,
 category, name and paycheck the sheet gives, counted once on its day for its figure, beside any
-rows the pay-period window filled into paychecks it added (below), and any other row is named with
-its remedy; and Checking reads SECU's close on 2026-03-26 apart by BAL-467's residue and nothing
+rows the pay-period window filled into paychecks it added (below), and any other row is named, with
+a remedy only where one is measured (below); every row the copy held before act 1 is still there;
+and Checking reads SECU's close on 2026-03-26 apart by BAL-467's residue and nothing
 else, with every Checking movement before SECU's next posted day one the map names. **Every one of
 these but the class moves is also the CHECK** (below): the same arms, run read-only on any copy.
 
@@ -532,11 +535,13 @@ paths, gave byte-identical dumps of every figure the balance seam answers, for e
 before against after differed only on accounts 1, 2 and 10.** The rehearsal block wrote its dump
 of the rehearsed copy beside the sheet, and this block compares against that FILE, so nothing done
 to the rehearsal copies since can change the answer. Paste the SETUP block if this terminal does
-not still hold it, set `T` to the stamp in the rehearsal's sheet name, then paste:
+not still hold it, set `T` to the stamp in the rehearsal's sheet name (the block refuses one not
+dated today), then paste:
 
 ```bash
 T=STAMP                                # from the sheet name of the rehearsal: sheet_STAMP.md
 ( set -e                               # compares against FILES that rehearsal wrote, never a live copy
+  [ "${T%%_*}" = "$(date +%F)" ] || { echo "STOPPED: T=$T is not a rehearsal of today's"; exit 1; }
   for f in sheet_$T.md snapshot_$T.json score_after_a10_$T.txt score_after_a1_$T.txt \
            baseline_rehearsed_$T.json check_rehearsed_$T.txt; do
     [ -f "$D/$f" ] || { echo "STOPPED: no $f in $D"; exit 1; }; done
@@ -584,33 +589,51 @@ performed copy's with the rehearsed copy's; a `FAILS:` line may name such an id.
   own day at 0.00, or its corrections not zero; the line beginning "act 2, step 3" is its 0.00
   typed with another figure or as of another day, act 2 above); acts 3 and 4 (an opening
   mistyped); act 3 or act 5 (account 10's books off Fidelity's close on 2026-03-26); act 5 or act 8
-  (a Fidelity side still borrowing Checking's day); act 6 (a row not re-dated shows only on
+  (a Fidelity side still borrowing Checking's day); act 8 (a Checking side of transfers 155 to 409
+  typed another day: that box is left as rendered); act 6 (a row not re-dated shows only on
   Checking's 2026-03-26 line, as a movement the map does not name there and a gap beyond the
   residue; that line also fails beside the rows line when act 7's row is not exactly the sheet's,
   or a copy of it is settled onto 2026-03-26 to 03-29); act 9 (the category not renamed, or a row
   that was already there moved into it: stop); **acts 7 and 9's rows, on the line beginning "rows
-  the snapshot before act 1 does not hold"**, which names every row the acts created that is not
-  exactly one the sheet gives, and each of the six it does not find. Each named row carries its
-  remedy: one not settled is that act's row left UNFINISHED (finish its two saves) when the line
-  says so, and otherwise a duplicate Add (**Delete this row**); a counted one (a duplicate marked
-  Paid or Received, or a row with any field typed otherwise than the sheet) and a CANCELLED one
-  (ruling **R-BAL262**) each mean stop. A dividend unfinished or mistyped in its amount also leaves
-  account 10's corrections nonzero; the line beginning "act 10";
+  the snapshot before act 1 does not hold"**, which names every row the acts created that differs
+  from one the sheet gives in its account, category, name, paycheck, day or figure, and each of the
+  six it does not find. It grades nothing else the cards offer: the Add's two checkboxes, and a
+  figure typed wrong in the Add and corrected in the Actual box, were each measured to move no money
+  (2026-10-10). **A remedy is named only for a row made during the acts**, after act 4's
+  restatement and before act 10's assertion: if any row the line names was made outside them, the
+  line is ONE stop naming those rows and no remedy, because then the snapshot is not of this copy's
+  dump, the app was changed outside the acts, act 10 was skipped, an opening was restated again
+  after an Add, or an Add was made out of order; delete or settle nothing on its strength. Inside
+  them, an unsettled row is that act's row left UNFINISHED (finish its two saves) when the line says
+  so, and otherwise a row that is not one of the six (**Delete this row** if it is a second Add you
+  made, and stop if you did not make it); a
+  counted one (a duplicate marked Paid or Received, or a row typed otherwise than the sheet), a
+  CANCELLED one (ruling **R-BAL262**) and one marked anything else (Credit, for one) each mean
+  stop, and when any row on the line means stop, the line says so and none of its remedies is
+  performed; act 10 (the line beginning "act 10"); account 10's corrections (the line beginning
+  "account 10's posted corrections": a dividend unfinished or mistyped in its amount, or a
+  transfer's Actual box typed otherwise in act 5 or act 8); **the line beginning "rows the copy
+  held before act 1 are deleted"** (a Delete pressed on a row no act made, which moves money:
+  stop);
 * a differing class total or Default Grid Account line, with no `FAILS:` line, is money or a
   setting the post-state cannot grade alone: read it beside the score and balance lines.
 
-**A FAILS line is read before anything else is done, and two remedies are measured** (2026-10-10,
+**A FAILS line is read before anything else is done, and two remedies are measured** (2026-10-11,
 below): an unpaid duplicate's **Delete this row**, and the two remaining saves of a row an Add made
-and left unsettled, performed when the check names it, after act 10 if that is when. After either,
-paste the POST block again: it rebuilds `$P` from a fresh dump and checks it against the same
+and left unsettled, performed when the check names it, after act 10 if that is when. A dividend's
+row is on account 10's grid: put Settings > General > Default Grid Account on *Fidelity Money
+Market Savings* first, as act 8 does, and back on the account the sheet names after, as act 10
+does. After either, paste the POST block again: it rebuilds `$P` from a fresh dump and checks it against the same
 snapshot. For any
 other, stop and report it. Performing the missed act now and pasting the POST block again (it
 rebuilds `$P` from a fresh dump) is the likely remedy, but it is not rehearsed, and some acts have
 an order the late one would break.
 
-**Measured 2026-10-10**, on copies of that evening's dump, with this check: thirty copies on which
-the acts were performed with ONE act wrong each failed the check on a line naming that act, and
-none passed. Twenty-two failed that line alone: act 8 skipped; act 5's account-10 box left; the twin
+**Measured 2026-10-11**, on copies of the dump of 2026-10-10 19:58, with this check: thirty-three
+copies on which the acts were performed with ONE act wrong each failed the check on a line naming
+that act, and none passed. Twenty-four failed that line alone: act 8 skipped; act 8 with Checking's
+box on transfer 154 typed a day early; a Delete pressed on one of the owner's own rows after act 7
+(the deleted-rows line); act 5's account-10 box left; the twin
 left unarchived; the twin restated onto 2026-03-25; the twin's 0.00 asserted as of 2026-04-07, and
 as of 2026-07-31; the grey Cancel; act 10 skipped; and, on the rows line, the dividends under
 *Income: Other Income*; the 2026-05-29 dividend filed one paycheck late, named otherwise, or
@@ -618,12 +641,21 @@ settled a day early; act 7's Add, and then a dividend's, submitted twice with th
 also with act 7's copy named with a curly apostrophe (left unpaid, or marked Paid) and with the
 dividend's copy under *Income: Other Income* (left unpaid, or marked Received); act 7's copy marked
 Paid, dated today, and dated 2026-04-02; a dividend's copy Cancelled; and, on a copy whose window
-was one paycheck short, a dividend's copy filed into the paycheck the window added. Seven failed
+was one paycheck short, a dividend's copy filed into the paycheck the window added. Eight failed
 two lines: act 2's restatement skipped (the twin's opening and its corrections); act 7's row in
-another category, named with a trailing space, for another figure or one paycheck late, and act
-7's copy settled onto 2026-03-27 (the rows line and Checking's 2026-03-26 line); the 2026-05-29
-dividend for another figure (the rows line and account 10's corrections). One failed three: the
-twin's 0.00 asserted as of 2026-04-05 (act 2, above). Left unsettled, act 7's row failed the rows
+another category, named with a trailing space, for another figure or one paycheck late, act 7's
+copy settled onto 2026-03-27, and act 7's row marked Credit at its second save, which the rows line
+names and stops on (the rows line and Checking's 2026-03-26 line); the 2026-05-29 dividend for
+another figure (the rows line and account 10's corrections). One failed three: the twin's 0.00
+asserted as of 2026-04-05 (act 2, above). **The rows line named no remedy for a row made outside
+the acts**: a row the owner added after the snapshot and before act 1, one added after act 10, and
+the clean copy checked against a snapshot one row short (as an earlier dump's would be, with its
+own capture time and with an earlier one) each failed it as ONE stop naming that row; given the
+pre-round snapshot format, the check refused to run. The 2026-05-29 dividend settled a day early
+beside a Projected copy of it failed the rows line naming both, the copy as left unfinished, and
+withholding every remedy; performing that finish anyway left account 10's corrections off by the
+dividend, counted twice. Act 8 with Checking's box typed the day it already held gave the clean
+rehearsal's output. Left unsettled, act 7's row failed the rows
 line, which named it unfinished, and Checking's 2026-03-26 gap; a dividend's, the rows line and
 account 10's corrections. Two copies whose Add went through twice and whose copy was then removed
 with **Delete this row** (act 7's and a dividend's), and three whose unsettled row had its two
