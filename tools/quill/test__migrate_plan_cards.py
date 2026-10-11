@@ -32,12 +32,46 @@ def _rekeyed(number, title, first=2):
     after ``first``, the migration's first card (A-2's, #2 in
     :func:`_migrate_plan_fake.filed_tracker`'s numbering)."""
     return (f"plan#{number} ({title!r}) is no item's card, and it is numbered above "
-            f"plan#{first}, the lowest card an item's key names, so it reads as the migration's.  "
-            f"FIRST, if plan#{first} is a card of the tracker's own given an item's key by hand "
-            "(refused besides), settle that one: this refusal goes with it, and this card is not "
-            "to be deleted for it.  Else it is the migration's card with its title or arc label "
-            "changed by hand, or its item left the registries, or it was filed natively inside "
-            "the freeze; settle it before the run")
+            f"plan#{first}, the lowest card an item's key names (a card filed already apart), so "
+            f"it reads as the migration's.  FIRST, if plan#{first} is a card of the tracker's own "
+            "given an item's key by hand (refused besides), settle that one and run again: this "
+            "card is not to be deleted for it.  Else it is the migration's card with its title or "
+            "arc label changed by hand, or its item left the registries, or it was filed natively "
+            "inside the freeze; settle it before the run")
+
+
+def _resent(key, *states):
+    """How the plan refuses ``key`` on cards in the state a re-sent create leaves, each named
+    with what it holds (``states``, lowest first, each opening with its card's number): the
+    last card, the one the run went on with, named to keep."""
+    keep = states[-1].split(" ", 1)[0]
+    return (f"{key} is the key of {len(states)} cards ({'; '.join(states)}): the state a "
+            "re-sent create leaves (GitHub refused a create for a rate limit though it had "
+            "performed it, and the tool sent it again), copies of one create, each but the last "
+            f"made as its create left it.  Keep the last made ({keep}), the one the run went on "
+            "with; delete the others on the web, and run again: the next run grades it as the "
+            "item's card")
+
+
+def _by_hand(key, *states):
+    """How the plan refuses ``key`` on cards in a state no re-sent create leaves, each named
+    with what it holds (``states``, lowest first)."""
+    return (f"{key} is the key of {len(states)} cards ({'; '.join(states)}), not the state a "
+            "re-sent create leaves (copies of one create, each but the last made as its create "
+            "left it, and the last refused nothing as the item's card): a person gave a card "
+            "this key by hand (retitled it, or changed its arc label), or edited one of them.  "
+            "Settle them by hand and run again: retitle or relabel a card given this key to its "
+            "own title and arc label, never deleting it (above all one of the tracker's own, "
+            "filed before the migration), and delete no card holding a later write")
+
+
+def _filed_already(key, mapped, *states):
+    """How the plan refuses ``key``, a card filed already's, on card ``mapped`` and others,
+    each named with what it holds (``states``, lowest first)."""
+    return (f"{key} is the key of {len(states)} cards ({'; '.join(states)}): the migration "
+            f"files no card for a card filed already (plan#{mapped}), so every other card "
+            "holding its key was given it by hand (retitled, or its arc label changed); retitle "
+            "or relabel each to its own title and arc label, delete none, and run again")
 
 
 def _outside(number, title):
@@ -136,9 +170,10 @@ def _ended(number, title):
             "withdrawn), no item claims it, and it is numbered lower than every card an item's "
             "key names (a card filed already apart) and under no card filed already: a card "
             "filed outside X-cx before the migration, an X-cx leaf quill unlinked when it was "
-            "dropped (R-BAL205), or one of the migration's first cards with its title or arc "
-            "label changed by hand or its item gone from the registries; delete it on the web "
-            "before the run")
+            "dropped (R-BAL205), an X-cx card a person unlinked from a card filed already, or "
+            "one of the migration's first cards with its title or arc label changed by hand or "
+            "its item gone from the registries; re-link one a person unlinked under its card "
+            "filed already, and delete any other on the web, before the run")
 
 
 def _mapped_with_leaf(corpus, monkeypatch, start=2):
@@ -442,3 +477,270 @@ def test_a_withdrawn_ruling_no_item_claims_is_refused_as_a_filing_that_ended(cor
     tracker.add(1, "ruling", title="A ruling of its own", is_open=False,
                 state_reason="NOT_PLANNED", on_board=False)
     assert corpus_plan(corpus, tracker).refusals == (_ended(1, "A ruling of its own"),)
+
+
+def test_a_card_of_the_trackers_own_given_a_filed_items_key_is_never_to_be_deleted(
+        corpus, monkeypatch):
+    """The rule's first premise broken after the item's card is filed: X-cx's own leaf #3,
+    below card #1, retitled to F-1's key once the migration filed F-1's card from #31.  F-1's
+    key is on two cards, neither as its create left it: the refusal names what each holds,
+    says to settle them by hand, retitling the tracker's own and deleting neither; the own
+    leaves above #3 read as the migration's (review of the #549 fix's LOWs, LOW-A: the
+    reviewer's P8; review 2 of B2b-1, MEDIUM-A)."""
+    monkeypatch.setitem(_migrate_source.MAPPED, "salary:S-1", 1)
+    filed, numbers = filed_tracker(corpus, skip=("salary:S-1",), start=31)
+    tracker = _with_own_cards(filed)
+    with_change(tracker, numbers["salary:N-391"], parent=1)
+    with_change(tracker, 3, title=card_title("F-1", "A leaf"), labels=("balance",))
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == (
+        _by_hand("balance:F-1", "plan#3 unmarked, under plan#1",
+                 f"plan#{numbers['balance:F-1']} unmarked, under plan#{numbers['balance:A-2a']}"),
+        *(_rekeyed(number, f"[X-cx L{number}] A leaf", first=3)
+          for number in (*range(4, 11), 26, 27)))
+    assert (found.history, found.freeze) == ((), ())
+
+
+@pytest.mark.parametrize("kind, change, refusal", [
+    ("step", {}, _outside),
+    ("ruling", {"is_open": False, "state_reason": "NOT_PLANNED"}, _ended),
+], ids=["open-step", "withdrawn-ruling"])
+def test_x_cx_s_own_card_a_person_unlinked_is_refused_naming_that_cause(
+        corpus, monkeypatch, kind, change, refusal):
+    """X-cx's own card below the card filed already, unlinked by a person -- an open step, or
+    a ruling withdrawn (quill never unlinks one): numbered below the migration's first card and
+    under no card filed already, it is refused, and its text names a person's unlink and, for
+    the ruling, re-linking it as the remedy (review of the #549 fix's LOWs, LOW-D and LOW-E:
+    the cause was pinned as text, never as a state)."""
+    tracker = _mapped_with_leaf(corpus, monkeypatch)
+    with_change(tracker, 1, kind=kind, parent=None, title="[X-cx L13] A leaf", **change)
+    found = plan(corpus_items(corpus), corpus_texts(corpus), MILESTONES, tracked(tracker))
+    assert found.refusals == (refusal(1, "[X-cx L13] A leaf"),)
+    assert (found.history, found.freeze) == ((), ())
+
+
+# -- a key on two cards (review 2 of B2b-1, MEDIUM-A): each card named by its state -----
+
+#: How a refusal names a card as its create left it.
+_BARE = ("still marked and open, linked to nothing the tool reads, off the board, with no "
+         "comment")
+
+
+def _copy(tracker, number, of):
+    """Card ``number`` put in ``tracker`` as the create that made card ``of`` made it: its
+    kind, title, body, labels and milestone, marked, and nothing more."""
+    card = tracker.cards_by_number[of]
+    tracker.add(number, card.kind, tracker.bodies[of], on_board=False, title=card.title,
+                labels=tuple(sorted({*card.labels, FILING})))
+    if of in tracker.milestone_of:
+        tracker.milestone_of[number] = tracker.milestone_of[of]
+
+
+@pytest.mark.parametrize("lagging", [False, True], ids=["as-written", "a-read-lagging-its-writes"])
+def test_a_re_sent_creates_other_cards_are_offered_for_deletion(corpus, lagging):
+    """F-1's create re-sent after a rate limit GitHub had performed it under: #1 a copy of
+    F-1's card as its create left it, and #7, the last made, the one the run went on with,
+    holding its later writes -- or read as its create left it too, by a read that lags them.
+    Each card is named with its state, the others are offered for deletion, and the card to
+    keep is the last made, by its number, either way: a keeper named by its state was any
+    one under that lag (review 3 of B2b-1, MEDIUM-1)."""
+    tracker, numbers = filed_tracker(corpus)
+    _copy(tracker, 1, numbers["balance:F-1"])
+    if lagging:
+        with_change(tracker, 7, labels=("balance", FILING), parent=None)
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == (_resent("balance:F-1", f"plan#1 {_BARE}",
+                                      f"plan#7 {_BARE if lagging else 'unmarked, under plan#3'}"),)
+    assert (found.history, found.freeze) == ((), ())
+
+
+def test_two_re_sent_creates_are_each_refused_by_key_with_its_own_card_to_keep(corpus):
+    """S-1's create and F-1's each re-sent: two keys on two cards each, S-1 first in the
+    source and F-1 first by key.  Each key is graded with its own last card alone, offers
+    its own copy for deletion and names its own last card to keep; the refusals stand in
+    key order, as every refusal of a key does."""
+    tracker, numbers = filed_tracker(corpus, start=3)
+    _copy(tracker, 1, numbers["salary:S-1"])
+    _copy(tracker, 2, numbers["balance:F-1"])
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == (
+        _resent("balance:F-1", f"plan#2 {_BARE}", "plan#8 unmarked, under plan#4"),
+        _resent("salary:S-1", f"plan#1 {_BARE}",
+                "plan#7 unmarked, holding 1 sub-issue(s), on the board"))
+    assert (found.history, found.freeze) == ((), ())
+
+
+@pytest.mark.parametrize("change, state", [
+    ({"parent": None}, "unmarked"),
+    ({"is_open": False, "state_reason": "COMPLETED"}, "unmarked, closed, under plan#3"),
+    ({"outside": (OutsideLink("parent", "o/code#5"),)},
+     "unmarked, under plan#3, linked outside the tracker"),
+    ({"kind": "step"}, "unmarked, under plan#3"),
+], ids=["unmarked-unlinked", "closed", "linked-outside", "both-retyped"])
+def test_a_re_sent_create_whose_last_card_is_refused_is_settled_by_hand(corpus, change, state):
+    """F-1's create re-sent, #1 a bare copy, and #7, the last made, one the next run refuses
+    as F-1's card: unmarked without its link, closed, or linked outside the tracker by a
+    person, or both cards retyped (copies still).  Keeping #7 would be refused, so neither
+    card is offered for deletion (review 3 of B2b-1, LOW-1, a condition of MEDIUM-1's
+    keeper)."""
+    tracker, numbers = filed_tracker(corpus)
+    _copy(tracker, 1, numbers["balance:F-1"])
+    with_change(tracker, 7, **change)
+    if "kind" in change:
+        with_change(tracker, 1, **change)
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == (_by_hand("balance:F-1", f"plan#1 {_BARE}", f"plan#7 {state}"),)
+    assert (found.history, found.freeze) == ((), ())
+
+
+def _held_by_hand(tracker, edit):
+    """``tracker`` with card #1, a re-sent copy, holding the later write ``edit`` names."""
+    if edit == "board":
+        tracker.board.items.append(1)
+    elif edit == "comment":
+        tracker.notes[1] = [Comment("a-person", "t", "Seen.")]
+    elif edit in ("sub-issue", "blocking"):
+        with_change(tracker, 8, **({"parent": 1} if edit == "sub-issue" else
+                                   {"blocked_by": (1,)}))
+    else:
+        with_change(tracker, 1, **{
+            "unmarked": {"labels": ("balance",)},
+            "closed": {"is_open": False, "state_reason": "NOT_PLANNED"},
+            "parent": {"parent": 3}, "blocker": {"blocked_by": (3,)},
+            "outside": {"outside": (OutsideLink("parent", "saltyreformed-labs/x#1"),)},
+        }[edit])
+
+
+@pytest.mark.parametrize("edit, state", [
+    ("unmarked", "unmarked"), ("closed", "marked, closed"), ("parent", "marked, under plan#3"),
+    ("sub-issue", "marked, holding 1 sub-issue(s)"), ("blocker", "marked, blocked by plan#3"),
+    ("blocking", "marked, blocking plan#8"), ("outside", "marked, linked outside the tracker"),
+    ("board", "marked, on the board"), ("comment", "marked, 1 comment(s)"),
+])
+def test_a_re_sent_copy_holding_any_later_write_is_settled_by_hand(corpus, edit, state):
+    """A re-sent create's copy of F-1's card (#1) holding a write its create did not make --
+    its mark removed, a close, a link either way, a board place, a comment: not the state a
+    re-sent create leaves, so settled by hand, never offered for deletion, the write named in
+    its state (review 2 of B2b-1, MEDIUM-A: the keeper by its state)."""
+    tracker, numbers = filed_tracker(corpus)
+    _copy(tracker, 1, numbers["balance:F-1"])
+    _held_by_hand(tracker, edit)
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == (_by_hand("balance:F-1", f"plan#1 {state}",
+                                       "plan#7 unmarked, under plan#3"),)
+    assert (found.history, found.freeze) == ((), ())
+
+
+@pytest.mark.parametrize("held, refusal", [
+    (False, _resent), (True, _by_hand),
+], ids=["each-but-the-last-as-created", "the-middle-one-holding-a-write"])
+def test_three_cards_of_one_create_are_each_graded(corpus, held, refusal):
+    """F-1's create re-sent twice (:mod:`_github` re-sends one up to ``RATE_LIMIT_RETRIES``
+    times): two copies, #1 and #2, before the card the run went on with.  Each card but the
+    last is graded, so a middle copy holding a write is settled by hand, never offered for
+    deletion."""
+    tracker, numbers = filed_tracker(corpus, start=4)
+    for number in (1, 2):
+        _copy(tracker, number, numbers["balance:F-1"])
+    if held:
+        tracker.notes[2] = [Comment("a-person", "t", "Seen.")]
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == (refusal(
+        "balance:F-1", f"plan#1 {_BARE}",
+        f"plan#2 {'marked, 1 comment(s)' if held else _BARE}", "plan#9 unmarked, under plan#5"),)
+    assert (found.history, found.freeze) == ((), ())
+
+
+@pytest.mark.parametrize("retitled, key, states", [
+    ("balance:A-3", "A-2", ("plan#2 unmarked, holding 2 sub-issue(s)",
+                            "plan#5 unmarked, holding 1 sub-issue(s), blocked by plan#3, on the "
+                            "board")),
+    ("balance:A-2b", "A-3", ("plan#4 unmarked, under plan#2, blocked by plan#3, on the board",
+                             "plan#5 unmarked, holding 1 sub-issue(s), blocked by plan#3, on the "
+                             "board")),
+], ids=["onto-a-lower-card", "onto-a-higher-card"])
+def test_a_card_retitled_to_another_items_key_is_settled_by_hand(corpus, retitled, key,
+                                                                  states):
+    """A-3's card retitled by hand to A-2's key, and A-2b's to A-3's (review 2 of B2b-1,
+    MEDIUM-A, P1 and P1b): "keep the highest" deleted A-2's card, holding A-2a and A-2b,
+    and A-2b's own.  Neither card is as its create left it, so the refusal names each
+    card's state, settles them by hand and offers neither for deletion."""
+    tracker, numbers = filed_tracker(corpus)
+    with_change(tracker, numbers[retitled], title=card_title(key, "Retitled"))
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == (_by_hand(f"balance:{key}", *states),)
+    assert (found.history, found.freeze) == ((), ())
+
+
+def test_a_card_given_a_card_filed_alreadys_key_offers_no_card_for_deletion(corpus,
+                                                                             monkeypatch):
+    """X-cx's own leaf #26 retitled by hand to S-1's key, S-1 mapped onto card #1 (review 2 of
+    B2b-1, MEDIUM-A, P2): "keep the highest" offered card #1 for deletion.  The migration files
+    no card for a card filed already, so every other card holding its key was given it by
+    hand: retitle, delete none.  #27, numbered above #26, reads as the migration's, its
+    refusal naming #26 to settle first."""
+    monkeypatch.setitem(_migrate_source.MAPPED, "salary:S-1", 1)
+    filed, numbers = filed_tracker(corpus, skip=("salary:S-1",), start=31)
+    tracker = _with_own_cards(filed)
+    with_change(tracker, numbers["salary:N-391"], parent=1)
+    with_change(tracker, 26, title=card_title("S-1", "A leaf"))
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == (
+        _filed_already("salary:S-1", 1, "plan#1 unmarked, holding 12 sub-issue(s)",
+                       "plan#26 unmarked, under plan#1"),
+        _rekeyed(27, "[X-cx L27] A leaf", first=26))
+    assert (found.history, found.freeze) == ((), ())
+
+
+@pytest.mark.parametrize("state", [
+    "a-copy-body-edited", "a-copy-title-edited", "a-copy-kind-changed",
+    "a-copy-milestone-changed", "a-copy-label-added", "another-items-card-retitled"])
+def test_cards_each_as_a_create_left_it_but_no_copies_of_one_are_settled_by_hand(corpus,
+                                                                                  state):
+    """Every card but the last made as its create left it, as a re-sent create leaves them,
+    yet not copies of one create: a re-sent copy's body, title (its key kept), kind,
+    milestone or labels (an arc's apart) edited by hand, a case per part the copies are
+    compared on (review 3 of B2b-1, LOW-3); or a run stopped after A-2a's create, before its
+    link, and A-2's card, holding nothing yet, retitled to A-2a's key.  A person's edit, so
+    settled by hand: neither is offered for deletion."""
+    if state.startswith("a-copy-"):
+        tracker, numbers = filed_tracker(corpus)
+        _copy(tracker, 1, numbers["balance:F-1"])
+        if state == "a-copy-body-edited":
+            tracker.bodies[1] = "Edited by hand."
+        elif state == "a-copy-milestone-changed":
+            assert 1 not in tracker.milestone_of
+            tracker.milestone_of[1] = 1
+        else:
+            with_change(tracker, 1, **{
+                "a-copy-title-edited": {"title": card_title("F-1", "Edited by hand")},
+                "a-copy-kind-changed": {"kind": "step"},
+                "a-copy-label-added": {"labels": ("balance", FILING, "moves-money")},
+            }[state])
+        key, states = "balance:F-1", (f"plan#1 {_BARE}", "plan#7 unmarked, under plan#3")
+    else:
+        kept = ("balance:A-2", "balance:A-2a")
+        tracker, numbers = filed_tracker(
+            corpus, marked=kept,
+            skip=tuple(item.key for item in corpus_items(corpus) if item.key not in kept))
+        tracker.board.items.remove(numbers["balance:A-2a"])
+        with_change(tracker, numbers["balance:A-2a"], parent=None)
+        with_change(tracker, numbers["balance:A-2"],
+                    title=tracker.cards_by_number[numbers["balance:A-2a"]].title)
+        key, states = "balance:A-2a", (f"plan#2 {_BARE}", f"plan#3 {_BARE}")
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == (_by_hand(key, *states),)
+    assert (found.history, found.freeze) == ((), ())
+
+
+def test_a_key_on_two_cards_is_refused_and_nothing_written_for_it(corpus):
+    """A second card of F-1, marked and holding nothing, numbered ABOVE F-1's filed card: not
+    the state a re-sent create leaves (the run goes on with the last made), so it is settled
+    by hand; and no third card is planned for F-1."""
+    tracker, _ = filed_tracker(corpus)
+    tracker.add(40, "finding", "dup", on_board=False,
+                title=card_title("F-1", "Stale row"), labels=("balance", FILING))
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == (_by_hand("balance:F-1", "plan#7 unmarked, under plan#3",
+                                       f"plan#40 {_BARE}"),)
+    assert not found.freeze and "balance:F-1" not in found.numbers

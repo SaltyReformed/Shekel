@@ -476,6 +476,37 @@ def test_a_placement_the_board_never_shows_is_reported_after_the_wait():
     assert sum(slept) == BOARD_WAIT_SECONDS
 
 
+class _ReadBoard:
+    """A board whose every read shows the items ``order``, in that order."""
+
+    def __init__(self, order):
+        """Read as ``order``."""
+        self.items = order
+
+    def graphql(self, query, **_variables):
+        """Answer a placement, and every read with :attr:`items`."""
+        if query.lstrip().startswith("mutation"):
+            return {}
+        return {"node": {"items": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                                   "nodes": [{"id": item, "content": {
+                                       "number": number, "repository": {
+                                           "nameWithOwner": PLAN.full_name}}}
+                                             for number, item in enumerate(self.items, 2)]}}}
+
+
+@pytest.mark.parametrize("order, shown", [
+    (("OTHER", "MINE"), True), (("MINE", "OTHER"), False), (("OTHER", "X", "MINE"), False),
+], ids=["right-after", "before-it", "after-another"])
+def test_a_placement_is_shown_only_right_after_the_item_it_was_put_after(order, shown):
+    """A card placed after OTHER is shown placed only where it sits right after it; on the
+    board anywhere else it is waited on, then reported (fix round 2 of B2b-1: a ``shows``
+    that took any read holding the card survived every test)."""
+    slept = []
+    board = Board(_ReadBoard(order), PLAN, "B", sleep=slept.append)
+    assert board.place("MINE", "OTHER") is shown
+    assert sum(slept) == (0 if shown else BOARD_WAIT_SECONDS)
+
+
 def test_a_card_nobody_ever_closed_is_neither_the_tools_display_nor_a_persons():
     """Review M2: with no close or reopen on record the card is untouched; read as a
     person's, sync would only report every card it should close."""

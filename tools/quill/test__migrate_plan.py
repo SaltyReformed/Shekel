@@ -33,6 +33,7 @@ from tools.quill._migrate_plan import (
     Write,
     card_key,
     desired_board,
+    milestone_title,
     moves,
     plan,
 )
@@ -170,19 +171,6 @@ def _blocked(item, key):
 
 # -- what a run refuses ----------------------------------------------------------
 
-def test_a_key_on_two_cards_is_refused_and_nothing_written_for_it(corpus):
-    """A retry's second create of F-1: refused, and no third card planned for it."""
-    tracker, numbers = filed_tracker(corpus)
-    tracker.add(40, "finding", "dup", on_board=False,
-                title=card_title("F-1", "Stale row"), labels=("balance", FILING))
-    found = corpus_plan(corpus, tracker)
-    assert found.refusals == (
-        f"balance:F-1 is the key of 2 cards (plan#{numbers['balance:F-1']}, plan#40): delete "
-        "the extras on the web (an extra is born of a create whose answer was lost and "
-        "re-sent), then run again",)
-    assert not found.freeze and "balance:F-1" not in found.numbers
-
-
 def test_a_card_filed_already_that_the_tracker_lacks_is_refused_never_filed_again(
         corpus, monkeypatch):
     """S-1 mapped onto #99, which the tracker does not hold: nothing is filed for it."""
@@ -218,6 +206,15 @@ def test_an_items_card_unlike_it_is_refused_and_left_alone(corpus, key, change, 
     assert len(found.refusals) == 1 and found.refusals[0].startswith(
         f"{key} (plan#{numbers[key]}): {reason}"), found.refusals
     assert not [write for write in (*found.history, *found.freeze) if write.key == key]
+
+
+def test_an_outcome_the_milestones_lack_fails_loud(corpus):
+    """An item whose outcome the input file's milestones lack: :func:`milestone_title`
+    raises, never files its card in no milestone (review 2 of B2b-1, LOW-C).  ``grade``
+    refuses such a file, so only a caller that skips it reaches this."""
+    scoped = next(item for item in corpus_items(corpus) if item.outcome is not None)
+    with pytest.raises(KeyError):
+        milestone_title(scoped, {})
 
 
 def test_a_card_in_another_milestone_or_none_is_refused(corpus):

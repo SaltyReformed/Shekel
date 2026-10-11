@@ -33,8 +33,15 @@ present and desired orders move, so a second run moves nothing.  What the board'
 refuses is refused by :func:`plan` itself, before any write (:func:`board_refusals`).
 
 **What it refuses, never chooses** (each a line of :attr:`Plan.refusals`): a key on two
-cards (a retry's second create among them); a card filed already that the tracker does not
-hold, or that still carries the filing mark (its own filing is unfinished); a card no item
+cards (a create re-sent after a rate-limit refusal it was performed for; a card given the
+key by hand, retitled or relabelled, one of the tracker's own or another item's, and the
+key a card filed already's among them; or a re-sent create's card edited by hand), each
+card named with what it holds; only in the state a re-sent create leaves, its last card
+refused nothing as the item's card, are the others offered for deletion, and that last
+card, the one the run went on with, named to keep by its number (GitHub's numbers rise),
+and a card filed already is never offered (:func:`_shared`); a card filed already that the
+tracker does not hold, or that still carries the filing mark (its own filing is
+unfinished); a card no item
 claims but the tracker's own (:func:`_unclaimed`); a step the registries put below a card
 filed already (X-cx's leaves are its sub-issues, never ``steps.md`` rows); a milestone the
 input file does not name (one renamed on the web would be made again); a board card the
@@ -106,13 +113,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from tools.ci.arcs import ARCS
 from tools.quill._migrate_bodies import AS_FILED, Built, differences
 from tools.quill._migrate_source import MAPPED, Item
 from tools.quill._state import filing_ended
-from tools.quill._tracker import Card, Milestone, WholeCard
+from tools.quill._tracker import Card, Comment, Milestone, WholeCard
 from tools.quill.check import card_title, title_alias
 from tools.quill.setup_tracker import FILING
 
@@ -194,11 +201,13 @@ def plan(items: Sequence[Item], built: Mapping[str, Built],
     """
     known = _numbers(items, tracked)
     unnamed = _unnamed_milestones(milestones, tracked)
-    refusals = [*known.refusals, *(f"milestone #{held.number} {held.title!r} is none the input "
-                                   "file names (renamed on the web?): settle it before the run"
-                                   for held in unnamed)]
     graded = _Grading(known.numbers, tracked, milestones, built, frozenset(known.unaccounted),
                       frozenset(held.number for held in unnamed))
+    refusals = [_shared(item, known.shared[item.key], graded)
+                for item in sorted(items, key=lambda item: item.key) if item.key in known.shared]
+    refusals += [*known.refusals, *(f"milestone #{held.number} {held.title!r} is none the input "
+                                    "file names (renamed on the web?): settle it before the run"
+                                    for held in unnamed)]
     writes, refused = {}, set(known.unwritable)
     for item in items:
         count = len(refusals)
@@ -227,38 +236,38 @@ def _unnamed_milestones(milestones: Mapping[str, tuple[str, str]],
 @dataclass(frozen=True)
 class _Known:
     """What a run knows of each item's card before grading it: its number, where exactly one
-    card holds its key; the items no write may touch; the refusals that say why; and the
-    cards those refusals name, which nothing else is refused for."""
+    card holds its key; the items no write may touch; the refusals that say why, but a key's
+    on two cards or more; the cards refused, which nothing else is refused for; and each key
+    on two cards or more with its cards, lowest first, which :func:`plan` refuses once it can
+    grade the last of them (:func:`_shared`)."""
 
     numbers: dict[str, int]
     unwritable: set[str]
     refusals: list[str]
     unaccounted: set[int]
+    shared: dict[str, list[int]]
 
 
 def _numbers(items: Sequence[Item], tracked: Tracked) -> _Known:
-    """Each item's card number, and the items and cards refused before any is graded: a key
-    on two cards, a card filed already that the tracker does not hold, an alias no title
-    gives back, a step the registries put below a card filed already, and each card no item
-    claims but the tracker's own (:func:`_unclaimed`)."""
+    """Each item's card number, and the items and cards refused before any is graded: a card
+    filed already that the tracker does not hold, an alias no title gives back, a step the
+    registries put below a card filed already, and each card no item claims but the
+    tracker's own (:func:`_unclaimed`); and each key on two cards or more, which :func:`plan`
+    refuses once it can grade the last of them (:func:`_shared`)."""
     by_key = defaultdict(list)
     for number, whole in sorted(tracked.cards.items()):
         if (key := card_key(number, whole)) is not None:
             by_key[key].append(number)
     keys = {item.key for item in items}
     parents = {item.key: item.links.parent for item in items}
-    shared = {key for key, found in by_key.items() if key in keys and len(found) > 1}
+    shared = {key: found for key, found in by_key.items() if key in keys and len(found) > 1}
     unheld = {key for key, number in MAPPED.items() if key in keys and number not in tracked.cards}
     misread = {item.key for item in items
                if title_alias(card_title(item.alias, item.alias)) != item.alias}
     under = {item.key for item in items
              if item.kind == "step" and _under_mapped(item.key, parents)}
-    refusals = [f"{key} is the key of {len(by_key[key])} cards "
-                f"({', '.join(f'plan#{n}' for n in by_key[key])}): delete the extras on the "
-                "web (an extra is born of a create whose answer was lost and re-sent), then "
-                "run again" for key in sorted(shared)]
-    refusals += [f"{key} is plan#{MAPPED[key]}, which the tracker does not hold: nothing is "
-                 "filed in its place" for key in sorted(unheld)]
+    refusals = [f"{key} is plan#{MAPPED[key]}, which the tracker does not hold: nothing is "
+                "filed in its place" for key in sorted(unheld)]
     refusals += [f"{key}: its alias does not read back from the title it would carry, so no "
                  "run could find its card" for key in sorted(misread)]
     refusals += [f"{key} is a step below a card filed already in the registries: that card's "
@@ -267,9 +276,108 @@ def _numbers(items: Sequence[Item], tracked: Tracked) -> _Known:
     unclaimed = _unclaimed(keys, tracked, _first_card(by_key, keys))
     refusals += [refusal for _, refusal in unclaimed]
     numbers = {key: found[0] for key, found in by_key.items() if key in keys and len(found) == 1}
-    return _Known(numbers, shared | unheld | misread | under, refusals,
-                  {number for key in shared for number in by_key[key]}
-                  | {number for number, _ in unclaimed})
+    return _Known(numbers, set(shared) | unheld | misread | under, refusals,
+                  {number for found in shared.values() for number in found}
+                  | {number for number, _ in unclaimed}, shared)
+
+
+def _shared(item: Item, numbers: Sequence[int], graded: _Grading) -> str:
+    """How :func:`plan` refuses ``item``'s key on the cards ``numbers`` (lowest first), on
+    the read ``graded`` grades: each card named with its state (:func:`_card_state`).
+
+    The one machine cause is a create GitHub refused for a rate limit though it had performed
+    it, which :mod:`_github` sends again: the run goes on with the card the last send made,
+    so every card before it is a copy of it, still as its create left it.  Only in that
+    state, and only when that last card, graded alone as the item's card, is refused nothing
+    (:meth:`_Grading.refuses_nothing`), are the others offered for deletion.  Only there is
+    the card to keep named by its CREATION ORDER, the last made: GitHub numbers issues in
+    one rising sequence, so the highest of the copies is the last send's, the card the run
+    went on with -- whatever a read that lags the run's writes shows of it, where a keeper
+    named by its state could be any copy, and the card deleted the one holding the writes.
+    A key a card filed already holds is never the machine's (the migration files no card
+    for it), and in any other state a person gave a card the key by hand or edited one of
+    them, so it is settled by hand: neither offers a card for deletion nor names one to keep,
+    and every card is named by its state alone."""
+    tracked = graded.tracked
+    states = "; ".join(f"plan#{number} {_card_state(number, tracked)}" for number in numbers)
+    head = f"{item.key} is the key of {len(numbers)} cards ({states})"
+    if item.key in MAPPED:
+        return (f"{head}: the migration files no card for a card filed already (plan#"
+                f"{MAPPED[item.key]}), so every other card holding its key was given it by "
+                "hand (retitled, or its arc label changed); retitle or relabel each to its own "
+                "title and arc label, delete none, and run again")
+    last = numbers[-1]
+    if all(not _later_writes(number, tracked)
+           and _create_of(tracked.cards[number]) == _create_of(tracked.cards[last])
+           for number in numbers[:-1]) and graded.refuses_nothing(item, last):
+        return (f"{head}: the state a re-sent create leaves (GitHub refused a create for a "
+                "rate limit though it had performed it, and the tool sent it again), copies of "
+                "one create, each but the last made as its create left it.  Keep the last made "
+                f"(plan#{last}), the one the run went on with; delete the others on the web, "
+                "and run again: the next run grades it as the item's card")
+    return (f"{head}, not the state a re-sent create leaves (copies of one create, each but "
+            "the last made as its create left it, and the last refused nothing as the item's "
+            "card): a person gave a card this key by hand (retitled it, or changed its arc "
+            "label), or edited one of them.  Settle them by hand and run again: retitle or "
+            "relabel a card given this key to its own title and arc label, never deleting it "
+            "(above all one of the tracker's own, filed before the migration), and delete no "
+            "card holding a later write")
+
+
+def _card_state(number: int, tracked: Tracked) -> str:
+    """Card ``number``'s state as a refusal names it: marked or not, and each later write it
+    holds (:func:`_later_writes`)."""
+    later = _later_writes(number, tracked)
+    if not later:
+        return ("still marked and open, linked to nothing the tool reads, off the board, with "
+                "no comment")
+    marked = FILING in tracked.cards[number].card.labels
+    return ", ".join(["marked", *later] if marked else later)
+
+
+def _later_writes(number: int, tracked: Tracked) -> list[str]:
+    """What card ``number`` holds that its create did not make, each as a refusal names it:
+    its mark removed, a close, a parent, sub-issues, a blocker either way, a link outside the
+    tracker, a board place, comments.  None: it is still marked and open, linked to nothing
+    the tool reads, off the board, with no comment.
+
+    The tool reads no issue OUTSIDE the tracker that the card blocks: a card's read holds
+    its blockers, never what it blocks (:data:`_tracker._CARD_FIELDS`), so "blocking" is
+    told from the tracker's own cards' blockers alone, and a card blocking an issue outside
+    the tracker reads as blocking nothing."""
+    whole = tracked.cards[number]
+    card = whole.card
+    children = [held for held, other in tracked.cards.items() if other.card.parent == number]
+    blocking = [held for held, other in sorted(tracked.cards.items())
+                if number in other.card.blocked_by]
+    found = [] if FILING in card.labels else ["unmarked"]
+    found += [] if card.is_open else ["closed"]
+    found += [] if card.parent is None else [f"under plan#{card.parent}"]
+    found += [f"holding {len(children)} sub-issue(s)"] if children else []
+    found += [f"blocked by {_named(card.blocked_by)}"] if card.blocked_by else []
+    found += [f"blocking {_named(blocking)}"] if blocking else []
+    found += ["linked outside the tracker"] if card.outside else []
+    found += [] if card.board_item is None else ["on the board"]
+    found += [f"{len(whole.comments)} comment(s)"] if whole.comments else []
+    return found
+
+
+def _named(numbers: Iterable[int]) -> str:
+    """Cards ``numbers`` as a refusal names them."""
+    return ", ".join(f"plan#{number}" for number in numbers)
+
+
+def _create_of(whole: WholeCard) -> tuple:
+    """What a card's create set and no later write of the run's changes: its kind, title,
+    body, milestone, and labels but the filing mark."""
+    card = whole.card
+    return card.kind, card.title, whole.body, whole.milestone, tuple(_labels(card))
+
+
+def _labels(card: Card) -> list[str]:
+    """A card's labels but the filing mark, sorted (:func:`_create_of`,
+    :meth:`_Grading._unlike`)."""
+    return sorted(label for label in card.labels if label != FILING)
 
 
 def _first_card(by_key: Mapping[str, list[int]], keys: set[str]) -> int | None:
@@ -283,10 +391,27 @@ def _first_card(by_key: Mapping[str, list[int]], keys: set[str]) -> int | None:
                 if number not in mapped), default=None)
 
 
-def _as_filed_comments(whole: WholeCard, app_login: str) -> list[str]:
-    """The card's As filed comments: the tool's that open :data:`_migrate_bodies.AS_FILED`,
-    found by reading its comments, never by remembering (draft 4 s.4)."""
-    return [comment.body for comment in whole.comments
+def milestone_title(item: Item, milestones: Mapping[str, tuple[str, str]]) -> str | None:
+    """The title of the milestone ``item``'s card is filed in, by its outcome's name in
+    ``milestones`` (the input file's), None for an item in no outcome's scope: what the plan
+    grades a card's milestone by and the run files a create in.
+
+    Raises:
+        KeyError: When ``milestones`` lacks the item's outcome, which
+            :func:`_migrate_input.grade` refuses for every outcome an item is in, so no plan
+            runs on such a file.
+    """
+    if item.outcome is None:
+        return None
+    return milestones[item.outcome][0]
+
+
+def as_filed_comments(comments: Iterable[Comment], app_login: str) -> list[str]:
+    """A card's As filed comments among its ``comments``: the tool's that open
+    :data:`_migrate_bodies.AS_FILED`, found by reading them, never by remembering (draft 4
+    s.4) -- by the plan from every card's listing, and by the run (:mod:`_migrate_run`)
+    from one card's re-read before it writes one."""
+    return [comment.body for comment in comments
             if comment.author == app_login and comment.body.startswith(AS_FILED)]
 
 
@@ -306,11 +431,12 @@ def _unclaimed(keys: set[str], tracked: Tracked,
         label = f"plan#{number} ({whole.card.title[:60]!r})"
         if first is not None and number > first:
             found.append((number, f"{label} is no item's card, and it is numbered above plan#"
-                          f"{first}, the lowest card an item's key names, so it reads as the "
-                          f"migration's.  FIRST, if plan#{first} is a card of the tracker's own "
-                          "given an item's key by hand (refused besides), settle that one: "
-                          "this refusal goes with it, and this card is not to be deleted for "
-                          "it.  Else it is the migration's card with its title or arc label "
+                          f"{first}, the lowest card an item's key names (a card filed already "
+                          "apart), so it reads as the migration's.  FIRST, if plan#"
+                          f"{first} is a card of the tracker's own given an item's key by hand "
+                          "(refused besides), settle that one and run again: this card is not "
+                          "to be deleted for it.  Else it is the migration's card with its "
+                          "title or arc label "
                           "changed by hand, or its item left the registries, or it was filed "
                           "natively inside the freeze; settle it before the run"))
         elif _ancestor(number, mapped, tracked.cards) is not None:
@@ -320,9 +446,11 @@ def _unclaimed(keys: set[str], tracked: Tracked,
                           "withdrawn), no item claims it, and it is numbered lower than every "
                           "card an item's key names (a card filed already apart) and under no "
                           "card filed already: a card filed outside X-cx before the migration, "
-                          "an X-cx leaf quill unlinked when it was dropped (R-BAL205), or one of "
-                          "the migration's first cards with its title or arc label changed by "
-                          "hand or its item gone from the registries; delete it on the web "
+                          "an X-cx leaf quill unlinked when it was dropped (R-BAL205), an X-cx "
+                          "card a person unlinked from a card filed already, or one of the "
+                          "migration's first cards with its title or arc label changed by hand "
+                          "or its item gone from the registries; re-link one a person unlinked "
+                          "under its card filed already, and delete any other on the web, "
                           "before the run"))
         else:
             found.append((number, f"{label} is no item's card, numbered lower than every card "
@@ -396,6 +524,14 @@ class _Grading:
         return missing + ([Write(UNMARK, item.key)] if unfinished and item.kind != "ruling"
                           else [])
 
+    def refuses_nothing(self, item: Item, number: int) -> bool:
+        """Whether card ``number``, graded alone as ``item``'s card on this read, is refused
+        nothing (:meth:`writes`): what a re-sent create's last card must be before its
+        others are offered for deletion (:func:`_shared`)."""
+        refusals: list[str] = []
+        replace(self, numbers={**self.numbers, item.key: number}).writes(item, refusals)
+        return not refusals
+
     def _follows(self, write: Write, card: Card) -> bool:
         """Whether a missing ``write`` follows from a card refused already: a link to an item
         with no card of its key, where the card is linked so to a card refused already (the
@@ -422,9 +558,8 @@ class _Grading:
     def _milestone(self, item: Item) -> int | None:
         """The number of the milestone ``item``'s card is filed in, None for none (an item in
         no outcome's scope, or one whose milestone does not exist yet)."""
-        if item.outcome is None or item.outcome not in self.milestones:
-            return None
-        found = self.tracked.milestones.get(self.milestones[item.outcome][0])
+        title = milestone_title(item, self.milestones)
+        found = None if title is None else self.tracked.milestones.get(title)
         return None if found is None else found.number
 
     def _refusal(self, item: Item, whole: WholeCard) -> str | None:
@@ -455,7 +590,7 @@ class _Grading:
         milestone (:meth:`_unlike_milestone`); a filing that ended; a link outside the
         tracker."""
         card = whole.card
-        labels = sorted(label for label in card.labels if label != FILING)
+        labels = _labels(card)
         if card.kind != item.kind:
             return f"it is a {card.kind}, not a {item.kind}"
         if labels != sorted(item.labels):
@@ -479,10 +614,11 @@ class _Grading:
         names it."""
         if item.key in MAPPED:
             return None
-        if item.outcome in self.milestones and self._milestone(item) is None:
+        title = milestone_title(item, self.milestones)
+        if title is not None and self._milestone(item) is None:
             if whole.milestone in self.unnamed:
                 return None
-            return (f"its milestone {self.milestones[item.outcome][0]!r} is not on the tracker, "
+            return (f"its milestone {title!r} is not on the tracker, "
                     "though the migration makes a milestone before any card in it: deleted or "
                     "renamed on the web? One made again would hold none of its cards (a card's "
                     "milestone is set only by its create); settle it by hand")
@@ -511,8 +647,8 @@ class _Grading:
         expected = {self.numbers.get(key) for key in item.links.blockers}
         extra = sorted(set(card.blocked_by) - expected - self.unaccounted)
         if extra:
-            return (f"it is blocked by {', '.join(f'plan#{n}' for n in extra)}, which "
-                    "steps.md does not record: a person's call")
+            return (f"it is blocked by {_named(extra)}, which steps.md does not record: a "
+                    "person's call")
         return None
 
     def _missing(self, item: Item, whole: WholeCard) -> list[Write]:
@@ -532,8 +668,8 @@ class _Grading:
         return missing
 
     def _as_filed(self, whole: WholeCard) -> list[str]:
-        """The card's As filed comments (:func:`_as_filed_comments`)."""
-        return _as_filed_comments(whole, self.tracked.app_login)
+        """The card's As filed comments (:func:`as_filed_comments`)."""
+        return as_filed_comments(whole.comments, self.tracked.app_login)
 
 
 def _filing_order(steps: Sequence[Item]) -> tuple[list[Item], list[str]]:
