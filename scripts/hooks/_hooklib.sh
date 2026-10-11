@@ -37,13 +37,14 @@
 #     ABSOLUTE path and every caller's ``case`` pattern missed -- silently
 #     SKIPPING the gate. The comment below still calls that outcome "correct",
 #     which it is for a file genuinely outside the project and is not for a
-#     worktree file. Five files source this helper --
+#     worktree file. Five files sourced this helper then --
 #     ``post-edit-python.sh``, ``post-edit-template.sh``, ``post-edit-deps.sh``,
-#     ``stop-check.sh`` and ``guard-migrations.sh``, whose developer-approval
-#     prompt on a hand-edited ``migrations/versions/*.py`` was therefore also
-#     inoperative in every worktree -- and, inside this file, the
-#     ``_hook_venv_bin`` prefix below was a further consumer asking a different
-#     question.
+#     ``stop-check.sh`` and ``guard-migrations.sh`` (deleted 2026-10-11: the
+#     developer ruled that a migration edit needs no approval), whose
+#     developer-approval prompt on a hand-edited ``migrations/versions/*.py``
+#     was therefore also inoperative in every worktree -- and, inside this
+#     file, the ``_hook_venv_bin`` prefix below was a further consumer asking
+#     a different question.
 #   * ``stop-check.sh`` cd'd to the primary checkout and linted a tree the
 #     session was not editing -- reporting another lane's uncommitted work as
 #     this lane's failure, and passing this lane's real one.
