@@ -46,6 +46,10 @@ _MIGRATION = load_migration_module(
     "e616adf7fe22_a_transfer_side_s_payment_hangs_off_the_transfer.py",
 )
 
+#: Plan step ``balance:X-bi-6-4d-3``'s revision, the one above, whose downgrade
+#: builds the twins this revision's downgrade re-attaches records under.
+_STEP_ABOVE = load_migration_module("82f7b7ed4332_a_transfer_is_one_row.py")
+
 #: A twin row's columns less its key and its soft-delete flag, so a raw
 #: statement can copy one the way a writer nobody enumerated would.
 _TWIN_COLUMNS = ", ".join(
@@ -499,6 +503,93 @@ class TestTheUpgradeRefuses:
         _db.session.commit()
         run_migration_callable(_MIGRATION.upgrade, _db.session)
         assert _has_side_links()
+
+
+def _below_this_revision(seed_user):
+    """A settled pair at the revision below this one, every record under its twin.
+
+    At head no twin exists, so the step above's downgrade builds them (each
+    saying its transfer's status and its side's record's day, basis and
+    link), and this revision's downgrade then files each record back under
+    its side's twin: the shape this revision's upgrade meets on production.
+    Committed; returns the pair.
+    """
+    first, second = _settled_pair(seed_user)
+    run_migration_callable(_STEP_ABOVE.downgrade, _db.session)
+    run_migration_callable(_MIGRATION.downgrade, _db.session)
+    assert not _has_side_links()
+    return first, second
+
+
+#: One fact moved on one twin of a settled pair at the revision below, as
+#: ``(the fact the census names, the statement that moves it)``: its status
+#: off its transfer's, and its day, basis or statement link off its record's.
+_PRE_STEP_DRIFTS = (
+    ("status", "UPDATE budget.transactions SET status_id = (SELECT id FROM "
+     "ref.statuses WHERE name = 'Projected') WHERE id = :twin"),
+    ("settle day", "UPDATE budget.transactions "
+     "SET settled_on = settled_on + 1 WHERE id = :twin"),
+    ("day basis", "UPDATE budget.transactions t SET settled_day_basis_id = "
+     "(SELECT min(b.id) FROM ref.settled_day_bases b "
+     "WHERE b.id <> t.settled_day_basis_id) WHERE id = :twin"),
+    ("statement link", "UPDATE budget.transactions t SET reconciled_by_id = "
+     "(SELECT min(h.id) FROM budget.account_anchor_history h "
+     "WHERE h.account_id = t.account_id) WHERE id = :twin"),
+)
+
+
+class TestTheUpgradeRefusesADriftedTwin:
+    """A twin that is not what its transfer and record say refuses the UPGRADE.
+
+    Below this revision the app writes a twin's status, day, basis and
+    statement link with its transfer and its record, so a twin that disagrees
+    is a drift no door wrote; from this revision the app writes those facts
+    on the transfer and the record alone, after which the drift could no
+    longer be told from its own.  So the upgrade asks the downgrade's own
+    census once the side links exist (the cp1d review's M-1, decided by the
+    coordinator 2026-10-11), and the refusal rolls the revision back.
+    """
+
+    @pytest.mark.parametrize(
+        "income", (False, True), ids=("from_side", "to_side"),
+    )
+    @pytest.mark.parametrize(
+        "fact, drift_sql", _PRE_STEP_DRIFTS,
+        ids=[fact.replace(" ", "_") for fact, _sql in _PRE_STEP_DRIFTS],
+    )
+    def test_a_twin_off_its_transfer_or_record_is_named(
+        self, app, seed_user, fact, drift_sql, income,
+    ):
+        """One fact moved on one side's twin: named with that fact alone, nothing written."""
+        del app
+        first, _second = _below_this_revision(seed_user)
+        account = first.to_account_id if income else first.from_account_id
+        twin = _db.session.execute(text(
+            "SELECT id, status_id, settled_on, settled_day_basis_id, "
+            "reconciled_by_id FROM budget.transactions "
+            "WHERE transfer_id = :t AND account_id = :a"
+        ), {"t": first.id, "a": account}).mappings().one()
+        _db.session.execute(text(drift_sql), {"twin": twin["id"]})
+        _db.session.commit()
+
+        with pytest.raises(
+            RuntimeError, match=r"X-bi-6-4d-2 refuses: 1 twin row\(s\) do not",
+        ) as refused:
+            run_migration_callable(_MIGRATION.upgrade, _db.session)
+        _db.session.rollback()
+
+        assert f"({first.id}, {twin['id']}, ['{fact}'])" in str(refused.value)
+        assert not _has_side_links()
+        _db.session.execute(text(
+            "UPDATE budget.transactions SET status_id = :status_id, "
+            "settled_on = :settled_on, "
+            "settled_day_basis_id = :settled_day_basis_id, "
+            "reconciled_by_id = :reconciled_by_id WHERE id = :id"
+        ), dict(twin))
+        _db.session.commit()
+        run_migration_callable(_MIGRATION.upgrade, _db.session)
+        assert _has_side_links()
+        run_migration_callable(_STEP_ABOVE.upgrade, _db.session)
 
 
 class TestTheDowngradeRefuses:

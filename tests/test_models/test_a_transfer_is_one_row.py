@@ -6,8 +6,9 @@ refuses a new one, "Database refuses") and **R-BAL260** (the downgrade restores
 each twin from a kept copy, "Keep a copy").  The revision keeps a copy of every
 twin in ``system.transfer_twin_purge``, deletes them, and adds
 ``ck_transactions_names_no_transfer``; it REFUSES, writing nothing, while a twin
-could not go cleanly, a twin that is no copy of its transfer among them; its
-downgrade restores column for column every kept twin whose transfer was not
+could not go cleanly, a twin that is no copy of its transfer among them (its
+status aside, which the app at ``e616adf7fe22`` writes on the transfer alone);
+its downgrade restores column for column every kept twin whose transfer was not
 written since (re-reading what its transfer and its side's record say now),
 rebuilds from its transfer (keeping its identity) every twin whose transfer
 was, puts a kept value that no longer fits back as the transfer says (ruling
@@ -91,7 +92,13 @@ def _downgrade_counts(capsys):
 
 
 def _assert_nothing_written(transfer_ids, twins_before):
-    """A refused upgrade left the twins, and made no copy and no CHECK."""
+    """A refused upgrade left the twins, and made no copy and no CHECK.
+
+    Called INSIDE the refused transaction, before the test rolls it back: the
+    upgrade runs in the test session's own transaction
+    (:func:`run_migration_callable`), so a write made before the refusal is
+    visible here and gone once rolled back (cp1d review L-2).
+    """
     assert _twin_rows(transfer_ids) == twins_before
     assert _db.session.execute(text(
         "SELECT to_regclass('system.transfer_twin_purge') IS NULL"
@@ -215,13 +222,20 @@ def _accounts(seed_user):
     return savings, van
 
 
-#: The fields a twin mirrors from its transfer, spelled HERE rather than read
-#: off the migration, so a field the migration stops refusing or stops
-#: re-reading fails its own case.
-_MIRRORED = (
-    "user_id", "account_id", "pay_period_id", "scenario_id", "status_id",
-    "due_date", "is_override", "is_deleted",
+#: The fields the upgrade refuses a twin over, spelled HERE rather than read
+#: off the migration, so a field the migration stops refusing fails its own
+#: case: every field the app at ``e616adf7fe22`` still writes on both twins
+#: with their transfer.
+_COPIED = (
+    "user_id", "account_id", "pay_period_id", "scenario_id", "due_date",
+    "is_override", "is_deleted",
 )
+
+#: Every field a twin mirrors from its transfer, which the downgrade re-reads:
+#: the copied ones and the status, which the app at ``e616adf7fe22`` writes on
+#: the transfer alone.  Spelled here for the same reason, so a field the
+#: migration stops re-reading fails its own case.
+_MIRRORED = _COPIED + ("status_id",)
 
 
 def _what_if_scenario(seed_user):
@@ -258,7 +272,7 @@ def _second_owner(request):
 
 
 def _twin_drift(field, request, seed_user, seed_periods, van):
-    """The values that put an income twin's *field* off its transfer.
+    """The values that put a twin's copied *field* off its transfer.
 
     Returns ``(column values, the fields the refusal then names)``.  The owner
     drift names three fields, since its account and pay period move with it.
@@ -274,7 +288,6 @@ def _twin_drift(field, request, seed_user, seed_periods, van):
         "account_id": lambda: van.id,
         "pay_period_id": lambda: seed_periods[1].id,
         "scenario_id": lambda: _what_if_scenario(seed_user),
-        "status_id": lambda: _status_id("Cancelled"),
         "due_date": lambda: seed_periods[0].start_date + timedelta(days=3),
         "is_override": lambda: True,
         "is_deleted": lambda: True,
@@ -428,12 +441,12 @@ class TestTheUpgrade:
 
             with pytest.raises(RuntimeError) as refused:
                 _upgrade()
+            _assert_nothing_written([xfer.id], before)
             db.session.rollback()
             assert (
                 f"({twin['id']}, {xfer.id}, "
                 "'budget.transactions.credit_payback_for_id')"
             ) in str(refused.value)
-            _assert_nothing_written([xfer.id], before)
 
             db.session.execute(text(
                 "DELETE FROM budget.transactions "
@@ -463,9 +476,9 @@ class TestTheUpgrade:
 
             with pytest.raises(RuntimeError) as refused:
                 _upgrade()
+            _assert_nothing_written([xfer.id], before)
             db.session.rollback()
             assert f"({xfer.id}, 1, 0)" in str(refused.value)
-            _assert_nothing_written([xfer.id], before)
 
             # Put a twin back so the transfer is a pair, then return to head.
             income.pop("id")
@@ -509,9 +522,9 @@ class TestTheUpgrade:
 
             with pytest.raises(RuntimeError) as refused:
                 _upgrade()
+            _assert_nothing_written([xfer.id], before)
             db.session.rollback()
             assert f"({xfer.id}, 2, 1)" in str(refused.value)
-            _assert_nothing_written([xfer.id], before)
 
             db.session.execute(text(
                 "DELETE FROM budget.transactions WHERE id = :e"
@@ -555,8 +568,8 @@ class TestTheUpgrade:
 
             with pytest.raises(RuntimeError) as refused:
                 _upgrade()
-            db.session.rollback()
             _assert_nothing_written([paid.id], before)
+            db.session.rollback()
             assert (
                 f"({twin['id']}, {paid.id}, "
                 "'budget.transaction_entries.transaction_id')"
@@ -617,17 +630,21 @@ class TestTheUpgrade:
             assert len(_twin_rows([xfer.id])) == 2
             _upgrade()
 
-    @pytest.mark.parametrize("field", _MIRRORED)
+    @pytest.mark.parametrize(
+        "income", (False, True), ids=("from_side", "to_side"),
+    )
+    @pytest.mark.parametrize("field", _COPIED)
     def test_it_refuses_a_twin_that_is_no_copy_of_its_transfer(
-        self, app, db, request, seed_user, seed_periods, field,
+        self, app, db, request, seed_user, seed_periods, field, income,
     ):
-        """A twin whose mirrored *field* is not its transfer's refuses the upgrade.
+        """A twin whose copied *field* is not its transfer's refuses the upgrade.
 
         Named as ``(transfer, twin, [fields])``, writing nothing: the twin is
         no copy of its transfer, so its delete would erase the disagreement
         unseen.  Each field is planted alone (the owner drift with the account
-        and pay period its keys move with it) and the refusal must name
-        exactly the fields that differ.
+        and pay period its keys move with it), on each side's twin in turn
+        (cp1d review L-3), and the refusal must name exactly the fields that
+        differ.
         """
         with app.app_context():
             savings, van = _accounts(seed_user)
@@ -637,7 +654,7 @@ class TestTheUpgrade:
             )
             db.session.commit()
             _downgrade()
-            twin = _twin_of(xfer.id, income=True)
+            twin = _twin_of(xfer.id, income=income)
             values, named = _twin_drift(
                 field, request, seed_user, seed_periods, van,
             )
@@ -647,12 +664,12 @@ class TestTheUpgrade:
 
             with pytest.raises(RuntimeError) as refused:
                 _upgrade()
+            _assert_nothing_written([xfer.id], before)
             db.session.rollback()
             assert "1 twin(s) are not a copy of their transfer" in str(
                 refused.value
             )
             assert f"({xfer.id}, {twin['id']}, {named!r})" in str(refused.value)
-            _assert_nothing_written([xfer.id], before)
 
             _set("transactions", twin["id"], {
                 column: twin[column] for column in values
@@ -1104,6 +1121,101 @@ class TestTheDowngrade:
             assert db.session.execute(text(
                 "SELECT to_regclass('system.transfer_twin_purge') IS NULL"
             )).scalar_one() is True
+            _upgrade()
+
+    @pytest.mark.parametrize("column", (
+        "settled_on", "settled_day_basis_id", "reconciled_by_id",
+    ))
+    def test_a_twin_off_its_sides_record_comes_back_saying_the_records(
+        self, app, db, seed_user, seed_periods, capsys, column,
+    ):
+        """A to-side twin whose *column* is not its record's: the record's comes back.
+
+        Not a copied field, so this revision's upgrade lets it through
+        (``e616adf7fe22``'s upgrade refuses it on production's path, where no
+        app writes between the two), and the downgrade re-reads the side's
+        record whatever the kept twin held: the twin comes back saying what
+        its record says and the print counts it (cp1d review L-1).  The state
+        the app at ``e616adf7fe22`` leaves after a day correction, which writes
+        the record alone.  The from-side twin comes back exactly as kept.
+        """
+        with app.app_context():
+            savings, _van = _accounts(seed_user)
+            paid = create_settled_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0], amount=Decimal("50.00"),
+            )
+            db.session.commit()
+            _downgrade()
+            twin = _twin_of(paid.id, income=True)
+            record = _side_record(paid.id, income=True)
+            off = {
+                "settled_on": lambda: record["settled_on"] + timedelta(days=1),
+                "settled_day_basis_id": lambda: db.session.execute(text(
+                    "SELECT min(id) FROM ref.settled_day_bases WHERE id <> :b"
+                ), {"b": record["settled_day_basis_id"]}).scalar_one(),
+                "reconciled_by_id": lambda: db.session.execute(text(
+                    "SELECT min(id) FROM budget.account_anchor_history "
+                    "WHERE account_id = :a"
+                ), {"a": savings.id}).scalar_one(),
+            }[column]()
+            assert off is not None and off != record[column]
+            _set("transactions", twin["id"], {column: off})
+            kept_from_side = _twin_of(paid.id, income=False)
+            _upgrade()
+
+            counts = _downgrade_counts(capsys)
+
+            assert _twin_of(paid.id, income=True) == {
+                **twin, column: record[column],
+            }
+            assert _twin_of(paid.id, income=False) == kept_from_side
+            assert counts == {
+                "restored": 2, "rebuilt": 0, "changed": 1, "unfit": 0,
+                "built": 0,
+            }
+            _upgrade()
+
+    def test_built_twins_take_ids_in_transfer_then_side_order(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Three transfers, the first stored last: the built ids follow the transfers.
+
+        ``_BUILD_NEW_SQL`` draws each id in transfer-then-side order, which
+        one transfer cannot tell from the order a scan meets the rows in.  A
+        no-op rewrite moves the first transfer's row to the end of the table,
+        asserted by its physical position, so a draw in scan order would hand
+        it the last ids (cp1d review X3).
+        """
+        with app.app_context():
+            savings, _van = _accounts(seed_user)
+            ids = []
+            for period in seed_periods[:3]:
+                ids.append(create_transfer(
+                    seed_user, db.session, seed_user["account"], savings,
+                    period,
+                ).id)
+                db.session.commit()
+            db.session.execute(text(
+                "UPDATE budget.transfers SET name = name WHERE id = :t"
+            ), {"t": ids[0]})
+            db.session.commit()
+            stored = [row[0] for row in db.session.execute(text(
+                "SELECT id FROM budget.transfers WHERE id = ANY(:ids) "
+                "ORDER BY ctid"
+            ), {"ids": ids})]
+            assert stored == [ids[1], ids[2], ids[0]], stored
+
+            _downgrade()
+
+            rows = sorted(_twin_rows(ids), key=lambda row: row["id"])
+            first = rows[0]["id"]
+            assert [row["id"] for row in rows] == list(range(first, first + 6))
+            assert [
+                (row["transfer_id"], row["account_id"] == savings.id)
+                for row in rows
+            ] == [(xfer, income) for xfer in sorted(ids)
+                  for income in (False, True)]
             _upgrade()
 
 
@@ -1587,6 +1699,59 @@ class TestAKeptValueThatNoLongerFits:
             db.session.commit()
             _upgrade()
 
+    def test_a_category_that_is_not_its_owners(
+        self, app, db, seed_user, seed_second_user, seed_periods, capsys,
+    ):
+        """A transfer moved to another user by a statement: its owner's category comes back.
+
+        The owner is a mirrored field, re-read from the transfer, so the kept
+        category, still the first user's, no longer fits its twin; no key on a
+        row's category asks its owner, so the downgrade asks it (cp1d review
+        L-4).  Reachable only by a raw statement: no door moves a transfer
+        between users, and the owner keys make it move with its accounts, its
+        period and its scenario.
+        """
+        with app.app_context():
+            savings, _van = _accounts(seed_user)
+            xfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0],
+            )
+            db.session.commit()
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                category_id=seed_user["categories"]["Rent"].id,
+            )
+            db.session.commit()
+            _downgrade()
+            _upgrade()
+            second_savings = create_account_of_type(
+                seed_second_user, db.session, "Savings", "Second Owner Savings",
+            )
+            db.session.commit()
+            _set("transfers", xfer.id, {
+                "user_id": seed_second_user["user"].id,
+                "from_account_id": seed_second_user["account"].id,
+                "to_account_id": second_savings.id,
+                "pay_period_id": seed_second_user["bootstrap_period"].id,
+                "scenario_id": seed_second_user["scenario"].id,
+                "category_id": seed_second_user["categories"]["Rent"].id,
+            })
+
+            counts = _downgrade_counts(capsys)
+
+            for income in (False, True):
+                twin = _twin_of(xfer.id, income=income)
+                assert twin["user_id"] == seed_second_user["user"].id
+                assert twin["category_id"] == (
+                    seed_second_user["categories"]["Rent"].id
+                )
+            assert counts == {
+                "restored": 2, "rebuilt": 0, "changed": 2, "unfit": 2,
+                "built": 0,
+            }
+            _upgrade()
+
 
 class TestTheCensusBelowStillRefuses:
     """``e616adf7fe22``'s drift census, after this downgrade, still REFUSES.
@@ -1760,3 +1925,81 @@ def test_the_revision_below_takes_what_this_downgrade_writes(
     # born-since transfers' both sides among them.
     assert records == on_sides
     assert records[ids["moved"]] == records[ids["born"]] == 2
+
+
+#: Each status act the app makes at ``e616adf7fe22``, which writes the transfer
+#: and its sides' records and never a twin: ``(act, whether the transfer is
+#: born settled, the status the act states)``.
+_STATUS_ACTS = (
+    ("settle", False, "Paid"),
+    ("revert", True, "Projected"),
+    ("cancel", False, "Cancelled"),
+)
+
+
+@pytest.mark.parametrize(
+    "born_settled, status", [act[1:] for act in _STATUS_ACTS],
+    ids=[act[0] for act in _STATUS_ACTS],
+)
+def test_a_database_the_app_wrote_below_takes_that_revisions_way_down(
+    app, seed_user, seed_periods, capsys, born_settled, status,
+):
+    """A status act at ``e616adf7fe22``: up through this revision, then down through both.
+
+    From ``e616adf7fe22`` the app writes a settle, revert or cancel on the
+    transfer and its sides' records and never on a twin, so afterwards the
+    twins' status is not their transfer's, by design (cp1d review M-1).  This
+    revision's upgrade does not refuse that (the status is not a copied
+    field), and its downgrade re-reads each twin's status from the transfer
+    and its day, basis and link from its side's record, which is what
+    ``e616adf7fe22``'s downgrade census requires: the route that revision's
+    own refusal prescribes, back to head.  Not inside a nested application
+    context, for the chain test's reason.
+    """
+    del app
+    savings = create_account_of_type(
+        seed_user, _db.session, "Savings", "Status Act Savings",
+    )
+    _db.session.commit()
+    make = create_settled_transfer if born_settled else create_transfer
+    xfer_id = make(
+        seed_user, _db.session, seed_user["account"], savings,
+        seed_periods[0], amount=Decimal("50.00"),
+    ).id
+    _db.session.commit()
+    _downgrade()
+    born = {row["status_id"] for row in _twin_rows([xfer_id])}
+    transfer_service.update_transfer(
+        xfer_id, seed_user["user"].id, status_id=_status_id(status),
+    )
+    _db.session.commit()
+    # The premise: the act wrote the transfer and never a twin.
+    assert _transfer(xfer_id)["status_id"] == _status_id(status)
+    assert {row["status_id"] for row in _twin_rows([xfer_id])} == born
+    assert born != {_status_id(status)}
+    records = {
+        income: _side_record(xfer_id, income=income) for income in (False, True)
+    }
+    none = dict.fromkeys(
+        ("settled_on", "settled_day_basis_id", "reconciled_by_id"),
+    )
+
+    _upgrade()
+    counts = _downgrade_counts(capsys)
+
+    assert counts == {
+        "restored": 2, "rebuilt": 0, "changed": 2, "unfit": 0, "built": 0,
+    }
+    for income in (False, True):
+        twin = _twin_of(xfer_id, income=income)
+        assert twin["status_id"] == _status_id(status)
+        for column, value in (records[income] or none).items():
+            assert twin[column] == value, column
+    run_migration_callable(_BELOW.downgrade, _db.session)
+    run_migration_callable(_BELOW.upgrade, _db.session)
+    _upgrade()
+
+    assert _twin_rows([xfer_id]) == []
+    assert {
+        income: _side_record(xfer_id, income=income) for income in (False, True)
+    } == records
