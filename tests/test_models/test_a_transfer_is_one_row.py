@@ -225,7 +225,9 @@ def _accounts(seed_user):
 #: The fields the upgrade refuses a twin over, spelled HERE rather than read
 #: off the migration, so a field the migration stops refusing fails its own
 #: case: every field the app at ``e616adf7fe22`` still writes on both twins
-#: with their transfer.
+#: with their transfer, save ``category_id``, which it writes there too but
+#: which older income twins carry otherwise (finding BAL-575), so it is no copy
+#: on production and is neither refused nor re-read (ruling R-BAL261 instead).
 _COPIED = (
     "user_id", "account_id", "pay_period_id", "scenario_id", "due_date",
     "is_override", "is_deleted",
@@ -1705,11 +1707,12 @@ class TestAKeptValueThatNoLongerFits:
         """A transfer moved to another user by a statement: its owner's category comes back.
 
         The owner is a mirrored field, re-read from the transfer, so the kept
-        category, still the first user's, no longer fits its twin; no key on a
-        row's category asks its owner, so the downgrade asks it (cp1d review
-        L-4).  Reachable only by a raw statement: no door moves a transfer
-        between users, and the owner keys make it move with its accounts, its
-        period and its scenario.
+        category, still the first user's, no longer fits a twin whose owner
+        MOVED; no key on a row's category asks its owner, so the downgrade
+        asks it where the owner moved (cp1d review L-4, narrowed by the cp1e
+        review's L-1).  Reachable only by a raw statement: no door moves a
+        transfer between users, and the owner keys make it move with its
+        accounts, its period and its scenario.
         """
         with app.app_context():
             savings, _van = _accounts(seed_user)
@@ -1751,6 +1754,91 @@ class TestAKeptValueThatNoLongerFits:
                 "built": 0,
             }
             _upgrade()
+
+    def test_a_category_another_users_when_kept_comes_back_as_kept(
+        self, app, db, seed_user, seed_second_user, seed_periods, capsys,
+    ):
+        """A transfer and both twins under another user's category: exactly as kept.
+
+        Ruling R-BAL261 answers a kept value that NO LONGER fits, and nothing
+        about this one changed after the upgrade: the owner did not move, so
+        its category is not asked of it, and both twins come back exactly as
+        kept, printed as none differing and none unfit (the cp1e review's Q1,
+        L-1).  Planted by raw statements: both transfer doors refuse another
+        user's category (``_get_owned_category``,
+        ``_reject_unowned_references``).
+        """
+        with app.app_context():
+            savings, _van = _accounts(seed_user)
+            xfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0],
+            )
+            db.session.commit()
+            _downgrade()
+            foreign = seed_second_user["categories"]["Rent"].id
+            _set("transfers", xfer.id, {"category_id": foreign})
+            db.session.execute(text(
+                "UPDATE budget.transactions SET category_id = :c "
+                "WHERE transfer_id = :t"
+            ), {"c": foreign, "t": xfer.id})
+            db.session.commit()
+            kept = _twin_rows([xfer.id])
+            assert {row["category_id"] for row in kept} == {foreign}
+            _upgrade()
+
+            counts = _downgrade_counts(capsys)
+
+            assert _twin_rows([xfer.id]) == kept
+            assert counts == {
+                "restored": 2, "rebuilt": 0, "changed": 0, "unfit": 0,
+                "built": 0,
+            }
+            _upgrade()
+
+    def test_the_release_path_returns_another_users_category_as_kept(
+        self, app, seed_user, seed_second_user, seed_periods, capsys,
+    ):
+        """Below ``e616adf7fe22``, a twin under another user's category: column for column.
+
+        At the revision below ``e616adf7fe22`` an income twin is filed under
+        another user's category (a raw statement; its transfer names none).
+        The release path, both upgrades with no app write between, lets it
+        through, since a category is neither refused nor re-read, and a
+        downgrade straight after brings it back exactly as kept: its owner
+        did not move (the cp1e review's Q2, L-1).  Not inside a nested
+        application context, for the chain test's reason.
+        """
+        del app
+        savings = create_account_of_type(
+            seed_user, _db.session, "Savings", "Kept Category Savings",
+        )
+        _db.session.commit()
+        xfer_id = create_transfer(
+            seed_user, _db.session, seed_user["account"], savings,
+            seed_periods[0],
+        ).id
+        _db.session.commit()
+        _downgrade()
+        run_migration_callable(_BELOW.downgrade, _db.session)
+        foreign = seed_second_user["categories"]["Rent"].id
+        _set("transactions", _twin_of(xfer_id, income=True)["id"], {
+            "category_id": foreign,
+        })
+        kept = _twin_rows([xfer_id])
+        assert _twin_of(xfer_id, income=True)["category_id"] == foreign
+        assert _transfer(xfer_id)["category_id"] is None
+
+        run_migration_callable(_BELOW.upgrade, _db.session)
+        _upgrade()
+        counts = _downgrade_counts(capsys)
+
+        assert _twin_rows([xfer_id]) == kept
+        assert counts == {
+            "restored": 2, "rebuilt": 0, "changed": 0, "unfit": 0,
+            "built": 0,
+        }
+        _upgrade()
 
 
 class TestTheCensusBelowStillRefuses:

@@ -59,13 +59,16 @@ not a settlement record, not on its side's endpoint, or under a deleted twin or
 a deleted transfer (the last two would be a hidden parent holding money, the
 state the transfer arm forbids); two records on one side of one transfer; a
 transfer naming an account its owner does not hold.  After the backfill, and
-before either rule is installed, it refuses the same way while a transfer's
-records break the band rule (step 5), and while a twin does not say what its
-transfer and its side's record say (:func:`refuse_drifted_twins`, the
-downgrade's own census, asked once the side links exist and before anything
-at this revision writes).  Below this revision the app writes a twin's
-status, settle day, day basis and statement link with its transfer and its
-record, so such a twin is a drift no door wrote; from this revision the app
+before either rule is installed, it refuses, naming each the same way, while a
+transfer's records break the band rule (step 5), and while a twin does not
+say what its transfer and its side's record say (:func:`refuse_drifted_twins`,
+the downgrade's own census, asked once the side links exist and before the
+app at this revision has written anything).  These two follow the DDL and the
+backfill, so a refusal keeps nothing: the revision rolls back whole (save the
+audit log's id sequence, which no rollback restores).  Below this revision
+the app writes a twin's status, settle day, day basis and statement link with
+its transfer and its record, so such a twin is a drift no door wrote; from
+this revision the app
 writes those facts on the transfer and the record alone, after which the
 drift could not be told from the app's own, and plan step
 ``balance:X-bi-6-4d-3``'s revision deletes the twin.  Every count is 0 where
@@ -469,7 +472,9 @@ def refuse_drifted_twins(bind, *, at_the_upgrade: bool = False) -> None:
     Raises:
         RuntimeError: Naming how many twins disagree, the first
             :data:`_NAMED_AT_MOST` with the facts that differ, and the query
-            that finds them all.  Nothing has been written.
+            that finds them all.  Asked by the downgrade, nothing has been
+            written; asked by the upgrade, after its DDL and backfill, the
+            revision rolls back whole.
     """
     drifted = [tuple(row) for row in bind.execute(sa.text(_DRIFTED_TWINS_SQL))]
     if not drifted:
@@ -486,7 +491,8 @@ def refuse_drifted_twins(bind, *, at_the_upgrade: bool = False) -> None:
             "transfer and its record, so each is a drift no door wrote; from "
             "this revision it writes them on the transfer and the record "
             "alone, and plan step balance:X-bi-6-4d-3's revision deletes the "
-            "twin.  Nothing was written; each is the developer's to rule."
+            "twin.  Nothing is kept: the revision rolls back whole; each is "
+            "the developer's to rule."
         )
     raise RuntimeError(
         f"X-bi-6-4d-2's downgrade refuses: {len(drifted)} twin row(s) no "
@@ -503,8 +509,8 @@ def refuse_off_band_transfers(bind) -> None:
     """Refuse the upgrade while a stored transfer's side records break the band rule.
 
     Asked after the backfill, inside the revision's transaction, so a refusal
-    rolls the whole revision back and writes nothing.  Module-level so a test
-    can DRIVE it, as :func:`refuse_unlinkable_rows`.
+    keeps nothing: the revision rolls back whole.  Module-level so a test can
+    DRIVE it, as :func:`refuse_unlinkable_rows`.
 
     Args:
         bind: A SQLAlchemy connection.
@@ -521,7 +527,8 @@ def refuse_off_band_transfers(bind) -> None:
             "un-dated record or a record on one side only, or an unsettled "
             "one with a dated record (transfer id, settled, dated, un-dated: "
             f"{off_band}; diagnose with: {_OFF_BAND_SQL.strip()}).  Nothing "
-            "was written; each is the developer's to rule."
+            "is kept: the revision rolls back whole; each is the developer's "
+            "to rule."
         )
 
 

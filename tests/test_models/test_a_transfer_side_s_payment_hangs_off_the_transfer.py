@@ -115,6 +115,23 @@ def _has_side_links():
     )).scalar_one() == 2
 
 
+#: The triggers this revision's two rules attach and the revision below holds
+#: none of: the deleted-row rule's transfer arm and the band rule's four.
+#: Spelled here, not read off the modules, so an attachment renamed fails here.
+_RULE_TRIGGERS = (
+    "ck_hidden_transfer_holds_nothing",
+    "ck_side_record_band_on_insert", "ck_side_record_band_on_update",
+    "ck_side_record_band_on_delete", "ck_side_record_band_on_status",
+)
+
+
+def _rule_triggers():
+    """Return which of :data:`_RULE_TRIGGERS` exist now, sorted."""
+    return sorted(row[0] for row in _db.session.execute(text(
+        "SELECT tgname FROM pg_trigger WHERE tgname = ANY(:names)"
+    ), {"names": list(_RULE_TRIGGERS)}))
+
+
 def _settled_pair(seed_user):
     """Two Paid transfers on two accounts, committed; returns ``(a, b)``."""
     savings = create_account_of_type(
@@ -560,7 +577,14 @@ class TestTheUpgradeRefusesADriftedTwin:
     def test_a_twin_off_its_transfer_or_record_is_named(
         self, app, seed_user, fact, drift_sql, income,
     ):
-        """One fact moved on one side's twin: named with that fact alone, nothing written."""
+        """One fact moved on one side's twin: named with that fact alone, before either rule.
+
+        Asked inside the refused transaction, before it is rolled back: the
+        census ran once the side links existed and before either rule was
+        installed, the placement the module docstring states.  The revision
+        then rolls back whole, which PostgreSQL's transactional DDL does and
+        no assertion here could fail on (the cp1e review's L-3).
+        """
         del app
         first, _second = _below_this_revision(seed_user)
         account = first.to_account_id if income else first.from_account_id
@@ -576,10 +600,11 @@ class TestTheUpgradeRefusesADriftedTwin:
             RuntimeError, match=r"X-bi-6-4d-2 refuses: 1 twin row\(s\) do not",
         ) as refused:
             run_migration_callable(_MIGRATION.upgrade, _db.session)
+        assert _has_side_links()
+        assert _rule_triggers() == []
         _db.session.rollback()
 
         assert f"({first.id}, {twin['id']}, ['{fact}'])" in str(refused.value)
-        assert not _has_side_links()
         _db.session.execute(text(
             "UPDATE budget.transactions SET status_id = :status_id, "
             "settled_on = :settled_on, "

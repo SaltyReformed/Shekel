@@ -107,10 +107,12 @@ straight after the upgrade reproduces every twin column for column:
 link were their transfer's and their record's, and this one only twins whose
 copied fields were their transfer's; and an older revision's own downgrade that
 finds a twin by its id (``c4e91a7b2d38``'s ``system.loan_due_date_backfill``)
-still finds it.  On a database the app DID write at ``e616adf7fe22``, a twin it
-outlived comes back different from its kept row: a settle, revert or cancel
-made there wrote the transfer and its side's records and never the twin, and a
-day correction the record alone.  The live read also answers what the version
+still finds it.  On a database the app DID write at ``e616adf7fe22``, a twin of
+a transfer it settled, reverted or cancelled there, or whose side's record it
+re-dated or linked to a statement there, comes back different from its kept
+row: a settle, revert or cancel made there wrote the transfer and its side's
+records and never the twin, and a day correction or a statement link the
+record alone.  The live read also answers what the version
 counter below cannot see: a raw statement or a later revision that wrote the
 transfer without raising its counter, and the record, which is a row of its
 own.  Such a twin comes back saying what its transfer and record say now -- the
@@ -153,13 +155,17 @@ so no stale twin counter can be compared against the rebuilt row.
 
 **A kept value that no longer fits comes back as the transfer says** (ruling
 **R-BAL261**, "Use the transfer's").  The upgrade releases what the twins held
-in place, so an ordinary act can leave a kept value pointing at nothing: a kept
-category the category screen has since deleted comes back as the transfer's
-category, and so does one that is not its twin's owner's (the owner the
-mirrored fields re-read, moved by a raw statement: no door moves a transfer
-between users, and no key on a row's category asks its owner); a kept
-``$0.00``-close day that now falls on or before its account's books opening (an
-opening restated after the upgrade) comes back with no day, basis or link; a
+in place, so an ordinary act can leave a kept value pointing at nothing.  A
+kept category no longer fits, and comes back as the transfer's category, by
+either of two reaches: the category screen has since deleted it, or its
+twin's owner MOVED since the upgrade and it is not the new owner's (the owner
+the mirrored fields re-read, moved only by a raw statement: no door moves a
+transfer between users, and no key on a row's category asks its owner).  A
+kept category that was already another user's when it was kept has not
+changed since, so where the owner has not moved it comes back as kept.  A
+kept ``$0.00``-close day that now falls on or before its account's books
+opening (an opening restated after the upgrade) comes back with no day, basis
+or link; a
 kept statement link whose statement is gone comes back with none.  The
 downgrade prints how many twins came back so.
 
@@ -191,7 +197,8 @@ ids its backfill table names, then updates no twin.
 on each side), a database the app wrote at ``e616adf7fe22`` taking that
 revision's documented way down,
 the exact round trip, the live re-read of each mirrored field, the rebuild of
-a written transfer's twins and each value that no longer fits.
+a written transfer's twins, each value that no longer fits, and a kept
+category already another user's coming back as kept.
 """
 from alembic import op
 import sqlalchemy as sa
@@ -402,7 +409,12 @@ SELECT x.id AS transfer_id, side.is_income, side.account_id, x.status_id,
 #: app at ``e616adf7fe22`` still writes on both twins with their transfer (its
 #: side's endpoint for ``account_id``; the module docstring names each
 #: writer), each as :data:`_BUILT_SQL` states it.  Only a field that app keeps
-#: equal is evidence of a drift when it differs.
+#: equal is evidence of a drift when it differs.  Save ``category_id``: that
+#: app writes it on both twins too (``_create.py:179``, ``_update.py:334-338``,
+#: ``_restore.py:147-154`` at ``5f46d6973``), but older income twins carry
+#: "Transfers: Incoming" in place of their transfer's (finding BAL-575), so on
+#: production it is no copy, and refusing it would refuse production; ruling
+#: R-BAL261 (the module docstring) says when a kept one comes back otherwise.
 _COPIED_FIELDS = (
     "user_id", "account_id", "pay_period_id", "scenario_id", "due_date",
     "is_override", "is_deleted",
@@ -413,7 +425,10 @@ _COPIED_FIELDS = (
 #: the app at ``e616adf7fe22`` writes on the transfer alone.  Every one is
 #: re-read because the code below this revision reads a twin for what its
 #: transfer says, and ``e616adf7fe22``'s downgrade, next, refuses a twin whose
-#: status is not its transfer's.
+#: status is not its transfer's.  Save ``category_id``, which a twin took from
+#: it too: older income twins carry another (finding BAL-575), so it is not
+#: re-read, and an unwritten transfer's twin keeps its kept one unless it no
+#: longer fits (ruling R-BAL261).
 _MIRRORED_FIELDS = _COPIED_FIELDS + ("status_id",)
 
 #: One arm per copied field: its name when the twin's value (``r.twin``) is
@@ -456,16 +471,20 @@ _MIRRORED_REREAD = ", ".join(
 #: fits)``.  ``gate`` asks "written since" once (the transfer's version counter
 #: against the kept one); ``kept`` reads the copy's values once; ``fit`` asks
 #: each of ruling R-BAL261's questions once.  A kept category fits while it
-#: exists and is its twin's owner's (the owner the build rule states, which
-#: the unwritten branch re-reads).  A kept
+#: exists and, where its twin's owner MOVED since the upgrade (the kept
+#: ``user_id`` is not the owner the build rule states, which the unwritten
+#: branch re-reads), is the new owner's; one already another user's when kept
+#: has not changed, so it fits while its owner has not moved.  A kept
 #: ``$0.00``-close day fits while ``budget.books_hold`` admits it on its
 #: account (the comparison ``ck_movement_after_books_open`` asks at COMMIT),
 #: and a kept link while its statement still exists on that account (the pair
 #: ``fk_transactions_reconciled_by`` names; a statement never changes
 #: accounts, so the account term only states the key's own question).  A
 #: written transfer's twins take the transfer's category whatever the kept one
-#: was, so ``category_unfit`` is asked of an unwritten one alone and the printed
-#: count names only the twins a fallback actually changed.
+#: was, so ``category_unfit`` is asked of an unwritten one alone, and every
+#: twin the print counts as unfit is one it counts as different from its kept
+#: row: a gone category, an unfit day or a gone link comes back as another
+#: value, and a moved owner comes back moved.
 _RESTORE_KEPT_SQL = f"""
 WITH staged AS (
     SELECT p.row_id, gate.written, p.row_data AS kept_row,
@@ -508,6 +527,7 @@ WITH staged AS (
                     AND (p.row_data->>'status_id')::integer = b.status_id)
                    AS day_applies,
                    (p.row_data->>'category_id')::integer AS category_id,
+                   (p.row_data->>'user_id')::integer AS user_id,
                    (p.row_data->>'settled_on')::date AS settled_on,
                    (p.row_data->>'reconciled_by_id')::integer
                    AS reconciled_by_id
@@ -515,11 +535,17 @@ WITH staged AS (
       CROSS JOIN LATERAL (
             SELECT NOT gate.written
                    AND kept.category_id IS NOT NULL
-                   AND NOT EXISTS (
-                         SELECT 1 FROM budget.categories c
-                          WHERE c.id = kept.category_id
-                            AND c.user_id = (b.twin->>'user_id')::integer
-                       ) AS category_unfit,
+                   AND (NOT EXISTS (
+                          SELECT 1 FROM budget.categories c
+                           WHERE c.id = kept.category_id
+                        )
+                        OR (kept.user_id <> (b.twin->>'user_id')::integer
+                            AND NOT EXISTS (
+                                  SELECT 1 FROM budget.categories c
+                                   WHERE c.id = kept.category_id
+                                     AND c.user_id
+                                         = (b.twin->>'user_id')::integer
+                                ))) AS category_unfit,
                    kept.day_applies
                    AND kept.settled_on IS NOT NULL
                    AND NOT COALESCE(budget.books_hold(
