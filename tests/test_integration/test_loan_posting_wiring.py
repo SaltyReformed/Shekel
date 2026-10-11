@@ -50,7 +50,6 @@ from tests._test_helpers import (
     freeze_today,
     ledger_net,
     loan_correction_entries,
-    loan_income_shadow,
     SPLIT_LOAN,
     transfer_side_record,
 )
@@ -124,8 +123,9 @@ class TestSettleWiringAutoPosts:
             xfer = _settle(seed_user, loan, seed_periods[_P1])
             db.session.commit()
 
-            shadow = loan_income_shadow(db.session, xfer.id, loan.id)
-            assert len(loan_correction_entries(db.session, shadow)) == 1
+            assert len(
+                loan_correction_entries(db.session, xfer.id, loan.id),
+            ) == 1
             # Genesis: opening (-250000) + true-up (+150000) + principal (+500).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
@@ -527,6 +527,12 @@ class TestNonLoanTransferIgnored:
         classify_account(Savings) is not AMORTIZING, so the loan wiring
         short-circuits: no loan-payment-sourced journal entry is booked under
         the transfer's income shadow.
+
+        **Read at the savings side's key and over the owner's entries since
+        plan step ``balance:X-bi-6-4d-3``** (ruling **R-BAL167** class 1):
+        it named the side by the income shadow, which no longer exists, and
+        counted the entries linking that shadow's row id, which no split has
+        carried since ruling **R-BAL102**.
         """
         with app.app_context():
             savings = create_account_of_type(
@@ -539,16 +545,17 @@ class TestNonLoanTransferIgnored:
             )
             db.session.commit()
 
-            shadow = loan_income_shadow(db.session, xfer.id, savings.id)
-            assert loan_correction_entries(db.session, shadow) == []
-            # And no loan_payment entry exists for this account at all.
+            assert loan_correction_entries(
+                db.session, xfer.id, savings.id,
+            ) == []
+            # And no loan_payment entry exists for this owner at all.
             loan_payment_source = ref_cache.posting_source_id(
                 PostingSourceEnum.LOAN_PAYMENT,
             )
             count = (
                 db.session.query(JournalEntry)
                 .filter_by(
-                    transaction_id=shadow.id,
+                    user_id=seed_user["user"].id,
                     source_kind_id=loan_payment_source,
                 )
                 .count()
@@ -698,9 +705,8 @@ class TestRouteChokepointWiring:
             db.session.commit()
             xfer = _settle(seed_user, loan, seed_periods[_P1])
             db.session.commit()
-            shadow = loan_income_shadow(db.session, xfer.id, loan.id)
             # Not resolvable yet -> no correction at settle.
-            assert loan_correction_entries(db.session, shadow) == []
+            assert loan_correction_entries(db.session, xfer.id, loan.id) == []
 
             resp = auth_client.post(
                 f"/accounts/{loan.id}/loan/setup",
@@ -723,7 +729,7 @@ class TestRouteChokepointWiring:
             assert resp.status_code == 302
 
             # Back-posted: the correction now exists with interest 500.00.
-            entries = loan_correction_entries(db.session, shadow)
+            entries = loan_correction_entries(db.session, xfer.id, loan.id)
             assert len(entries) == 1
             assert ledger_net(
                 db.session, _interest_ledger(loan).id, scenario_id,

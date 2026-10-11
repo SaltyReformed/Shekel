@@ -149,7 +149,6 @@ from app.models.ledger_account import LedgerAccount
 from app.models.loan_features import RateHistory
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import balance_at, loan_anchor_service, loan_ledger, loan_loaders, loan_payment_service, loan_posting_service, loan_resolver, pay_period_write, posting_service, transfer_service
@@ -180,7 +179,6 @@ from tests._test_helpers import (
     linked_ledger_account,
     load_migration_module,
     loan_correction_entries,
-    loan_income_shadow,
     posted_loan_balance_at,
     posted_loan_balance_map,
     seam_confirmed_view,
@@ -740,14 +738,14 @@ def _assert_completeness(
     )
     # A split's ``source`` is the payment's loan-side TransferLeg since plan step
     # balance:X-bi-6-4d-2, not its income shadow; the shared reader keys the
-    # corrections off the transfer and the loan side's record, so the shadow
-    # passed it names only which transfer and side (ruling R-BAL167 class 4).
+    # corrections off the transfer and the loan side's record, and is passed
+    # the transfer and the loan since plan step balance:X-bi-6-4d-3, where no
+    # shadow exists to name the side (ruling R-BAL167 class 4).
     for split in splits:
         non_principal = split.interest + split.escrow + split.excess
         transfer_id = split.source.transfer.id
         entries = loan_correction_entries(
-            _db.session,
-            loan_income_shadow(_db.session, transfer_id, loan_account_id),
+            _db.session, transfer_id, loan_account_id,
         )
         if non_principal != Decimal("0"):
             assert entries, (
@@ -882,8 +880,9 @@ class TestParallelRunAgainstResolver:
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
             ) == scheduled_pi - Decimal("500.00") - _ANCHOR_BALANCE
-            shadow = loan_income_shadow(db.session, xfer.id, loan.id)
-            assert len(loan_correction_entries(db.session, shadow)) == 1
+            assert len(
+                loan_correction_entries(db.session, xfer.id, loan.id),
+            ) == 1
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
     def test_tracking_start_opening_matches_resolver(
@@ -1092,7 +1091,6 @@ class TestParallelRunAgainstResolver:
                 seed_user, loan, seed_periods[_P1], amount=Decimal("1000.00"),
             )
             db.session.commit()
-            shadow = loan_income_shadow(db.session, xfer.id, loan.id)
 
             # Genesis SPLITS the pre-trueup payment (Step 4 excluded it).
             splits = loan_ledger.compute_loan_payment_splits(
@@ -1100,7 +1098,7 @@ class TestParallelRunAgainstResolver:
             )
             assert len(splits) == 1
             assert splits[0].interest == Decimal("1250.00")
-            assert loan_correction_entries(db.session, shadow) != []
+            assert loan_correction_entries(db.session, xfer.id, loan.id) != []
 
             # Post the opening + true-up (the read-switch corrections): the
             # ONE sync since plan step ``balance:X-bi-6-3`` (the anchor-only
@@ -1574,13 +1572,12 @@ class TestOracleIsNotVacuous:
                 seed_user, loan, seed_periods[_P1], amount=Decimal("1000.00"),
             )
             db.session.commit()
-            shadow = loan_income_shadow(db.session, xfer.id, loan.id)
             assert _trial_balance() == Decimal("0.00")
 
             # Inject one extra, unmatched leg onto the correction entry, on the
             # loan's interest ledger.  Flush (not commit) makes it visible; the
             # deferred balanced trigger validates only at COMMIT, never reached.
-            correction = loan_correction_entries(db.session, shadow)[0]
+            correction = loan_correction_entries(db.session, xfer.id, loan.id)[0]
             interest_ledger = find_loan_ledger_account(
                 db.session, loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
             )
@@ -2033,9 +2030,8 @@ class TestResolverIsLedgerFree:
             before_ledger = _ledger_balance(loan.id, scenario_id)
             before_reference = _resolver_balance(loan.id, scenario_id, _AS_OF)
 
-            shadow = loan_income_shadow(db.session, xfer.id, loan.id)
             linked = linked_ledger_account(db.session, loan.id)
-            entry = loan_correction_entries(db.session, shadow)[0]
+            entry = loan_correction_entries(db.session, xfer.id, loan.id)[0]
             db.session.execute(_db.text(
                 "INSERT INTO budget.account_postings "
                 "  (journal_entry_id, ledger_account_id, amount, posting_kind_id) "
@@ -2453,21 +2449,15 @@ class TestReaderParallelRunAgainstResolver:
             # reason ``TestLatePaidPaymentDating`` does: the pay period governs
             # the CASH and the stored due date governs the INSTALLMENT, and
             # re-deriving one from the other is the defect that class pins.
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=early.id, account_id=loan.id)
-                .one()
-            )
-            # On the transfer and its shadow alike -- see ``_settle_late``.
+            # On the transfer -- see ``_settle_late``.
             early.due_date = date(2026, 3, 1)
-            shadow.due_date = date(2026, 3, 1)
             db.session.flush()
             loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
             db.session.commit()
             # The premise: the money HAS moved (its day is at or before today)
             # and the installment it paid is NOT yet due -- an early settle.
             assert early_period.start_date <= frozen
-            assert shadow.due_date > frozen
+            assert early.due_date > frozen
 
             # The parallel run holds at EVERY period start -- including the
             # period the early installment comes due in and the tail after it,
@@ -3096,21 +3086,16 @@ class TestLatePaidPaymentDating:
         ``due_date`` still records the installment it paid.
         """
         payment = _settle(seed_user, loan, seed_periods[3])
-        shadow = (
-            db.session.query(Transaction)
-            .filter_by(transfer_id=payment.id, account_id=loan.id)
-            .one()
-        )
         # On the TRANSFER, where a payment's installment is read since plan step
-        # balance:X-bi-6-4b, and on its shadow beside it (Transfer Invariant 3).
-        # It wrote the shadow's copy alone until then (rule-5 re-expression,
-        # developer approval 2026-09-24).
+        # balance:X-bi-6-4b.  It wrote the shadow's copy alone until then
+        # (rule-5 re-expression, developer approval 2026-09-24), and the
+        # shadow's copy beside it until plan step balance:X-bi-6-4d-3 made a
+        # transfer one row (ruling R-BAL167 class 1).
         payment.due_date = date(2026, 2, 1)
-        shadow.due_date = date(2026, 2, 1)
         db.session.flush()
         loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
         db.session.commit()
-        return shadow
+        return payment
 
     def test_late_payment_is_dated_at_the_installment_it_paid(
         self, app, db, seed_user, seed_periods,
@@ -3254,12 +3239,12 @@ class TestLatePaidPaymentDating:
                 p for p in periods if p.start_date == date(2026, 5, 8)
             )
             late = _settle(seed_user, loan, late_period)
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=late.id, account_id=loan.id)
-                .one()
-            )
-            shadow.due_date = date(2026, 5, 5)
+            # The installment it paid, on the TRANSFER, where a payment's
+            # installment is read since plan step balance:X-bi-6-4b.  It was
+            # written on the shadow alone until plan step balance:X-bi-6-4d-3
+            # made a transfer one row (ruling R-BAL167 class 1), a copy no
+            # reader asked after X-bi-6-4b.
+            late.due_date = date(2026, 5, 5)
             db.session.flush()
             loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
             db.session.commit()

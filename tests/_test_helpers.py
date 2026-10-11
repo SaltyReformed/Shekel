@@ -1952,7 +1952,7 @@ def make_balanced_entry(  # pylint: disable=too-many-arguments
     return entry
 
 
-def loan_correction_entries(db_session, shadow):
+def loan_correction_entries(db_session, transfer_id, loan_account_id):
     """Return the loan_payment corrections booked at a payment's KEY.
 
     The ``budget.journal_entries`` rows the loan posting package books for one
@@ -1968,9 +1968,12 @@ def loan_correction_entries(db_session, shadow):
     the TRANSFER and the loan side's RECORD since plan step
     ``balance:X-bi-6-4d-2``** (ruling **R-BAL167** class 4): the record hangs
     off the transfer there and the twins' status and day are no longer kept,
-    so the shadow passed in names only which transfer and which side; it read
-    the shadow's own period, scenario and day until then (the loan walk has
-    read the record's day since ``X-bi-6-4b``).  A side with no dated record
+    so the shadow it was passed named only which transfer and which side; it
+    read the shadow's own period, scenario and day until then (the loan walk
+    has read the record's day since ``X-bi-6-4b``).  **It is keyed by the
+    transfer and the loan account since plan step ``balance:X-bi-6-4d-3``**
+    (ruling **R-BAL167** class 4): a transfer is one row there and no
+    shadow exists to name the side.  A side with no dated record
     has no key and is REFUSED rather than answered ``[]`` (the leaf-2
     adversarial review: an empty answer for a reverted payment would let
     "after the revert the split is gone" pass without reading the ledger);
@@ -1981,9 +1984,9 @@ def loan_correction_entries(db_session, shadow):
 
     Args:
         db_session: The test ``db.session``.
-        shadow: The loan-side income shadow :class:`~app.models.transaction.
-            Transaction` of the payment whose corrections to fetch: its
-            ``transfer_id`` and ``account_id`` are read.
+        transfer_id: The payment's ``budget.transfers`` id.
+        loan_account_id: The loan (to-)account whose side holds the record
+            and whose chart rows scope the read.
 
     Returns:
         list[:class:`~app.models.journal_entry.JournalEntry`] -- the correction
@@ -1992,19 +1995,22 @@ def loan_correction_entries(db_session, shadow):
     Raises:
         ValueError: If the loan side holds no dated record (it has no key).
     """
-    record = transfer_side_record(
-        db_session, shadow.transfer_id, shadow.account_id,
-    )
+    # Pylint: import-outside-toplevel -- same lazy-app-import convention
+    # every helper in this module follows.
+    # pylint: disable=import-outside-toplevel
+    from app.models.transfer import Transfer
+
+    record = transfer_side_record(db_session, transfer_id, loan_account_id)
     if record is None or record.settled_on is None:
         raise ValueError(
-            f"loan_correction_entries: transfer {shadow.transfer_id}'s side "
-            f"on account {shadow.account_id} holds no dated record and so no "
+            f"loan_correction_entries: transfer {transfer_id}'s side "
+            f"on account {loan_account_id} holds no dated record and so no "
             f"split key; read loan_correction_entries_at with the key "
             f"captured before the act that released the day."
         )
-    transfer = shadow.transfer
+    transfer = db_session.get(Transfer, transfer_id)
     return loan_correction_entries_at(
-        db_session, shadow.account_id, transfer.scenario_id,
+        db_session, loan_account_id, transfer.scenario_id,
         transfer.pay_period_id, record.settled_on,
     )
 
@@ -2426,38 +2432,6 @@ def find_loan_ledger_account(db_session, loan_account_id, kind):
             kind_id=ref_cache.ledger_account_kind_id(kind),
         )
         .one_or_none()
-    )
-
-
-def loan_income_shadow(db_session, transfer_id, loan_account_id):
-    """Return the loan-side income shadow of a transfer.
-
-    The income (to-account) shadow of *transfer_id* on *loan_account_id* -- the
-    row the Step-4 correction books under.  Shared by the Step-4 split-service
-    and wiring suites.
-
-    Args:
-        db_session: The test ``db.session``.
-        transfer_id: The parent transfer's id.
-        loan_account_id: The loan (to-)account the income shadow lives on.
-
-    Returns:
-        The loan-side income :class:`~app.models.transaction.Transaction`.
-    """
-    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
-    # convention every helper in this module follows.
-    from app import ref_cache
-    from app.enums import TxnTypeEnum
-    from app.models.transaction import Transaction
-
-    return (
-        db_session.query(Transaction)
-        .filter_by(
-            transfer_id=transfer_id,
-            account_id=loan_account_id,
-            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-        )
-        .one()
     )
 
 
@@ -4858,6 +4832,61 @@ def transfer_side_journal_filter(transfer_id, account_id):
         TransactionEntry.account_id == account_id,
     )
     return JournalEntry.transaction_entry_id.in_(movement_ids)
+
+
+def assert_a_twin_is_refused(db_session, xfer, is_income):
+    """Stage the twin one side of *xfer* used to have, and assert it is refused.
+
+    The ruling **R-BAL167** class 2 re-expression of a test whose subject was a
+    transfer's shadow row: a transfer is one row since plan step
+    ``balance:X-bi-6-4d-3``, and ``ck_transactions_names_no_transfer`` (ruling
+    **R-BAL258**) refuses any ``budget.transactions`` row naming one, so the
+    row such a test drove a door on, priced or read can no longer be stored.
+    The row is built column for column as ``transfer_service._create.
+    _build_shadow`` built it at ``5f46d6973`` (the leaf below, where the create
+    door still made two): the transfer's owner, period, scenario, category and
+    due date, the side's endpoint and type, born Projected as every transfer
+    and so every twin was, derived from its parent (``PARENT_TRANSFER``), so
+    the refusal reported is that CHECK's and no other constraint's.  The
+    session is rolled back after the refusal, so a caller re-reads whatever it
+    holds.
+
+    Args:
+        db_session: The test ``db.session``.
+        xfer: The flushed :class:`~app.models.transfer.Transfer`.
+        is_income: ``True`` for the to-side's (income) twin, ``False`` for
+            the from-side's (expense) twin.
+    """
+    # Pylint: import-outside-toplevel -- same lazy-app-import convention
+    # every helper in this module follows.
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.enums import AmountSourceEnum, StatusEnum, TxnTypeEnum
+    from app.models.transaction import Transaction
+    from app.services.amount_ownership import declare_derived
+
+    twin = Transaction(
+        user_id=xfer.user_id,
+        account_id=xfer.to_account_id if is_income else xfer.from_account_id,
+        transfer_id=xfer.id,
+        pay_period_id=xfer.pay_period_id,
+        scenario_id=xfer.scenario_id,
+        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        name=f"Twin of transfer {xfer.id}",
+        category_id=xfer.category_id,
+        transaction_type_id=ref_cache.txn_type_id(
+            TxnTypeEnum.INCOME if is_income else TxnTypeEnum.EXPENSE,
+        ),
+        due_date=xfer.due_date,
+    )
+    declare_derived(twin, AmountSourceEnum.PARENT_TRANSFER)
+    db_session.add(twin)
+    with pytest.raises(sa_exc.IntegrityError) as excinfo:
+        db_session.flush()
+    db_session.rollback()
+    assert constraint_name_from(excinfo.value) == (
+        "ck_transactions_names_no_transfer"
+    ), f"the twin was refused by another rule: {excinfo.value}"
 
 
 def transfer_side_record(db_session, transfer_id, account_id):

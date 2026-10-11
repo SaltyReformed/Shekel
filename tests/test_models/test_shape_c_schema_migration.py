@@ -57,12 +57,12 @@ from app.enums import LedgerAccountKindEnum, PostingSourceEnum
 from app.extensions import db as _db
 from tests._test_helpers import (
     SPLIT_LOAN,
+    add_txn,
     create_account_of_type,
     create_loan_with_trueup,
     create_settled_transfer,
     load_migration_module,
     loan_correction_entries,
-    loan_income_shadow,
 )
 
 
@@ -295,6 +295,12 @@ class TestTheSplitUnlinkExecutes:
     is what the grade counts.  The migration's own ``upgrade()`` raises on a
     nonzero grade; the statement and the grade are the two halves tested
     here, since the DDL half cannot run under the ORM.
+
+    **The plant links an ordinary row of the owner's since plan step
+    ``balance:X-bi-6-4d-3``** (ruling **R-BAL167** class 1): a transfer is one
+    row there, so the income shadow the old shape linked cannot be stored, and
+    the statement and the grade read only whether a link is SET, never what
+    it names.
     """
 
     def test_unlink_clears_every_link_and_the_grade_counts_what_is_left(
@@ -325,15 +331,18 @@ class TestTheSplitUnlinkExecutes:
                 seed_periods[SPLIT_LOAN.p1], amount=Decimal("1000.00"),
             )
             _db.session.commit()
-            shadow = loan_income_shadow(_db.session, xfer.id, loan.id)
-            [entry] = loan_correction_entries(_db.session, shadow)
+            [entry] = loan_correction_entries(_db.session, xfer.id, loan.id)
             assert entry.transaction_id is None
+            linked_row = add_txn(
+                _db.session, seed_user, seed_periods[SPLIT_LOAN.p1],
+                "Linked row", Decimal("10.00"),
+            )
 
             relink = text(
                 "UPDATE budget.journal_entries SET transaction_id = :sid "
                 "WHERE id = :eid"
             )
-            db.session.execute(relink, {"sid": shadow.id, "eid": entry.id})
+            db.session.execute(relink, {"sid": linked_row.id, "eid": entry.id})
             grade = text(_MIGRATION._LINKED_LOAN_PAYMENT_ENTRIES_SQL)
             assert db.session.execute(grade).scalar() == 1
 
@@ -347,6 +356,6 @@ class TestTheSplitUnlinkExecutes:
                     entry.transaction_entry_id) == (None, None, None)
 
             # The grade counts: a link the statement did not reach is seen.
-            db.session.execute(relink, {"sid": shadow.id, "eid": entry.id})
+            db.session.execute(relink, {"sid": linked_row.id, "eid": entry.id})
             assert db.session.execute(grade).scalar() == 1
             db.session.rollback()
