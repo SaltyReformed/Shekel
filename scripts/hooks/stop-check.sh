@@ -34,8 +34,13 @@ cd "$REPO" || {
 
 WARNINGS=""
 
+# Every capped list below is cut with `sed -n '1,Np'`, not `head -N` (plan
+# step balance:X-dm): sed reads to the end, so no writer is killed mid-list
+# by a reader that left.  Inert in this hook, which sets no -e and reads no
+# status of these captures; swept with the class.
+
 # --- Check 1: incomplete markers in app code ---
-TODOS=$(grep -rn "TODO\|FIXME\|HACK\|XXX" app/ --include="*.py" 2>/dev/null | head -10)
+TODOS=$(grep -rn "TODO\|FIXME\|HACK\|XXX" app/ --include="*.py" 2>/dev/null | sed -n '1,10p')
 if [ -n "$TODOS" ]; then
     WARNINGS+="INCOMPLETE MARKERS in app/:"$'\n'"$TODOS"$'\n\n'
 fi
@@ -45,9 +50,9 @@ fi
 UNTRACKED_PY=$(git ls-files --others --exclude-standard -- '*.py' 2>/dev/null)
 
 # --- Check 2: pylint suppressions added this session ---
-NEW_DISABLES=$(git diff HEAD -- '*.py' 2>/dev/null | grep "^+" | grep "pylint: disable" | head -5)
+NEW_DISABLES=$(git diff HEAD -- '*.py' 2>/dev/null | grep "^+" | grep "pylint: disable" | sed -n '1,5p')
 if [ -n "$UNTRACKED_PY" ]; then
-    UNTRACKED_DISABLES=$(printf '%s\n' "$UNTRACKED_PY" | xargs -r -d '\n' grep -n "pylint: disable" 2>/dev/null | head -5)
+    UNTRACKED_DISABLES=$(printf '%s\n' "$UNTRACKED_PY" | xargs -r -d '\n' grep -n "pylint: disable" 2>/dev/null | sed -n '1,5p')
     [ -n "$UNTRACKED_DISABLES" ] && NEW_DISABLES+=$'\n'"$UNTRACKED_DISABLES"
 fi
 if [ -n "$NEW_DISABLES" ]; then
@@ -55,9 +60,9 @@ if [ -n "$NEW_DISABLES" ]; then
 fi
 
 # --- Check 3: broad except blocks added this session ---
-NEW_BROAD=$(git diff HEAD -- '*.py' 2>/dev/null | grep "^+" | grep "except Exception" | head -5)
+NEW_BROAD=$(git diff HEAD -- '*.py' 2>/dev/null | grep "^+" | grep "except Exception" | sed -n '1,5p')
 if [ -n "$UNTRACKED_PY" ]; then
-    UNTRACKED_BROAD=$(printf '%s\n' "$UNTRACKED_PY" | xargs -r -d '\n' grep -n "except Exception" 2>/dev/null | head -5)
+    UNTRACKED_BROAD=$(printf '%s\n' "$UNTRACKED_PY" | xargs -r -d '\n' grep -n "except Exception" 2>/dev/null | sed -n '1,5p')
     [ -n "$UNTRACKED_BROAD" ] && NEW_BROAD+=$'\n'"$UNTRACKED_BROAD"
 fi
 if [ -n "$NEW_BROAD" ]; then
@@ -110,7 +115,7 @@ if [ -n "$LINT_FAILURES" ]; then
 fi
 
 # --- Check 4: uncommitted changes reminder ---
-CHANGED=$(git status --porcelain 2>/dev/null | head -10)
+CHANGED=$(git status --porcelain 2>/dev/null | sed -n '1,10p')
 if [ -n "$CHANGED" ]; then
     COUNT=$(git status --porcelain 2>/dev/null | wc -l)
     WARNINGS+="UNCOMMITTED CHANGES ($COUNT files):"$'\n'"$CHANGED"$'\n\n'

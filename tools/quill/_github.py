@@ -70,7 +70,9 @@ BACKOFF_SECONDS = 60
 #: The most one request waits in all before quill stops: the hour an installation token
 #: lives, past which the re-sent request would go with a dead token.  The five backoff
 #: waits come to 1,860 seconds, inside it; a wait GitHub names that would cross it
-#: stops quill rather than being shortened (the module docstring).
+#: stops quill rather than being shortened (the module docstring).  It bounds ONE
+#: request's waits, not a command's: a command of many requests may wait longer in all,
+#: each request within its own budget (review of A2b).
 RATE_LIMIT_BUDGET_SECONDS = 3600
 #: How GitHub's error message says a rate limit refused the request ("You have exceeded a
 #: secondary rate limit", "API rate limit exceeded").

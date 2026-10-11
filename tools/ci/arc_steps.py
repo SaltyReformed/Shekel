@@ -41,6 +41,32 @@ CHECKBOX_RX = re.compile(
 )
 
 
+def fenced_lines(lines: Sequence[str]) -> list[bool]:
+    """Return, for each of *lines*, whether it belongs to a fenced code block: the fence
+    rule's one spelling.
+
+    A line opening or closing a fence (```` ``` ````, however indented) belongs to it, and
+    so does every line between, blank or not.  A fence that never closes runs to the end.
+    X-cx's migration reads this as well as :func:`blank_fenced_lines`: a paragraph of a
+    step's entry runs THROUGH a fenced sample's blank lines, which the blanked copy cannot
+    tell from a blank line between two paragraphs.
+
+    Args:
+        lines: A document's lines (``text.splitlines()``).
+
+    Returns:
+        A list of the same length, True for each line of a fenced block.
+    """
+    out, inside = [], False
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            inside = not inside
+            out.append(True)
+            continue
+        out.append(inside)
+    return out
+
+
 def blank_fenced_lines(lines: Sequence[str]) -> list[str]:
     """Return *lines* with every fenced code block's lines blanked, one for one.
 
@@ -48,7 +74,8 @@ def blank_fenced_lines(lines: Sequence[str]) -> list[str]:
     Blanking rather than deleting keeps every line at its index, and blanking
     rather than ignoring means a ``|`` row or a ``- [ ]`` line inside a code
     sample is not mistaken for a table row or a checkbox -- a code sample is an
-    illustration, not a record.  A fence that never closes blanks to the end.
+    illustration, not a record.  A fence that never closes blanks to the end
+    (:func:`fenced_lines`, the rule's one spelling).
 
     Args:
         lines: A document's lines (``text.splitlines()``).
@@ -57,14 +84,7 @@ def blank_fenced_lines(lines: Sequence[str]) -> list[str]:
         A list of the same length: each fence line and each line inside a fence
         empty, every other line unchanged.
     """
-    out, inside = [], False
-    for line in lines:
-        if line.lstrip().startswith("```"):
-            inside = not inside
-            out.append("")
-            continue
-        out.append("" if inside else line)
-    return out
+    return ["" if fenced else line for line, fenced in zip(lines, fenced_lines(lines))]
 
 
 def blank_fenced_regions(text: str) -> str:

@@ -53,6 +53,12 @@ log() {
 }
 
 # ── Prerequisites ────────────────────────────────────────────────
+# "Is this container running?" has one home in the shell scripts, shared
+# with deploy/shekel-deploy.sh and scripts/restore.sh (plan step
+# balance:X-dm, ruling R-BAL254).
+# shellcheck source=_container_lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_container_lib.sh"
+
 # Verify docker exists and the named DB container is running.
 # Usage: require_db_container "$DB_CONTAINER" || exit 1
 require_db_container() {
@@ -61,7 +67,8 @@ require_db_container() {
         log "ERROR" "docker command not found"
         return 1
     fi
-    if ! docker inspect --format='{{.State.Running}}' "${container}" 2>/dev/null | grep -q true; then
+    # shellcheck disable=SC2310 # container_running is a boolean predicate (one captured docker inspect); its 0/1 is exactly what this if tests.
+    if ! container_running "${container}"; then
         log "ERROR" "Database container '${container}' is not running"
         return 1
     fi

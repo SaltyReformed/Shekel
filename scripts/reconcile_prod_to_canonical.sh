@@ -77,8 +77,13 @@ extract_env_value() {
     # to kill the whole script mid-run with no diagnostic, AFTER step 3
     # had already migrated secrets (OPS/SH-12); required keys get their
     # explicit die at the call sites instead.
+    #
+    # `sed -n '1p'`, not `head -1` (plan step balance:X-dm): sed reads to
+    # the end, so no stage can be killed writing to a reader that left,
+    # which pipefail would report as a failure.  The `|| true` answers
+    # grep's no-match, and also hid that race: cut had printed the value.
     local key=$1
-    grep -E "^${key}=" "$PROD_ROOT/.env" | head -1 | cut -d= -f2- || true
+    grep -E "^${key}=" "$PROD_ROOT/.env" | sed -n '1p' | cut -d= -f2- || true
 }
 
 for pair in \
@@ -125,9 +130,17 @@ log "Step 4: rewrite $PROD_ROOT/.env"
 # when nothing matched (OPS/SH-11). NOTE the fallback greps the SHEKEL
 # image line specifically: a bare 'first sha256 in the file' would now
 # match the postgres digest pin.
+compose_image_digest() {
+    # Echo the first digest on a SHEKEL image line of the legacy compose
+    # layout, or EMPTY -- never a non-zero status; the caller's die names
+    # both places it looked.  Ends in `sed -n '1p'`, not `head -1` (plan
+    # step balance:X-dm), for the reason extract_env_value gives.
+    grep -E 'image:.*saltyreformed/shekel' "$PROD_ROOT/docker-compose.yml" \
+        | grep -oE 'sha256:[0-9a-f]{64}' | sed -n '1p' || true
+}
 current_digest=$(extract_env_value SHEKEL_IMAGE_DIGEST)
 if [[ -z "$current_digest" ]]; then
-    current_digest=$(grep -E 'image:.*saltyreformed/shekel' "$PROD_ROOT/docker-compose.yml" | grep -oE 'sha256:[0-9a-f]{64}' | head -1 || true)
+    current_digest=$(compose_image_digest)
 fi
 [[ -n "$current_digest" ]] || die "could not determine the image digest: no SHEKEL_IMAGE_DIGEST in $PROD_ROOT/.env and no inline digest on the shekel image line of $PROD_ROOT/docker-compose.yml"
 
@@ -318,7 +331,7 @@ When ready to recreate the stack:
     docker compose logs --tail=80 app
     docker inspect shekel-prod-app --format '{{.HostConfig.ReadonlyRootfs}}'  # → true
     docker inspect shekel-prod-app --format '{{.HostConfig.CapDrop}}'         # → [ALL]
-    curl -sI https://shekel.saltyreformed.com/login | head -5                  # → 200 + sec headers
+    curl -sI https://shekel.saltyreformed.com/login | sed -n '1,5p'            # → 200 + sec headers
 
 Rollback (if anything goes wrong):
 
