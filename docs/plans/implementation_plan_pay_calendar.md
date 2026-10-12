@@ -331,7 +331,15 @@ record.
       **PC-508**, **PC-513**, **PC-514**. Archived with `C17-d`.
 - [ ] **C17-e -- coalesced nominal paydays are ONE paycheck** (**R-PC77**; closes **N-493**). Two
       nominal paydays a closed run displaces onto one cash day derive one paycheck wherever an era's
-      grid is read; `reject_shift_on_short_cadence` is then a fence. `$0.00`, after `C17-d`.
+      grid is read; `reject_shift_on_short_cadence` is then deleted. `$0.00`, after `C17-d`.
+- [ ] **C23 -- the pay-period doors take a narrowed period** (O7, **balance:R-BAL263**).
+- [ ] **C24 -- every civil day through one pinned clock** (O7; closes **balance:N-191**,
+      **balance:N-197**).
+- [ ] **C25 -- the developer answers whether paycheck removal stops refusing** (O7; **PC-534**;
+      `C16` waits on it, **balance:R-BAL271**, and on a yes is re-pointed onto, or cancelled by, the
+      deletion step in the same commit).
+- [ ] **C26 -- the developer answers whether `C13-c` keys paycheck lines** (O7; **PC-535**; its
+      answer amends `C13-c`'s specification in the same commit).
 - [ ] **C19 -- the `PayCalendar` door splits by SHAPE** (**PC-512**, re-homed from salary:P77
       2026-09-13): `searches` / `views` / `walks` as a PURE move graded by AST (**R-PC74**'s shape);
       `_calendar.py` sits at 20 of 20 methods and 981 of 1000 lines. ~100 call sites; `$0.00`.
@@ -376,10 +384,10 @@ record.
       across all seven column pairs, expressible-not-present. `fk_statement_matches_owner` and
       `fk_account_external_identities_owner` are already this construction, so each is a superkey
       plus a composite foreign key -- three on `transfers`, one on each other table, eight keys --
-      in ONE migration, and it DELETES `integrity_check.py`'s DC-09, the hand-written fence for
-      exactly this one table over, rather than joining it (`CLAUDE.md` rule 14). Filed here as
-      `C13`'s third leaf though the tables span three arcs: a migration does not care which arc a
-      table's steps live in.
+      in ONE migration, and it DELETES `integrity_check.py`'s DC-09 rather than joining it
+      (`CLAUDE.md` rule 14); DC-09 reads `salary.paycheck_lines`, none of the six, so whether it
+      joins as a seventh is `C26`'s question. Filed here as `C13`'s third leaf though the tables
+      span three arcs: a migration does not care which arc a table's steps live in.
 
 *`C12` (one current-paycheck producer) moved to the `salary` arc on 2026-09-03 (**R-SAL1**) with its
 rows **P62**, **P63** and **P64**'s engine half; its specification is

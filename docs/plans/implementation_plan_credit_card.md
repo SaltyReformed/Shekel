@@ -204,11 +204,13 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       `$0.00`; `is_credit`, its reducer arm and
       `ck_transaction_entries_card_purchase_clears_nowhere` deleted once no line carries the flag;
       the mark/unmark doors, the `Credit` transition and the `Credit` status VALUE retired; routes,
-      templates and JS; `credit_workflow.py` and `entry_credit_workflow.py` deleted whole. Graded on
-      checking's cash fold by equality (`tests/manual/verify_balance_baseline.py`), on the budget
-      clock by a stated per-period diff (`verify_grid_cutover.py`) and on the posted ledger for the
-      reversed legs. **MOVES MONEY on the budget clock, `$0.00` on checking's cash fold.** Closes
-      **CC-352**, **N-337**, **N-350**, **N-351**.
+      templates and JS; `credit_workflow.py` and `entry_credit_workflow.py` deleted whole;
+      `_reject_drifted_under_the_act` is measured once the cheat is gone and deleted if it can no
+      longer fire (`balance:R-BAL263`). Graded on checking's cash fold by equality
+      (`tests/manual/verify_balance_baseline.py`), on the budget clock by a stated per-period diff
+      (`verify_grid_cutover.py`) and on the posted ledger for the reversed legs.
+      **MOVES MONEY on the budget clock, `$0.00` on checking's cash fold.** Closes **CC-352**,
+      **N-337**, **N-350**, **N-351**.
 - [ ] **CC-7o** `docs(runbook): the card's release` -- design 3.10 (`R-CC21`; `salary:R18-d`'s shape
       under `R-HJ`): the prerequisite act (the card paid in full, every payback marked paid, no new
       charges), the release, the card created through the account door with its books opened on the
@@ -232,6 +234,12 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       dev clone. A payment between two non-balance members of the set is drawn on a third member's
       grid from its FROM side and counted once (**R-CC38**, amending R-CC23; the fourth arm of
       `cash_flow_set.leg_accounts_shown` and `far_legs_of`). Closes **CC-355**.
+- [ ] **CC-12** `refactor(goals): a Fixed goal's target rule has one home` -- outcome O7
+      (`balance:R-BAL263`; the 2026-10-11 fence census); closes **CC-375**. The rule that a Fixed
+      savings goal needs a target is held twice, by the goal schemas' shared cross-field check and
+      by the goal door, in the same words; one home keeps it and the other copy and its words are
+      deleted, so the two cannot drift. Which home keeps it is **CC-375**'s question, put to the
+      developer before anything is built. `$0.00`.
 
 **The card on the feed is `bank_import:X-f6b`'s** (design 3.11): SimpleFIN serves a card's lines and
 balance (an external property nothing on the tree asserts, which `X-f6b` CONFIRMS); card lines are
