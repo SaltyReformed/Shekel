@@ -360,11 +360,13 @@ def _set(table, row_id, values):
 
 #: The category refusal's repair advice, spelled HERE rather than read off the
 #: migration, so a refusal that stops saying which row to repair fails its
-#: case (the cp2b-0 review's L-1).
+#: case (the cp2b-0 review's L-1).  It runs to the message's own clause break,
+#: ``"; "``, so no word the message adds after it can turn an arm around (the
+#: cp2b-1 review's L-2).
 _REPAIR_ADVICE = (
     "where the transfer names a category whose owner is not the transfer's, "
     "the transfer is refused for its own category as well and is a row to "
-    "repair, its twins with it; otherwise the twin alone is"
+    "repair, its twins with it; otherwise the twin alone is; "
 )
 
 

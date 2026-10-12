@@ -68,6 +68,7 @@ from app.services import (
     pay_period_admin,
     posting_service,
     status_seam,
+    transaction_service,
     transfer_service,
 )
 from app.services._posting_write import _emit_balanced_entry, _PostingLeg
@@ -263,6 +264,21 @@ def _cash_reader_loan_net(xfer, loan, ledger_id):
 def _correction_entries(xfer, loan):
     """Return the loan_payment corrections at a payment's key (shared query helper)."""
     return loan_correction_entries(_db.session, xfer.id, loan.id)
+
+
+def _split_and_interest(xfer, loan, scenario_id):
+    """The payment's split as ``(its entry count, the loan_interest ledger's net)``.
+
+    The ledger is the loan's, so its net is the split's interest only while
+    the payment is the loan's one split.
+    """
+    interest_ledger = _find_loan_ledger(
+        loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
+    )
+    return (
+        len(_correction_entries(xfer, loan)),
+        _ledger_net(interest_ledger.id, scenario_id),
+    )
 
 
 def _entry_legs(entry_id):
@@ -1358,14 +1374,18 @@ class TestSyncLoanPaymentPostings:
         ORDINARY row on the LOAN account, in the payment's own period and on
         its loan side's own settle day, settled through the real go-forward
         primitives (which post it) and then driven through
-        ``sync_transaction_postings`` again.  What is read is the split's
-        EFFECT across the row's whole life, its first post included (the
-        cp2b-0 review's M-1): the loan_interest ledger nets the split's
-        ``500.00`` before the row and after both its posts, and the split
-        is still one entry.  A transaction path that reached the split, by
-        its link or by its key, would reverse it on the FIRST post, under
-        the row's own source kind, and leave the repeat nothing to write.
-        The repeat writes nothing.
+        ``sync_transaction_postings`` again, then reverted through the status
+        door and deleted through the delete door.  What is read is the
+        split's EFFECT after every step of the row's life: its settle (its
+        first post, the cp2b-0 review's M-1) and the repeat, its revert and
+        its delete (the cp2b-1 review's L-1).  After each, the split is
+        still one entry and the loan_interest ledger still nets its
+        ``500.00``.  A reach into the split, by its link or by its key and
+        through whichever source's reader reached it, would reverse it at
+        the step that ran that reader, so every step is read; the row's own
+        ``25.00`` on the loan's linked ledger is read beside it, so every
+        step is shown to have posted or reversed the row.  The repeat
+        writes nothing.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1378,16 +1398,13 @@ class TestSyncLoanPaymentPostings:
                 loan.id, scenario_id,
             )
             db.session.commit()
-            interest_ledger = _find_loan_ledger(
-                loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
-            )
-            # The split: 100000 * 0.06 / 12 = 500.00 of interest.
-            assert len(_correction_entries(xfer, loan)) == 1
-            assert _ledger_net(
-                interest_ledger.id, scenario_id,
-            ) == Decimal("500.00")
+            # The split: one entry, 100000 * 0.06 / 12 = 500.00 of interest.
+            whole = (1, Decimal("500.00"))
+            assert _split_and_interest(xfer, loan, scenario_id) == whole
+            linked = _linked_ledger_id(loan)
+            without_the_row = _ledger_net(linked, scenario_id)
 
-            # Settling the row posts it: its FIRST post.
+            # Settling the row posts it: its FIRST post, the loan leg -25.00.
             row = create_settled_cash_transaction(
                 seed_user, db.session, seed_periods[_P1], Decimal("25.00"),
                 account=loan,
@@ -1397,11 +1414,29 @@ class TestSyncLoanPaymentPostings:
             # A repeat writes nothing: no entry returned.
             assert not posting_service.sync_transaction_postings(row)
             db.session.commit()
+            assert _split_and_interest(xfer, loan, scenario_id) == whole
+            assert _ledger_net(linked, scenario_id) == (
+                without_the_row - Decimal("25.00")
+            )
 
-            assert len(_correction_entries(xfer, loan)) == 1
-            assert _ledger_net(
-                interest_ledger.id, scenario_id,
-            ) == Decimal("500.00")
+            # Reverted through the status door: the row's posting reversed.
+            transaction_service.apply_requested_status(
+                row, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+            assert _split_and_interest(xfer, loan, scenario_id) == whole
+            assert _ledger_net(linked, scenario_id) == without_the_row
+
+            # Deleted through the delete door: the row's teardown.
+            transaction_service.delete_transaction(
+                row, seed_user["user"].id,
+                purchases_named=(
+                    transaction_service.preview_deletion(row).purchase_ids
+                ),
+            )
+            db.session.commit()
+            assert _split_and_interest(xfer, loan, scenario_id) == whole
+            assert _ledger_net(linked, scenario_id) == without_the_row
 
     def test_early_settled_payment_splits_at_settle(
         self, app, db, monkeypatch, seed_user, seed_periods,

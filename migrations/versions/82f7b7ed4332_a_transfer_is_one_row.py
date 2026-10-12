@@ -112,8 +112,8 @@ link and nothing reads a twin, so this revision deletes them:
      repair, its twins with it (a repair of the twins alone leaves the
      transfer's own refusal standing); otherwise (the transfer names its
      owner's category, or none) the twin alone is, whatever moved (its
-     category's owner, or its own owner, which the copied-field refusal
-     names too).
+     category, that category's owner, or its own owner, which the
+     copied-field refusal names too).
   2. **It keeps a copy of every twin** in ``system.transfer_twin_purge``: the
      whole row as ``jsonb`` (the shape ``b2d8f3a6c541``'s
      ``system.pre_origination_purge`` keeps), with its transfer's version
@@ -538,14 +538,17 @@ SELECT t.transfer_id, t.id AS twin_id,
 #: Every twin filed under a category that is not its owner's: ``(transfer id,
 #: twin id, the category, that category's owner, the transfer's own
 #: category, THAT category's owner)``.  No door writes one (the module
-#: docstring, item 1).  The last says which row to repair: where the
-#: transfer names a category whose owner is not the transfer's,
-#: :data:`_FOREIGN_TRANSFER_CATEGORY_SQL` names the transfer too, and the
-#: transfer is a row to repair, its twins with it; otherwise (the transfer
-#: names its owner's category, or none) the twin alone is.  The join to its
-#: transfer finds the twins (the key on ``transfer_id`` makes it total over
-#: them; a migrated database names it ``fk_transactions_transfer_id``, while
-#: the model declares it unnamed); a twin with no category names none, and
+#: docstring, item 1).  The last, read against the transfer's owner, says
+#: which row to repair: where the transfer names a category whose owner is
+#: not the transfer's, :data:`_FOREIGN_TRANSFER_CATEGORY_SQL` names the
+#: transfer too, and the transfer is a row to repair, its twins with it;
+#: otherwise (the transfer names its owner's category, or none) the twin
+#: alone is.  The tuple does not carry the transfer's owner; the transfer
+#: refusal's tuple does (fourth), and its diagnostic query lists every
+#: transfer it applies to.  The join to its transfer finds the twins (the
+#: key on ``transfer_id`` makes it total over them; a migrated database
+#: names it ``fk_transactions_transfer_id``, while the model declares it
+#: unnamed); a twin with no category names none, and
 #: ``transactions_category_id_fkey`` makes the join total over the rest.  The
 #: transfer's category is LEFT joined: a transfer may name none.
 _FOREIGN_CATEGORY_SQL = """
