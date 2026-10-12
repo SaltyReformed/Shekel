@@ -18,7 +18,7 @@ import pytest
 
 from tools.plan_gate import _registry as registry
 from tools.plan_gate import _rulings as rulings
-from tools.plan_gate._tables import cells
+from tools.plan_gate._tables import StepRow, cells
 from tools.plan_gate._staging import (
     a_live_ledger_row,
     an_open_step_key,
@@ -276,3 +276,43 @@ class TestEveryPipeLineIsARowOfItsTablesWidth:
             f"steps.md line {number}: the row starting 'stray | a' splits to 3 "
             f"cells under a 2-column header"
         ], problems
+
+
+class TestAStartsCellSplitsAfterItsHeadByPosition:
+    """:meth:`_tables.StepRow.starts_head` is the head's one spelling (review 11)."""
+
+    def test_each_shape_splits_after_its_head_and_every_live_cell_rebuilds(self):
+        """The head is the cell's first ``/``-separated part, whatever follows.
+
+        So the rest is the cell's stored part verbatim: a colon-less aside and
+        an annotation holding `` / `` stay whole, where a reading by keys would
+        drop the one and tear the other (review 11, MEDIUM-1; X-cx's migration
+        quotes the rest).  Over every live ``steps.md`` row, the head, then
+        `` / ``, then the rest, rebuilds the cell, so the split loses nothing.
+        """
+        shapes = {
+            "--": ("--", ""),
+            "NOW": ("NOW", ""),
+            "ticks with #3": ("ticks with #3", ""),
+            "NOW / balance:A-2a": ("NOW", "balance:A-2a"),
+            "after #24 / balance:A-2a (its rows) / balance:A-1 (shipped)":
+                ("after #24", "balance:A-2a (its rows) / balance:A-1 (shipped)"),
+            "after #20 / bank_import:X-f6b-2 / not before the freeze":
+                ("after #20", "bank_import:X-f6b-2 / not before the freeze"),
+            "after #32 / recurrence:R16-e (its rows / read twice)":
+                ("after #32", "recurrence:R16-e (its rows / read twice)"),
+            "after #20 / not before the freeze / bank_import:X-f6b-2":
+                ("after #20", "not before the freeze / bank_import:X-f6b-2"),
+        }
+        rows = {cell: StepRow("balance", "A-1", "--", "A step.", "#1", "--", cell)
+                for cell in shapes}
+        assert {cell: (row.starts_head, row.starts_stored)
+                for cell, row in rows.items()} == shapes
+
+        live = registry.step_rows()
+        assert any(" (" in row.starts_stored for row in live), (
+            "the premise: a live cell holds an annotated blocker"
+        )
+        for row in live:
+            parts = [row.starts_head, *([row.starts_stored] if row.starts_stored else [])]
+            assert " / ".join(parts) == row.blocked, row.key

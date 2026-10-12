@@ -326,7 +326,7 @@ def ready_count_violation() -> list[str]:
     ready = sum(
         1 for row in registry.step_rows()
         if not row.shipped and not row.is_container
-        and row.blocked.split(" / ")[0].strip() == "NOW"
+        and row.starts_head == "NOW"
     )
     if int(match.group("ready")) == ready:
         return []
@@ -359,7 +359,7 @@ def starts_violations() -> list[str]:
     for row in rows:
         if row.shipped:
             continue
-        head = row.blocked.split(" / ")[0].strip()
+        head = row.starts_head
         match = STARTS_HEAD_RX.match(head)
         if match is None:
             problems.append(

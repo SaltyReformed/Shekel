@@ -368,12 +368,12 @@ class FailOnce:
         self.real, self.failed = getattr(owner, name), False
         setattr(owner, name, self)
 
-    def __call__(self, *args):
+    def __call__(self, *args, **kwargs):
         """Fail once, then write."""
         if not self.failed:
             self.failed = True
             raise GitHubError(502, "bad gateway")
-        return self.real(*args)
+        return self.real(*args, **kwargs)
 
 
 class AnswerLostOnce:
@@ -387,9 +387,9 @@ class AnswerLostOnce:
         self.real, self.failed = getattr(owner, name), False
         setattr(owner, name, self)
 
-    def __call__(self, *args):
+    def __call__(self, *args, **kwargs):
         """Write, then fail once."""
-        answer = self.real(*args)
+        answer = self.real(*args, **kwargs)
         if not self.failed:
             self.failed = True
             raise GitHubError(502, "bad gateway")
