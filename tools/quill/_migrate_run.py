@@ -50,11 +50,12 @@ the run stops; the next run connects afresh.
 
 **The board** is ordered once every card's writes are made (:meth:`Run.open`): the
 tracker is read and planned again, and anything still to write or refused stops the run
-(a read that lags the run's own writes, or a person's edit; a later run, once GitHub's
-reads catch up, tells which);
-then the board is read until it holds every card the desired order places on that read of
-the tracker, for :data:`_tracker.BOARD_WAIT_SECONDS` at most, else the run stops, so a
-board read that lags one of them is waited on, never ordered without it.  From that one
+(a read that lags the run's own writes, a create GitHub performed twice, or a person's
+edit; run ``migrate open`` again once GitHub's reads catch up, and settle what it still
+refuses as each says, else by hand); then the board is read until it holds every card the
+desired order places on that read of the tracker, for :data:`_tracker.BOARD_WAIT_SECONDS` at
+most, else the run stops, so a board read that lags one of them is waited on, never ordered
+without it.  From that one
 board read come the order of the cards below a card filed already, the moves and the
 board items' ids, and a card it holds beyond them stops the run; only the cards outside
 the longest common subsequence move (:func:`_migrate_plan.moves`), each a write, each read
@@ -340,8 +341,9 @@ class Run:
         found = self._plan(tracked)
         if found.refusals:
             raise Stopped("the tracker, read again after every card's writes, is refused (a "
-                          "read that lags the run's writes, or a person's edit; run `migrate "
-                          "open` again once GitHub's reads catch up to tell): "
+                          "read that lags the run's writes, a create GitHub performed twice, or "
+                          "a person's edit; run `migrate open` again once GitHub's reads catch "
+                          "up, and settle what it still refuses as each says, else by hand): "
                           f"{'; '.join(found.refusals)}")
         if found.history or found.freeze:
             raise Stopped("the tracker does not show every write yet "

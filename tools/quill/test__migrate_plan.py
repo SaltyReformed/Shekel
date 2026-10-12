@@ -511,6 +511,16 @@ def test_a_milestone_renamed_on_the_web_is_refused_not_made_again(corpus):
                               "the web?): settle it before the run",) and not found.freeze
 
 
+def _milestone_gone(number):
+    """How the plan refuses A-3's card ``number`` when its outcome's milestone, 'The first',
+    is not on the tracker by its title."""
+    return (f"balance:A-3 (plan#{number}): its milestone 'The first' is not on the tracker, "
+            "though the migration makes a milestone before any card in it: deleted or renamed "
+            "on the web, or this read lags its create? One made again would hold none of its "
+            "cards (a card's milestone is set only by its create); run again later, and if it "
+            "is refused still, settle it by hand")
+
+
 def test_a_milestone_deleted_on_the_web_is_refused_never_made_again(corpus):
     """The outcome's milestone deleted after A-3 was filed in it (GitHub clears it from the
     card): refused, never made again holding none of its cards, which the next run would
@@ -520,10 +530,7 @@ def test_a_milestone_deleted_on_the_web_is_refused_never_made_again(corpus):
     tracker.milestone_of.pop(numbers["balance:A-3"])
     found = corpus_plan(corpus, tracker)
     assert found.refusals == (
-        f"balance:A-3 (plan#{numbers['balance:A-3']}): its milestone 'The first' is not on the "
-        "tracker, though the migration makes a milestone before any card in it: deleted or "
-        "renamed on the web? One made again would hold none of its cards (a card's milestone is "
-        "set only by its create); settle it by hand",)
+        _milestone_gone(numbers["balance:A-3"]),)
     assert (found.history, found.freeze) == ((), ())
 
 
@@ -550,10 +557,7 @@ def test_a_card_in_another_milestone_whose_own_is_gone_is_refused_for_the_one_go
                  {**MILESTONES, "O2 the second": ("The second", "The second outcome.")},
                  tracked(tracker))
     assert found.refusals == (
-        f"balance:A-3 (plan#{numbers['balance:A-3']}): its milestone 'The first' is not on the "
-        "tracker, though the migration makes a milestone before any card in it: deleted or "
-        "renamed on the web? One made again would hold none of its cards (a card's milestone is "
-        "set only by its create); settle it by hand",)
+        _milestone_gone(numbers["balance:A-3"]),)
 
 
 @pytest.mark.parametrize("moved, held", [(True, 2), (False, None)],

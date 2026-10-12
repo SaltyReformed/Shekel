@@ -315,6 +315,41 @@ def test_a_read_after_the_freeze_that_lags_its_writes_stops_before_the_board(
     assert _settled(corpus, tracker)
 
 
+def test_a_re_plan_whose_milestone_listing_lags_its_create_stops_naming_the_lag(corpus):
+    """The board phase's re-plan reads a milestone listing that lags the milestone this run
+    made: A-3's card, filed in it, is refused for a milestone not on the tracker, and both
+    the refusal and the wrapper name the lag; the next run, its listing caught up, writes
+    nothing and finishes, the milestone made once (review 6 of B2b-1, LOW-1: the wrapper's
+    "settle the rest as each says" could not be followed here)."""
+    tracker = _empty()
+    _run(corpus, tracker).history()
+    real, reads = tracker.milestones, []
+
+    def lagging():
+        reads.append(True)
+        return {} if len(reads) == 2 else real()
+
+    tracker.milestones = lagging
+    with pytest.raises(Stopped) as raised:
+        _run(corpus, tracker).open()
+    card, = [number for number, held in tracker.cards_by_number.items()
+             if held.title.startswith("[A-3]")]
+    assert str(raised.value) == (
+        "the tracker, read again after every card's writes, is refused (a read that lags the "
+        "run's writes, a create GitHub performed twice, or a person's edit; run `migrate open` "
+        "again once GitHub's reads catch up, and settle what it still refuses as each says, "
+        f"else by hand): balance:A-3 (plan#{card}): its milestone 'The first' is not on the "
+        "tracker, though the migration makes a milestone before any card in it: deleted or "
+        "renamed on the web, or this read lags its create? One made again would hold none of "
+        "its cards (a card's milestone is set only by its create); run again later, and if it "
+        "is refused still, settle it by hand")
+    made = len(tracker.writes)
+    tracker.milestones = real
+    assert not _run(corpus, tracker).open() and len(tracker.writes) == made
+    assert _settled(corpus, tracker)
+    assert len(tracker.milestones()) == 1
+
+
 def test_the_numbering_probe_stops_a_run_whose_listing_lags_a_card(corpus):
     """A card the listing lacks answers a read by number: the run stops before any write
     (a create whose answer was lost is found, never made twice)."""
@@ -356,8 +391,9 @@ def test_a_re_sent_create_is_refused_offering_its_other_card_and_settled_by_dele
     :mod:`_github` re-sends it): two cards of F-1, and the run goes on with the last made --
     to the board's re-plan, which refuses the key, or to its link, which fails.  The next
     plan names each card's state and offers the others for deletion (review 2 of B2b-1,
-    MEDIUM-A: the one machine state); deleting the first, as it says, the next run finishes
-    with nothing refused."""
+    MEDIUM-A: the one machine state), and the board phase's stop names a create GitHub
+    performed twice among its causes (review 5 of B2b-1, LOW-C); deleting the first, as it
+    says, the next run finishes with nothing refused."""
     tracker = _empty()
     _run(corpus, tracker).history()
     create, add_child, sent = tracker.create, tracker.add_child, []
@@ -379,8 +415,14 @@ def test_a_re_sent_create_is_refused_offering_its_other_card_and_settled_by_dele
     first = sent[0]
     later = (f"plan#{first + 1} {_BARE}" if stop else
              f"plan#{first + 1} unmarked, under plan#{tracker.cards_by_number[first + 1].parent}")
-    assert corpus_plan(corpus, tracker).refusals == (_resent("balance:F-1", first + 1, (
-        f"plan#{first} {_BARE}; {later}")),)
+    refusal = _resent("balance:F-1", first + 1, f"plan#{first} {_BARE}; {later}")
+    assert corpus_plan(corpus, tracker).refusals == (refusal,)
+    if not stop:
+        assert str(raised.value) == (
+            "the tracker, read again after every card's writes, is refused (a read that lags "
+            "the run's writes, a create GitHub performed twice, or a person's edit; run "
+            "`migrate open` again once GitHub's reads catch up, and settle what it still refuses "
+            f"as each says, else by hand): {refusal}")
     _delete(tracker, first)
     tracker.create, tracker.add_child = create, add_child
     assert not _run(corpus, tracker).open()

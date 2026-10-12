@@ -22,7 +22,7 @@ from tools.quill._migrate_plan_fake import (
     tracked,
     with_change,
 )
-from tools.quill._tracker import Comment, OutsideLink
+from tools.quill._tracker import Comment, Milestone, OutsideLink
 from tools.quill.check import card_title
 from tools.quill.setup_tracker import FILING
 
@@ -59,10 +59,13 @@ def _by_hand(key, *states):
     return (f"{key} is the key of {len(states)} cards ({'; '.join(states)}), not the state a "
             "re-sent create leaves (copies of one create, each but the last made as its create "
             "left it, and the last refused nothing as the item's card): a person gave a card "
-            "this key by hand (retitled it, or changed its arc label), or edited one of them.  "
-            "Settle them by hand and run again: retitle or relabel a card given this key to its "
-            "own title and arc label, never deleting it (above all one of the tracker's own, "
-            "filed before the migration), and delete no card holding a later write")
+            "this key by hand (retitled it, or changed its arc label), edited one of them, or "
+            "changed what the last is graded against (such as a card it is linked to, that "
+            "card's key given to another card, or its milestone), or this read lags the "
+            "migration's own writes.  Run again later, and if it is refused still, settle them "
+            "by hand and run again: retitle or relabel a card given this key to its own title "
+            "and arc label, never deleting it (above all one of the tracker's own, filed before "
+            "the migration), and delete no card holding a later write")
 
 
 def _filed_already(key, mapped, *states):
@@ -573,28 +576,38 @@ def test_two_re_sent_creates_are_each_refused_by_key_with_its_own_card_to_keep(c
 _A2A = "holding 1 sub-issue(s), blocking plan#5, plan#6, on the board"
 
 
-@pytest.mark.parametrize("moved, refusals", [
-    (False, (_resent("balance:A-2", f"plan#1 {_BARE}",
-                     "plan#3 unmarked, holding 2 sub-issue(s)"),
-             _resent("balance:A-2a", f"plan#2 {_BARE}",
-                     f"plan#4 unmarked, under plan#3, {_A2A}"))),
-    (True, (_by_hand("balance:A-2", "plan#1 marked, holding 1 sub-issue(s)",
-                     "plan#3 unmarked, holding 1 sub-issue(s)"),
-            _by_hand("balance:A-2a", f"plan#2 {_BARE}",
-                     f"plan#4 unmarked, under plan#1, {_A2A}"))),
-], ids=["as-the-run-left-them", "the-last-leaf-card-under-the-containers-copy"])
+@pytest.mark.parametrize("change, refusals", [
+    (None, (_resent("balance:A-2", f"plan#1 {_BARE}",
+                    "plan#3 unmarked, holding 2 sub-issue(s)"),
+            _resent("balance:A-2a", f"plan#2 {_BARE}",
+                    f"plan#4 unmarked, under plan#3, {_A2A}"))),
+    ("moved", (_by_hand("balance:A-2", "plan#1 marked, holding 1 sub-issue(s)",
+                        "plan#3 unmarked, holding 1 sub-issue(s)"),
+               _by_hand("balance:A-2a", f"plan#2 {_BARE}",
+                        f"plan#4 unmarked, under plan#1, {_A2A}"))),
+    ("closed", (_by_hand("balance:A-2", f"plan#1 {_BARE}",
+                         "plan#3 unmarked, closed, holding 2 sub-issue(s)"),
+                _resent("balance:A-2a", f"plan#2 {_BARE}",
+                        f"plan#4 unmarked, under plan#3, {_A2A}"))),
+], ids=["as-the-run-left-them", "the-last-leaf-card-under-the-containers-copy",
+        "the-containers-last-card-closed"])
 def test_two_re_sent_creates_one_the_others_parent_are_graded_on_each_others_kept_card(
-        corpus, moved, refusals):
+        corpus, change, refusals):
     """A-2's create and A-2a's each re-sent, the run going on with each last made, so A-2a's
     last card is under A-2's: each last card is graded with every such key's card the one
     it keeps, so both keys offer their copies (review 4 of B2b-1, LOW-3: no test held two
     keys re-sent, one the other's parent).  A-2a's last card moved under A-2's copy by hand
-    is under a card no run keeps: both keys are settled by hand."""
+    is under a card no run keeps: both keys are settled by hand.  A-2's last card closed by
+    a person is settled by hand, yet A-2's cards are still in the state a re-sent create
+    leaves, so A-2a's last card is graded under A-2's last and offered: that one holds a
+    later write, which no refusal lets be deleted (review 5 of B2b-1, LOW-A)."""
     tracker, numbers = filed_tracker(corpus, start=3)
     _copy(tracker, 1, numbers["balance:A-2"])
     _copy(tracker, 2, numbers["balance:A-2a"])
-    if moved:
+    if change == "moved":
         with_change(tracker, numbers["balance:A-2a"], parent=1)
+    elif change == "closed":
+        with_change(tracker, numbers["balance:A-2"], is_open=False, state_reason="COMPLETED")
     found = corpus_plan(corpus, tracker)
     assert found.refusals == refusals
     assert (found.history, found.freeze) == ((), ())
@@ -617,6 +630,47 @@ def test_a_re_sent_last_card_under_a_card_refused_already_is_settled_by_hand(cor
     assert (found.history, found.freeze) == ((), ())
 
 
+def test_a_re_sent_last_card_under_a_card_given_its_parents_key_by_hand_is_settled_by_hand(
+        corpus):
+    """F-1's create re-sent, #1 a bare copy; a person retitles A-3's card (#5) to A-2a's
+    key, F-1's parent's, and links #7, F-1's last card, under it (review 5 of B2b-1, LOW-A,
+    its P1).  A-2a's key is on two cards, neither as its create left it, so a person keeps
+    either: graded with no card of A-2a's, #7 stands under a card no grading names, and
+    neither F-1 card is offered for deletion.  Graded under A-2a's last card, #5, #7 was
+    offered, and once #5 was retitled back as A-2a's refusal says, the next run refused it."""
+    tracker, numbers = filed_tracker(corpus)
+    _copy(tracker, 1, numbers["balance:F-1"])
+    with_change(tracker, numbers["balance:A-3"], title=corpus_texts(corpus)["balance:A-2a"].title)
+    with_change(tracker, numbers["balance:F-1"], parent=numbers["balance:A-3"])
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == (
+        _by_hand("balance:A-2a", "plan#3 unmarked, under plan#2, blocking plan#4, plan#5, on the "
+                 "board", "plan#5 unmarked, holding 2 sub-issue(s), blocked by plan#3, on the "
+                 "board"),
+        _by_hand("balance:F-1", f"plan#1 {_BARE}", "plan#7 unmarked, under plan#5"))
+    assert (found.history, found.freeze) == ((), ())
+
+
+def test_a_re_sent_last_card_in_a_milestone_made_by_hand_is_settled_by_hand(corpus):
+    """A-3's create re-sent, #1 a bare copy; its outcome's milestone deleted on the web and
+    every card in it moved into one a person made (review 5 of B2b-1, LOW-A, its P1b).  The
+    read refuses that milestone and excuses a card in it, but once it is settled -- deleted,
+    say -- A-3's last card is in no milestone of its outcome's title: graded with no
+    milestone excused, neither card is offered for deletion."""
+    tracker, numbers = filed_tracker(corpus)
+    _copy(tracker, 1, numbers["balance:A-3"])
+    tracker.milestones_by_number.pop(1)
+    tracker.milestones_by_number[2] = Milestone(2, "Made by hand", "by hand")
+    tracker.milestone_of = {number: 2 for number in tracker.milestone_of}
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == (
+        _by_hand("balance:A-3", f"plan#1 {_BARE}",
+                 "plan#5 unmarked, holding 1 sub-issue(s), blocked by plan#3, on the board"),
+        "milestone #2 'Made by hand' is none the input file names (renamed on the web?): settle "
+        "it before the run")
+    assert (found.history, found.freeze) == ((), ())
+
+
 @pytest.mark.parametrize("parent, refusal, states", [
     (1, _resent, ("plan#1 unmarked, holding 12 sub-issue(s)", "plan#26 unmarked, under plan#1")),
     (26, _by_hand, ("plan#1 unmarked, holding 11 sub-issue(s)",
@@ -627,8 +681,8 @@ def test_a_re_sent_last_card_is_graded_under_a_card_filed_alreadys_own_card(
     """N-391's create re-sent, its last card under card #1, filed already as S-1's, while
     X-cx's own leaf #26 carries S-1's key by hand.  S-1's refusal keeps card #1 (retitle
     #26), so N-391's last card is graded under #1, not under #26, the last card of S-1's
-    key: under #1 its copy is offered; under #26, where the next run refuses it, it is
-    settled by hand."""
+    key: under #1 its copy is offered; under #26, which a run refuses once #26 is retitled
+    as S-1's refusal says, it is settled by hand."""
     monkeypatch.setitem(_migrate_source.MAPPED, "salary:S-1", 1)
     filed, numbers = filed_tracker(corpus, skip=("salary:S-1",), start=31)
     tracker = _with_own_cards(filed)
@@ -653,10 +707,11 @@ def test_a_re_sent_last_card_is_graded_under_a_card_filed_alreadys_own_card(
 ], ids=["unmarked-unlinked", "closed", "linked-outside", "both-retyped"])
 def test_a_re_sent_create_whose_last_card_is_refused_is_settled_by_hand(corpus, change, state):
     """F-1's create re-sent, #1 a bare copy, and #7, the last made, one the next run refuses
-    as F-1's card: unmarked without its link, closed, or linked outside the tracker by a
-    person, or both cards retyped (copies still).  Keeping #7 would be refused, so neither
-    card is offered for deletion (review 3 of B2b-1, LOW-1, a condition of MEDIUM-1's
-    keeper)."""
+    as F-1's card: unmarked without its link (a person's unlink, or a read that lags the
+    link's write, both of which the refusal names: review 5 of B2b-1, LOW-B), closed, or
+    linked outside the tracker by a person, or both cards retyped (copies still).  Keeping
+    #7 would be refused, so neither card is offered for deletion (review 3 of B2b-1, LOW-1,
+    a condition of MEDIUM-1's keeper)."""
     tracker, numbers = filed_tracker(corpus)
     _copy(tracker, 1, numbers["balance:F-1"])
     with_change(tracker, 7, **change)
