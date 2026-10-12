@@ -24,11 +24,14 @@ whose last act is an upgrade runs both upgrades and so ends at head; a case
 that ends in a refusal ends where the refusal left it, on a database the
 ``db`` fixture clones for that case alone.
 
-**A case whose premise is a database the app wrote AT this revision builds
-the twins first and then drives the act through the app's own door**: from
-this revision the app writes a settle or a ``$0.00`` close on the transfer
-and its sides' records and never on a twin, so the twins keep the status
-they were built with, which is what this revision's downgrade refuses.
+**A case whose premise is a settle or a ``$0.00`` close the app made AT this
+revision builds the twins first and then drives that act through the app's
+own status door**: from this revision that door writes the transfer and its
+sides' records and never a twin, so the twins keep the status and the day
+they were built with, which is what this revision's downgrade refuses.  Only
+that act stands in this way: the head app's create door writes no twin where
+the one at this revision wrote two, so a case needing another act made at
+this revision would have to plant it.
 """
 
 from __future__ import annotations
@@ -733,9 +736,14 @@ class TestTheDowngradeRefusesADriftedTwin:
             run_migration_callable(_MIGRATION.downgrade, _db.session)
         _db.session.rollback()
 
+        # Every fact the door left on the twin, not only its status: twins the
+        # door had dated would be named for their status alone.
         message = str(refused.value)
-        assert f"({first.id}, {_from_side_twin(first)}, ['status'" in message
-        assert f"({second.id}, {_from_side_twin(second)}, ['status'" in message
+        for xfer in (first, second):
+            assert (
+                f"({xfer.id}, {_from_side_twin(xfer)}, "
+                "['status', 'settle day', 'day basis'])" in message
+            )
         assert "4 twin row(s)" in message
         assert _has_side_links()
 
