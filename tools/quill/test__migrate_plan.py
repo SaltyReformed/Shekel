@@ -171,6 +171,22 @@ def test_a_card_filed_already_takes_its_links_alone(corpus, monkeypatch):
     assert (found.freeze, found.refusals) == ((Write(BLOCK, "salary:S-1", "balance:A-2a"),), ())
 
 
+def test_a_card_filed_already_writes_exactly_its_missing_links(corpus, monkeypatch):
+    """A-2b mapped onto its card, which holds neither its parent link nor its one blocker
+    link, and is off the board as a container is: exactly those two writes, the parent
+    link first -- no create, board place, comment or unmark (moved here with B2b-2, from
+    ``test_migrate``'s test of ``migrate.writes``, the estimate's second producer, deleted;
+    review of B1's fixes, L2a)."""
+    tracker, numbers = filed_tracker(corpus)
+    monkeypatch.setitem(_migrate_source.MAPPED, "balance:A-2b", numbers["balance:A-2b"])
+    with_change(tracker, numbers["balance:A-2b"], parent=None, blocked_by=())
+    tracker.board.items.remove(numbers["balance:A-2b"])
+    found = corpus_plan(corpus, tracker)
+    assert (found.history, found.freeze, found.refusals) == (
+        (), (Write(LINK, "balance:A-2b", "balance:A-2"),
+             Write(BLOCK, "balance:A-2b", "balance:A-2a")), ())
+
+
 def _blocked(item, key):
     """``item`` blocked by ``key`` too."""
     return _migrate_source.Item(item.arc, item.alias, item.kind, item.row, item.labels,
@@ -466,7 +482,8 @@ def test_a_stale_card_is_refused_never_finished(corpus, key, part):
     found = corpus_plan(corpus, tracker)
     assert found.refusals == (f"{key} (plan#{number}): it differs in its {part} from what the "
                               "registries make it at this commit: a stale card is never "
-                              "finished; settle it by hand",)
+                              "finished; settle it by hand, giving it that text, its As filed "
+                              f"block naming this commit ({COMMIT})",)
 
 
 def test_a_card_written_at_another_commit_is_not_stale(corpus):
@@ -685,7 +702,8 @@ def test_a_finished_card_gone_stale_is_refused_whatever_its_kind(corpus, key):
     tracker.bodies[number] = tracker.bodies[number] + " (amended)"
     assert corpus_plan(corpus, tracker).refusals == (
         f"{key} (plan#{number}): it differs in its body from what the registries make it at "
-        "this commit: a stale card is never finished; settle it by hand",)
+        "this commit: a stale card is never finished; settle it by hand, giving it that text, "
+        f"its As filed block naming this commit ({COMMIT})",)
 
 
 def test_a_body_github_stored_with_crlf_and_a_trailing_newline_is_not_stale(corpus):

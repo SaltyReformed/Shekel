@@ -125,6 +125,21 @@ class Filing:
     milestones: Mapping[str, tuple[str, str]]
 
 
+def read_tracked(tracker: Tracker) -> Tracked:
+    """``tracker`` as the migration reads it, a run, ``check --target`` and ``verify`` alike:
+    every card whole, checked against the numbering probe; its milestones; its board's
+    order.
+
+    Raises:
+        TrackerError: When the probe finds a card the listing lacks, or another number it
+            refuses (:func:`_tracker.numbering`); or two milestones share a title.
+    """
+    cards = tracker.all_cards()
+    numbering(cards, tracker.number_state)
+    return Tracked(cards, tracker.milestones(),
+                   tuple(number for number, _ in tracker.board.order()), tracker.app_login)
+
+
 class _Connection:
     """The tracker a run reaches: connected afresh once its token is :data:`RENEW_SECONDS`
     old, and its writes paced :data:`PACE_SECONDS` apart."""
@@ -170,18 +185,8 @@ class Run:
         self.made = 0
 
     def read(self) -> Tracked:
-        """The tracker as this run reads it: every card whole, checked against the
-        numbering probe; its milestones; its board's order.
-
-        Raises:
-            TrackerError: When the probe finds a card the listing lacks, or another number
-                it refuses (:func:`_tracker.numbering`); or two milestones share a title.
-        """
-        tracker = self._at.tracker
-        cards = tracker.all_cards()
-        numbering(cards, tracker.number_state)
-        return Tracked(cards, tracker.milestones(),
-                       tuple(number for number, _ in tracker.board.order()), tracker.app_login)
+        """The tracker as this run reads it (:func:`read_tracked`)."""
+        return read_tracked(self._at.tracker)
 
     def _plan(self, tracked: Tracked) -> Plan:
         """The plan for EVERY item on ``tracked``, rulings included."""
@@ -224,8 +229,7 @@ class Run:
                   COMMENT: self._comment, BOARD_ADD: self._board_add, UNMARK: self._unmark}
         for write in writes:
             said = makers[write.what](write, numbers, milestones)
-            print(f"{phase}: {write.what} {write.key}"
-                  + (f" -> {write.other}" if write.other else "") + (f": {said}" if said else ""))
+            print(f"{phase}: {write}" + (f": {said}" if said else ""))
 
     def _milestone(self, write: Write, _numbers: dict[str, int],
                    milestones: dict[str, int]) -> str:

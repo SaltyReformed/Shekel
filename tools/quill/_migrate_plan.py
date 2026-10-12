@@ -118,7 +118,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from tools.ci.arcs import ARCS
-from tools.quill._migrate_bodies import AS_FILED, Built, differences
+from tools.quill._migrate_bodies import AS_FILED, Built, differences, filed_commit
 from tools.quill._migrate_source import MAPPED, Item
 from tools.quill._state import filing_ended
 from tools.quill._tracker import Card, Comment, Milestone, WholeCard
@@ -146,6 +146,11 @@ class Write:
     what: str
     key: str
     other: str | None = None
+
+    def __str__(self) -> str:
+        """The write as a run prints it, and ``migrate verify`` names one still to make: what
+        it is, its key, and the other card it names."""
+        return f"{self.what} {self.key}" + (f" -> {self.other}" if self.other else "")
 
 
 @dataclass(frozen=True)
@@ -629,11 +634,14 @@ class _Grading:
         comments = self._as_filed(whole)
         if len(comments) > 1:
             return f"it holds {len(comments)} As filed comments; the tool comments one"
-        parts = differences(self.built[item.key], whole.card.title, whole.body,
+        built = self.built[item.key]
+        parts = differences(built, whole.card.title, whole.body,
                             comments[0] if comments else None)
         if parts:
+            commit = filed_commit(built.comment if item.kind == "question" else built.body)
             return (f"it differs in its {', '.join(parts)} from what the registries make it at "
-                    "this commit: a stale card is never finished; settle it by hand")
+                    "this commit: a stale card is never finished; settle it by hand, giving it "
+                    f"that text, its As filed block naming this commit ({commit})")
         return None
 
     def _unlike(self, item: Item, whole: WholeCard) -> str | None:
