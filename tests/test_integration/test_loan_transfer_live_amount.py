@@ -11,8 +11,18 @@ is why the figures below are untouched.  A read-time OVERRIDE
 shadow stores no figure at all now -- it declares ``PARENT_TRANSFER`` and is
 priced by amount rule 4 -- so the same arithmetic arrives through the amount
 model and there is no stale copy left for an override to beat.  Every case here
-asks :func:`_derived_cash`, which is what a SCREEN reads
-(``cash_ledger.amounts_by_id``).
+asks :func:`_derived_cash`, which is what a SCREEN reads for a transfer's legs
+(``cash_ledger.leg_amounts_by_key``, the grid's since plan step
+``balance:X-bi-6-1``).
+
+**The rows priced are the payment's LEGS since plan step
+balance:X-bi-6-4d-3** (ruling **R-BAL167**; each case's class is in the
+commit that made it).  A transfer is one row since that step and no shadow is
+born, so a case that priced the loan's shadow rows with
+``cash_ledger.amounts_by_id`` prices the legs read off each transfer
+(:func:`_loan_payment_legs`), each worth ``resolve_transfer_amount`` on its
+parent (**R-BAL13**), and a case that found the loan-side shadow finds the
+TRANSFER due that day.  No figure moved.
 
 Every monetary expectation is hand-computed with the arithmetic shown.
 """
@@ -26,7 +36,6 @@ from app.extensions import db
 from app.models.escrow_line import EscrowComponentVersion, EscrowLine
 from app.models.loan_features import RateHistory
 from app.models.loan_payment_settings import LoanPaymentSettings
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import (
@@ -58,19 +67,22 @@ from app.services.row_valuation import leg_settled_contribution
 from app.services import template_amount_service
 
 
-def _derived_cash(seed_user, rows):
-    """What a SCREEN shows for *rows* -- the figure the amount model resolves.
+def _derived_cash(seed_user, legs):
+    """What a SCREEN shows for *legs* -- the figure the amount model resolves.
 
     Plan step X-au-c2b split ``live_loan_transfer_amounts`` into an owner-scoped
     DERIVATION and a per-row lookup, and collapsed the settle-time twin
     ``live_loan_payment_amount`` into the same rule; plan step X-au-g-2c-2 then
     deleted that rule outright, because a transfer shadow stores no figure for a
-    read-time override to supersede.  So the ``{transaction_id: Decimal}`` map
-    this file grades is now the amount model's own
-    (``cash_ledger.amounts_by_id``), and the assertions below keep their
-    original figures.
+    read-time override to supersede.  So the map this file grades is the
+    amount model's own, and the assertions below keep their original figures.
+    It was ``cash_ledger.amounts_by_id`` over the shadow rows, keyed by
+    transaction id, until plan step balance:X-bi-6-4d-3 stopped the shadows
+    being born; it is ``cash_ledger.leg_amounts_by_key`` over the legs now,
+    keyed by ``leg.cell_key`` -- what the grid publishes for a leg since plan
+    step ``balance:X-bi-6-1`` (ruling **R-BAL167** class 4).
 
-    **It covers EVERY row it is given, where the override map covered only the
+    **It covers EVERY leg it is given, where the override map covered only the
     rows that had one.**  That is the substantive difference, and two cases turn
     on it: a manual payment and a non-derive transfer used to be ABSENT from the
     map (``assert overrides == {}``) and are now PRESENT with their definition's
@@ -83,15 +95,16 @@ def _derived_cash(seed_user, rows):
 
     Args:
         seed_user: The owner fixture; its user and scenario pin the basis.
-        rows: The shadows to price.
+        legs: The :class:`~app.services.transfer_legs.TransferLeg` values to
+            price.
 
     Returns:
-        ``{transaction_id: Decimal}`` covering every row.
+        ``{(transfer_id, account_id): Decimal}`` covering every leg.
     """
     basis = cash_ledger.derived_amount_basis(
         seed_user["user"].id, seed_user["scenario"].id,
     )
-    return cash_ledger.amounts_by_id(rows, basis)
+    return cash_ledger.leg_amounts_by_key(legs, basis)
 
 def _state_price(template, figure):
     """State *figure* as the template's price, through the one write door.
@@ -192,19 +205,21 @@ def _build_derived_loan_transfer(
     return loan, escrow, scenario_id, template, rule, periods
 
 
-def _mark_done_from_leg(auth_client, shadow):
+def _mark_done_from_leg(auth_client, transfer_id, account_id):
     """Settle the transfer the way the grid does since plan step balance:X-bi-6-1.
 
     The grid draws a transfer as a LEG read off its parent and the leg's
     Mark Paid posts to the TRANSFER's door with ``leg_account_id`` (ruling
     R-BAL87); these cases posted to the SHADOW row's transaction door until
-    that leaf deleted the shadow branch.  *shadow* is the leg's row on the
-    loan side, read for its transfer and its account; the response is the
-    leg's cell.
+    that leaf deleted the shadow branch.  The leg is *transfer_id*'s on
+    *account_id*; the response is the leg's cell.  It took the loan-side
+    shadow row and read only its ``transfer_id`` and ``account_id`` until plan
+    step balance:X-bi-6-4d-3 stopped the shadow being born, so it takes those
+    two now (ruling **R-BAL167** class 4).
     """
     return auth_client.post(
-        f"/transfers/instance/{shadow.transfer_id}/mark-done",
-        data={"leg_account_id": str(shadow.account_id)},
+        f"/transfers/instance/{transfer_id}/mark-done",
+        data={"leg_account_id": str(account_id)},
     )
 
 
@@ -225,16 +240,50 @@ def _side_leg(transfer_id, account_id):
     )
 
 
-def _loan_transfer_shadows(loan_id, scenario_id):
-    """Return the projected shadow transactions of the loan's transfers."""
-    return (
-        db.session.query(Transaction)
+def _loan_payment_legs(loan_id, scenario_id):
+    """Return both legs of every transfer into *loan_id* in *scenario_id*.
+
+    From-side first, transfers in id order.  It was
+    ``_loan_transfer_shadows`` and returned every shadow row in the scenario
+    -- both sides, and IGNORING ``loan_id`` -- until plan step
+    balance:X-bi-6-4d-3 stopped the shadows being born (ruling **R-BAL167**
+    class 4).  The legs are read off each transfer with
+    :func:`~app.services.transfer_legs.leg_of`, so both sides stay covered
+    and the parameter now selects what it names.
+    """
+    payments = (
+        db.session.query(Transfer)
         .filter(
-            Transaction.transfer_id.isnot(None),
-            Transaction.scenario_id == scenario_id,
+            Transfer.to_account_id == loan_id,
+            Transfer.scenario_id == scenario_id,
         )
+        .order_by(Transfer.id)
         .all()
     )
+    return [
+        transfer_legs.leg_of(xfer, account_id)
+        for xfer in payments
+        for account_id in (xfer.from_account_id, loan_id)
+    ]
+
+
+def _first_payment(loan_id, scenario_id, due_date=None):
+    """Return the transfer into *loan_id* due on *due_date*, or the first one.
+
+    Where these cases found the loan-side SHADOW row due that day (or the
+    first by id), until plan step balance:X-bi-6-4d-3 stopped the shadows
+    being born (ruling **R-BAL167** class 1): the shadow copied its due date
+    and pay period off this transfer, and its leg on the loan is
+    ``transfer_legs.leg_of(xfer, loan_id)``.  With *due_date* it insists on
+    exactly one, as the shadow lookup did.
+    """
+    query = db.session.query(Transfer).filter(
+        Transfer.to_account_id == loan_id,
+        Transfer.scenario_id == scenario_id,
+    )
+    if due_date is not None:
+        return query.filter(Transfer.due_date == due_date).one()
+    return query.order_by(Transfer.id).first()
 
 
 def test_derived_transfer_amount_tracks_escrow_without_regeneration(
@@ -250,6 +299,10 @@ def test_derived_transfer_amount_tracks_escrow_without_regeneration(
         PITI   = 1,199.10 + 400.00 = 1,599.10
     The stored Transfer.amount never changes (no regeneration); only the
     live override reflects the new escrow.
+
+    Both reads price the payments' LEGS, where they priced the shadow rows
+    until plan step balance:X-bi-6-4d-3 (ruling R-BAL167 class 1); the
+    second read is now guarded non-empty too.
     """
     with app.app_context():
         loan, escrow, scenario_id, template, _rule, _periods = (
@@ -262,11 +315,11 @@ def test_derived_transfer_amount_tracks_escrow_without_regeneration(
         )
         db.session.commit()
 
-        shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        assert shadows, "expected generated shadow transactions"
+        legs = _loan_payment_legs(loan.id, scenario_id)
+        assert legs, "expected generated loan payments"
 
-        overrides = _derived_cash(seed_user, shadows)
-        # Every shadow of this loan's transfer gets the live PITI.
+        overrides = _derived_cash(seed_user, legs)
+        # Every leg of this loan's transfers gets the live PITI.
         assert overrides, "expected live overrides for the derive_from_loan transfer"
         assert all(v == Decimal("1499.10") for v in overrides.values())
 
@@ -288,7 +341,8 @@ def test_derived_transfer_amount_tracks_escrow_without_regeneration(
         escrow.annual_amount = Decimal("4800.00")
         db.session.commit()
 
-        overrides_after = _derived_cash(seed_user, shadows)
+        overrides_after = _derived_cash(seed_user, legs)
+        assert overrides_after
         assert all(v == Decimal("1599.10") for v in overrides_after.values())
         # Still no regeneration, and still nothing stored to regenerate.
         stored_after = {
@@ -314,7 +368,9 @@ def test_non_derived_transfer_has_no_live_override(
     **It asserted an EMPTY override map until plan step X-au-g-2c-2**, which
     could not tell "the loan did not price this" from "nothing priced this at
     all".  Naming the figure is the stronger claim, and it is the one that
-    would catch a shadow that had stopped being priced.
+    would catch a shadow that had stopped being priced.  It prices the
+    payments' legs, where it priced the shadow rows until plan step
+    balance:X-bi-6-4d-3 (ruling R-BAL167 class 1).
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -329,9 +385,9 @@ def test_non_derived_transfer_has_no_live_override(
         )
         db.session.commit()
 
-        shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        assert shadows, "expected generated shadow transactions"
-        resolved = _derived_cash(seed_user, shadows)
+        legs = _loan_payment_legs(loan.id, scenario_id)
+        assert legs, "expected generated loan payments"
+        resolved = _derived_cash(seed_user, legs)
         assert all(v == Decimal("1.00") for v in resolved.values())
 
 
@@ -343,11 +399,18 @@ def test_derived_transfer_due_date_matches_loan_due_date(
     The loan card derives its due dates from LoanParams.payment_day via
     installment_calendar.monthly_due_date.  The transfer recurrence now uses the
     shared compute_due_date, and the loan template's rule carries
-    day_of_month = payment_day (1), so the transfer's parent + both shadows
-    land on the 1st of each month -- matching the loan card -- rather than the
-    pay-period start (~2 weeks early) they used before.  Over seed_periods
-    (biweekly from 2026-01-02), day 1 falls in P2/P4/P6/P8, giving due dates
-    2026-02-01, 03-01, 04-01, 05-01.
+    day_of_month = payment_day (1), so the transfer lands on the 1st of each
+    month -- matching the loan card -- rather than the pay-period start (~2
+    weeks early) it used before.  Over seed_periods (biweekly from
+    2026-01-02), day 1 falls in P2/P4/P6/P8, giving due dates 2026-02-01,
+    03-01, 04-01, 05-01.
+
+    **The "both shadows mirror the parent" block went at plan step
+    balance:X-bi-6-4d-3** (ruling R-BAL167 class 1, with no subject left):
+    it asserted each shadow row's copied ``due_date`` (Transfer Invariant
+    3), and no shadow is born.  A leg's due date IS its parent's
+    (``TransferLeg.due_date`` reads the transfer), so there is no copy left
+    to disagree; the parent's own assertions stand.
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -372,15 +435,6 @@ def test_derived_transfer_due_date_matches_loan_due_date(
                 xfer.pay_period.start_date, 1,
             )
             assert xfer.due_date.day == 1
-            # Both shadows mirror the parent (Transfer Invariant 3).
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            )
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.due_date == xfer.due_date
 
 
 def test_derived_override_is_per_shadow_date_aware(
@@ -403,6 +457,10 @@ def test_derived_override_is_per_shadow_date_aware(
     them identically here.  The test that DISCRIMINATES them is
     :func:`test_live_cash_and_split_agree_on_a_mid_window_escrow_change`, which
     puts the version inside a single payment's period-start-to-due-date window.
+
+    It partitions the payments' LEGS by their due date (the parent's), where
+    it partitioned the shadow rows by theirs until plan step
+    balance:X-bi-6-4d-3 (ruling R-BAL167 class 1).
     """
     with app.app_context():
         loan, escrow, scenario_id, template, _rule, _periods = (
@@ -421,18 +479,18 @@ def test_derived_override_is_per_shadow_date_aware(
         ))
         db.session.commit()
 
-        shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = _derived_cash(seed_user, shadows)
+        legs = _loan_payment_legs(loan.id, scenario_id)
+        overrides = _derived_cash(seed_user, legs)
         cutoff = date(2026, 3, 15)
-        before = [s for s in shadows if s.due_date < cutoff]
-        after = [s for s in shadows if s.due_date >= cutoff]
+        before = [leg for leg in legs if leg.due_date < cutoff]
+        after = [leg for leg in legs if leg.due_date >= cutoff]
         assert before and after, (
             "seed_periods must place installments on both sides of 2026-03-15"
         )
-        # Old escrow ($300) for pre-effective shadows: 1199.10 + 300 = 1499.10.
-        assert all(overrides[s.id] == Decimal("1499.10") for s in before)
-        # New escrow ($400) for on/after shadows: 1199.10 + 400 = 1599.10.
-        assert all(overrides[s.id] == Decimal("1599.10") for s in after)
+        # Old escrow ($300) for pre-effective legs: 1199.10 + 300 = 1499.10.
+        assert all(overrides[leg.cell_key] == Decimal("1499.10") for leg in before)
+        # New escrow ($400) for on/after legs: 1199.10 + 400 = 1599.10.
+        assert all(overrides[leg.cell_key] == Decimal("1599.10") for leg in after)
 
 
 def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
@@ -468,7 +526,11 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
 
     The settled payment is read as the transfer and its loan side's record,
     where it was read off the loan-side twin row (ruling R-BAL167 class 1,
-    plan step balance:X-bi-6-4d-2).
+    plan step balance:X-bi-6-4d-2).  The payment is the TRANSFER due
+    2026-03-01, priced and settled through its leg on the loan, where it was
+    the loan-side shadow due that day until plan step balance:X-bi-6-4d-3
+    (ruling R-BAL167 class 1); the shadow copied the window's two dates off
+    the transfer.
     """
     with app.app_context():
         loan, escrow, scenario_id, template, _rule, _periods = (
@@ -490,32 +552,24 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
         ))
         db.session.commit()
 
-        income_shadow = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.transfer_id.isnot(None),
-                Transaction.account_id == loan.id,
-                Transaction.scenario_id == scenario_id,
-                Transaction.due_date == date(2026, 3, 1),
-            )
-            .one()
-        )
+        xfer = _first_payment(loan.id, scenario_id, date(2026, 3, 1))
+        xfer_id = xfer.id
         # The version really is inside the window: after the period start,
         # before the installment it governs.
         assert (
-            income_shadow.pay_period.start_date
+            xfer.pay_period.start_date
             < date(2026, 2, 28)
-            < income_shadow.due_date
+            < xfer.due_date
         )
 
-        overrides = _derived_cash(seed_user, [income_shadow])
-        assert overrides[income_shadow.id] == Decimal("1699.10")
+        overrides = _derived_cash(seed_user, [transfer_legs.leg_of(xfer, loan.id)])
+        assert overrides[(xfer_id, loan.id)] == Decimal("1699.10")
 
-        resp = _mark_done_from_leg(auth_client, income_shadow)
+        resp = _mark_done_from_leg(auth_client, xfer_id, loan.id)
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()
-        settled = _side_leg(income_shadow.transfer_id, loan.id)
+        settled = _side_leg(xfer_id, loan.id)
         assert leg_settled_contribution(settled) == Decimal("1699.10")
 
         (split,) = loan_ledger.compute_loan_payment_splits(loan.id, scenario_id)
@@ -559,7 +613,10 @@ def test_an_off_day_payment_is_priced_on_its_intervals_installment(
 
     The settled payment is read as the transfer and its loan side's record,
     where it was read off the loan-side twin row (ruling R-BAL167 class 1,
-    plan step balance:X-bi-6-4d-2).
+    plan step balance:X-bi-6-4d-2).  The payment is the TRANSFER due
+    2026-03-10, priced and settled through its leg on the loan, where it was
+    the loan-side shadow due that day until plan step balance:X-bi-6-4d-3
+    (ruling R-BAL167 class 1).
     """
     with app.app_context():
         loan, escrow, scenario_id, template, _rule, _periods = (
@@ -582,25 +639,17 @@ def test_an_off_day_payment_is_priced_on_its_intervals_installment(
         ))
         db.session.commit()
 
-        income_shadow = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.transfer_id.isnot(None),
-                Transaction.account_id == loan.id,
-                Transaction.scenario_id == scenario_id,
-                Transaction.due_date == date(2026, 3, 10),
-            )
-            .one()
-        )
-        assert _derived_cash(seed_user, [income_shadow])[
-            income_shadow.id
+        xfer = _first_payment(loan.id, scenario_id, date(2026, 3, 10))
+        xfer_id = xfer.id
+        assert _derived_cash(seed_user, [transfer_legs.leg_of(xfer, loan.id)])[
+            (xfer_id, loan.id)
         ] == Decimal("1299.10")
 
-        resp = _mark_done_from_leg(auth_client, income_shadow)
+        resp = _mark_done_from_leg(auth_client, xfer_id, loan.id)
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()
-        settled = _side_leg(income_shadow.transfer_id, loan.id)
+        settled = _side_leg(xfer_id, loan.id)
         assert leg_settled_contribution(settled) == Decimal("1299.10")
 
         (split,) = loan_ledger.compute_loan_payment_splits(loan.id, scenario_id)
@@ -636,7 +685,10 @@ def test_an_early_extra_is_charged_nothing_in_the_posted_ledger(
 
     The settled payment is read as the transfer and its loan side's record,
     where it was read off the loan-side twin row (ruling R-BAL167 class 1,
-    plan step balance:X-bi-6-4d-2).
+    plan step balance:X-bi-6-4d-2).  The payment is the TRANSFER due
+    2026-02-10, settled through its leg on the loan, where it was the
+    loan-side shadow due that day until plan step balance:X-bi-6-4d-3
+    (ruling R-BAL167 class 1).
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -654,21 +706,12 @@ def test_an_early_extra_is_charged_nothing_in_the_posted_ledger(
         )
         db.session.commit()
 
-        income_shadow = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.transfer_id.isnot(None),
-                Transaction.account_id == loan.id,
-                Transaction.scenario_id == scenario_id,
-                Transaction.due_date == date(2026, 2, 10),
-            )
-            .one()
-        )
-        resp = _mark_done_from_leg(auth_client, income_shadow)
+        xfer_id = _first_payment(loan.id, scenario_id, date(2026, 2, 10)).id
+        resp = _mark_done_from_leg(auth_client, xfer_id, loan.id)
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()
-        settled = _side_leg(income_shadow.transfer_id, loan.id)
+        settled = _side_leg(xfer_id, loan.id)
         assert leg_settled_contribution(settled) == Decimal("1299.10")
 
         (split,) = loan_ledger.compute_loan_payment_splits(loan.id, scenario_id)
@@ -717,6 +760,14 @@ def test_settling_derived_loan_payment_captures_live_amount(
     After the settle, the transfer's status is the one status and each side's
     record holds the captured figure, where both were read off the twin rows
     (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+
+    **The payment is the first TRANSFER into the loan since plan step
+    balance:X-bi-6-4d-3** (ruling R-BAL167 class 1), where it was the first
+    loan-side shadow; it is priced through its leg on the loan.  The two "the
+    PLAN column is empty" reads were the shadow's ``estimated_amount`` and the
+    transfer's ``amount`` before the settle, and the shadow's after it: the
+    one row left is the transfer, so both are its ``amount`` -- the same
+    claim with nothing left to violate it.
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -729,36 +780,22 @@ def test_settling_derived_loan_payment_captures_live_amount(
         )
         db.session.commit()
 
-        income_shadow = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.transfer_id.isnot(None),
-                Transaction.account_id == loan.id,
-                Transaction.scenario_id == scenario_id,
-            )
-            .order_by(Transaction.id)
-            .first()
-        )
-        assert income_shadow is not None
-        # Pre-settle the shadow is worth the LIVE PITI, and NEITHER the leg nor
-        # its parent stores a figure to have shown instead.  Asked of the
-        # amount model, because ``settled_contribution`` REFUSES a derived row --
-        # its name is the assertion, and a projected shadow no longer owns
-        # anything.  The parent's stale $1.00 was here until plan step X-au-f
-        # emptied it; the assertion below is what replaces it, and it is the
-        # stronger one -- the live figure cannot be a stored copy when no copy
-        # is stored.
-        assert _derived_cash(seed_user, [income_shadow])[
-            income_shadow.id
+        payment = _first_payment(loan.id, scenario_id)
+        assert payment is not None
+        # Pre-settle the payment is worth the LIVE PITI, and it stores no
+        # figure to have shown instead.  Asked of the amount model, because
+        # ``settled_contribution`` REFUSES a derived row -- its name is the
+        # assertion.  The stale $1.00 was here until plan step X-au-f emptied
+        # it; the assertion below is what replaces it, and it is the stronger
+        # one -- the live figure cannot be a stored copy when no copy is
+        # stored.
+        transfer_id = payment.id
+        assert _derived_cash(seed_user, [transfer_legs.leg_of(payment, loan.id)])[
+            (transfer_id, loan.id)
         ] == Decimal("1499.10")
-        assert income_shadow.estimated_amount is None
-        assert income_shadow.transfer.amount is None
-        income_shadow_id = income_shadow.id
-        transfer_id = income_shadow.transfer_id
+        assert payment.amount is None
 
-        resp = _mark_done_from_leg(
-            auth_client, db.session.get(Transaction, income_shadow_id),
-        )
+        resp = _mark_done_from_leg(auth_client, transfer_id, loan.id)
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()
@@ -773,9 +810,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
         ) == Decimal("1499.10")
         # The PLAN column stays empty: a settle RECORDS what moved beside the
         # plan (plan step X-au-c3) and never writes into it.
-        assert db.session.get(
-            Transaction, income_shadow_id,
-        ).estimated_amount is None
+        assert xfer.amount is None
         # Both sides record the captured figure.
         assert transfer_side_figure(
             db.session, transfer_id, xfer.from_account_id,
@@ -816,7 +851,11 @@ def test_settled_loan_payment_freeze_is_one_shot(
 
     The settled payment is read as the transfer and its loan side's record,
     where it was read off the loan-side twin row (ruling R-BAL167 class 1,
-    plan step balance:X-bi-6-4d-2).
+    plan step balance:X-bi-6-4d-2).  The payment is the first TRANSFER into
+    the loan, where it was the first loan-side shadow, and the model is asked
+    of its leg on the loan, where it was asked of that shadow row, until plan
+    step balance:X-bi-6-4d-3 (ruling R-BAL167 class 1): the row priced the
+    plan off its transfer, as the leg does.
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -829,25 +868,11 @@ def test_settled_loan_payment_freeze_is_one_shot(
         )
         db.session.commit()
 
-        income_shadow_id = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.transfer_id.isnot(None),
-                Transaction.account_id == loan.id,
-                Transaction.scenario_id == scenario_id,
-            )
-            .order_by(Transaction.id)
-            .first()
-            .id
-        )
+        transfer_id = _first_payment(loan.id, scenario_id).id
 
-        resp = _mark_done_from_leg(
-            auth_client, db.session.get(Transaction, income_shadow_id),
-        )
+        resp = _mark_done_from_leg(auth_client, transfer_id, loan.id)
         assert resp.status_code == 200, resp.data
         db.session.expire_all()
-        twin = db.session.get(Transaction, income_shadow_id)
-        transfer_id = twin.transfer_id
         assert db.session.get(Transfer, transfer_id).status.is_settled is True
         assert transfer_side_figure(
             db.session, transfer_id, loan.id,
@@ -855,19 +880,17 @@ def test_settled_loan_payment_freeze_is_one_shot(
 
         # The freeze is one-shot: a settled side answers from its own RECORD,
         # so even asking the model directly cannot produce a fresher figure to
-        # overwrite it with.  The model is asked of the loan-side twin row,
-        # which it prices off its transfer; the record is read off the side.
-        assert _derived_cash(seed_user, [twin])[twin.id] == Decimal(
-            "1499.10",
-        )
+        # overwrite it with.  The model is asked of the loan-side LEG, which
+        # it prices off its transfer; the record is read off the side.
+        assert _derived_cash(seed_user, [_side_leg(transfer_id, loan.id)])[
+            (transfer_id, loan.id)
+        ] == Decimal("1499.10")
         assert leg_settled_contribution(
             _side_leg(transfer_id, loan.id),
         ) == Decimal("1499.10")
 
         # A stale-tab re-settle leaves the frozen figure untouched.
-        resp2 = _mark_done_from_leg(
-            auth_client, db.session.get(Transaction, income_shadow_id),
-        )
+        resp2 = _mark_done_from_leg(auth_client, transfer_id, loan.id)
         assert resp2.status_code == 200, resp2.data
         db.session.expire_all()
         assert transfer_side_figure(
@@ -934,7 +957,9 @@ def test_derived_override_includes_standing_extra(
         escrow = 3600 / 12                   = 300.00
         cash   = 1,199.10 + 300.00 + 100.00  = 1,599.10
     The extra is a LIVE parameter added on top; it is NOT baked into the stale
-    stored $1.00, which stays untouched.
+    stored $1.00, which stays untouched.  It prices the payments' legs, where
+    it priced the shadow rows until plan step balance:X-bi-6-4d-3 (ruling
+    R-BAL167 class 1).
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -949,8 +974,9 @@ def test_derived_override_includes_standing_extra(
         )
         db.session.commit()
 
-        shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = _derived_cash(seed_user, shadows)
+        overrides = _derived_cash(
+            seed_user, _loan_payment_legs(loan.id, scenario_id),
+        )
         assert overrides
         assert all(v == Decimal("1599.10") for v in overrides.values())
 
@@ -962,6 +988,8 @@ def test_manual_payment_with_extra_gets_base_plus_extra(
 
     Manual base (stored default) $1,499.10 + extra $100.00 = $1,599.10.  The
     base is operator-owned (not re-derived); only the extra is added live.
+    It prices the payments' legs, where it priced the shadow rows until plan
+    step balance:X-bi-6-4d-3 (ruling R-BAL167 class 1).
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -985,8 +1013,9 @@ def test_manual_payment_with_extra_gets_base_plus_extra(
         )
         db.session.commit()
 
-        shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = _derived_cash(seed_user, shadows)
+        overrides = _derived_cash(
+            seed_user, _loan_payment_legs(loan.id, scenario_id),
+        )
         assert overrides
         assert all(v == Decimal("1599.10") for v in overrides.values())
 
@@ -1025,6 +1054,11 @@ def test_manual_payment_without_extra_gets_no_override(
     override was dormant for this shape, so the row simply did not appear.
     Absence could not tell "no override" from "not priced at all"; the row is
     priced now, by rule 4's manual arm, and the figure is stated.
+
+    It prices the payments' legs, and the probe keys the escrow by each leg's
+    installment date, where both read the shadow rows until plan step
+    balance:X-bi-6-4d-3 (ruling R-BAL167 class 1; ``loan_payment_due_date``
+    takes a leg).
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -1042,9 +1076,9 @@ def test_manual_payment_without_extra_gets_no_override(
         )
         db.session.commit()
 
-        shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        assert shadows, "expected generated shadow transactions"
-        resolved = _derived_cash(seed_user, shadows)
+        legs = _loan_payment_legs(loan.id, scenario_id)
+        assert legs, "expected generated loan payments"
+        resolved = _derived_cash(seed_user, legs)
         assert all(v == Decimal("1499.10") for v in resolved.values())
 
         # Raise the escrow: a DERIVE payment would move to $1,599.10 and a
@@ -1063,23 +1097,23 @@ def test_manual_payment_without_extra_gets_no_override(
 
         # The control on the control: the raise really took effect, so the
         # assertion below is about the RULE and not about a write that never
-        # happened.  Measured over the axis the RULE reads -- each shadow's own
-        # installment date (``_shadow_live_amount`` resolves the escrow on
+        # happened.  Measured over the axis the RULE reads -- each payment's own
+        # installment date (the derive arm resolves the escrow on
         # ``loan_payment_due_date``) -- and not a date chosen here.  A hard-coded
         # date coincides only while the write mutates the standing version in
         # place; converting it to "append a later version", which is the shape
         # ``add_escrow_line`` itself produces, would leave the probe green while
-        # the shadows read the old figure and this case went back to proving
+        # the payments read the old figure and this case went back to proving
         # nothing.
         lines = load_escrow_lines(loan.id)
         assert {
             escrow_calculator.escrow_monthly_as_of(
-                lines, loan_payment_due_date(shadow, 1),
+                lines, loan_payment_due_date(leg, 1),
             )
-            for shadow in shadows
+            for leg in legs
         } == {Decimal("400.00")}
 
-        after = _derived_cash(seed_user, shadows)
+        after = _derived_cash(seed_user, legs)
         assert all(v == Decimal("1499.10") for v in after.values())
 
 
@@ -1096,6 +1130,14 @@ def test_a_DERIVE_payment_on_the_same_fixture_DOES_follow_the_escrow(
     fixture, the same raise, ``derive_from_loan`` left ON.
 
     P&I 1,199.10 + the raised escrow 400.00 = 1,599.10.
+
+    **It graded NOTHING from plan step balance:X-bi-6-4d-3's first checkpoint
+    until it was re-expressed** (CLAUDE.md rule 4; ruling R-BAL167 class 1).
+    Its row set was every shadow in the scenario, none is born since that
+    step, so both ``all()`` reads ran over an empty map and passed --
+    measured: zero rows, an empty map.  It prices the payments' LEGS now, and
+    each read is guarded non-empty, so a derive arm that stopped following
+    the escrow fails here.
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -1111,11 +1153,11 @@ def test_a_DERIVE_payment_on_the_same_fixture_DOES_follow_the_escrow(
         )
         db.session.commit()
 
-        shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        assert all(
-            v == Decimal("1499.10")
-            for v in _derived_cash(seed_user, shadows).values()
-        )
+        legs = _loan_payment_legs(loan.id, scenario_id)
+        assert legs, "expected generated loan payments"
+        before = _derived_cash(seed_user, legs)
+        assert before
+        assert all(v == Decimal("1499.10") for v in before.values())
 
         version = (
             db.session.query(EscrowComponentVersion)
@@ -1126,7 +1168,8 @@ def test_a_DERIVE_payment_on_the_same_fixture_DOES_follow_the_escrow(
         version.annual_amount = Decimal("4800.00")
         db.session.commit()
 
-        after = _derived_cash(seed_user, shadows)
+        after = _derived_cash(seed_user, legs)
+        assert after
         assert all(v == Decimal("1599.10") for v in after.values())
 
 
@@ -1147,7 +1190,9 @@ def test_settling_with_extra_lands_the_extra_in_principal(
 
     The frozen cash is read off the loan side's record, where it was read off
     the loan-side twin row (ruling R-BAL167 class 1, plan step
-    balance:X-bi-6-4d-2).
+    balance:X-bi-6-4d-2).  The payment is the first TRANSFER into the loan,
+    settled through its leg there, where it was the first loan-side shadow
+    until plan step balance:X-bi-6-4d-3 (ruling R-BAL167 class 1).
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -1162,30 +1207,17 @@ def test_settling_with_extra_lands_the_extra_in_principal(
         )
         db.session.commit()
 
-        income_shadow = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.transfer_id.isnot(None),
-                Transaction.account_id == loan.id,
-                Transaction.scenario_id == scenario_id,
-            )
-            .order_by(Transaction.id)
-            .first()
-        )
-        assert income_shadow is not None
-        income_shadow_id = income_shadow.id
+        payment = _first_payment(loan.id, scenario_id)
+        assert payment is not None
+        transfer_id = payment.id
 
-        resp = _mark_done_from_leg(
-            auth_client, db.session.get(Transaction, income_shadow_id),
-        )
+        resp = _mark_done_from_leg(auth_client, transfer_id, loan.id)
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()
         # Frozen cash carries P&I + escrow + extra.
         assert transfer_side_figure(
-            db.session,
-            db.session.get(Transaction, income_shadow_id).transfer_id,
-            loan.id,
+            db.session, transfer_id, loan.id,
         ) == Decimal("1599.10")
 
         # The genesis split routes the extra into principal (cash == split).
@@ -1211,7 +1243,11 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
 
     The frozen cash is read off the loan side's record, where it was read off
     the loan-side twin row (ruling R-BAL167 class 1, plan step
-    balance:X-bi-6-4d-2).
+    balance:X-bi-6-4d-2).  The payment is the first TRANSFER into the loan,
+    where it was the first loan-side shadow, and "neither row has a plan
+    column to write" is asked of the one row left, until plan step
+    balance:X-bi-6-4d-3 (ruling R-BAL167 class 1): the shadow's
+    ``estimated_amount`` half went with the shadow.
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -1234,28 +1270,17 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
         )
         db.session.commit()
 
-        income_shadow = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.transfer_id.isnot(None),
-                Transaction.account_id == loan.id,
-                Transaction.scenario_id == scenario_id,
-            )
-            .order_by(Transaction.id)
-            .first()
-        )
-        assert income_shadow is not None
-        income_shadow_id = income_shadow.id
+        payment = _first_payment(loan.id, scenario_id)
+        assert payment is not None
+        transfer_id = payment.id
 
-        resp = _mark_done_from_leg(
-            auth_client, db.session.get(Transaction, income_shadow_id),
-        )
+        resp = _mark_done_from_leg(auth_client, transfer_id, loan.id)
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()
-        shadow = db.session.get(Transaction, income_shadow_id)
+        xfer = db.session.get(Transfer, transfer_id)
         assert transfer_side_figure(
-            db.session, shadow.transfer_id, loan.id,
+            db.session, transfer_id, loan.id,
         ) == Decimal("1599.10")
         # The manual BASE is untouched, so a second settle would freeze the
         # same 1,599.10 rather than 1,699.10: the derivation must never read
@@ -1263,15 +1288,14 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
         # X-au-f**, which is what makes the compounding cycle structurally
         # impossible rather than merely not-currently-written: the manual arm
         # reads the definition's SERIES, and a settle writes neither that nor
-        # any plan column on either row -- neither the shadow nor its parent has
-        # one left to write, which is the pairing CHECK saying so.  It read the
-        # PARENT's stored figure until X-au-f emptied it (X-au-g-2c-2 had moved
-        # it off the shadow first), so the base has moved one row further from
-        # anything a settle can touch.
-        assert shadow.estimated_amount is None
-        assert shadow.transfer.amount is None
+        # the transfer's plan column -- it has none left to write, which is
+        # the pairing CHECK saying so.  It read the PARENT's stored figure
+        # until X-au-f emptied it (X-au-g-2c-2 had moved it off the shadow
+        # first), so the base has moved one row further from anything a settle
+        # can touch.
+        assert xfer.amount is None
         assert template_amount_service.amount_as_of(
-            shadow.transfer.template, shadow.transfer.due_date,
+            xfer.template, xfer.due_date,
         ) == Decimal("1499.10")
 
 
@@ -1301,6 +1325,10 @@ def test_each_shadows_cash_is_its_own_installments_pi(
     fixture whose shadows all landed on one side of the boundary would assert
     the same thing about a producer that read one clock, which is why the
     boundary itself is asserted rather than the figures alone.
+
+    It prices the payments' legs, keyed by each leg's installment date, where
+    it priced the shadow rows until plan step balance:X-bi-6-4d-3 (ruling
+    R-BAL167 class 1).
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -1324,13 +1352,13 @@ def test_each_shadows_cash_is_its_own_installments_pi(
         )
         db.session.commit()
 
-        shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        assert shadows, "expected generated shadow transactions"
+        legs = _loan_payment_legs(loan.id, scenario_id)
+        assert legs, "expected generated loan payments"
 
-        resolved = _derived_cash(seed_user, shadows)
+        resolved = _derived_cash(seed_user, legs)
         priced = {
-            loan_payment_due_date(shadow, 1): resolved[shadow.id]
-            for shadow in shadows
+            loan_payment_due_date(leg, 1): resolved[leg.cell_key]
+            for leg in legs
         }
 
         assert priced, "expected derived cash for the derive_from_loan transfer"
