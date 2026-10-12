@@ -206,7 +206,7 @@ def _project_loan_payment(seed_user, db, loan, period, amount, due_date):
 def test_a_derived_projected_shadow_is_priced_by_the_plan_tier(
     seed_user, db, seed_periods,
 ):
-    """A projected shadow with NO stored figure is priced, not refused.
+    """A projected loan payment whose plan is DERIVED is priced, not refused.
 
     **The PLAN tier's half of plan step balance:X-au-g-2c-1**, and the reason
     that step routed two readers rather than the one its finding named.
@@ -220,20 +220,19 @@ def test_a_derived_projected_shadow_is_priced_by_the_plan_tier(
     adversarial review censused the accessor and found TWO callers of an
     unsettled row, not one.
 
-    The paired refusal below is what makes this a measurement rather than a
-    happy path: the SAME declaration, in the same fixture, still breaks the
-    accessor the tier used to call.  *Its ``match`` is load-bearing since plan
-    step X-bx, which widened that accessor to refuse ANY unsettled row: a bare
-    ``pytest.raises`` would pass on the shadow's Projected STATUS alone, leaving
-    ``declare_derived`` -- the subject of the fixture -- ungraded by it.*
-
-    **No shadow can be stored since plan step ``balance:X-bi-6-4d-3``**
-    (ruling **R-BAL258**; re-expressed under ruling **R-BAL167** class 2): a
-    transfer is one row, so the derived income shadow this declared and asked
-    that accessor of is refused by ``ck_transactions_names_no_transfer``
-    (built derived, ``PARENT_TRANSFER``, as this fixture declared it), and the
-    tier prices the projected payment off its parent transfer (ruling
-    **R-BAL13**), which the second half still measures.
+    Until plan step ``balance:X-bi-6-4d-3`` a paired refusal made this a
+    measurement rather than a happy path: the SAME derived declaration, on the
+    payment's income shadow, still broke the accessor the tier used to call.
+    That step made a transfer one row (ruling **R-BAL258**), so there is no
+    shadow to declare or to ask that accessor of.  What the case grades now
+    (re-expressed under ruling **R-BAL167** class 2, the cp2a review's L-2):
+    that a twin built derived (``PARENT_TRANSFER``) is refused by
+    ``ck_transactions_names_no_transfer``, which the 82f7 migration's and the
+    transfer schema's tests also grade, and that the tier prices the projected
+    payment off its parent transfer (ruling **R-BAL13**), the same June
+    measurement as :func:`test_a_projected_record_makes_its_slot_planned_not_estimated`.
+    It is kept beside that case as the record of finding N-266(a)'s second
+    caller, not as a control the other lacks.
     """
     account = create_loan_account(
         seed_user, db.session,
@@ -245,7 +244,7 @@ def test_a_derived_projected_shadow_is_priced_by_the_plan_tier(
         amount=Decimal("2100.00"), due_date=date(2026, 6, 1),
     )
 
-    # The derived income shadow the accessor was asked of cannot be stored...
+    # A derived twin of the payment cannot be stored...
     assert_a_twin_is_refused(db.session, transfer, is_income=True)
 
     # ...and the tier prices the payment, from the parent transfer.
@@ -260,7 +259,7 @@ def test_a_derived_projected_shadow_is_priced_by_the_plan_tier(
 def test_a_projected_record_makes_its_slot_planned_not_estimated(
     seed_user, db, seed_periods,
 ):
-    """A projected shadow becomes PLANNED; its contractual slot is not also ESTIMATED."""
+    """A projected payment becomes PLANNED; its contractual slot is not also ESTIMATED."""
     account = create_loan_account(
         seed_user, db.session,
         principal=_PRINCIPAL, rate=_RATE, term=_TERM,

@@ -23,10 +23,12 @@ link and nothing reads a twin, so this revision deletes them:
      twins are not exactly one expense and one income (Transfer Invariant 1
      broken; the kept copy could not then be restored as a pair); a twin
      whose COPIED fields (:data:`_COPIED_FIELDS`) are not its transfer's,
-     named as ``(transfer, twin, [fields])``; or a twin filed under a
+     named as ``(transfer, twin, [fields])``; a twin filed under a
      category that is not its owner's, named as ``(transfer, twin,
-     category, that category's owner, the transfer's own category)``
-     (below).  The step's premise is that a
+     category, that category's owner, the transfer's own category, THAT
+     category's owner)``; or a transfer filed under a category that is not
+     its owner's, named as ``(transfer, category, that category's owner,
+     the transfer's owner)`` (below).  The step's premise is that a
      twin is a copy of its transfer, so deleting it loses nothing; a twin
      that disagrees is no copy, and its delete would erase the last trace of
      the disagreement unseen.  A field is refused only where the app at
@@ -91,12 +93,25 @@ link and nothing reads a twin, so this revision deletes them:
      category that is not its twin's owner's at the downgrade is one where
      something CHANGED since (ruling R-BAL261, below).  The category is not
      otherwise compared with the transfer's: those older income twins name
-     one their transfer does not, so it is no copied field.  Each such twin
-     is named with its transfer's own category beside its own: where the two
-     agree, the twin only repeats its transfer, and the TRANSFER is the row
-     to repair, its twins with it (a repair of the twins alone lets the
-     upgrade through with the transfer's reference left, which no refusal
-     asks).
+     one their transfer does not, so it is no copied field.
+
+     **A transfer filed under a category that is not its owner's is refused
+     too** (the cp2a review's L-1, option D, decided by the coordinator
+     2026-10-11).  No door writes one (the doors above), and the
+     downgrade's one build rule files every twin it builds under its
+     transfer's category (:data:`_BUILT_SQL`), so the twins of such a
+     transfer, rebuilt once it is written since or built where the copy
+     holds none of them, would come back under another user's category,
+     which the twin refusal of the next upgrade names: asked here, the
+     first upgrade refuses the transfer before any twin of it can come back
+     so (a twin-only repair passed this upgrade before it asked).  Each twin
+     refused for its category is therefore named with its transfer's own
+     category and THAT category's owner beside its own, and the repair is
+     read off that owner: where it is not the transfer's owner, the
+     transfer is refused as well and is a row to repair, its twins with it
+     (a repair of the twins alone leaves the transfer's own refusal
+     standing); otherwise the twin alone is, whatever moved (its category's
+     owner, or its own owner, which the copied-field refusal names too).
   2. **It keeps a copy of every twin** in ``system.transfer_twin_purge``: the
      whole row as ``jsonb`` (the shape ``b2d8f3a6c541``'s
      ``system.pre_origination_purge`` keeps), with its transfer's version
@@ -206,14 +221,18 @@ category's own owner, each moved only by a raw statement (no door moves a
 transfer between users or writes a category's owner after its create, and no
 key on a row's category asks its owner).  Where nothing changed, the category
 still there and still its twin's owner's, it comes back as kept.  **The
-fallback can fit no better.**  The upgrade asks no transfer's OWN category, so
-a raw statement can leave it not its owner's: the transfer moved without it,
-the category given to another user, or the transfer written under another
-user's.  A twin then comes back under it as its transfer says, whether by
-this fallback, by the rebuild of a transfer written since or by the build for
-one created since, and the next upgrade refuses that twin by name with its
-transfer's category beside it: the transfer is the row to repair, its twins
-with it.  A kept
+fallback can fit no better.**  The upgrade refuses a transfer whose OWN
+category is not its owner's, so one met at the downgrade was made so by a raw
+statement, since the upgrade or on a database built at this revision, which
+never ran it: the transfer moved without it, the category given to another
+user, or the transfer written under another user's.  A twin then
+comes back under it as its transfer says, whether by this fallback, by the
+rebuild of a transfer written since, or by the build for a transfer the copy
+holds none of (one created since, one the upgrade met holding none, or every
+transfer where the copy is missing), and the next upgrade refuses that twin
+by name with its transfer's category and that category's owner beside it,
+and the transfer for its own category: the transfer is the row to repair,
+its twins with it.  A kept
 ``$0.00``-close day that now falls on or before its account's books opening
 (an opening restated after the upgrade) comes back with no day, basis or
 link; a kept statement link whose statement is gone comes back with none.
@@ -247,8 +266,9 @@ ids its backfill table names, then updates no twin.
 
 ``tests/test_models/test_a_transfer_is_one_row.py`` drives the shipped
 ``upgrade`` / ``downgrade``, each refusal (the drift refusal field by field,
-and the category refusal over a live and a soft-deleted transfer, each on
-each side), a database the app wrote at
+the twin's category refusal over a live and a soft-deleted transfer, each on
+each side, and the transfer's over a live, a soft-deleted and a twinless
+one), a database the app wrote at
 ``e616adf7fe22`` taking that revision's documented way down, the exact round
 trip, the live re-read of each mirrored field, the rebuild of a written
 transfer's twins, and each value that no longer fits.
@@ -515,19 +535,40 @@ SELECT t.transfer_id, t.id AS twin_id,
 
 #: Every twin filed under a category that is not its owner's: ``(transfer id,
 #: twin id, the category, that category's owner, the transfer's own
-#: category)``.  No door writes one (the module docstring, item 1).  The
-#: transfer's category says which row to repair: the transfer where the twin
-#: only repeats it, the twin where it does not.  The join to its transfer
-#: finds the twins (``fk_transactions_transfer_id`` makes it total over
-#: them); a twin with no category names none, and
-#: ``transactions_category_id_fkey`` makes the join total over the rest.
+#: category, THAT category's owner)``.  No door writes one (the module
+#: docstring, item 1).  The last says which row to repair: where it is not
+#: the transfer's owner, :data:`_FOREIGN_TRANSFER_CATEGORY_SQL` names the
+#: transfer too, and the transfer is a row to repair, its twins with it;
+#: otherwise the twin alone is.  The join to its transfer finds the twins
+#: (the key on ``transfer_id`` makes it total over them; a migrated database
+#: names it ``fk_transactions_transfer_id``, while the model declares it
+#: unnamed); a twin with no category names none, and
+#: ``transactions_category_id_fkey`` makes the join total over the rest.  The
+#: transfer's category is LEFT joined: a transfer may name none.
 _FOREIGN_CATEGORY_SQL = """
-SELECT t.transfer_id, t.id, t.category_id, c.user_id, x.category_id
+SELECT t.transfer_id, t.id, t.category_id, c.user_id, x.category_id,
+       xc.user_id
   FROM budget.transactions t
   JOIN budget.transfers x ON x.id = t.transfer_id
   JOIN budget.categories c ON c.id = t.category_id
+  LEFT JOIN budget.categories xc ON xc.id = x.category_id
  WHERE c.user_id <> t.user_id
  ORDER BY t.transfer_id, t.id
+"""
+
+#: Every transfer filed under a category that is not its owner's, live or
+#: soft-deleted: ``(transfer id, the category, that category's owner, the
+#: transfer's owner)``.  No door writes one (the module docstring, item 1),
+#: and the downgrade's build rule files every twin it builds under its
+#: transfer's category, a soft-deleted transfer's among them.  A transfer
+#: naming no category names none, and the transfers' category key makes the
+#: join total over the rest.
+_FOREIGN_TRANSFER_CATEGORY_SQL = """
+SELECT x.id, x.category_id, c.user_id, x.user_id
+  FROM budget.transfers x
+  JOIN budget.categories c ON c.id = x.category_id
+ WHERE c.user_id <> x.user_id
+ ORDER BY x.id
 """
 
 #: The unwritten branch's re-read of every mirrored field from the build rule,
@@ -561,9 +602,9 @@ _MIRRORED_REREAD = ", ".join(
 #: behind, or the category given to another user), so the category arm counts
 #: only where the two differ.  The fallback can fit no better: where the
 #: transfer's category is not its owner's either, the twin comes back under
-#: it as its transfer says and the next upgrade refuses it by name, the
-#: transfer being the row to repair, its twins with it (ruling R-BAL261, the
-#: module docstring).
+#: it as its transfer says and the next upgrade refuses it and its transfer by
+#: name, the transfer being the row to repair, its twins with it (ruling
+#: R-BAL261, the module docstring).
 _RESTORE_KEPT_SQL = f"""
 WITH staged AS (
     SELECT p.row_id, gate.written, p.row_data AS kept_row,
@@ -695,7 +736,9 @@ SELECT r.*
 def refuse_twins_that_cannot_go(bind) -> None:
     """Refuse the upgrade while a twin could not be deleted and restored cleanly.
 
-    **Module-level so a test can DRIVE each refusal** (the chain's own pattern,
+    Or while a transfer's twins would be built back under another user's
+    category (the module docstring, item 1).  **Module-level so a test can
+    DRIVE each refusal** (the chain's own pattern,
     ``e616adf7fe22.refuse_unlinkable_rows``).
 
     Args:
@@ -711,6 +754,10 @@ def refuse_twins_that_cannot_go(bind) -> None:
     drifted = [tuple(row) for row in bind.execute(sa.text(_MIRROR_DRIFT_SQL))]
     foreign = [
         tuple(row) for row in bind.execute(sa.text(_FOREIGN_CATEGORY_SQL))
+    ]
+    foreign_transfers = [
+        tuple(row)
+        for row in bind.execute(sa.text(_FOREIGN_TRANSFER_CATEGORY_SQL))
     ]
     problems = []
     if referenced:
@@ -738,11 +785,21 @@ def refuse_twins_that_cannot_go(bind) -> None:
         problems.append(
             f"{len(foreign)} twin(s) are filed under a category that is not "
             f"their owner's (transfer id, twin id, category id, that "
-            f"category's owner id, the transfer's own category id: where the "
-            f"two category ids agree the twin repeats its transfer, and the "
-            f"transfer is the row to repair, its twins with it; first "
-            f"{_NAMED_AT_MOST}: {foreign[:_NAMED_AT_MOST]}; diagnose with: "
-            f"{_FOREIGN_CATEGORY_SQL.strip()})"
+            f"category's owner id, the transfer's own category id, THAT "
+            f"category's owner id: where that owner is not the transfer's, "
+            f"the transfer is refused for its own category as well and is a "
+            f"row to repair, its twins with it; otherwise the twin alone is; "
+            f"first {_NAMED_AT_MOST}: {foreign[:_NAMED_AT_MOST]}; diagnose "
+            f"with: {_FOREIGN_CATEGORY_SQL.strip()})"
+        )
+    if foreign_transfers:
+        problems.append(
+            f"{len(foreign_transfers)} transfer(s) are filed under a category "
+            f"that is not their owner's, under which the downgrade would build "
+            f"their twins (transfer id, category id, that category's owner "
+            f"id, the transfer's owner id; first {_NAMED_AT_MOST}: "
+            f"{foreign_transfers[:_NAMED_AT_MOST]}; diagnose with: "
+            f"{_FOREIGN_TRANSFER_CATEGORY_SQL.strip()})"
         )
     if problems:
         raise RuntimeError(

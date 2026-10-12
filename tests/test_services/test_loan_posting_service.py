@@ -75,12 +75,12 @@ from app.services.transfer_legs import transfer_side_leg
 from tests._test_helpers import (
     SPLIT_LOAN,
     add_escrow_line,
-    assert_a_twin_is_refused,
     an_entered_day,
     clear_loan_ledger,
     correction_net_in_period,
     create_loan_account,
     create_loan_with_trueup,
+    create_settled_cash_transaction,
     create_settled_transfer,
     find_loan_ledger_account,
     freeze_today,
@@ -1339,7 +1339,7 @@ class TestSyncLoanPaymentPostings:
     def test_correction_is_disjoint_from_the_transaction_path(
         self, app, db, seed_user, seed_periods,
     ):
-        """The transaction poster, driven on a loan income shadow, touches no split.
+        """The transaction poster, run on the loan at a payment's own key, touches no split.
 
         Through plan step ``balance:X-bi-6-1b`` this pinned a GUARD: the
         transaction path's reader was link-keyed and the correction carried
@@ -1348,19 +1348,18 @@ class TestSyncLoanPaymentPostings:
         return None``.  Leaf 1 of ``X-bi-6-3`` deleted the guard and gave
         every typed reader a source-kind term (ruling **R-BAL101**); leaf 2
         gave the split no row link at all (ruling **R-BAL102**).  So the
-        property is structural now, and this pins it as such: after a loan
-        payment is settled and synced, driving the income shadow through
-        ``sync_transaction_postings`` reconciles its family (the cash leg is
-        already at target) and writes nothing, and the split's entry count is
-        unchanged.
+        property is structural now, and this pins it as such.
 
-        **No transaction row can name the payment since plan step
-        ``balance:X-bi-6-4d-3``** (ruling **R-BAL258**; re-expressed under
-        ruling **R-BAL167** class 2): a transfer is one row, so the income
-        shadow the poster was driven on is refused by
-        ``ck_transactions_names_no_transfer`` and the transaction path has
-        no row of the payment's to reach.  The split's count is read on
-        both sides of the refusal.
+        It drove the poster on the payment's loan-side income shadow until
+        plan step ``balance:X-bi-6-4d-3`` made a transfer one row: no
+        transaction row can name the payment now (ruling **R-BAL258**).
+        Re-expressed under ruling **R-BAL167** class 1 (the cp2a review's
+        L-2, its RV-B3): an ORDINARY row on the LOAN account, in the
+        payment's own period and on its loan side's own settle day, settled
+        through the real go-forward primitives (which post it) and then
+        driven through ``sync_transaction_postings`` again.  The repeat
+        writes nothing, and the split's entry count after both posts is the
+        one before them.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1376,7 +1375,15 @@ class TestSyncLoanPaymentPostings:
             entries_before = len(_correction_entries(xfer, loan))
             assert entries_before == 1
 
-            assert_a_twin_is_refused(db.session, xfer, is_income=True)
+            row = create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[_P1], Decimal("25.00"),
+                account=loan,
+                settled_on=_loan_side_movement(xfer, loan).settled_on,
+            )
+            db.session.commit()
+            # A repeat writes nothing: no entry returned.
+            assert not posting_service.sync_transaction_postings(row)
+            db.session.commit()
 
             assert len(_correction_entries(xfer, loan)) == entries_before
 

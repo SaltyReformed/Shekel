@@ -289,7 +289,7 @@ class TestTheSplitUnlinkExecutes:
     The DML the upgrade adds at leaf 2 (ruling **R-BAL102**), executed against
     the test's OWN database: a ``loan_payment`` entry planted in the OLD shape
     -- linking a settled loan payment's income shadow by ``transaction_id``,
-    exactly as every one of production's 25 does at the base -- is unlinked
+    exactly as every one of production's does at the base -- is unlinked
     by the statement, the grade query then counts ZERO still linked, and an
     entry the statement did not reach (planted linked again after it ran)
     is what the grade counts.  The migration's own ``upgrade()`` raises on a
@@ -310,10 +310,12 @@ class TestTheSplitUnlinkExecutes:
 
         Arithmetic: the ``$1,000`` payment on the ``$100,000`` @ 6% fixture
         posts one split (Loan -500 / Interest +500) which the go-forward
-        writer books sourceless; the test re-links it to its shadow by raw SQL
-        (the pre-leaf-2 shape), runs the unlink (``rowcount`` 1), and reads the
-        grade (0).  Re-linking it once more and reading the grade (1) is what
-        proves the grade counts rather than always answering zero.
+        writer books sourceless; the test re-links it by raw SQL to an ordinary
+        row of the owner's (the pre-leaf-2 shape linked the loan side's shadow,
+        which cannot be stored now: the class docstring), runs the unlink
+        (``rowcount`` 1), and reads the grade (0).  Re-linking it once more and
+        reading the grade (1) is what proves the grade counts rather than
+        always answering zero.
         """
         with app.app_context():
             loan = create_loan_with_trueup(

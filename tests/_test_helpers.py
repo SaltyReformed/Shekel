@@ -3620,7 +3620,10 @@ def create_transfer(
     seed_user, db_session, from_account, to_account, period,
     amount=Decimal("100.00"), *, due_date=None, name=None, scenario=None,
 ):
-    """Create a PROJECTED transfer with its two shadows, via the real service.
+    """Create a PROJECTED transfer via the real service; it is one row.
+
+    It came with two shadow rows until plan step ``balance:X-bi-6-4d-3`` made a
+    transfer one row (ruling **R-BAL258**).
 
     The create half of :func:`create_settled_transfer`, which now builds on this
     one -- so both helpers route through ``transfer_service.create_transfer``,
@@ -3640,14 +3643,14 @@ def create_transfer(
             baseline scenario).
         db_session: The test ``db.session`` (unused directly -- the service owns
             the session -- but accepted so call sites read uniformly).
-        from_account: The account money leaves (the expense shadow lands here).
-        to_account: The account money enters (the income shadow lands here).
+        from_account: The account money leaves (the from-side).
+        to_account: The account money enters (the to-side).
         period: The :class:`~app.models.pay_period.PayPeriod` to place the
-            transfer (and both shadows) in.
+            transfer in.
         amount: The transfer amount (Decimal).  Defaults to
             ``Decimal("100.00")``.
-        due_date: Optional due date stored on the transfer and mirrored to both
-            shadows.  ``None`` (the default) leaves it unset, which is what the
+        due_date: Optional due date stored on the transfer.  ``None`` (the
+            default) leaves it unset, which is what the
             ad-hoc transfer form produces; a loan payment's installment then
             falls back to its pay-period start.
         name: Optional transfer display name.
@@ -3689,14 +3692,15 @@ def create_settled_transfer(
 ):
     """Create an ad-hoc transfer and settle it (Paid), returning the parent.
 
-    The shared "settled transfer with two real shadows" builder for the
-    posting-ledger (Build-Order Step 2) backfill / lifecycle suites.  Routes
-    the whole thing through ``transfer_service`` -- the sole transfer writer --
-    so the parent transfer plus its expense/income shadow transactions obey
-    every transfer invariant (two balanced shadows, amounts/status/period
-    mirrored), exactly as production produces them.  The transfer is created
-    Projected, then transitioned to Paid via ``update_transfer`` (the same
-    ``mark_done`` chokepoint the route uses).
+    The shared settled-transfer builder for the posting-ledger (Build-Order
+    Step 2) backfill / lifecycle suites.  Routes the whole thing through
+    ``transfer_service`` -- the sole transfer writer -- so the transfer and
+    each side's payment record obey every transfer invariant, exactly as
+    production produces them.  The transfer is created Projected, then
+    transitioned to Paid via ``update_transfer`` (the same ``mark_done``
+    chokepoint the route uses).  It built "a settled transfer with two real
+    shadows" until plan step ``balance:X-bi-6-4d-3`` made a transfer one row
+    (ruling **R-BAL258**).
 
     **It PRESSES Paid, and a Paid press states no day** (ruling **R-BAL163**,
     plan step ``balance:X-bi-6-4c-3``): both sides BORROW the day it was
@@ -3724,16 +3728,16 @@ def create_settled_transfer(
         db_session: The test ``db.session``.  The service owns the writes;
             this reads the two sides back for the check above.
         from_account: The :class:`~app.models.account.Account` money leaves
-            (the expense shadow lands here).
-        to_account: The account money enters (the income shadow lands here).
+            (the from-side).
+        to_account: The account money enters (the to-side).
         period: The :class:`~app.models.pay_period.PayPeriod` to place the
-            transfer (and both shadows) in.
-        amount: The transfer amount (Decimal); also the shadows'
-            ``estimated_amount``.  Defaults to ``Decimal("100.00")``.
+            transfer in.
+        amount: The transfer amount (Decimal).  Defaults to
+            ``Decimal("100.00")``.
         settled_amount: When not ``None``, the figure the owner typed as what
-            moved, recorded on both legs (so their ``effective_amount`` becomes
-            this, not ``amount``).  Defaults to ``None`` (effective ==
-            estimated == amount).
+            moved, passed to the settle as a person's typed figure
+            (:func:`typed`).  Defaults to ``None``: the transfer settles at
+            *amount*.
         settled_on: The civil DAY Paid is pressed on, which both sides then
             borrow.  ``None`` (the default) presses it on the owner's today.
             A loan test reading a PAST balance must pin this to the day it
@@ -3747,15 +3751,15 @@ def create_settled_transfer(
             :class:`~app.services.transfer_service.SideDay` cannot wrap
             ``None``).
         name: Optional transfer display name.
-        due_date: Optional due date stored on the transfer and mirrored to both
-            shadows, passed straight through to :func:`create_transfer`.
+        due_date: Optional due date stored on the transfer, passed straight
+            through to :func:`create_transfer`.
             ``None`` (the default) leaves it unset, and a loan payment's
             installment then falls back to its pay-period start.  Pass it when a
             test needs two settled loan payments in ONE accrual period at
             DIFFERENT installments -- the period-start fallback resolves both to
             the same date, so it cannot express that shape.
         scenario: The :class:`~app.models.scenario.Scenario` to place the
-            transfer (and both shadows) in.  Defaults to ``None``, which uses
+            transfer in.  Defaults to ``None``, which uses
             the seed user's baseline scenario (``seed_user["scenario"]``);
             pass a non-baseline scenario to exercise multi-scenario isolation
             (the Commit-6 reconciliation oracle).
@@ -4837,19 +4841,30 @@ def transfer_side_journal_filter(transfer_id, account_id):
 def assert_a_twin_is_refused(db_session, xfer, is_income):
     """Stage the twin one side of *xfer* used to have, and assert it is refused.
 
-    The ruling **R-BAL167** class 2 re-expression of a test whose subject was a
+    A ruling **R-BAL167** class 2 re-expression of a test whose subject was a
     transfer's shadow row: a transfer is one row since plan step
     ``balance:X-bi-6-4d-3``, and ``ck_transactions_names_no_transfer`` (ruling
     **R-BAL258**) refuses any ``budget.transactions`` row naming one, so the
     row such a test drove a door on, priced or read can no longer be stored.
-    The row is built column for column as ``transfer_service._create.
-    _build_shadow`` built it at ``5f46d6973`` (the leaf below, where the create
-    door still made two): the transfer's owner, period, scenario, category and
-    due date, the side's endpoint and type, born Projected as every transfer
-    and so every twin was, derived from its parent (``PARENT_TRANSFER``), so
-    the refusal reported is that CHECK's and no other constraint's.  The
-    session is rolled back after the refusal, so a caller re-reads whatever it
-    holds.
+    The refusal is spelled other ways too (the transfer schema's
+    ``_make_shadow`` cases, ``test_amount_ownership``, the 82f7 migration's
+    own); this is the one a class-2 re-expression calls.
+
+    The row carries what ``transfer_service._create._build_shadow`` copied
+    onto a twin at ``5f46d6973`` (the leaf below, where the create door still
+    made two): the transfer's owner, period, scenario, category and due date,
+    the side's endpoint and type, and a figure derived from its parent
+    (``PARENT_TRANSFER``).  It is NOT that builder's row column for column:
+    its ``name`` is this helper's own (the builder wrote "Transfer to / from
+    <account>"), and its status is Projected, the status every transfer door
+    created a transfer in, where the builder wrote the transfer's own (the
+    service's born-settled branch built settled twins).  Neither column bears
+    on the CHECK, and the row satisfies every other rule, so the refusal
+    reported is that CHECK's and no other constraint's.
+
+    **The session is rolled back after the refusal**, which discards anything
+    the caller had not committed; commit first, and re-read what the session
+    held after.
 
     Args:
         db_session: The test ``db.session``.
