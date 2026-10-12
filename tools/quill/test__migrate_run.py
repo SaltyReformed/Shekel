@@ -229,6 +229,32 @@ def test_a_card_linked_elsewhere_by_the_time_its_link_is_made_stops_the_run(corp
     assert not tracker.writes[1:]
 
 
+def test_a_blocker_outside_the_tracker_added_since_the_read_is_refused_by_the_re_plan(corpus):
+    """A-2b's card blocked by an issue outside the tracker after the run's read: its parent
+    link's re-read finds no parent, and only a parent stops the link, so the link is made,
+    then the mark's removal; the board phase's re-plan refuses the outside link, a person's
+    call, and the run stops before the board (review 4 of B2b-1, LOW-3: the filter was
+    unpinned, and dropping it stopped the link naming a parent that does not exist)."""
+    tracker, numbers = _filed(corpus, marked=("balance:A-2b",))
+    step, real, reads = numbers["balance:A-2b"], tracker.all_cards, []
+
+    def lagging():
+        cards = real()
+        reads.append(True)
+        if len(reads) == 1:
+            cards[step] = replace(cards[step], card=replace(cards[step].card, parent=None,
+                                                            outside=()))
+        return cards
+
+    tracker.all_cards = lagging
+    tracker.cards_by_number[step] = replace(tracker.cards_by_number[step], parent=None,
+                                            outside=(OutsideLink("blocker", "o/code#9"),))
+    with pytest.raises(Stopped, match=rf"is refused .*: balance:A-2b \(plan#{step}\): it is "
+                                      r"linked outside the tracker \(o/code#9\)"):
+        _run(corpus, tracker).open()
+    assert tracker.writes[1:] == [("add_child", numbers["balance:A-2"], step), ("unmark", step)]
+
+
 def test_a_card_gone_by_the_time_its_link_is_made_stops_the_run(corpus):
     """The re-read before a parent link finds no card: deleted by hand inside the freeze
     after the run's read, so the run stops, naming it, and writes nothing."""
@@ -254,15 +280,17 @@ def test_a_card_gone_by_the_time_its_link_is_made_stops_the_run(corpus):
      r"does not show every write yet \(1 to make on this read\)"),
     ("[A-2b]", {"parent": None},
      r"read again after every card's writes, is refused .*: balance:A-2b \(plan#\d+\): its "
-     r"filing finished, yet it lacks link"),
+     r"filing finished, yet it lacks link: a person changed it, or this read lags the "
+     r"migration's own writes; run again later"),
 ], ids=["a-link-and-its-mark", "a-rulings-close", "read-as-a-persons-edit"])
 def test_a_read_after_the_freeze_that_lags_its_writes_stops_before_the_board(
         corpus, title, change, stop):
     """The read after every card's writes shows a card as it stood before some of them --
     A-2b before its link and its mark's removal, R-A before its close, or A-2b before its
-    link alone, which reads as a person's edit: the plan, read again, has writes left or
-    refuses, so the run stops before ordering the board, the count or the refusal named,
-    and the next run, its read caught up, writes nothing and finishes."""
+    link alone, which reads as a person's edit, and the refusal names the lag beside it
+    (review 4 of B2b-1, LOW-4): the plan, read again, has writes left or refuses, so the
+    run stops before ordering the board, the count or the refusal named, and the next run,
+    its read caught up, writes nothing and finishes."""
     tracker = _empty()
     _run(corpus, tracker).history()
     real, reads = tracker.all_cards, []
@@ -298,6 +326,7 @@ def test_the_numbering_probe_stops_a_run_whose_listing_lags_a_card(corpus):
     with pytest.raises(TrackerError, match="#3 is an issue the listing of every card lacks"):
         _run(corpus, tracker).open()
     assert tracker.writes == made
+
 
 #: How a refusal names a card as its create left it.
 _BARE = ("still marked and open, linked to nothing the tool reads, off the board, with no "
@@ -356,7 +385,6 @@ def test_a_re_sent_create_is_refused_offering_its_other_card_and_settled_by_dele
     tracker.create, tracker.add_child = create, add_child
     assert not _run(corpus, tracker).open()
     assert _settled(corpus, tracker)
-
 
 
 def test_a_re_sent_create_read_lagging_its_writes_names_the_card_holding_them_to_keep(corpus):

@@ -37,18 +37,18 @@ cards (a create re-sent after a rate-limit refusal it was performed for; a card 
 key by hand, retitled or relabelled, one of the tracker's own or another item's, and the
 key a card filed already's among them; or a re-sent create's card edited by hand), each
 card named with what it holds; only in the state a re-sent create leaves, its last card
-refused nothing as the item's card, are the others offered for deletion, and that last
+refused nothing as the item's card by the grading a run makes once every refusal is
+settled (:func:`_shared_refusals`), are the others offered for deletion, and that last
 card, the one the run went on with, named to keep by its number (GitHub's numbers rise),
 and a card filed already is never offered (:func:`_shared`); a card filed already that the
 tracker does not hold, or that still carries the filing mark (its own filing is
-unfinished); a card no item
-claims but the tracker's own (:func:`_unclaimed`); a step the registries put below a card
-filed already (X-cx's leaves are its sub-issues, never ``steps.md`` rows); a milestone the
-input file does not name (one renamed on the web would be made again); a board card the
-desired order has no place for (:func:`board_refusals`); an item's card of another kind,
-labels or milestone, or one whose outcome's milestone the tracker no longer holds (deleted
-or renamed on the web, it would be made again holding none of its cards), closed when it
-moves open, or open when it is a ruling; one whose filing ENDED
+unfinished); a card no item claims but the tracker's own (:func:`_unclaimed`); a step the
+registries put below a card filed already (X-cx's leaves are its sub-issues, never
+``steps.md`` rows); a milestone the input file does not name (one renamed on the web would
+be made again); a board card the desired order has no place for (:func:`board_refusals`);
+an item's card of another kind, labels or milestone, or one whose outcome's milestone the
+tracker no longer holds (deleted or renamed on the web, it would be made again holding none
+of its cards), closed when it moves open, or open when it is a ruling; one whose filing ENDED
 (:func:`_state.filing_ended`: dropped, or a ruling withdrawn, R-BAL205's hazard); one under
 another parent, blocked by a card its item is not, or linked outside the tracker (a
 person's call); one whose title, body or As filed comment is not what the registries make
@@ -203,8 +203,7 @@ def plan(items: Sequence[Item], built: Mapping[str, Built],
     unnamed = _unnamed_milestones(milestones, tracked)
     graded = _Grading(known.numbers, tracked, milestones, built, frozenset(known.unaccounted),
                       frozenset(held.number for held in unnamed))
-    refusals = [_shared(item, known.shared[item.key], graded)
-                for item in sorted(items, key=lambda item: item.key) if item.key in known.shared]
+    refusals = _shared_refusals(items, known, graded)
     refusals += [*known.refusals, *(f"milestone #{held.number} {held.title!r} is none the input "
                                     "file names (renamed on the web?): settle it before the run"
                                     for held in unnamed)]
@@ -281,15 +280,35 @@ def _numbers(items: Sequence[Item], tracked: Tracked) -> _Known:
                   | {number for number, _ in unclaimed}, shared)
 
 
+def _shared_refusals(items: Sequence[Item], known: _Known, graded: _Grading) -> list[str]:
+    """Each key on two cards or more refused (:func:`_shared`), in key order, on ONE grading
+    of the read ``graded`` grades: the one a run makes once every refusal of this read is
+    settled.  There each such key's number is the card it keeps -- a card filed already's
+    own, else the last made, the card a re-sent create's refusal keeps -- and no card is
+    excused for being refused already, since settling a refusal can leave a link it excused
+    standing wrong (a card retitled away from its key, then back): a link to a card refused
+    already is graded as the link it is.  A last card refused nothing here as its item's card
+    (:meth:`_Grading.writes`; the board's shape is graded apart, :func:`board_refusals`) is
+    refused nothing so by the very next run either, once its copies are deleted as offered and
+    nothing else is settled: that run's numbers lack only the keys still on two cards, whose
+    cards it excuses, and it excuses every card still refused besides."""
+    kept = {key: MAPPED.get(key, found[-1]) for key, found in known.shared.items()}
+    after = replace(graded, numbers={**graded.numbers, **kept}, unaccounted=frozenset())
+    return [_shared(item, known.shared[item.key], after)
+            for item in sorted(items, key=lambda item: item.key) if item.key in known.shared]
+
+
 def _shared(item: Item, numbers: Sequence[int], graded: _Grading) -> str:
     """How :func:`plan` refuses ``item``'s key on the cards ``numbers`` (lowest first), on
-    the read ``graded`` grades: each card named with its state (:func:`_card_state`).
+    the grading ``graded`` (:func:`_shared_refusals`'): each card named with its state
+    (:func:`_card_state`).
 
     The one machine cause is a create GitHub refused for a rate limit though it had performed
     it, which :mod:`_github` sends again: the run goes on with the card the last send made,
     so every card before it is a copy of it, still as its create left it.  Only in that
-    state, and only when that last card, graded alone as the item's card, is refused nothing
-    (:meth:`_Grading.refuses_nothing`), are the others offered for deletion.  Only there is
+    state, and only when that last card is refused nothing as the item's card by the grading
+    the next run makes once every key's refusal is followed (:meth:`_Grading.refuses_nothing`
+    on :func:`_shared_refusals`' grading), are the others offered for deletion.  Only there is
     the card to keep named by its CREATION ORDER, the last made: GitHub numbers issues in
     one rising sequence, so the highest of the copies is the last send's, the card the run
     went on with -- whatever a read that lags the run's writes shows of it, where a keeper
@@ -309,7 +328,7 @@ def _shared(item: Item, numbers: Sequence[int], graded: _Grading) -> str:
     last = numbers[-1]
     if all(not _later_writes(number, tracked)
            and _create_of(tracked.cards[number]) == _create_of(tracked.cards[last])
-           for number in numbers[:-1]) and graded.refuses_nothing(item, last):
+           for number in numbers[:-1]) and graded.refuses_nothing(item):
         return (f"{head}: the state a re-sent create leaves (GitHub refused a create for a "
                 "rate limit though it had performed it, and the tool sent it again), copies of "
                 "one create, each but the last made as its create left it.  Keep the last made "
@@ -517,19 +536,20 @@ class _Grading:
                 write for write in missing if not self._follows(write, whole.card)]:
             refusals.append(f"{item.key} (plan#{number}): its filing finished, yet it lacks "
                             f"{', '.join(sorted({write.what for write in missing}))}: a "
-                            "person changed it; settle it by hand")
+                            "person changed it, or this read lags the migration's own writes; "
+                            "run again later, and if it is refused still, settle it by hand")
             return []
         if item.key in MAPPED:
             return [write for write in missing if write.what in (LINK, BLOCK)]
         return missing + ([Write(UNMARK, item.key)] if unfinished and item.kind != "ruling"
                           else [])
 
-    def refuses_nothing(self, item: Item, number: int) -> bool:
-        """Whether card ``number``, graded alone as ``item``'s card on this read, is refused
-        nothing (:meth:`writes`): what a re-sent create's last card must be before its
-        others are offered for deletion (:func:`_shared`)."""
+    def refuses_nothing(self, item: Item) -> bool:
+        """Whether ``item``'s card on this grading is refused nothing (:meth:`writes`): on
+        :func:`_shared_refusals`' grading, what a re-sent create's last card must be before
+        its others are offered for deletion (:func:`_shared`)."""
         refusals: list[str] = []
-        replace(self, numbers={**self.numbers, item.key: number}).writes(item, refusals)
+        self.writes(item, refusals)
         return not refusals
 
     def _follows(self, write: Write, card: Card) -> bool:

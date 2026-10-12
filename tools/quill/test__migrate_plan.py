@@ -96,6 +96,16 @@ def test_a_wholly_filed_tracker_takes_no_write(corpus):
     assert found.numbers == numbers
 
 
+def test_a_cards_labels_read_in_another_order_are_the_same_labels(corpus):
+    """A-2b's labels read back out of order (the in-memory tracker keeps them sorted; the
+    order GitHub answers in is not the plan's to assume): the same labels, so nothing is
+    refused or written (review 4 of B2b-1, LOW-3: the sort was unpinned)."""
+    tracker, numbers = filed_tracker(corpus)
+    with_change(tracker, numbers["balance:A-2b"], labels=("moves-money", "balance"))
+    found = corpus_plan(corpus, tracker)
+    assert (found.history, found.freeze, found.refusals) == ((), (), ())
+
+
 def test_a_steps_filing_cut_short_after_its_create_resumes_at_its_links(corpus):
     """A-2b created, still marked, with no link yet (a run stopped after the create's
     answer): its parent link, its blocker link, its board place and its unmark remain."""
@@ -232,13 +242,16 @@ def test_a_card_in_another_milestone_or_none_is_refused(corpus):
 
 def test_a_finished_filing_lacking_a_write_is_refused(corpus):
     """A-3 unmarked, but off the board and unblocked: a person changed it after its filing
-    finished, so the migration does not redo it over them."""
+    finished, so the migration does not redo it over them -- or a read lags the run's own
+    writes, showing the mark's removal and not the writes before it, which the refusal names
+    too (review 4 of B2b-1, LOW-4: the executor opens that window)."""
     tracker, numbers = filed_tracker(corpus)
     with_change(tracker, numbers["balance:A-3"], blocked_by=())
     tracker.board.items.remove(numbers["balance:A-3"])
     assert corpus_plan(corpus, tracker).refusals == (
         f"balance:A-3 (plan#{numbers['balance:A-3']}): its filing finished, yet it lacks "
-        "block, board-add: a person changed it; settle it by hand",)
+        "block, board-add: a person changed it, or this read lags the migration's own writes; "
+        "run again later, and if it is refused still, settle it by hand",)
 
 
 def test_steps_waiting_in_a_cycle_are_refused(corpus):

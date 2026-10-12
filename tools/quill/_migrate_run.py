@@ -27,12 +27,16 @@ landed with its answer lost.
 **A by-number re-read precedes each write a listing that lags the run before would
 send again** (draft 4 s.4), and the write is not sent when the re-read shows it made: a
 parent link and a blocked-by link (both cards), a question's As filed comment (its
-comments), a board add and a mark's removal (the card).  A link to the wrong card, in the
-tracker or outside it, or a card gone, stops the run.  The rest take none: a create the
-listing lags is found by the numbering probe; a milestone the listing lags is sent again,
-and fails closed, refused by GitHub (reasoned, unmeasured: the rehearsal's to measure) or
-by the next read's refusal of two of one title; and a ruling's close with its mark
-removed, sent again, leaves it as it was.
+comments), a board add and a mark's removal (the card).  A card found under another
+parent, in the tracker or outside it, stops its parent link at the re-read, and a card gone
+stops any write that re-reads it (the comment's through GitHub's NOT_FOUND error,
+:meth:`_tracker.Tracker.comments`: reasoned, unmeasured); any other edit since the read is
+left to the next plan, which refuses what it grades: the board phase's re-plan, after the
+writes, or the next run's.  The rest take none: a create the listing lags is found by the
+numbering probe; a milestone the listing lags is sent again, and fails closed, refused by
+GitHub (reasoned, unmeasured: the rehearsal's to measure) or by the next read's refusal of
+two of one title; and a ruling's close with its mark removed, sent again, leaves it as it
+was.
 
 **Paced, renewed.**  Each write after a run's first is made at least :data:`PACE_SECONDS`
 after the run's last, GitHub's documented 500 content-creating requests an hour with every
@@ -46,7 +50,8 @@ the run stops; the next run connects afresh.
 
 **The board** is ordered once every card's writes are made (:meth:`Run.open`): the
 tracker is read and planned again, and anything still to write or refused stops the run
-(a read that lags the run's own writes, or a person's edit; the next run tells which);
+(a read that lags the run's own writes, or a person's edit; a later run, once GitHub's
+reads catch up, tells which);
 then the board is read until it holds every card the desired order places on that read of
 the tracker, for :data:`_tracker.BOARD_WAIT_SECONDS` at most, else the run stops, so a
 board read that lags one of them is waited on, never ordered without it.  From that one
@@ -336,7 +341,8 @@ class Run:
         if found.refusals:
             raise Stopped("the tracker, read again after every card's writes, is refused (a "
                           "read that lags the run's writes, or a person's edit; run `migrate "
-                          f"open` again to tell): {'; '.join(found.refusals)}")
+                          "open` again once GitHub's reads catch up to tell): "
+                          f"{'; '.join(found.refusals)}")
         if found.history or found.freeze:
             raise Stopped("the tracker does not show every write yet "
                           f"({len(found.history) + len(found.freeze)} to make on this read): "

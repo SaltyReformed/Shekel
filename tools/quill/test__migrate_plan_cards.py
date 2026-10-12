@@ -556,7 +556,7 @@ def test_a_re_sent_creates_other_cards_are_offered_for_deletion(corpus, lagging)
 
 def test_two_re_sent_creates_are_each_refused_by_key_with_its_own_card_to_keep(corpus):
     """S-1's create and F-1's each re-sent: two keys on two cards each, S-1 first in the
-    source and F-1 first by key.  Each key is graded with its own last card alone, offers
+    source and F-1 first by key.  Each key's last card is graded as its item's card, offers
     its own copy for deletion and names its own last card to keep; the refusals stand in
     key order, as every refusal of a key does."""
     tracker, numbers = filed_tracker(corpus, start=3)
@@ -567,6 +567,80 @@ def test_two_re_sent_creates_are_each_refused_by_key_with_its_own_card_to_keep(c
         _resent("balance:F-1", f"plan#2 {_BARE}", "plan#8 unmarked, under plan#4"),
         _resent("salary:S-1", f"plan#1 {_BARE}",
                 "plan#7 unmarked, holding 1 sub-issue(s), on the board"))
+    assert (found.history, found.freeze) == ((), ())
+
+
+_A2A = "holding 1 sub-issue(s), blocking plan#5, plan#6, on the board"
+
+
+@pytest.mark.parametrize("moved, refusals", [
+    (False, (_resent("balance:A-2", f"plan#1 {_BARE}",
+                     "plan#3 unmarked, holding 2 sub-issue(s)"),
+             _resent("balance:A-2a", f"plan#2 {_BARE}",
+                     f"plan#4 unmarked, under plan#3, {_A2A}"))),
+    (True, (_by_hand("balance:A-2", "plan#1 marked, holding 1 sub-issue(s)",
+                     "plan#3 unmarked, holding 1 sub-issue(s)"),
+            _by_hand("balance:A-2a", f"plan#2 {_BARE}",
+                     f"plan#4 unmarked, under plan#1, {_A2A}"))),
+], ids=["as-the-run-left-them", "the-last-leaf-card-under-the-containers-copy"])
+def test_two_re_sent_creates_one_the_others_parent_are_graded_on_each_others_kept_card(
+        corpus, moved, refusals):
+    """A-2's create and A-2a's each re-sent, the run going on with each last made, so A-2a's
+    last card is under A-2's: each last card is graded with every such key's card the one
+    it keeps, so both keys offer their copies (review 4 of B2b-1, LOW-3: no test held two
+    keys re-sent, one the other's parent).  A-2a's last card moved under A-2's copy by hand
+    is under a card no run keeps: both keys are settled by hand."""
+    tracker, numbers = filed_tracker(corpus, start=3)
+    _copy(tracker, 1, numbers["balance:A-2"])
+    _copy(tracker, 2, numbers["balance:A-2a"])
+    if moved:
+        with_change(tracker, numbers["balance:A-2a"], parent=1)
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == refusals
+    assert (found.history, found.freeze) == ((), ())
+
+
+def test_a_re_sent_last_card_under_a_card_refused_already_is_settled_by_hand(corpus):
+    """F-1's create re-sent, #1 a bare copy; a person retitles A-3's card (#5) away from its
+    key and links #7, F-1's last card, under it (review 4 of B2b-1, LOW-1, its probe).  #5 is
+    refused as no item's card, and the read excuses a link to a card refused already; but
+    once #5 is retitled back, #7 stands under A-3's card, not A-2a's, so the last card is
+    graded as it is and neither card is offered for deletion."""
+    tracker, numbers = filed_tracker(corpus)
+    _copy(tracker, 1, numbers["balance:F-1"])
+    with_change(tracker, numbers["balance:A-3"], title="Last part, renamed by hand")
+    with_change(tracker, numbers["balance:F-1"], parent=numbers["balance:A-3"])
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == (
+        _by_hand("balance:F-1", f"plan#1 {_BARE}", "plan#7 unmarked, under plan#5"),
+        _rekeyed(5, "Last part, renamed by hand", first=1))
+    assert (found.history, found.freeze) == ((), ())
+
+
+@pytest.mark.parametrize("parent, refusal, states", [
+    (1, _resent, ("plan#1 unmarked, holding 12 sub-issue(s)", "plan#26 unmarked, under plan#1")),
+    (26, _by_hand, ("plan#1 unmarked, holding 11 sub-issue(s)",
+                    "plan#26 unmarked, under plan#1, holding 1 sub-issue(s)")),
+], ids=["under-the-card-filed-already", "under-the-card-given-its-key"])
+def test_a_re_sent_last_card_is_graded_under_a_card_filed_alreadys_own_card(
+        corpus, monkeypatch, parent, refusal, states):
+    """N-391's create re-sent, its last card under card #1, filed already as S-1's, while
+    X-cx's own leaf #26 carries S-1's key by hand.  S-1's refusal keeps card #1 (retitle
+    #26), so N-391's last card is graded under #1, not under #26, the last card of S-1's
+    key: under #1 its copy is offered; under #26, where the next run refuses it, it is
+    settled by hand."""
+    monkeypatch.setitem(_migrate_source.MAPPED, "salary:S-1", 1)
+    filed, numbers = filed_tracker(corpus, skip=("salary:S-1",), start=31)
+    tracker = _with_own_cards(filed)
+    _copy(tracker, 30, numbers["salary:N-391"])
+    with_change(tracker, numbers["salary:N-391"], parent=parent)
+    with_change(tracker, 26, title=card_title("S-1", "A leaf"))
+    found = corpus_plan(corpus, tracker)
+    assert found.refusals == (
+        refusal("salary:N-391", f"plan#30 {_BARE}",
+                f"plan#{numbers['salary:N-391']} unmarked, under plan#{parent}"),
+        _filed_already("salary:S-1", 1, *states),
+        _rekeyed(27, "[X-cx L27] A leaf", first=26))
     assert (found.history, found.freeze) == ((), ())
 
 
