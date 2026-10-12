@@ -54,7 +54,6 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import MovementFigureSourceEnum, StatusEnum
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
     account_service,
@@ -72,6 +71,7 @@ from tests._test_helpers import (
     typed,
     amount_basis_for,
     an_entered_day,
+    assert_a_twin_is_refused,
     create_transfer,
     open_books_before_the_first_assertion,
     transfer_side_figure,
@@ -92,12 +92,20 @@ _STALE = Decimal("1.00")
 
 
 def _derived_loan_transfer(seed_user, seed_periods):
-    """Return one projected loan-payment transfer and its expense shadow.
+    """Return one projected loan-payment transfer.
 
     Built on the derive-from-loan fixture the live-override integration test
     already owns, so the two grade the same loan with the same arithmetic: a
     $200k / 6% / 360mo mortgage with $3,600/yr escrow behind a recurring
     transfer whose stored amount is stale.
+
+    It returned the transfer AND its expense shadow until plan step
+    ``balance:X-bi-6-4d-3``, where a transfer became one row and the shadow
+    stopped being born (ruling **R-BAL167** class 4).  Four callers read the
+    shadow and every other discarded it: three read only its ``account_id``,
+    the transfer's from-account, where the expense twin sat; one read the
+    period it was filed in and its due date, both copied off the transfer.
+    Each reads the transfer's own column now.
     """
     loan, _escrow, scenario_id, template, _rule, _periods = (
         _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
@@ -118,12 +126,7 @@ def _derived_loan_transfer(seed_user, seed_periods):
         .first()
     )
     assert xfer is not None, "expected a generated loan-payment transfer"
-    expense_shadow = (
-        db.session.query(Transaction)
-        .filter_by(transfer_id=xfer.id, account_id=xfer.from_account_id)
-        .one()
-    )
-    return xfer, expense_shadow
+    return xfer
 
 
 def _plain_transfer(
@@ -158,18 +161,6 @@ def _plain_transfer(
     )
 
 
-def _shadows(xfer_id):
-    """Return both legs of *xfer_id*, expense side first."""
-    rows = (
-        db.session.query(Transaction)
-        .filter_by(transfer_id=xfer_id)
-        .order_by(Transaction.id)
-        .all()
-    )
-    assert len(rows) == 2, "Transfer Invariant 1: exactly two shadows"
-    return rows
-
-
 def _sides(xfer_id):
     """Return *xfer_id*'s two side accounts, the from (expense) side first.
 
@@ -177,7 +168,8 @@ def _sides(xfer_id):
     ``balance:X-bi-6-4d-2`` (ruling **R-BAL167** class 4): a side's payment
     record hangs off the TRANSFER and nothing keeps a twin's status, day or
     figure, so each side is read as the transfer and its record, never as its
-    twin row (:func:`_shadows`).
+    twin row (the deleted ``_shadows``, which went with its last caller at plan
+    step ``balance:X-bi-6-4d-3``, where no twin is born).
     """
     xfer = db.session.get(Transfer, xfer_id)
     return (xfer.from_account_id, xfer.to_account_id)
@@ -209,10 +201,13 @@ class TestTheSettleFreezeIsTheSERVICEs:
 
         Each side is read as the transfer and its side's record, where it was
         read off its twin row (ruling R-BAL167 class 1, plan step
-        balance:X-bi-6-4d-2).
+        balance:X-bi-6-4d-2).  The PLAN column asserted empty below is the
+        transfer's, where it was each twin's AND the transfer's until plan
+        step balance:X-bi-6-4d-3 stopped the twins being born (ruling
+        R-BAL167 class 1).
         """
         with app.app_context():
-            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer = _derived_loan_transfer(seed_user, seed_periods)
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
@@ -230,20 +225,17 @@ class TestTheSettleFreezeIsTheSERVICEs:
                 assert transfer_side_figure(
                     db.session, xfer.id, account_id,
                 ) == _LIVE_PITI
-            for shadow in _shadows(xfer.id):
-                # The shadow's PLAN column is empty, and that is what keeps
-                # the freeze idempotent (plan step X-au-g-2c-2).  It held the
-                # stale ``$1.00`` and had to be left untouched, because the
-                # deleted ``_manual_shadow_amount`` read it as its base -- a
-                # settle that wrote it would have made a later settle derive
-                # from its own output.  A derived shadow has no such column,
-                # so the cycle has nowhere to close.  The stale figure it used
-                # to hold moved to the PARENT at X-au-g-2c-2 and is GONE at
-                # X-au-f, so there is no stored figure on either row for a
-                # settle to derive from -- which is the same claim with nothing
-                # left to violate it.
-                assert shadow.estimated_amount is None
-                assert shadow.transfer.amount is None
+            # The transfer's PLAN column is empty after the settle, and that
+            # is what keeps the freeze idempotent (plan step X-au-g-2c-2): a
+            # settle that wrote its booked figure there would hand a later
+            # settle its own output to derive from.  The stale ``$1.00`` once
+            # sat on each shadow, where the deleted ``_manual_shadow_amount``
+            # read it as its base; it moved to the PARENT at X-au-g-2c-2 and
+            # is GONE at X-au-f, and the shadows themselves are gone since
+            # plan step balance:X-bi-6-4d-3.  So the ONE row left stores no
+            # figure for a settle to derive from -- the same claim with
+            # nothing left to violate it.
+            assert db.session.get(Transfer, xfer.id).amount is None
 
     def test_a_typed_figure_BEATS_the_freeze(
         self, app, db, seed_user, seed_periods,
@@ -257,7 +249,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
         balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer = _derived_loan_transfer(seed_user, seed_periods)
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
@@ -348,10 +340,13 @@ class TestTheSettleFreezeIsTheSERVICEs:
         typed -- which is why the dispatch runs after the caller-stated facts
         rather than before them.  Each side's figure is read as the transfer
         and its side's record, not its twin row (ruling R-BAL167 class 1, plan
-        step balance:X-bi-6-4d-2).
+        step balance:X-bi-6-4d-2).  The stored `$1,325.00` is read off the
+        transfer, which owns it, where each twin's copy was read until plan
+        step balance:X-bi-6-4d-3 stopped the twins being born (ruling R-BAL167
+        class 1).
         """
         with app.app_context():
-            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer = _derived_loan_transfer(seed_user, seed_periods)
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
@@ -370,8 +365,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
             db.session.commit()
 
             db.session.expire_all()
-            for shadow in _shadows(xfer.id):
-                assert shadow.estimated_amount == Decimal("1325.00")
+            assert db.session.get(Transfer, xfer.id).amount == Decimal("1325.00")
             for account_id in _sides(xfer.id):
                 # An uncorrected settle RECORDS what it booked on the
                 # ``derived`` basis (plan step X-au-c3).  This asserted a NULL
@@ -400,7 +394,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
         balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer = _derived_loan_transfer(seed_user, seed_periods)
             done_id = ref_cache.status_id(StatusEnum.DONE)
 
             transfer_service.update_transfer(
@@ -443,7 +437,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
         step balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer = _derived_loan_transfer(seed_user, seed_periods)
             leg = _side_leg(xfer.id, xfer.from_account_id)
 
             offered = transfer_service.leg_settle_amount(leg, amount_basis_for(leg))
@@ -479,7 +473,7 @@ class TestEveryDoorReachesTheSameFigure:
         (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer = _derived_loan_transfer(seed_user, seed_periods)
             xfer_id = xfer.id
 
         response = auth_client.post(f"/transfers/instance/{xfer_id}/mark-done")
@@ -505,11 +499,14 @@ class TestEveryDoorReachesTheSameFigure:
         ``leg_account_id`` now.  The control for the move: the rule left the
         route for the service, so the figure it books must be unchanged.  Each
         side is read as the transfer and its side's record, not its twin row
-        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  The leg
+        pressed is the transfer's from-side, where it was the expense twin's
+        account until plan step balance:X-bi-6-4d-3 stopped the twin being
+        born -- the same account (ruling R-BAL167 class 1).
         """
         with app.app_context():
-            xfer, shadow = _derived_loan_transfer(seed_user, seed_periods)
-            xfer_id, leg_account_id = xfer.id, shadow.account_id
+            xfer = _derived_loan_transfer(seed_user, seed_periods)
+            xfer_id, leg_account_id = xfer.id, xfer.from_account_id
 
         response = auth_client.post(
             f"/transfers/instance/{xfer_id}/mark-done",
@@ -559,7 +556,7 @@ class TestEveryDoorReachesTheSameFigure:
         balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer = _derived_loan_transfer(seed_user, seed_periods)
             xfer_id = xfer.id
             version = xfer.version_id
             # Exactly what the rendered form carries back: the value already in
@@ -617,11 +614,14 @@ class TestEveryDoorReachesTheSameFigure:
         a settle that must freeze like any other.  Without this case the
         census is a claim in a docstring: three doors graded, one asserted.
         Each side is read as the transfer and its side's record, not its twin
-        row (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+        row (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  The leg
+        asked from is the transfer's from-side, where it was the expense
+        twin's account until plan step balance:X-bi-6-4d-3 stopped the twin
+        being born -- the same account (ruling R-BAL167 class 1).
         """
         with app.app_context():
-            xfer, shadow = _derived_loan_transfer(seed_user, seed_periods)
-            xfer_id, leg_account_id = xfer.id, shadow.account_id
+            xfer = _derived_loan_transfer(seed_user, seed_periods)
+            xfer_id, leg_account_id = xfer.id, xfer.from_account_id
             version = xfer.version_id
 
         response = auth_client.patch(
@@ -654,10 +654,14 @@ class TestEveryDoorReachesTheSameFigure:
         date the money as having moved on the day the STATEMENT covers rather
         than the day the operator got round to reconciling.  Each side is read
         as the transfer and its side's record, not its twin row (ruling
-        R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+        R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  The landing day is
+        read off the TRANSFER's own period and due date, where it was read off
+        the expense twin's until plan step balance:X-bi-6-4d-3 stopped the twin
+        being born; the twin copied both from the transfer, so the day is the
+        same (ruling R-BAL167 class 1).
         """
         with app.app_context():
-            xfer, shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer = _derived_loan_transfer(seed_user, seed_periods)
             xfer_id = xfer.id
             account_id = xfer.from_account_id
             # The day the panel measures the offer against is the row's own
@@ -665,9 +669,9 @@ class TestEveryDoorReachesTheSameFigure:
             # due date, so the two differ and a statement asserted before the
             # landing day would (correctly) offer nothing.
             period = calendar_for(seed_user["user"].id).require_period(
-                FiledRow.for_row(shadow),
+                FiledRow.for_row(xfer),
             )
-            observed = period.attribution_day(shadow.due_date)
+            observed = period.attribution_day(xfer.due_date)
 
         response = auth_client.patch(
             f"/accounts/{account_id}/true-up",
@@ -867,7 +871,7 @@ class TestTheNamedVerbItself:
         against the transfer's own, which reproduces the old extension exactly.
         """
         with app.app_context():
-            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer = _derived_loan_transfer(seed_user, seed_periods)
             xfer.template.settings.derive_from_loan = False
             xfer.template.settings.extra_principal = Decimal("0.00")
             db.session.commit()
@@ -912,7 +916,7 @@ class TestTheNamedVerbItself:
         R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer = _derived_loan_transfer(seed_user, seed_periods)
             user_id = seed_user["user"].id
             corrected = Decimal("1512.44")
 
@@ -950,7 +954,7 @@ class TestTheNamedVerbItself:
         R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer = _derived_loan_transfer(seed_user, seed_periods)
             transfer_service.settle_transfer(
                 xfer.id, seed_user["user"].id,
                 submitted=typed(Decimal("1512.44")),
@@ -1057,14 +1061,26 @@ class TestOneBrokenPairCannotStopTheDeployResync:
     would have posted a figure and carried on.
     """
 
-    def test_it_skips_the_broken_pair_and_still_posts_the_healthy_one(
+    def test_the_drift_it_skipped_is_refused_and_the_batch_still_completes(
         self, app, db, seed_user, seed_periods,
     ):
-        """One drifted pair beside one sound pair: the sound one still syncs.
+        """The drifted pair cannot be stored, and the batch completes beside it.
 
-        Shown to FIRE: without the per-transfer isolation this raises
-        ``PostingError`` out of the batch and the healthy transfer is never
-        reached, which is the container-start failure.
+        **Renamed and re-expressed at plan step balance:X-bi-6-4d-3** (ruling
+        **R-BAL167** class 2; it was
+        ``test_it_skips_the_broken_pair_and_still_posts_the_healthy_one``).
+        Its drift was the INCOME twin's status moved out of the settled band
+        under a settled parent, behind the seam's back.  A transfer is one row
+        since that step and ``ck_transactions_names_no_transfer`` refuses a
+        twin (ruling **R-BAL258**), so the drift has no row to live on: the
+        twin is asserted refused, and the batch-completes assertions stand
+        over the two transfers.  The skip itself -- the per-transfer
+        savepoint that keeps one refused transfer from aborting the batch --
+        is graded on a drift that can still be built, a side's record
+        re-pointed onto an account with no ledger pairing:
+        ``test_posting_service.py``'s ``test_a_refused_transfer_is_skipped_whole``.
+        The "shown to FIRE" note this case carried described the twin drift
+        and went with it.
         """
         with app.app_context():
             broken = _plain_transfer(
@@ -1083,15 +1099,10 @@ class TestOneBrokenPairCannotStopTheDeployResync:
             transfer_service.settle_transfer(healthy_id, owner)
             db.session.commit()
 
-            # Drift the INCOME leg out of the settled band, behind the seam's
-            # back -- which is how the real corruption arises (a bulk UPDATE, a
-            # half-applied migration).  The PARENT stays settled, so the batch
-            # still selects it and still asks for its settled effect.
-            income = [
-                s for s in _shadows(broken_id) if not s.is_expense
-            ][0]
-            income.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            db.session.commit()
+            # The drift lived on the INCOME twin, which cannot be stored.
+            assert_a_twin_is_refused(
+                db.session, db.session.get(Transfer, broken_id), is_income=True,
+            )
 
             # The batch completes rather than raising, which is the claim.
             transactions_changed, transfers_changed = (
@@ -1102,6 +1113,6 @@ class TestOneBrokenPairCannotStopTheDeployResync:
             assert isinstance(transfers_changed, int)
             assert isinstance(transactions_changed, int)
 
-            # And the sound pair was still reached: it is at target, so a
-            # further pass reports nothing to do for it.
+            # And both transfers were reached: each is at target, so a further
+            # pass reports nothing to do.
             assert posting_service.resync_all_cash_postings()[1] == 0

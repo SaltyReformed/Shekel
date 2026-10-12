@@ -4852,19 +4852,9 @@ def assert_a_twin_is_refused(db_session, xfer, is_income):
     row such a test drove a door on, priced or read can no longer be stored.
     The refusal is spelled other ways too (the transfer schema's
     ``_make_shadow`` cases, ``test_amount_ownership``, the 82f7 migration's
-    own); this is the one a class-2 re-expression calls.
-
-    The row carries what ``transfer_service._create._build_shadow`` copied
-    onto a twin at ``5f46d6973`` (the leaf below, where the create door still
-    made two): the transfer's owner, period, scenario, category and due date,
-    the side's endpoint and type, and a figure derived from its parent
-    (``PARENT_TRANSFER``).  It is NOT that builder's row column for column:
-    its ``name`` is this helper's own (the builder wrote "Transfer to / from
-    <account>"), and its status is Projected, the status every transfer door
-    created a transfer in, where the builder wrote the transfer's own (the
-    service's born-settled branch built settled twins).  Neither column bears
-    on the CHECK, and the row satisfies every other rule, so the refusal
-    reported is that CHECK's and no other constraint's.
+    own); this is the one a class-2 re-expression calls.  The row is
+    :func:`a_twin_of`'s, which says what it carries and why that CHECK is the
+    one reported.
 
     **The session is rolled back after the refusal**, which discards anything
     the caller had not committed; commit first, and re-read what the session
@@ -4875,6 +4865,44 @@ def assert_a_twin_is_refused(db_session, xfer, is_income):
         xfer: The flushed :class:`~app.models.transfer.Transfer`.
         is_income: ``True`` for the to-side's (income) twin, ``False`` for
             the from-side's (expense) twin.
+    """
+    db_session.add(a_twin_of(xfer, is_income))
+    with pytest.raises(sa_exc.IntegrityError) as excinfo:
+        db_session.flush()
+    db_session.rollback()
+    assert constraint_name_from(excinfo.value) == (
+        "ck_transactions_names_no_transfer"
+    ), f"the twin was refused by another rule: {excinfo.value}"
+
+
+def a_twin_of(xfer, is_income):
+    """Return, unsaved, the twin row one side of *xfer* used to have.
+
+    The ONE construction of a twin for a test that plants one (plan step
+    ``balance:X-bi-6-4d-3``): :func:`assert_a_twin_is_refused` adds it as it
+    is, and a test whose planted shape is a twin with something MORE on it --
+    a figure written past the amount seam -- takes it from here and adds that,
+    so the two cannot come to disagree about what the rest of the row is.
+
+    The row carries what ``transfer_service._create._build_shadow`` copied
+    onto a twin at ``5f46d6973`` (the leaf below, where the create door still
+    made two): the transfer's owner, period, scenario, category and due date,
+    the side's endpoint and type, and a figure derived from its parent
+    (``PARENT_TRANSFER``).  It is NOT that builder's row column for column:
+    its ``name`` is this helper's own (the builder wrote "Transfer to / from
+    <account>"), and its status is Projected, the status every transfer door
+    created a transfer in, where the builder wrote the transfer's own (the
+    service's born-settled branch built settled twins).  Neither column bears
+    on ``ck_transactions_names_no_transfer``, and as built the row satisfies
+    every other rule, so that CHECK is the only one it violates.
+
+    Args:
+        xfer: The flushed :class:`~app.models.transfer.Transfer`.
+        is_income: ``True`` for the to-side's (income) twin, ``False`` for
+            the from-side's (expense) twin.
+
+    Returns:
+        The unsaved :class:`~app.models.transaction.Transaction`.
     """
     # Pylint: import-outside-toplevel -- same lazy-app-import convention
     # every helper in this module follows.
@@ -4899,13 +4927,7 @@ def assert_a_twin_is_refused(db_session, xfer, is_income):
         due_date=xfer.due_date,
     )
     declare_derived(twin, AmountSourceEnum.PARENT_TRANSFER)
-    db_session.add(twin)
-    with pytest.raises(sa_exc.IntegrityError) as excinfo:
-        db_session.flush()
-    db_session.rollback()
-    assert constraint_name_from(excinfo.value) == (
-        "ck_transactions_names_no_transfer"
-    ), f"the twin was refused by another rule: {excinfo.value}"
+    return twin
 
 
 def transfer_side_record(db_session, transfer_id, account_id):
