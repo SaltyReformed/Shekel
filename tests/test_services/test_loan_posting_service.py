@@ -1339,7 +1339,7 @@ class TestSyncLoanPaymentPostings:
     def test_correction_is_disjoint_from_the_transaction_path(
         self, app, db, seed_user, seed_periods,
     ):
-        """The transaction poster, run on the loan at a payment's own key, touches no split.
+        """An ordinary row posted on the loan at a payment's own key leaves its split whole.
 
         Through plan step ``balance:X-bi-6-1b`` this pinned a GUARD: the
         transaction path's reader was link-keyed and the correction carried
@@ -1354,12 +1354,18 @@ class TestSyncLoanPaymentPostings:
         plan step ``balance:X-bi-6-4d-3`` made a transfer one row: no
         transaction row can name the payment now (ruling **R-BAL258**).
         Re-expressed under ruling **R-BAL167** class 1 (the cp2a review's
-        L-2, its RV-B3): an ORDINARY row on the LOAN account, in the
-        payment's own period and on its loan side's own settle day, settled
-        through the real go-forward primitives (which post it) and then
-        driven through ``sync_transaction_postings`` again.  The repeat
-        writes nothing, and the split's entry count after both posts is the
-        one before them.
+        L-2, its RV-B3), an ordinary row standing where the shadow stood: an
+        ORDINARY row on the LOAN account, in the payment's own period and on
+        its loan side's own settle day, settled through the real go-forward
+        primitives (which post it) and then driven through
+        ``sync_transaction_postings`` again.  What is read is the split's
+        EFFECT across the row's whole life, its first post included (the
+        cp2b-0 review's M-1): the loan_interest ledger nets the split's
+        ``500.00`` before the row and after both its posts, and the split
+        is still one entry.  A transaction path that reached the split, by
+        its link or by its key, would reverse it on the FIRST post, under
+        the row's own source kind, and leave the repeat nothing to write.
+        The repeat writes nothing.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1372,9 +1378,16 @@ class TestSyncLoanPaymentPostings:
                 loan.id, scenario_id,
             )
             db.session.commit()
-            entries_before = len(_correction_entries(xfer, loan))
-            assert entries_before == 1
+            interest_ledger = _find_loan_ledger(
+                loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
+            )
+            # The split: 100000 * 0.06 / 12 = 500.00 of interest.
+            assert len(_correction_entries(xfer, loan)) == 1
+            assert _ledger_net(
+                interest_ledger.id, scenario_id,
+            ) == Decimal("500.00")
 
+            # Settling the row posts it: its FIRST post.
             row = create_settled_cash_transaction(
                 seed_user, db.session, seed_periods[_P1], Decimal("25.00"),
                 account=loan,
@@ -1385,7 +1398,10 @@ class TestSyncLoanPaymentPostings:
             assert not posting_service.sync_transaction_postings(row)
             db.session.commit()
 
-            assert len(_correction_entries(xfer, loan)) == entries_before
+            assert len(_correction_entries(xfer, loan)) == 1
+            assert _ledger_net(
+                interest_ledger.id, scenario_id,
+            ) == Decimal("500.00")
 
     def test_early_settled_payment_splits_at_settle(
         self, app, db, monkeypatch, seed_user, seed_periods,

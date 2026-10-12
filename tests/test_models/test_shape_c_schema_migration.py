@@ -289,7 +289,8 @@ class TestTheSplitUnlinkExecutes:
     The DML the upgrade adds at leaf 2 (ruling **R-BAL102**), executed against
     the test's OWN database: a ``loan_payment`` entry planted in the OLD shape
     -- linking a settled loan payment's income shadow by ``transaction_id``,
-    exactly as every one of production's does at the base -- is unlinked
+    exactly as every one of production's loan-payment splits did at the base
+    -- is unlinked
     by the statement, the grade query then counts ZERO still linked, and an
     entry the statement did not reach (planted linked again after it ran)
     is what the grade counts.  The migration's own ``upgrade()`` raises on a

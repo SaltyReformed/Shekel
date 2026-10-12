@@ -3652,7 +3652,9 @@ def create_transfer(
         due_date: Optional due date stored on the transfer.  ``None`` (the
             default) leaves it unset, which is what the
             ad-hoc transfer form produces; a loan payment's installment then
-            falls back to its pay-period start.
+            falls back to the loan's first payment day on or after its
+            pay-period start
+            (:func:`app.services.installment_calendar.monthly_due_date`).
         name: Optional transfer display name.
         scenario: The :class:`~app.models.scenario.Scenario` to place the
             transfer in.  Defaults to the seed user's baseline.
@@ -3754,9 +3756,11 @@ def create_settled_transfer(
         due_date: Optional due date stored on the transfer, passed straight
             through to :func:`create_transfer`.
             ``None`` (the default) leaves it unset, and a loan payment's
-            installment then falls back to its pay-period start.  Pass it when a
-            test needs two settled loan payments in ONE accrual period at
-            DIFFERENT installments -- the period-start fallback resolves both to
+            installment then falls back to the loan's first payment day on or
+            after its pay-period start
+            (:func:`app.services.installment_calendar.monthly_due_date`).  Pass
+            it when a test needs two settled loan payments in ONE accrual
+            period at DIFFERENT installments -- that fallback resolves both to
             the same date, so it cannot express that shape.
         scenario: The :class:`~app.models.scenario.Scenario` to place the
             transfer in.  Defaults to ``None``, which uses

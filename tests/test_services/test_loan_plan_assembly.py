@@ -206,7 +206,7 @@ def _project_loan_payment(seed_user, db, loan, period, amount, due_date):
 def test_a_derived_projected_shadow_is_priced_by_the_plan_tier(
     seed_user, db, seed_periods,
 ):
-    """A projected loan payment whose plan is DERIVED is priced, not refused.
+    """A projected loan payment is priced by the plan tier, and a derived twin of it is refused.
 
     **The PLAN tier's half of plan step balance:X-au-g-2c-1**, and the reason
     that step routed two readers rather than the one its finding named.

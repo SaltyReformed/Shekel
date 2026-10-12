@@ -358,6 +358,33 @@ def _set(table, row_id, values):
     _db.session.commit()
 
 
+#: The category refusal's repair advice, spelled HERE rather than read off the
+#: migration, so a refusal that stops saying which row to repair fails its
+#: case (the cp2b-0 review's L-1).
+_REPAIR_ADVICE = (
+    "where the transfer names a category whose owner is not the transfer's, "
+    "the transfer is refused for its own category as well and is a row to "
+    "repair, its twins with it; otherwise the twin alone is"
+)
+
+
+def _cross_user_references():
+    """Every transfer and transaction filed under a category not its owner's.
+
+    Returned as ``(table, row id)`` pairs, so an empty list says no row of
+    either table names another user's category.
+    """
+    return [tuple(row) for row in _db.session.execute(text(
+        "SELECT 'transfers', x.id FROM budget.transfers x "
+        "JOIN budget.categories c ON c.id = x.category_id "
+        "WHERE c.user_id <> x.user_id "
+        "UNION ALL "
+        "SELECT 'transactions', t.id FROM budget.transactions t "
+        "JOIN budget.categories c ON c.id = t.category_id "
+        "WHERE c.user_id <> t.user_id ORDER BY 1, 2"
+    ))]
+
+
 def _side_value(parent, field, *, income):
     """What *parent* says its *income* (or expense) side's twin holds in *field*."""
     if field == "account_id":
@@ -946,6 +973,71 @@ class TestTheUpgrade:
             )
 
             _set("transfers", xfer.id, {"category_id": None})
+            _upgrade()
+
+    @pytest.mark.parametrize(
+        "given_away", (False, True),
+        ids=("another_users_category", "its_own_category_given_away"),
+    )
+    def test_a_foreign_twin_of_a_clean_transfer_is_the_row_to_repair(
+        self, app, seed_user, seed_second_user, seed_periods, given_away,
+    ):
+        """The ids differ and the transfer's category is its owner's: the twin alone is the row.
+
+        The transfer under its owner's Rent, as the update door files it; ONE
+        twin, by raw statements, under a category that is not its owner's
+        and is not its transfer's either: the second user's Groceries on the
+        to-side (the ids differ as on finding BAL-575's older income twins,
+        here with a foreign category), or on the from-side a category of the
+        owner's own that is then given to the second user.  The twin is refused with its
+        transfer's category and THAT category's owner, the transfer's own,
+        beside its own; the transfer is not refused, and the advice, read
+        whole here, sends the operator to the twin alone.  Following it, the
+        upgrade passes and no transfer or row is left under another user's
+        category, through a round trip after (the cp2b-0 review's L-1, its
+        RV-S3 and RV-S6).  *given_away* is whether the twin's category is the
+        owner's own, given away since.
+        """
+        with app.app_context():
+            savings = _accounts(seed_user)[0]
+            owner = seed_user["user"].id
+            second = seed_second_user["user"].id
+            rent = seed_user["categories"]["Rent"].id
+            xfer = create_transfer(
+                seed_user, _db.session, seed_user["account"], savings,
+                seed_periods[0],
+            )
+            _db.session.commit()
+            transfer_service.update_transfer(xfer.id, owner, category_id=rent)
+            _db.session.commit()
+            _downgrade()
+            twin = _twin_of(xfer.id, income=not given_away)
+            if given_away:
+                category = _new_category(owner, "One Row", "Given Away")
+                _set("transactions", twin["id"], {"category_id": category})
+                _set("categories", category, {"user_id": second})
+            else:
+                category = seed_second_user["categories"]["Groceries"].id
+                _set("transactions", twin["id"], {"category_id": category})
+            before = _twin_rows([xfer.id])
+
+            with pytest.raises(RuntimeError) as refused:
+                _upgrade()
+            _assert_nothing_written([xfer.id], before)
+            _db.session.rollback()
+            assert (
+                f"({xfer.id}, {twin['id']}, {category}, {second}, {rent}, "
+                f"{owner})"
+            ) in str(refused.value)
+            assert "transfer(s) are filed under" not in str(refused.value)
+            assert _REPAIR_ADVICE in str(refused.value)
+
+            # The advice followed: the twin alone repaired.
+            _set("transactions", twin["id"], {"category_id": rent})
+            _upgrade()
+            assert _cross_user_references() == []
+            _downgrade()
+            assert _cross_user_references() == []
             _upgrade()
 
     @pytest.mark.parametrize(
