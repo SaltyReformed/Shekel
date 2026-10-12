@@ -10,18 +10,25 @@ twin, refusing while a side has none or while a twin no longer says what its
 transfer and its side's record say (the cp2b-1 review's L-4).
 
 Driven against the test database, which is built at head, through the shipped
-``upgrade`` / ``downgrade``: each case first downgrades, so the pre-step shape
-(every record under a twin) is what the upgrade meets -- whichever parent the
-code under test writes a record under, the downgrade has put it under a twin.
-Between the two the ORM's models name columns the table does not have, so that
-window is raw SQL only.  Every case ends at head.
+``upgrade`` / ``downgrade``.  **At head no transfer has a twin**: plan step
+``balance:X-bi-6-4d-3``'s revision, the one above (:data:`_STEP_ABOVE`),
+deletes them and refuses a new one.  So every case that reads or plants a
+twin, or downgrades this revision, first runs the step above's downgrade
+(:func:`_twins_built`), as the release's own way down does: it builds two
+twins for every transfer by its one build rule, each saying its transfer's
+status and its side's record's day, basis and link.  This revision's
+downgrade then files every record under its side's twin, which is the
+pre-step shape its upgrade meets.  Between the two the ORM's models name
+columns the table does not have, so that window is raw SQL only.  Every case
+whose last act is an upgrade runs both upgrades and so ends at head; a case
+that ends in a refusal ends where the refusal left it, on a database the
+``db`` fixture clones for that case alone.
 
-**A case that settles through the app brings its twins into step before it
-downgrades** (:func:`_twins_rebuilt`): the app writes a settle on the transfer
-and the side's record alone at this revision, so its twins still say Projected,
-and the downgrade refuses that, as it must; plan step
-``balance:X-bi-6-4d-3``'s downgrade rebuilds the twins first in the release
-this revision ships in, and the helper does what it will.
+**A case whose premise is a database the app wrote AT this revision builds
+the twins first and then drives the act through the app's own door**: from
+this revision the app writes a settle or a ``$0.00`` close on the transfer
+and its sides' records and never on a twin, so the twins keep the status
+they were built with, which is what this revision's downgrade refuses.
 """
 
 from __future__ import annotations
@@ -31,15 +38,19 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import text
 
+from app import ref_cache
+from app.enums import StatusEnum
 from app.extensions import db as _db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.services import transfer_service
 from tests._test_helpers import (
     create_account_of_type,
     create_settled_transfer,
     create_transfer,
     load_migration_module,
     run_migration_callable,
+    typed,
 )
 
 _MIGRATION = load_migration_module(
@@ -135,8 +146,8 @@ def _rule_triggers():
     ), {"names": list(_RULE_TRIGGERS)}))
 
 
-def _settled_pair(seed_user):
-    """Two Paid transfers on two accounts, committed; returns ``(a, b)``."""
+def _pair(seed_user, build):
+    """Two transfers on two accounts, each made by *build*, committed; returns ``(a, b)``."""
     savings = create_account_of_type(
         seed_user, _db.session, "Savings", "Migration Savings",
     )
@@ -144,11 +155,11 @@ def _settled_pair(seed_user):
         seed_user, _db.session, "Savings", "Migration Van Fund",
     )
     _db.session.commit()
-    first = create_settled_transfer(
+    first = build(
         seed_user, _db.session, seed_user["account"], savings,
         seed_user["bootstrap_period"], amount=Decimal("500.00"),
     )
-    second = create_settled_transfer(
+    second = build(
         seed_user, _db.session, savings, van,
         seed_user["bootstrap_period"], amount=Decimal("120.00"),
     )
@@ -156,31 +167,58 @@ def _settled_pair(seed_user):
     return first, second
 
 
-def _twins_rebuilt():
-    """Rebuild every twin's status, day, basis and statement link from its transfer and record.
+def _settled_pair(seed_user):
+    """Two Paid transfers on two accounts, committed; returns ``(a, b)``."""
+    return _pair(seed_user, create_settled_transfer)
 
-    By SQL, at head: each twin takes its transfer's status, and a LIVE twin
-    its side's record's day, basis and link (``NULL`` where the side holds
-    none, and on a deleted twin) -- what the downgrade's
-    ``refuse_drifted_twins`` reads, and what ``X-bi-6-4d-3``'s downgrade
-    promises to write before this revision's runs.  A sub-select returning no
-    row sets its columns ``NULL``.  Staged; the caller's downgrade runs in the
-    same transaction.
+
+def _settle_at_this_revision(seed_user, xfer, **figure):
+    """Mark *xfer* Paid through the app's own door, after its twins are built.
+
+    The door writes the transfer and its sides' records and never a twin, so
+    the twins keep the status and the day they were built with (Projected
+    and none, for a transfer built Projected): what the app from this
+    revision on leaves.  *figure* passes a typed figure through
+    (``figure=typed(...)``), as :func:`create_settled_transfer` does.
+    Committed.
     """
-    _db.session.execute(text(
-        "UPDATE budget.transactions t SET "
-        "status_id = (SELECT x.status_id FROM budget.transfers x "
-        "  WHERE x.id = t.transfer_id), "
-        "(settled_on, settled_day_basis_id, reconciled_by_id) = ("
-        "  SELECT e.settled_on, e.settled_day_basis_id, e.reconciled_by_id "
-        "  FROM budget.transaction_entries e "
-        "  WHERE NOT t.is_deleted "
-        "    AND CASE WHEN t.transaction_type_id = (SELECT id FROM "
-        "             ref.transaction_types WHERE name = 'Income') "
-        "             THEN e.income_transfer_id "
-        "             ELSE e.expense_transfer_id END = t.transfer_id) "
-        "WHERE t.transfer_id IS NOT NULL"
-    ))
+    transfer_service.update_transfer(
+        xfer.id, seed_user["user"].id,
+        status_id=ref_cache.status_id(StatusEnum.DONE), **figure,
+    )
+    _db.session.commit()
+
+
+def _twins_built():
+    """Run the step above's downgrade: two twins for every transfer, at this revision.
+
+    Each built by that revision's one build rule: its transfer's status, and
+    its side's record's day, basis and statement link (none where the side
+    holds no record).  Committed, as every migration call is.
+    """
+    run_migration_callable(_STEP_ABOVE.downgrade, _db.session)
+
+
+def _below_this_revision(seed_user):
+    """A settled pair at the revision below this one, every record under its twin.
+
+    At head no twin exists, so the step above's downgrade builds them
+    (:func:`_twins_built`), and this revision's downgrade then files each
+    record back under its side's twin: the shape this revision's upgrade
+    meets on production.  Committed; returns the pair.
+    """
+    first, second = _settled_pair(seed_user)
+    _twins_built()
+    run_migration_callable(_MIGRATION.downgrade, _db.session)
+    assert not _has_side_links()
+    return first, second
+
+
+def _up_to_head():
+    """Run this revision's upgrade, then the step above's: head again."""
+    run_migration_callable(_MIGRATION.upgrade, _db.session)
+    assert _has_side_links()
+    run_migration_callable(_STEP_ABOVE.upgrade, _db.session)
 
 
 class TestTheRevision:
@@ -317,7 +355,7 @@ class TestTheRoundTrip:
         before = _records(entry_ids)
         assert len(before) == 4
 
-        _twins_rebuilt()
+        _twins_built()
         run_migration_callable(_MIGRATION.downgrade, _db.session)
         assert not _has_side_links()
         assert _records(entry_ids) == before
@@ -352,7 +390,7 @@ class TestTheRoundTrip:
         ), {"ids": entry_ids}).all() == [
             (entry_id, twin) for entry_id, twin, _income in twins
         ]
-        run_migration_callable(_MIGRATION.upgrade, _db.session)
+        _up_to_head()
 
     def test_the_downgrade_withdraws_the_transfer_arm_and_the_upgrade_restores_it(
         self, app,
@@ -366,6 +404,7 @@ class TestTheRoundTrip:
                 "'ck_hidden_transfer_holds_nothing')"
             )))
 
+        _twins_built()
         run_migration_callable(_MIGRATION.downgrade, _db.session)
         assert attachments() == [
             "ck_hidden_row_holds_nothing", "ck_movement_row_not_deleted",
@@ -375,6 +414,7 @@ class TestTheRoundTrip:
             "ck_hidden_row_holds_nothing", "ck_hidden_transfer_holds_nothing",
             "ck_movement_row_not_deleted",
         ]
+        run_migration_callable(_STEP_ABOVE.upgrade, _db.session)
 
 
 def _downgraded_with(seed_user, plant_sql, params_of):
@@ -383,9 +423,7 @@ def _downgraded_with(seed_user, plant_sql, params_of):
     Returns the transfer pair; the plant is staged, not committed, and the
     caller rolls it back before upgrading.
     """
-    first, second = _settled_pair(seed_user)
-    _twins_rebuilt()
-    run_migration_callable(_MIGRATION.downgrade, _db.session)
+    first, second = _below_this_revision(seed_user)
     (entry_id, shadow_id) = _db.session.execute(text(
         "SELECT e.id, t.id FROM budget.transaction_entries e "
         "JOIN budget.transactions t ON t.id = e.transaction_id "
@@ -399,10 +437,9 @@ def _downgraded_with(seed_user, plant_sql, params_of):
 
 
 def _back_to_head():
-    """Discard a staged plant and run the upgrade."""
+    """Discard a staged plant and run both upgrades."""
     _db.session.rollback()
-    run_migration_callable(_MIGRATION.upgrade, _db.session)
-    assert _has_side_links()
+    _up_to_head()
 
 
 class TestTheUpgradeRefuses:
@@ -521,24 +558,7 @@ class TestTheUpgradeRefuses:
             "WHERE transfer_id IS NOT NULL)"
         ))
         _db.session.commit()
-        run_migration_callable(_MIGRATION.upgrade, _db.session)
-        assert _has_side_links()
-
-
-def _below_this_revision(seed_user):
-    """A settled pair at the revision below this one, every record under its twin.
-
-    At head no twin exists, so the step above's downgrade builds them (each
-    saying its transfer's status and its side's record's day, basis and
-    link), and this revision's downgrade then files each record back under
-    its side's twin: the shape this revision's upgrade meets on production.
-    Committed; returns the pair.
-    """
-    first, second = _settled_pair(seed_user)
-    run_migration_callable(_STEP_ABOVE.downgrade, _db.session)
-    run_migration_callable(_MIGRATION.downgrade, _db.session)
-    assert not _has_side_links()
-    return first, second
+        _up_to_head()
 
 
 #: One fact moved on one twin of a settled pair at the revision below, as
@@ -634,9 +654,7 @@ class TestTheDowngradeRefuses:
         so the census names it before any statement runs.
         """
         del app
-        first, _second = _settled_pair(seed_user)
-        _twins_rebuilt()
-        run_migration_callable(_MIGRATION.downgrade, _db.session)
+        first, _second = _below_this_revision(seed_user)
         run_migration_callable(_MIGRATION.upgrade, _db.session)
         _db.session.execute(text(
             "UPDATE budget.transactions SET is_deleted = TRUE "
@@ -649,7 +667,12 @@ class TestTheDowngradeRefuses:
         assert _has_side_links()
 
     def test_a_side_with_no_twin(self, app, seed_user):
-        """A from-side record whose transfer's twins are gone is named; nothing is written."""
+        """A from-side record whose transfer's twins are gone is named; nothing is written.
+
+        The step above's downgrade, the only way down to this revision,
+        builds every transfer's two twins (:func:`_twins_built`), so the case
+        deletes them after it: at head there are none to delete.
+        """
         del app
         savings = create_account_of_type(
             seed_user, _db.session, "Savings", "Twinless Savings",
@@ -660,9 +683,10 @@ class TestTheDowngradeRefuses:
             seed_user["bootstrap_period"], amount=Decimal("75.00"),
         )
         _db.session.commit()
-        _db.session.execute(text(
+        _twins_built()
+        assert _db.session.execute(text(
             "DELETE FROM budget.transactions WHERE transfer_id = :t"
-        ), {"t": xfer.id})
+        ), {"t": xfer.id}).rowcount == 2
         _db.session.execute(text(
             "INSERT INTO budget.transaction_entries (expense_transfer_id, "
             "account_id, owner_id, user_id, amount, description, "
@@ -694,9 +718,16 @@ class TestTheDowngradeRefusesADriftedTwin:
     def test_a_pair_settled_at_this_revision_refuses_the_downgrade_by_name(
         self, app, seed_user,
     ):
-        """Two transfers marked Paid by the app: their twins still say Projected."""
+        """Two transfers marked Paid by the app: their twins still say Projected.
+
+        Created Projected, their twins built, and then marked Paid through the
+        app's own door (:func:`_settle_at_this_revision`).
+        """
         del app
-        first, second = _settled_pair(seed_user)
+        first, second = _pair(seed_user, create_transfer)
+        _twins_built()
+        for xfer in (first, second):
+            _settle_at_this_revision(seed_user, xfer)
 
         with pytest.raises(RuntimeError, match="no longer say") as refused:
             run_migration_callable(_MIGRATION.downgrade, _db.session)
@@ -717,9 +748,11 @@ class TestTheDowngradeRefusesADriftedTwin:
         and a ``$0.00`` close live and soft-deleted: the seam below this
         revision dated both twins of a close on the day it was stated, with no
         record beside them, and its soft delete kept them (the cp2c review's
-        M-1, which a control built by :func:`_twins_rebuilt` -- the census's
-        complement -- could never fail on).  The census passes, the whole
-        downgrade runs, and the closes' twins keep their day.
+        M-1, which a control left as the step above's downgrade builds it --
+        the census's complement, every twin its transfer's status and its
+        side's record's day or none -- could never fail on).  The census
+        passes, the whole downgrade runs, and the closes' twins keep their
+        day.
         """
         del app
         first, _second = _settled_pair(seed_user)
@@ -732,7 +765,7 @@ class TestTheDowngradeRefusesADriftedTwin:
             seed_user["bootstrap_period"], amount=Decimal("80.00"),
         )
         _db.session.commit()
-        _twins_rebuilt()
+        _twins_built()
         closed_on = _db.session.execute(text(
             "SELECT settled_on FROM budget.transaction_entries "
             "WHERE expense_transfer_id = :t"
@@ -764,21 +797,29 @@ class TestTheDowngradeRefusesADriftedTwin:
             "SELECT DISTINCT settled_on FROM budget.transactions "
             "WHERE transfer_id = ANY(:ids)"
         ), {"ids": zero_closes}).scalars().all() == [closed_on]
-        run_migration_callable(_MIGRATION.upgrade, _db.session)
+        _up_to_head()
 
     def test_a_zero_close_made_at_this_revision_refuses(self, app, seed_user):
-        """The carve-out's boundary: a close made HERE leaves its twins Projected."""
+        """The carve-out's boundary: a close made HERE leaves its twins Projected.
+
+        Created Projected, its twins built, and then closed at ``$0.00``
+        through the app's own door (:func:`_settle_at_this_revision`), which
+        writes no record on either side.
+        """
         del app
         savings = create_account_of_type(
             seed_user, _db.session, "Savings", "Zero Close Savings",
         )
         _db.session.commit()
-        xfer = create_settled_transfer(
+        xfer = create_transfer(
             seed_user, _db.session, seed_user["account"], savings,
             seed_user["bootstrap_period"], amount=Decimal("90.00"),
-            settled_amount=Decimal("0.00"),
         )
         _db.session.commit()
+        _twins_built()
+        _settle_at_this_revision(
+            seed_user, xfer, figure=typed(Decimal("0.00")),
+        )
 
         with pytest.raises(RuntimeError, match="2 twin row") as refused:
             _MIGRATION.refuse_drifted_twins(_db.session.connection())
@@ -802,6 +843,7 @@ class TestTheDowngradeRefusesADriftedTwin:
             seed_user["bootstrap_period"], amount=Decimal("60.00"),
         )
         _db.session.commit()
+        _twins_built()
         twin = _from_side_twin(xfer)
         _db.session.execute(text(
             "UPDATE budget.transactions SET settled_on = :d, "
@@ -835,7 +877,7 @@ class TestTheDowngradeRefusesADriftedTwin:
         """One fact moved on one in-step twin: that twin is named with that fact alone."""
         del app
         first, _second = _settled_pair(seed_user)
-        _twins_rebuilt()
+        _twins_built()
         twin = _from_side_twin(first)
         _db.session.execute(text(drift_sql), {"twin": twin})
 
@@ -848,10 +890,11 @@ class TestTheDowngradeRefusesADriftedTwin:
     def test_a_deleted_twin_is_read_against_no_record(self, app, seed_user):
         """A hidden copy of a LINKED twin: its record goes back under the LIVE twin, not it.
 
-        Read through the link, the one fact a deleted twin of a settled
-        transfer is read for besides its status: its day and basis are not,
-        since the seam below this revision left a soft-deleted ``$0.00``
-        close's twins dated (the M-1 carve-out).
+        So the copy is read against no record, for its day, basis and link
+        alike.  The ``$0.00``-close carve-out, which reads a twin for its
+        status alone, asks whether the twin's SIDE holds a record, live twin
+        or not (the census's docstring), and this side holds one: the copy's
+        day, basis and link, each its live twin's, each differ from none.
         """
         del app
         first, _second = _settled_pair(seed_user)
@@ -861,7 +904,7 @@ class TestTheDowngradeRefusesADriftedTwin:
             "WHERE h.account_id = e.account_id) "
             "WHERE e.expense_transfer_id = :t"
         ), {"t": first.id})
-        _twins_rebuilt()
+        _twins_built()
         copy = _db.session.execute(text(
             f"INSERT INTO budget.transactions (is_deleted, {_TWIN_COLUMNS}) "
             f"SELECT TRUE, {_TWIN_COLUMNS} FROM budget.transactions "
@@ -873,5 +916,6 @@ class TestTheDowngradeRefusesADriftedTwin:
         _db.session.rollback()
 
         assert (
-            f"({first.id}, {copy}, ['statement link'])" in str(refused.value)
+            f"({first.id}, {copy}, ['settle day', 'day basis', "
+            "'statement link'])" in str(refused.value)
         )

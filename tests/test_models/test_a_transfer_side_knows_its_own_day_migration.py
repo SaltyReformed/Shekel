@@ -26,6 +26,15 @@ movement together, and a tick linking both.  Setup only, approved by the
 developer 2026-10-08 (rule 5, ruling **balance:R-BAL234**): no arm, basis or
 day a case checks changed.  Until that step the service wrote these states.
 
+**And no transfer has a twin at head** since plan step
+``balance:X-bi-6-4d-3``, whose revision (:data:`_TWINS_DELETED`) deletes
+them and refuses a new one.  So each case runs that revision's downgrade
+ONCE, once its transfers exist and before any plant (:func:`_twins_built`):
+it builds each transfer's two twins, saying its transfer's status and, its
+sides holding no record, no day -- the Projected, undated pair the create
+door below that step wrote, which the plants then settle -- on the schema
+every case here ran on until that step.
+
 **Two arms are told apart by a further plant**: the test database's writes
 and the migration run as ONE role, so every write onto a settled dateless row
 reads as the backfill's (``entered_guess``) until its audit row's ``db_user``
@@ -63,6 +72,10 @@ _MIGRATION = load_migration_module(
     "d3b8f5a1c7e2_a_transfer_side_knows_its_own_day.py",
 )
 
+#: Plan step ``balance:X-bi-6-4d-3``'s revision, which deletes every twin and
+#: whose downgrade builds them back (the module docstring).
+_TWINS_DELETED = load_migration_module("82f7b7ed4332_a_transfer_is_one_row.py")
+
 
 class TestTheRevision:
     """Where the revision sits in the chain."""
@@ -89,6 +102,16 @@ def _transfer(seed_user, period, name):
     )
     db.session.commit()
     return xfer
+
+
+def _twins_built():
+    """Run :data:`_TWINS_DELETED`'s downgrade: two twins for every transfer (the module docstring).
+
+    Once per case, after its transfers exist: a transfer made after it gets
+    no twin, and a second run fails, since the refusal it drops is gone.
+    Committed, as every migration call is.
+    """
+    run_migration_callable(_TWINS_DELETED.downgrade, db.session)
 
 
 def _shadows(xfer):
@@ -247,6 +270,7 @@ class TestTheArms:
         """Status into the band AND the write's own day, in one UPDATE: the press, not typing."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Stamp")
+            _twins_built()
             _paid_press_before_the_step(xfer)
 
             assert _arms(xfer) == ("entered_stamp", "entered_stamp")
@@ -258,6 +282,7 @@ class TestTheArms:
         """A later write of another day onto a pair already settled: the owner's own."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Typed")
+            _twins_built()
             _paid_press_before_the_step(xfer)
             _correct_before_the_step(
                 xfer, an_entered_day(display_today() - timedelta(days=4)),
@@ -272,6 +297,7 @@ class TestTheArms:
         """The backfill's write is a guess; the same write by the APP role is a typed repair."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Dateless")
+            _twins_built()
             _paid_press_before_the_step(xfer)
             # The legacy shape (finding N-181): settled, no day, behind the
             # seam's back -- each covering movement un-dated with its row.
@@ -303,6 +329,7 @@ class TestTheArms:
         """The matcher stated the bank's day for BOTH sides; no member ever named either."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Copied")
+            _twins_built()
             _settle_before_the_step(
                 xfer, an_observed_day(display_today() - timedelta(days=4)),
             )
@@ -315,6 +342,7 @@ class TestTheArms:
         """A member since removed still counts: the predicate reads the member audit INSERTs."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Named")
+            _twins_built()
             _settle_before_the_step(
                 xfer, an_observed_day(display_today() - timedelta(days=4)),
             )
@@ -328,6 +356,7 @@ class TestTheArms:
         """The tick links its own leg; the day copied to the other side borrows."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Ticked")
+            _twins_built()
             _settle_before_the_step(
                 xfer, an_asserted_day(display_today() - timedelta(days=4)),
             )
@@ -339,6 +368,7 @@ class TestTheArms:
         """A side this step's own code wrote is already labelled, and is counted as kept."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Pressed")
+            _twins_built()
             _settle_before_the_step(xfer, SettleDay(
                 day=display_today(), basis=SettledDayBasisEnum.BORROWED,
             ))
@@ -358,6 +388,7 @@ class TestTheArms:
         """
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Unlogged")
+            _twins_built()
             _paid_press_before_the_step(xfer)
             db.session.execute(text(
                 "DELETE FROM system.audit_log "
@@ -393,6 +424,7 @@ class TestTheRefusal:
         """
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Parted")
+            _twins_built()
             _settle_before_the_step(
                 xfer, an_observed_day(display_today() - timedelta(days=4)),
             )
@@ -427,6 +459,7 @@ class TestTheRefusal:
         """
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Unmirrored")
+            _twins_built()
             day = display_today() - timedelta(days=4)
             _settle_before_the_step(
                 xfer, an_observed_day(day),
@@ -446,6 +479,7 @@ class TestTheRefusal:
         """The control: the same copied day on both sides relabels without a refusal."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Together")
+            _twins_built()
             _settle_before_the_step(
                 xfer, an_observed_day(display_today() - timedelta(days=4)),
             )
@@ -485,22 +519,23 @@ class TestTheRoundTrip:
         """Four pre-step pairs: a press, a typed day, a matched bank day, a linked tick.
 
         Each pair holds ONE day and ONE basis on both sides -- what every door
-        wrote before this step.  The first downgrade turns the head database's
-        pairs into exactly that and deletes the ref row; the upgrade relabels
-        by predicate, shadows and movements together; the second downgrade
-        must give back the first one's labels, byte for byte.
+        wrote before this step.  This revision's first downgrade turns the
+        planted pairs into exactly that and deletes the ref row; the upgrade
+        relabels by predicate, shadows and movements together; the second
+        downgrade must give back the first one's labels, byte for byte.
         """
         with app.app_context():
             period = seed_periods_today[3]
             press = _transfer(seed_user, period, "Press")
-            _paid_press_before_the_step(press)
             typed = _transfer(seed_user, period, "Typed")
+            copied = _transfer(seed_user, period, "Copied")
+            ticked = _transfer(seed_user, period, "Ticked")
+            _twins_built()
+            _paid_press_before_the_step(press)
             _paid_press_before_the_step(typed)
             _correct_before_the_step(
                 typed, an_entered_day(display_today() - timedelta(days=4)),
             )
-            copied = _transfer(seed_user, period, "Copied")
-            ticked = _transfer(seed_user, period, "Ticked")
             for xfer, day in (
                 (copied, an_observed_day(display_today() - timedelta(days=3))),
                 (ticked, an_asserted_day(display_today() - timedelta(days=2))),
@@ -550,6 +585,7 @@ class TestTheRoundTrip:
         """
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Unnamed")
+            _twins_built()
             _settle_before_the_step(
                 xfer, an_observed_day(display_today() - timedelta(days=4)),
             )

@@ -203,7 +203,7 @@ def _project_loan_payment(seed_user, db, loan, period, amount, due_date):
     return transfer
 
 
-def test_a_derived_projected_shadow_is_priced_by_the_plan_tier(
+def test_a_projected_loan_payment_is_priced_and_its_derived_twin_refused(
     seed_user, db, seed_periods,
 ):
     """A projected loan payment is priced by the plan tier, and a derived twin of it is refused.
