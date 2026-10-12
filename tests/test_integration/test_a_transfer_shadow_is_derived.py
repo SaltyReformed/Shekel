@@ -30,10 +30,15 @@ transfer is one row, its two legs are read off it (**R-BAL13**: each worth
 ``resolve_transfer_amount`` on the parent), and
 ``ck_transactions_names_no_transfer`` refuses a row naming a transfer (ruling
 **R-BAL258**).  So the step's end state is the one this module argued for, with
-the copy deleted rather than derived: every claim below that was asked of each
+the copy deleted rather than derived: a claim below that was asked of each
 shadow is asked of the transfer, or of its legs through the producers that
-price them, with its figures unchanged (ruling **R-BAL167** class 1); the two
-that planted a shadow assert the database refuses it (class 2).
+price them, with its figures unchanged (ruling **R-BAL167** class 1), and the
+one case that planted a shadow -- a figure on it -- asserts the database
+refuses it (class 2).  Three claims were not re-asked, and each case says so:
+the AD-HOC case's ownership read, which the transfer's own CHECK makes
+infallible and which a refusal replaces; the two FORM cases' per-leg period
+reads, because a leg's period IS its transfer's (``leg_of``); and the per-leg
+"stores nothing", because no leg row is left to store anything.
 """
 
 import re
@@ -73,7 +78,7 @@ from tests.test_integration.test_transfer_settle_freeze import (
     _derived_loan_transfer,
 )
 from app.models.amount_ownership import AmountOwnership
-from app.services.amount_ownership import derived_ownership
+from app.services.amount_ownership import declare_derived, derived_ownership
 from tests._test_helpers import rendered_transfer_amount
 from datetime import date
 from app.services import template_amount_service
@@ -115,8 +120,10 @@ class TestAShadowIsBornDerived:
     """The declaration is made by the constructor, not by a later writer.
 
     Since plan step balance:X-bi-6-4d-3 the constructor makes ONE row, so what
-    these cases asked of the two legs it built is asked of the transfer, and
-    the legs themselves are asserted unstorable (ruling **R-BAL167** class 2).
+    the first case asked of the two legs it built is asked of the transfer
+    (ruling **R-BAL167** class 1, with a refusal of either twin added), and
+    the second, which planted a figure on a leg, asserts that row unstorable
+    (class 2).
     """
 
     def test_the_transfer_owns_its_figure_and_neither_twin_can_be_stored(
@@ -126,20 +133,27 @@ class TestAShadowIsBornDerived:
 
         **Renamed and re-expressed at plan step balance:X-bi-6-4d-3** (it was
         ``test_both_legs_declare_their_parent_and_store_nothing``; ruling
-        **R-BAL167** class 2).  It asserted three things per leg -- declared
+        **R-BAL167** class 1, with a refusal ADDED: it planted nothing, it read
+        the two legs ``create_transfer`` made, so the twin refused below is a
+        shape this case adds rather than one it planted).  It asserted three
+        things per leg -- declared
         ``PARENT_TRANSFER``, stored nothing, worth the transfer's figure --
         because the leg was a ROW that could hold a copy.  No leg row is born
         now and the database refuses one on either side
         (``ck_transactions_names_no_transfer``, ruling **R-BAL258**), so the
         copy is not merely derived but absent.  What each leg is worth is the
         transfer's own resolution (**R-BAL13**), asserted as `$250.00` here
-        where it was asserted per leg.
+        where it was asserted per leg.  "Owns its figure" is the stored
+        `$250.00` (``ck_transfers_amount_ownership`` pairs a stored figure with
+        no source): an ``owns_its_amount`` read of this AD-HOC transfer could
+        not fail under ``ck_transfers_adhoc_owns_amount``, so none is taken
+        (the cp2c review's L-4; the AD-HOC retype case asserts that CHECK's
+        refusal).
         """
         with app.app_context():
             xfer = _plain_transfer(seed_user, seed_periods)
 
             assert xfer.amount == Decimal("250.00")
-            assert owns_its_amount(xfer) is True
             assert transfer_amount(xfer) == Decimal("250.00")
             db.session.commit()
             for is_income in (False, True):
@@ -270,8 +284,10 @@ class TestWhoOwnsTheFigureAfterAnEdit:
     ``transfer_service._amount.apply_amount_ownership`` wrote the parent's
     stated ownership onto each leg (at ``5f46d6973``), so asking the transfer
     asks what the legs copied.  The one state where the two differed is an
-    AD-HOC transfer no edit has touched -- it owns its figure from birth while
-    its legs were born derived -- and the case that read that difference,
+    AD-HOC transfer no edit that STATED an amount has touched (that function
+    ran only when an ownership was stated, so a bare period move or a
+    notes-only save left it too) -- it owns its figure from birth while its
+    legs were born derived -- and the case that read that difference,
     ``test_an_AD_HOC_retype_lands_on_the_transfer_and_raises_no_flag``, says
     so.
     """
@@ -324,6 +340,17 @@ class TestWhoOwnsTheFigureAfterAnEdit:
         translates the caller's own statement into the model's column -- it does
         not READ the stored flag to decide a price, which is finding N-262's
         rule; ``is_override`` here is the kwarg this call carried.
+
+        **Its ownership read went at plan step balance:X-bi-6-4d-3** (ruling
+        **R-BAL167** class 1, the cp2c review's L-4 applied to this case).
+        The fixture is AD-HOC, whose legs were born derived and were TAKEN by
+        this statement; the transfer owns its figure from birth
+        (``ck_transfers_adhoc_owns_amount``), so ``owns_its_amount`` asked of
+        it could not fail.  The refusal that grades that CHECK is the AD-HOC
+        retype case's, and a TAKE that changes ownership is graded on a
+        template-linked transfer by
+        ``test_stating_the_definitions_ownership_hands_a_taken_leg_back``.
+        The `$400.00` stored and resolved stands.
         """
         with app.app_context():
             xfer = _plain_transfer(seed_user, seed_periods)
@@ -337,7 +364,6 @@ class TestWhoOwnsTheFigureAfterAnEdit:
 
             edited = _reread(xfer.id)
             assert edited.amount == Decimal("400.00")
-            assert owns_its_amount(edited) is True
             assert transfer_amount(edited) == Decimal("400.00")
 
     def test_stating_the_definitions_ownership_hands_a_taken_leg_back(
@@ -722,20 +748,30 @@ class TestWhoOwnsTheFigureAfterAnEdit:
     def test_an_AD_HOC_retype_lands_on_the_transfer_and_raises_no_flag(
         self, app, db, auth_client, seed_user, seed_periods,
     ):
-        """The arm that CHANGED at plan step X-au-h, stated so it is not a surprise.
+        """An ad-hoc retype lands on the transfer as typed and raises no flag.
 
         **Renamed and re-expressed at plan step balance:X-bi-6-4d-3** (it was
         ``test_an_AD_HOC_retype_now_TAKES_both_legs``; ruling **R-BAL167**
         class 1).  What it was written to state -- an ad-hoc retype TAKES both
-        legs, where it once left them derived -- was a change in the legs'
-        ROWS, and no leg row is born since that step.  An ad-hoc transfer owns
-        its figure from birth (``ck_transfers_adhoc_owns_amount``) and both
-        legs are read off it (**R-BAL13**), so there is no derived leg left to
-        take and nothing for the X-au-h arm to change.  What stands is the
-        rest of the case: the retype lands on the one row as `$400.00`, the
-        row still owns it, and the route raises no ``is_override`` for a row
-        with no template.  The paragraphs below describe the three-row shape
-        this case was written against.
+        legs, where it once left them derived, the arm that changed at plan
+        step X-au-h -- was a change in the legs' ROWS, and no leg row is born
+        since that step.  An ad-hoc transfer owns its figure from birth and
+        both legs are read off it (**R-BAL13**), so there is no derived leg
+        left to take and nothing for the X-au-h arm to change.  What stands is
+        the rest of the case: the retype lands on the one row as `$400.00` and
+        the route raises no ``is_override`` for a row with no template.  The
+        paragraphs below describe the three-row shape this case was written
+        against.
+
+        **"The row still owns it" is a REFUSAL, not an ``owns_its_amount``
+        read** (ruling **R-BAL167** class 2, the cp2c review's L-4).
+        ``ck_transfers_adhoc_owns_amount`` refuses an ad-hoc transfer that
+        declares a derived figure, so ``owns_its_amount`` is ``True`` for every
+        ad-hoc row the database holds and the two reads it took could not
+        fail.  The case asserts the database refuses the other state instead,
+        on the retyped row.  Where the legs were rows the precondition
+        discriminated -- they were born derived beside a parent that owned
+        its figure -- and that difference is what the transfer cannot have.
 
         The old discriminator was ``is_override``, and
         ``routes/transfers/mutations.py`` raises that flag only for a
@@ -758,7 +794,6 @@ class TestWhoOwnsTheFigureAfterAnEdit:
             xfer = _plain_transfer(seed_user, seed_periods)
             xfer_id = xfer.id
             assert xfer.transfer_template_id is None, "the ad-hoc precondition"
-            assert owns_its_amount(xfer) is True, "born owning its figure"
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer_id}",
@@ -776,9 +811,18 @@ class TestWhoOwnsTheFigureAfterAnEdit:
             assert retyped.is_override is False, (
                 "the route raises the flag only for a template-linked row"
             )
-            assert owns_its_amount(retyped) is True
             assert retyped.amount == Decimal("400.00")
             assert transfer_amount(retyped) == Decimal("400.00")
+
+            # It cannot stop owning the figure: no definition prices an
+            # ad-hoc transfer, so the database refuses the declaration.
+            declare_derived(retyped, AmountSourceEnum.TEMPLATE)
+            with pytest.raises(sqlalchemy.exc.IntegrityError) as excinfo:
+                db.session.flush()
+            db.session.rollback()
+            assert constraint_name_from(excinfo.value) == (
+                "ck_transfers_adhoc_owns_amount"
+            ), f"the derived ad-hoc transfer was refused by: {excinfo.value}"
 
     def test_a_later_definition_write_hands_a_taken_leg_back(
         self, app, db, seed_user, seed_periods,
@@ -836,10 +880,13 @@ class TestALoanPaymentsLegsReadTheLoan:
         """The definition's ``$1.00`` is not what either leg is worth.
 
         The fixture's definition states a deliberately stale ``$1.00``, so a leg
-        worth ``$1.00`` is one the loan did not price.  Both legs, because the
-        cutover declares both -- a version declaring only the checking side
-        would leave the loan-side income leg answering the parent, and that leg
-        is the one the payment feed reads.
+        worth ``$1.00`` is one the loan did not price.  It asked both legs
+        because the cutover declared both shadow rows, and a version declaring
+        only the checking side would have left the loan-side income leg
+        answering the parent.  Since plan step balance:X-bi-6-4d-3 both legs
+        resolve through ONE ``resolve_transfer_amount`` call on one transfer,
+        so the two cannot differ: ``len(priced) == 2`` checks that the two
+        legs' keys are distinct, not that two answers agree.
 
         **The parent stores NOTHING since plan step X-au-f**, and the assertion
         below is what replaces ``xfer.amount == Decimal("1.00")``: the stale
@@ -1050,12 +1097,17 @@ class TestTheAmountModelsOwnEagerLoad:
     under ``Transaction.transfer``, so the parent's pricing graph is the one
     being graded in both shapes.
 
-    **These are the first pin of that tuple's zero-statement claim**, which
-    only prose stated before (``test_spending_report_service``).  The warm-up
-    pays the LOAN resolve and nothing else -- it asks the basis's loan
-    derivation directly rather than pricing a leg -- so dropping the
-    per-DEFINITION settings chain from the tuple shows as a statement too,
-    not only dropping the per-ROW period chain (both measured).
+    **The tuple's zero-statement claim was pinned before this step too**: the
+    shadow-row pair priced rows loaded with ``pricing_load_options``, which
+    composes this same tuple, and
+    ``test_loan_installments.test_the_priced_feed_reads_every_pricing_table``
+    pins it by a statement count.  What is new here is narrower: the old
+    warm-up priced one leg, which loaded the one definition's ``settings``
+    before the capture opened, and this warm-up pays the LOAN resolve and
+    nothing else -- it asks the basis's loan derivation directly -- so
+    dropping the per-DEFINITION settings chain from the tuple now shows as a
+    statement, as dropping the per-ROW period chain always did (both
+    measured).
     """
 
     @staticmethod
@@ -1099,10 +1151,12 @@ class TestTheAmountModelsOwnEagerLoad:
         loading a per-row relationship the tuple does not list (a transfer's
         movements, say), or issuing a statement of its own, would show up
         here as a statement rather than as a slow page nobody measures.  Two
-        things it cannot see, both measured: a many-to-one whose target the
-        session already holds resolves without a statement (a rule reading
-        the transfer's ``from_account`` added none), and this fixture is a
-        derive-mode loan payment, so the series chain
+        things it cannot see.  The transfer's ``lazy="joined"`` relationships
+        -- ``from_account``, ``to_account``, ``status`` and ``category``
+        (``app/models/transfer.py``) -- are loaded by the loader's OWN
+        statement, so a rule that started reading one adds no statement here
+        (measured: one reading ``from_account`` added none).  And this fixture
+        is a derive-mode loan payment, so the series chain
         (``template -> amount_versions``), which only rule 3 and rule 4's
         manual arm read, is not exercised here.
         """
