@@ -325,17 +325,17 @@ def test_a_cards_text_is_compared_with_its_commit_left_out_and_nothing_else(corp
     later = step.body.replace(COMMIT, "f" * 40)
     assert later != step.body and masked(later) == masked(step.body)
     assert masked(step.body).count("<commit>") == 1 and COMMIT not in masked(step.body)
-    assert differences(step, step.title, later, None) == []
+    assert not differences(step, step.title, later, None)
     assert differences(step, step.title + " ", step.body.replace("the", "a", 1), None) == [
         "title", "body"]
     assert differences(question, question.title, question.body,
                        question.comment.replace("OPEN", "CLOSED")) == ["comment"]
-    assert differences(question, question.title, question.body, question.comment) == []
+    assert not differences(question, question.title, question.body, question.comment)
     edited = step.body.replace("blocked by: ", "blocked by: after ", 1)
     assert differences(step, step.title, edited, None) == ["body"]
     assert differences(step, step.title, step.body.replace(
         "filed from: steps.md at", "filed from: ledger.md at"), None) == ["body"]
-    assert differences(question, question.title, question.body, None) == []
+    assert not differences(question, question.title, question.body, None)
     assert differences(step, step.title, step.body, question.comment) == ["comment"]
 
 
@@ -350,8 +350,8 @@ def test_only_the_last_as_filed_blocks_commit_is_left_out(corpus):
     assert masked(body).count("<commit>") == 1 and line in masked(body)
     assert differences(quoting, step.title, body.replace(COMMIT, "f" * 40, 1), None) == ["body"]
     head, opened, tail = body.rpartition(line)
-    assert differences(quoting, step.title, f"{head}{opened.replace(COMMIT, 'f' * 40)}{tail}",
-                       None) == []
+    assert not differences(quoting, step.title, f"{head}{opened.replace(COMMIT, 'f' * 40)}{tail}",
+                           None)
 
 
 def test_a_text_built_with_no_block_is_compared_whole(corpus):
