@@ -2464,7 +2464,7 @@ class TestMovingATransferBetweenAccounts:
     def test_the_destination_move_carries_the_income_leg_and_its_name(
         self, app, db, transfer_data
     ):
-        """Moving the destination moves the income leg and re-derives its label.
+        """Moving the destination moves the income leg and re-labels the expense leg.
 
         The expense leg stays on the unchanged source, but its NAME says where
         the money is going -- so it must follow too.  A leg on the new account
@@ -2523,22 +2523,27 @@ class TestMovingATransferBetweenAccounts:
     ):
         """The control: an ordinary edit moves neither endpoint.
 
-        **It also pinned, until plan step ``balance:X-bi-6-4d-3``, that the edit
-        left the two shadow rows' STORED names alone** after an owner renamed
-        an account: the arm re-wrote those names only on a real MOVE, so an
-        unrelated edit could not silently re-label rows it was not asked about.
-        That half has no subject now (ruling R-BAL167 class 1): a leg's name is
-        composed from the endpoints' CURRENT names (``TransferLeg.name``, since
-        plan step ``balance:X-bi-6-1``), so the rename itself re-labels the leg,
-        by design and with no edit at all, and the gated re-write goes with the
-        shadows at that step's leaf 3b.  The endpoint half stands.  Renamed
-        from ``test_an_update_naming_no_account_leaves_the_pair_where_it_is``.
+        **It carried a NAME half until plan step ``balance:X-bi-6-4d-3``, and
+        that half could never fire.**  It renamed the destination account and
+        then asserted the edit left the two shadow rows' STORED names alone
+        (the arm re-wrote them only on a real MOVE).  The rename was set on
+        the fixture's ``Account``, which is not in this test's session, so it
+        reached no row: re-read from the database after its flush, the
+        account still has its old name (measured by the review of that step's
+        checkpoint 2e-1, and again at 2e-1a).  Every name either side of the
+        edit was therefore composed from unchanged account names, so the half
+        could not fail whatever the arm did.  It is dropped as a
+        measured-vacuous read, with the rename that set nothing.  Its intended subject, the arm's re-write of stored names
+        gated on a real move, goes with that arm at the step's leaf 3b.  That
+        a leg's name is composed from its endpoints' current names is pinned
+        by ``test_transfer_legs.py``'s ``TestALegsDisplayProjections``
+        (``test_the_label_is_composed_from_the_endpoints_current_names``).
+        The endpoint half stands.  Renamed from
+        ``test_an_update_naming_no_account_leaves_the_pair_where_it_is``.
         """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
-            td["savings_account"].name = "Renamed Since"
-            db.session.flush()
 
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, amount_ownership=AmountOwnership.own(Decimal("300.00")),
@@ -2713,10 +2718,10 @@ class TestMovingATransferBetweenAccounts:
                 )
             db.session.rollback()
 
-    def test_a_refused_amount_does_not_move_the_pair_first(
+    def test_a_refused_amount_does_not_move_the_transfer_first(
         self, app, db, transfer_data
     ):
-        """A refusal LATER in the payload still leaves all three rows untouched.
+        """A refusal LATER in the payload still leaves the transfer and its legs untouched.
 
         **RE-WRITTEN after an adversarial review of plan step R10-b showed the
         first version could not fire.**  It paired a valid amount with an
@@ -2732,9 +2737,15 @@ class TestMovingATransferBetweenAccounts:
         leaves the legs on accounts the money does not move between, and their
         display names saying so.  The legs were two shadow rows until plan
         step ``balance:X-bi-6-4d-3`` (ruling R-BAL167 class 4, :meth:`_legs`).
-        Measured at that step's checkpoint 2e-1: with the amount's refusal
-        moved below the endpoint apply, this case fails on the transfer's own
-        destination column, the move already flushed when the refusal raised.
+        The update does not flush before the amount's refusal raises, so the
+        case flushes explicitly first: with the refusal moved below the
+        endpoint apply, the staged move then reaches the transfer's own
+        destination column, and that column fails the case on its own
+        (measured at that step's checkpoint 2e-1a, on this case and on a copy
+        of it asserting the transfer's three columns alone).  Until then the
+        case leaned on its own :meth:`_legs` re-read, a query whose autoflush
+        wrote the staged move.  Renamed from
+        ``test_a_refused_amount_does_not_move_the_pair_first``.
         """
         with app.app_context():
             td = transfer_data
@@ -2754,6 +2765,12 @@ class TestMovingATransferBetweenAccounts:
                     amount_ownership=AmountOwnership.own(Decimal("-5.00")),
                 )
 
+            # A move assigns RELATIONSHIPS (``_apply_endpoint_move``), whose
+            # FK columns sync only at a flush, and the update does not flush
+            # before the refusal raises -- so a staged move would still read
+            # the old ``to_account_id`` here.  Flush first, so the column
+            # assertions grade what the session would have written.
+            db.session.flush()
             expense, income = self._legs(xfer)
             assert (
                 xfer.from_account_id, xfer.to_account_id, xfer.amount,
