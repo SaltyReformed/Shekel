@@ -707,11 +707,8 @@ section 4, under their unchanged ids.*
   one reproduced twice independently. The placement is X-ai's, not a patch at each loop. Carries
   **N-135** (wrap both bare fact fields in their own types). Re-lands after X-ai.
 * [ ] **X-aj** `refactor(status): one status seam, and the fence is structural` -- rulings
-  **R-DN**, **R-DO**, **R-DP**. Its merge half shipped as X-aj1 above, which ANSWERED
-  **N-145** (`transfer_service` at the 1000-line ceiling, blocking X-d -- it is a PACKAGE since, largest module 823): R-DN
-  ruled it and X-aj1 took the module to 987. That row is archived here rather than carried
-  (2026-08-13) -- what survives is **N-152**'s claim that 987 is an answer and not a
-  solution, and the structural remedy is the PACKAGE X-f2-c3 later built.
+  **R-DN**, **R-DO**, **R-DP**. The DECOMPOSED parent of the one-status-seam work: its merge half
+  shipped as X-aj1, and it ticks with its open leaf **X-aj2**.
   * [ ] **X-aj2** the structural write door and the DELETION of W9907 (**R-DP**), carrying
     **N-149**, **N-151**, **N-185** and **N-188**. Its trace decides the three candidates R-DP
     names and must rule what a row may be BORN as: today `create_transfer` runs no legality check,
