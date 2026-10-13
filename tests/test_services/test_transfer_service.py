@@ -31,12 +31,18 @@ from app.services import (
     transfer_service,
     status_seam,
 )
-from app.services.transfer_legs import grid_transfer_leg, transfer_side_leg
+from app.services.cash_ledger import derived_amount_basis, leg_amounts_by_key
+from app.services.transfer_legs import (
+    grid_transfer_leg,
+    planned_transfer_legs,
+    transfer_side_leg,
+)
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
     add_anchor_history,
     an_entered_day,
+    assert_a_twin_is_refused,
     create_loan_account,
     generate_transfer_of,
     on_both_sides,
@@ -46,6 +52,7 @@ from tests._test_helpers import (
     transfer_family_journal_filter,
     transfer_side_figure,
     transfer_side_record,
+    transfer_amount,
     transfer_side_settle_day,
     typed,
     write_past_the_amount_seam,
@@ -146,65 +153,97 @@ def _create_basic_transfer(td):
     )
 
 
+def _leg_amounts(xfer):
+    """Return what each of *xfer*'s two legs is priced at, by its grid key.
+
+    Each side's :class:`~app.services.transfer_legs.TransferLeg`
+    (``transfer_side_leg``) priced by ``leg_amounts_by_key``, the producer the
+    grid prices a leg's cell with, on a fresh basis so a case that edits and
+    re-reads sees the new figure.
+
+    Returns:
+        ``{(transfer id, account id): Decimal}`` for the from-side and the
+        to-side.
+    """
+    legs = [
+        transfer_side_leg(xfer, is_income=is_income)
+        for is_income in (False, True)
+    ]
+    return leg_amounts_by_key(
+        legs, derived_amount_basis(xfer.user_id, xfer.scenario_id),
+    )
+
+
 # ── Creation Tests ─────────────────────────────────────────────────
 
 
 class TestCreateTransfer:
     """Tests for transfer_service.create_transfer."""
 
-    def test_produces_two_shadows(self, app, db, transfer_data):
-        """create_transfer creates exactly 2 shadows with correct fields."""
+    def test_produces_one_transfer_with_correct_fields(
+        self, app, db, transfer_data,
+    ):
+        """create_transfer writes ONE row, the transfer, carrying the spec's fields.
+
+        It counted two shadow rows and asserted these fields on each until
+        plan step ``balance:X-bi-6-4d-3``, whose create door stopped writing
+        them: a transfer is one row and its two legs are derived from it
+        (ruling R-BAL167 class 1; one leg per side is
+        :class:`TestInvariants`').  It also asked each shadow for a recorded
+        settlement, which is not asked of each side here: the two mutants
+        that sent this create down the born-settled branch were each refused
+        by the status seam at the create (a day, then a record, on a status
+        that is not settled; measured at that step's checkpoint 2e-2a-1), so
+        no mutant built there let a side read be the first failure.  Renamed
+        from ``test_produces_two_shadows``.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
             db.session.flush()
 
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            )
-            assert len(shadows) == 2
+            assert transfer_amount(xfer) == Decimal("250.00")
+            assert xfer.status_id == td["projected_status"].id
+            assert xfer.pay_period_id == td["periods"][0].id
+            assert xfer.scenario_id == td["scenario"].id
+            assert xfer.transfer_template_id is None
+            assert xfer.is_override is False
+            assert xfer.is_deleted is False
+            assert xfer.from_account_id == td["account"].id
+            assert xfer.to_account_id == td["savings_account"].id
 
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+    def test_leg_names_reference_the_other_endpoint(
+        self, app, db, transfer_data,
+    ):
+        """Each leg's label names the account at the OTHER end of the transfer.
 
-            types = {s.transaction_type_id for s in shadows}
-            assert types == {expense_type.id, income_type.id}
-
-            for s in shadows:
-                assert shadow_amount(s) == Decimal("250.00")
-                assert s.status_id == td["projected_status"].id
-                assert s.pay_period_id == td["periods"][0].id
-                assert s.scenario_id == td["scenario"].id
-                assert s.template_id is None
-                assert s.is_override is False
-                assert s.is_deleted is False
-                assert status_seam.recorded_settlement(s) is None
-
-            expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
-            income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
-            assert expense.account_id == td["account"].id
-            assert income.account_id == td["savings_account"].id
-
-    def test_shadow_names(self, app, db, transfer_data):
-        """Shadow names reference the correct account names."""
+        The from-side (expense) leg says where the money went, the to-side
+        (income) leg where it came from.  The labels were stored on two shadow
+        rows until plan step ``balance:X-bi-6-4d-3``; each leg's is composed
+        from the transfer's endpoints now (ruling R-BAL167 class 1).  Renamed
+        from ``test_shadow_names``.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
+            db.session.flush()
 
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
-            income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
+            expense = transfer_side_leg(xfer, is_income=False)
+            income = transfer_side_leg(xfer, is_income=True)
 
             assert td["savings_account"].name in expense.name
             assert td["account"].name in income.name
 
     def test_with_category(self, app, db, transfer_data):
-        """Both shadows use the user-selected category when provided."""
+        """The transfer files under the user-selected category, and both legs with it.
+
+        It asserted the two shadow rows' categories, and nothing on the
+        transfer, until plan step ``balance:X-bi-6-4d-3``; the transfer holds
+        the category and each leg reads it now (ruling R-BAL167 class 1).
+        The two leg reads are PROJECTION reads: what the grid files each leg
+        under, separated from the transfer's own read only by a defect in the
+        leg's projection of it.
+        """
         with app.app_context():
             td = transfer_data
             rent_cat = td["categories"]["Rent"]
@@ -221,34 +260,45 @@ class TestCreateTransfer:
                     category_id=rent_cat.id,
                 ),
             )
+            db.session.flush()
 
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
-            income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
+            assert xfer.category_id == rent_cat.id
+            for is_income in (False, True):
+                assert transfer_side_leg(
+                    xfer, is_income=is_income,
+                ).category_id == rent_cat.id
 
-            assert expense.category_id == rent_cat.id
-            assert income.category_id == rent_cat.id
-
-    def test_with_template_id(self, app, db, transfer_data):
-        """Template-linked transfer has template_id; shadows have template_id=None.
+    def test_with_template_id(self, app, transfer_data):
+        """A template-linked transfer has its link, and neither leg names a definition.
 
         The linked transfer is the ENGINE's (:func:`generate_transfer_of`,
         plan step balance:X-ch), which reaches ``create_transfer`` with the
-        link in its spec the way the application does.
+        link in its spec the way the application does.  A leg's
+        ``template_id`` is ``None`` whatever transfer definition generated its
+        parent: it names no TRANSACTION definition (the grid's row-key
+        contract).  That was asked of the two shadow rows until plan step
+        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
+        over them ran over none (a vacuous read, measured at its checkpoint
+        2e-2a-1); it is asked of each leg now.
         """
         with app.app_context():
             td = transfer_data
             xfer = generate_transfer_of(td["transfer_template"], td["periods"][0])
 
             assert xfer.transfer_template_id == td["transfer_template"].id
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            for s in shadows:
-                assert s.template_id is None
+            for is_income in (False, True):
+                assert transfer_side_leg(
+                    xfer, is_income=is_income,
+                ).template_id is None
 
-    def test_with_custom_name(self, app, db, transfer_data):
-        """Custom name sets transfer name; shadows still use derived names."""
+    def test_with_custom_name(self, app, transfer_data):
+        """A custom name names the transfer; each leg keeps its derived label.
+
+        It asked the two shadow rows' names until plan step
+        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
+        over them ran over none (a vacuous read, measured at its checkpoint
+        2e-2a-1); each leg's label is asked now, exactly.
+        """
         with app.app_context():
             td = transfer_data
             xfer = transfer_service.create_transfer(
@@ -266,9 +316,12 @@ class TestCreateTransfer:
             )
 
             assert xfer.name == "Mortgage Payment"
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            for s in shadows:
-                assert "Transfer" in s.name
+            assert transfer_side_leg(xfer, is_income=False).name == (
+                f"Transfer to {td['savings_account'].name}"
+            )
+            assert transfer_side_leg(xfer, is_income=True).name == (
+                f"Transfer from {td['account'].name}"
+            )
 
     def test_returns_transfer_object(self, app, db, transfer_data):
         """create_transfer returns a Transfer with a valid ID."""
@@ -984,52 +1037,83 @@ class TestDeleteTransfer:
 
 
 class TestInvariants:
-    """Tests that directly verify the five core invariants."""
+    """Tests that directly verify the five core invariants.
 
-    def test_shadow_count_is_exactly_two(self, app, db, transfer_data):
-        """Invariant 1: every transfer has exactly two shadow transactions."""
+    Invariant 2's case, ``test_shadows_cannot_exist_without_transfer``, was
+    deleted at plan step ``balance:X-bi-6-4d-3`` (ruling R-BAL278, the
+    developer, 2026-10-13): a transfer is one row, so no shadow can outlive
+    it, and the case counted rows nothing can write.
+    """
+
+    def test_one_leg_per_side_and_no_twin(self, app, db, transfer_data):
+        """Invariant 1: a transfer has exactly one leg on each side, and no twin row.
+
+        **It measured nothing from plan step ``balance:X-bi-6-4d-3``'s create
+        door on**: it counted the transfer's two shadow rows, which that door
+        no longer writes, so it FAILED (``assert 0 == 2``).  Now the fold's
+        plan loader holds exactly one leg of it on each endpoint, and a twin
+        row on either side is refused by ``ck_transactions_names_no_transfer``
+        (ruling R-BAL258), the CHECK
+        ``test_a_transfer_is_one_row.py::TestTheUpgrade::test_the_database_refuses_a_twin``
+        pins with a raw insert (ruling R-BAL167 class 1 with a refusal
+        added).  Which side each leg is on is the next case's.  Renamed from
+        ``test_shadow_count_is_exactly_two``.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
+            # Committed, because the twin refusal rolls the session back.
+            db.session.commit()
 
-            count = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .count()
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                legs = planned_transfer_legs(
+                    account_id, td["scenario"].id, options=(),
+                )
+                assert [leg.transfer.id for leg in legs] == [xfer.id]
+            for is_income in (False, True):
+                assert_a_twin_is_refused(db.session, xfer, is_income)
+
+    def test_the_from_leg_is_an_expense_and_the_to_leg_an_income(
+        self, app, db, transfer_data,
+    ):
+        """Invariant 1: the from-side leg is an expense, the to-side leg an income.
+
+        Each on its own endpoint: the source and the destination.
+        **It measured nothing from plan step ``balance:X-bi-6-4d-3``'s create
+        door on**: it read the two shadow rows' transaction types, which that
+        door no longer writes, so it FAILED (``assert 2 in []``).  Now each
+        endpoint's leg is read from the fold's plan loader (ruling R-BAL167
+        class 1).  Renamed from
+        ``test_shadow_types_are_one_expense_one_income``.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            db.session.flush()
+
+            [expense] = planned_transfer_legs(
+                xfer.from_account_id, td["scenario"].id, options=(),
             )
-            assert count == 2
+            [income] = planned_transfer_legs(
+                xfer.to_account_id, td["scenario"].id, options=(),
+            )
+            assert (expense.transfer.id, expense.account_id, expense.is_expense) == (
+                xfer.id, xfer.from_account_id, True,
+            )
+            assert (income.transfer.id, income.account_id, income.is_income) == (
+                xfer.id, xfer.to_account_id, True,
+            )
 
-    def test_shadow_types_are_one_expense_one_income(self, app, db, transfer_data):
-        """Invariant 1: one shadow is expense, one is income."""
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
+    def test_amounts_always_match_after_update(self, app, transfer_data):
+        """Invariant 3: both legs are priced at the transfer's amount after an edit.
 
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            type_ids = [s.transaction_type_id for s in shadows]
-            assert expense_type.id in type_ids
-            assert income_type.id in type_ids
-
-    def test_shadows_cannot_exist_without_transfer(self, app, db, transfer_data):
-        """Invariant 2: deleting a transfer removes all shadows (CASCADE)."""
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-            db.session.commit()
-
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=False)
-            db.session.commit()
-            db.session.expire_all()
-
-            orphans = db.session.query(Transaction).filter_by(transfer_id=xfer_id).count()
-            assert orphans == 0
-
-    def test_amounts_always_match_after_update(self, app, db, transfer_data):
-        """Invariant 3: shadow amounts always equal transfer amount."""
+        It priced the two shadow rows until plan step
+        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
+        over them ran over none (a vacuous read, measured at its checkpoint
+        2e-2a-1).  Each leg is priced as the grid prices its cell now: a
+        PROJECTION read, separated from the transfer's own amount only by a
+        defect in how a leg is priced.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
@@ -1038,9 +1122,10 @@ class TestInvariants:
                 xfer.id, td["user"].id, amount_ownership=AmountOwnership.own(Decimal("777.77")), )
 
             assert xfer.amount == Decimal("777.77")
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            for s in shadows:
-                assert shadow_amount(s) == Decimal("777.77")
+            assert _leg_amounts(xfer) == {
+                (xfer.id, xfer.from_account_id): Decimal("777.77"),
+                (xfer.id, xfer.to_account_id): Decimal("777.77"),
+            }
 
     def test_statuses_always_match_after_update(self, app, db, transfer_data):
         """Invariant 4: the transfer's status is the one status, and its sides follow.
@@ -1065,8 +1150,16 @@ class TestInvariants:
                     db.session, xfer.id, account_id,
                 ) is not None
 
-    def test_periods_always_match_after_update(self, app, db, transfer_data):
-        """Invariant 5: shadow periods always equal transfer period."""
+    def test_periods_always_match_after_update(self, app, transfer_data):
+        """Invariant 5: both legs sit in the transfer's period after an edit.
+
+        It read the two shadow rows' periods until plan step
+        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
+        over them ran over none (a vacuous read, measured at its checkpoint
+        2e-2a-1).  Each leg's period is read now: a PROJECTION read,
+        separated from the transfer's own period only by a defect in the
+        leg's projection of it.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
@@ -1077,9 +1170,10 @@ class TestInvariants:
             )
 
             assert xfer.pay_period_id == new_period.id
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            for s in shadows:
-                assert s.pay_period_id == new_period.id
+            for is_income in (False, True):
+                assert transfer_side_leg(
+                    xfer, is_income=is_income,
+                ).pay_period_id == new_period.id
 
     def test_multiple_updates_maintain_invariants(self, app, db, transfer_data):
         """Multiple sequential updates do not break any invariant.
@@ -1087,8 +1181,11 @@ class TestInvariants:
         The status half is the transfer's and its sides' payment records'
         since plan step ``balance:X-bi-6-4d-2``: the transfer says Paid and
         each side's record is dated, where each shadow said Paid until then
-        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  The shadows
-        still mirror the amount and the period.
+        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  The amount
+        and period halves read both legs since plan step
+        ``balance:X-bi-6-4d-3``, where they read the two shadow rows the
+        create door no longer writes (ruling R-BAL167 class 1); each leg read
+        is a PROJECTION read, as in the two cases above.
         """
         with app.app_context():
             td = transfer_data
@@ -1102,11 +1199,14 @@ class TestInvariants:
                 pay_period_id=td["periods"][4].id,
             )
 
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            assert len(shadows) == 2
-            for s in shadows:
-                assert shadow_amount(s) == Decimal("999.99")
-                assert s.pay_period_id == td["periods"][4].id
+            assert _leg_amounts(xfer) == {
+                (xfer.id, xfer.from_account_id): Decimal("999.99"),
+                (xfer.id, xfer.to_account_id): Decimal("999.99"),
+            }
+            for is_income in (False, True):
+                assert transfer_side_leg(
+                    xfer, is_income=is_income,
+                ).pay_period_id == td["periods"][4].id
             assert xfer.status_id == done.id
             for account_id in (xfer.from_account_id, xfer.to_account_id):
                 assert transfer_side_settle_day(
