@@ -2,8 +2,10 @@
 Shekel Budget App -- Transfer Service Tests
 
 Comprehensive tests for create_transfer, update_transfer, and
-delete_transfer.  Covers all five core invariants, validation rules,
-edge cases, and cross-user isolation.
+delete_transfer.  Covers four of the five core invariants (Invariant 2's
+case was deleted at plan step ``balance:X-bi-6-4d-3``, ruling R-BAL278;
+see :class:`TestInvariants`), validation rules, edge cases, and
+cross-user isolation.
 """
 
 from datetime import date, timedelta
@@ -49,10 +51,10 @@ from tests._test_helpers import (
     record_paydays_across_a_hole,
     rhythm_of,
     shadow_amount,
+    transfer_amount,
     transfer_family_journal_filter,
     transfer_side_figure,
     transfer_side_record,
-    transfer_amount,
     transfer_side_settle_day,
     typed,
     write_past_the_amount_seam,
@@ -190,12 +192,13 @@ class TestCreateTransfer:
         them: a transfer is one row and its two legs are derived from it
         (ruling R-BAL167 class 1; one leg per side is
         :class:`TestInvariants`').  It also asked each shadow for a recorded
-        settlement, which is not asked of each side here: the two mutants
-        that sent this create down the born-settled branch were each refused
-        by the status seam at the create (a day, then a record, on a status
-        that is not settled; measured at that step's checkpoint 2e-2a-1), so
-        no mutant built there let a side read be the first failure.  Renamed
-        from ``test_produces_two_shadows``.
+        settlement, and asks each SIDE now: a Projected create records
+        nothing on either side.  That read is the case's own: a create that
+        hands the status seam a settled status for an unsettled transfer
+        records the transfer's figure un-dated on both sides, passes every
+        read above it, and fails this one first (measured at that step's
+        checkpoint 2e-2a-1a, by the mutant its review named R-PROJ-RECORD).
+        Renamed from ``test_produces_two_shadows``.
         """
         with app.app_context():
             td = transfer_data
@@ -211,6 +214,10 @@ class TestCreateTransfer:
             assert xfer.is_deleted is False
             assert xfer.from_account_id == td["account"].id
             assert xfer.to_account_id == td["savings_account"].id
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                assert transfer_side_record(
+                    db.session, xfer.id, account_id,
+                ) is None
 
     def test_leg_names_reference_the_other_endpoint(
         self, app, db, transfer_data,
@@ -2635,13 +2642,16 @@ class TestMovingATransferBetweenAccounts:
         re-write of stored names gated on a real move, which goes with that
         arm at the step's leaf 3b.
 
-        The half fails only where the endpoint half already fails.  Under a
-        mutant that defaults an absent endpoint to the OTHER side, the name
-        half fails on its own, and in its original order the endpoint half
-        fails first (measured at checkpoint 2e-1a and by its review).  No
-        other defect can separate them, because a leg's label is a function
-        of the two endpoints and those accounts' names: this case asserts the
-        endpoints after a flush, and no account name moves in it.  That a
+        Two mutants were measured against the half.  Under one that defaults
+        an absent endpoint to the OTHER side, the name half fails on its own,
+        and in its original order the endpoint half fails first (measured at
+        checkpoint 2e-1a and by its review).  Under one that renames the
+        destination ACCOUNT on every edit (the review of checkpoint 2e-2a-1
+        named it R-RENAME-ON-EDIT), the name half, re-expressed on the legs,
+        fails while the endpoint half passes; in this file
+        ``test_the_source_move_carries_the_expense_leg_and_its_name``'s
+        expense-name assert fails under it (measured at checkpoint 2e-2a-1a
+        and by that review).  That a
         leg's name is composed from its endpoints' current names is pinned by
         ``test_transfer_legs.py``'s ``TestALegsDisplayProjections``
         (``test_the_label_is_composed_from_the_endpoints_current_names``).
