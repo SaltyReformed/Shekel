@@ -435,8 +435,8 @@ class TestThisRepositoryHasNoUnexemptedReader:
         assert not ci_scope.imports_of_the_tools(), (
             "a test the registry-only scope SKIPS imports the tools package, which names "
             "registry-only paths without a string the path census can see: move the test "
-            "into the tool's own tests (tools/ci, tools/quill or tools/plan_gate run in "
-            "every scope)"
+            "into the tool's own tests (tools/ci, tools/quill, tools/plan_gate or "
+            "tools/release run in every scope)"
         )
 
     def test_nothing_censused_imports_the_manual_harnesses(self):

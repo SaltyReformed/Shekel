@@ -458,7 +458,7 @@ def _steps(registries: Registries, layouts: Mapping[str, Layout], specs: Mapping
         links = Links(_nearest(row.key, containers, leaves, refusals),
                       _open_blockers(row, by_key, refusals),
                       None if row.rank is None else (STEPS_TIER, row.rank))
-        items.append(Item(row.arc, row.bare_ident, "step", row, _step_labels(row), links,
+        items.append(Item(row.arc, row.bare_ident, "step", row, step_labels(row), links,
                           outcome.get(row.key)))
     refusals += _shown_nowhere(containers, items)
     known = {(row.arc, row.bare_ident) for row in rows}
@@ -477,10 +477,12 @@ def _shown_nowhere(containers: set[str], items: Sequence[Item]) -> list[str]:
             "or file its leaf" for key in sorted(containers - split)]
 
 
-def _step_labels(row: StepRow) -> tuple[str, ...]:
+def step_labels(row: StepRow) -> tuple[str, ...]:
     """A step card's labels: its arc; :data:`MOVES_MONEY_LABEL` when its sentence carries
     :data:`MOVES_MONEY` and it is no container; :data:`DEPLOY_TOGETHER_LABEL` when
-    R-BAL240 names it."""
+    R-BAL240 names it.  The release tool reads a step's money flag and group through it
+    too, until the cutover (:mod:`tools.quill.plan_labels`), so a row it reads gets the
+    label the migration would give it."""
     labels = [row.arc]
     if MOVES_MONEY in row.title and not row.is_decomposed_parent:
         labels.append(MOVES_MONEY_LABEL)

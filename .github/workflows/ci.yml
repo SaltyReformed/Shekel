@@ -276,6 +276,11 @@ jobs:
       # list the gate and the tool read; step X-cx's L4) is graded here too.
       # A change to it is never registry-only, but every registry pass RUNS
       # its classifier, so its tests are not left to the scope they grade.
+      #
+      # ``tools/release`` (what a release carries; step X-cx's L9a) reads
+      # steps.md as each commit holds it until the cutover, so, like quill's,
+      # its tests run in every scope rather than being skipped by a
+      # registry-only change set.
       - name: Plan gate (every scope)
         run: |
           pylint tools/plan_gate/ --fail-under=10 --fail-on=E,F --output-format=colorized
@@ -284,6 +289,8 @@ jobs:
           pytest tools/quill -c /dev/null -q
           pylint tools/ci/ --fail-under=10 --fail-on=E,F --output-format=colorized
           pytest tools/ci -c /dev/null -q
+          pylint tools/release/ --fail-under=10 --fail-on=E,F --output-format=colorized
+          pytest tools/release -c /dev/null -q
 
   tax-law:
     runs-on: ubuntu-latest
