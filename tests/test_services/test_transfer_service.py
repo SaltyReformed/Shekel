@@ -2523,20 +2523,27 @@ class TestMovingATransferBetweenAccounts:
     ):
         """The control: an ordinary edit moves neither endpoint.
 
-        **It carried a NAME half until plan step ``balance:X-bi-6-4d-3``, and
-        that half could never fire.**  It renamed the destination account and
-        then asserted the edit left the two shadow rows' STORED names alone
-        (the arm re-wrote them only on a real MOVE).  The rename was set on
-        the fixture's ``Account``, which is not in this test's session, so it
-        reached no row: re-read from the database after its flush, the
-        account still has its old name (measured by the review of that step's
-        checkpoint 2e-1, and again at 2e-1a).  Every name either side of the
-        edit was therefore composed from unchanged account names, so the half
-        could not fail whatever the arm did.  It is dropped as a
-        measured-vacuous read, with the rename that set nothing.  Its intended subject, the arm's re-write of stored names
-        gated on a real move, goes with that arm at the step's leaf 3b.  That
-        a leg's name is composed from its endpoints' current names is pinned
-        by ``test_transfer_legs.py``'s ``TestALegsDisplayProjections``
+        **It carried a NAME half until plan step ``balance:X-bi-6-4d-3``,
+        dropped there as a DOMINATED read, with the rename that set nothing.**
+        It renamed the destination account and then asserted the edit left
+        the two shadow rows' STORED names alone (the arm re-wrote them only on
+        a real MOVE).  The rename was set on the fixture's ``Account``, which
+        is not in this test's session, so it reached no row: re-read from the
+        database after its flush, the account still has its old name
+        (measured by the review of that step's checkpoint 2e-1, and again at
+        2e-1a).  So the half never exercised its intended subject, the arm's
+        re-write of stored names gated on a real move, which goes with that
+        arm at the step's leaf 3b.
+
+        The half fails only where the endpoint half already fails.  Under a
+        mutant that defaults an absent endpoint to the OTHER side, the name
+        half fails on its own, and in its original order the endpoint half
+        fails first (measured at checkpoint 2e-1a and by its review).  No
+        other defect can separate them, because a leg's label is a function
+        of the two endpoints and those accounts' names: this case asserts the
+        endpoints after a flush, and no account name moves in it.  That a
+        leg's name is composed from its endpoints' current names is pinned by
+        ``test_transfer_legs.py``'s ``TestALegsDisplayProjections``
         (``test_the_label_is_composed_from_the_endpoints_current_names``).
         The endpoint half stands.  Renamed from
         ``test_an_update_naming_no_account_leaves_the_pair_where_it_is``.
@@ -2742,9 +2749,12 @@ class TestMovingATransferBetweenAccounts:
         endpoint apply, the staged move then reaches the transfer's own
         destination column, and that column fails the case on its own
         (measured at that step's checkpoint 2e-1a, on this case and on a copy
-        of it asserting the transfer's three columns alone).  Until then the
-        case leaned on its own :meth:`_legs` re-read, a query whose autoflush
-        wrote the staged move.  Renamed from
+        of it asserting the transfer's three columns alone).  Until then its
+        column elements caught the move only through its own :meth:`_legs`
+        re-read, a query whose autoflush wrote the staged move.  Its leg NAMES
+        catch it with no flush at all, since a name reads the endpoint
+        relationship that the move assigns at once (measured by the review of
+        checkpoint 2e-1a).  Renamed from
         ``test_a_refused_amount_does_not_move_the_pair_first``.
         """
         with app.app_context():
