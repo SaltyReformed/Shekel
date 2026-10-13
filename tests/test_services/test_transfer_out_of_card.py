@@ -16,13 +16,14 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import transfer_service
+from app.services.transfer_legs import transfer_side_leg
 from tests._test_helpers import create_account_of_type
 
 
@@ -49,15 +50,21 @@ def _spec(td, *, from_account_id, to_account_id):
 
 
 def _legs(xfer):
-    """Return this transfer's ``(expense, income)`` shadows."""
-    expense_type = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    shadows = db.session.query(Transaction).filter_by(
-        transfer_id=xfer.id, is_deleted=False,
-    ).all()
-    assert len(shadows) == 2
-    expense = [s for s in shadows if s.transaction_type_id == expense_type]
-    income = [s for s in shadows if s.transaction_type_id != expense_type]
-    return expense[0], income[0]
+    """Return this transfer's ``(expense, income)`` legs, by SIDE.
+
+    The from-side and to-side :class:`~app.services.transfer_legs.TransferLeg`
+    (``transfer_side_leg``, keyed by the side and never by an account, so it is
+    safe across an endpoint move once the move is flushed).  It returned the
+    two shadow rows, found by their transaction TYPE, until plan step
+    ``balance:X-bi-6-4d-3`` (ruling R-BAL167 class 4: the callers' assertions
+    are unchanged): a transfer is one row since then, and a leg is derived from
+    it.  A leg's ``account_id`` is its side's endpoint column, and its ``name``
+    is composed from the endpoints' current names.
+    """
+    return (
+        transfer_side_leg(xfer, is_income=False),
+        transfer_side_leg(xfer, is_income=True),
+    )
 
 
 class TestTheCreateDoor:
@@ -96,9 +103,11 @@ class TestTheCreateDoor:
         """The control: the same spec with the endpoints swapped succeeds.
 
         A transfer INTO the card is how the card is paid (design 3.5), so it
-        must pass the guard that refuses the reverse.  Both shadows exist and
-        the income leg sits on the card, which attributes the refusal above to
-        the card being the SOURCE and to nothing else about a card.
+        must pass the guard that refuses the reverse.  The transfer exists and
+        its income leg sits on the card, which attributes the refusal above to
+        the card being the SOURCE and to nothing else about a card.  Its legs
+        were its two shadows until plan step ``balance:X-bi-6-4d-3`` (ruling
+        R-BAL167 class 4, :func:`_legs`).
         """
         with app.app_context():
             td = seed_full_user_data
@@ -128,8 +137,10 @@ class TestTheEndpointMoveDoor:
         The create door refuses a card source; the edit path can move a
         source (plan step R10-b), so it inherits the rule -- otherwise the one
         guard would have a second door straight past it.  The refusal runs in
-        ``_resolve_endpoints``, which writes nothing, so the parent and both
-        legs still name their pre-edit accounts when it raises.
+        ``_resolve_endpoints``, which writes nothing, so the transfer and both
+        its legs still name their pre-edit accounts when it raises (the legs
+        were its two shadow rows until plan step ``balance:X-bi-6-4d-3``;
+        ruling R-BAL167 class 4, :func:`_legs`).
         """
         with app.app_context():
             td = seed_full_user_data
@@ -165,8 +176,11 @@ class TestTheEndpointMoveDoor:
         """The control: the same edit naming the card as DESTINATION lands.
 
         Moving where a transfer arrives onto a card turns it into that card's
-        payment, which is allowed; the income leg follows and its derived name
-        re-states the unchanged source.
+        payment, which is allowed; the income leg follows and the expense
+        leg's derived name states the new destination.  The legs were the two
+        shadow rows, whose names the move re-wrote, until plan step
+        ``balance:X-bi-6-4d-3`` (ruling R-BAL167 class 4, :func:`_legs`); a
+        leg's name is composed from the endpoints now.
         """
         with app.app_context():
             td = seed_full_user_data
@@ -201,7 +215,11 @@ class TestTheEndpointMoveDoor:
         ``vacated_source`` gate is caught whichever arm a test reaches for.
         The legacy state is PLANTED, because no door produces it: a transfer
         whose source is already a card must move its DESTINATION without
-        being re-graded for a shape the edit does not touch.
+        being re-graded for a shape the edit does not touch.  It is planted on
+        the transfer alone since plan step ``balance:X-bi-6-4d-3``, where it was
+        planted on the transfer AND its expense shadow: a leg is derived from
+        its transfer, so there is no second row to plant it on (ruling
+        R-BAL167 class 1).
         """
         with app.app_context():
             td = seed_full_user_data
@@ -212,10 +230,8 @@ class TestTheEndpointMoveDoor:
                 to_account_id=td["savings_account"].id,
             ))
             db.session.flush()
-            expense, _ = _legs(xfer)
             # The pre-refusal shape: money leaving a card.
             xfer.from_account = card
-            expense.account = card
             db.session.commit()
             elsewhere = create_account_of_type(
                 td, db.session, "Savings", "New Destination",

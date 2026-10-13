@@ -16,7 +16,6 @@ from app import ref_cache
 from app.enums import (
     MovementFigureSourceEnum,
     StatusEnum,
-    TxnTypeEnum,
 )
 from app.extensions import db
 from app.models.account import Account
@@ -32,7 +31,7 @@ from app.services import (
     transfer_service,
     status_seam,
 )
-from app.services.transfer_legs import grid_transfer_leg
+from app.services.transfer_legs import grid_transfer_leg, transfer_side_leg
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
@@ -2405,9 +2404,11 @@ class TestMovingATransferBetweenAccounts:
     definition states, and this door could write only four of them -- so a
     definition's account change reached its generated rows by DESTROYING and
     re-creating every one of them, and a NON-repeating transfer refused the same
-    edit outright because nothing could carry it.  The arm moves the parent and
-    BOTH legs, re-derives each leg's display name, and reconciles the ledger on
-    both sides of the move.
+    edit outright because nothing could carry it.  The arm moves the transfer
+    and reconciles the ledger on both sides of the move; its two legs, and
+    each leg's display name, are derived from the transfer's endpoints.  Until
+    plan step ``balance:X-bi-6-4d-3`` the legs were two shadow rows, which the
+    arm re-pointed and re-named (that upkeep is deleted at the step's leaf 3b).
     """
 
     def _other_savings(self, td, name="Second Savings", observed_on=None):
@@ -2444,15 +2445,21 @@ class TestMovingATransferBetweenAccounts:
         return account
 
     def _legs(self, xfer):
-        """Return this transfer's ``(expense, income)`` shadows."""
-        expense_type = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-        shadows = db.session.query(Transaction).filter_by(
-            transfer_id=xfer.id, is_deleted=False,
-        ).all()
-        assert len(shadows) == 2
-        expense = [s for s in shadows if s.transaction_type_id == expense_type]
-        income = [s for s in shadows if s.transaction_type_id != expense_type]
-        return expense[0], income[0]
+        """Return this transfer's ``(expense, income)`` legs, by SIDE.
+
+        The from-side and to-side :class:`~app.services.transfer_legs.TransferLeg`
+        (``transfer_side_leg``, keyed by the side and never by an account, so
+        it is safe across an endpoint move once the move is flushed).  It
+        returned the two shadow rows, found by their transaction TYPE, until
+        plan step ``balance:X-bi-6-4d-3`` (ruling R-BAL167 class 4: the
+        callers' assertions are unchanged).  A leg's ``account_id`` is its
+        side's endpoint COLUMN, and its ``name`` is composed from the endpoint
+        RELATIONSHIPS' current names.
+        """
+        return (
+            transfer_side_leg(xfer, is_income=False),
+            transfer_side_leg(xfer, is_income=True),
+        )
 
     def test_the_destination_move_carries_the_income_leg_and_its_name(
         self, app, db, transfer_data
@@ -2460,10 +2467,14 @@ class TestMovingATransferBetweenAccounts:
         """Moving the destination moves the income leg and re-derives its label.
 
         The expense leg stays on the unchanged source, but its NAME says where
-        the money is going -- so it is re-derived too.  A leg on the new account
-        still labelled with the old one is a row that contradicts itself, and
-        the delete-and-recreate this replaces got that right for free by
-        rebuilding the pair.
+        the money is going -- so it must follow too.  A leg on the new account
+        still labelled with the old one contradicts itself, and the
+        delete-and-recreate this replaces got that right for free by rebuilding
+        the pair.  The legs were two shadow rows whose names the arm re-wrote
+        until plan step ``balance:X-bi-6-4d-3``; each is derived from the
+        transfer now, its name composed from the endpoints (ruling R-BAL167
+        class 4, :meth:`_legs`), and the re-write goes with the shadows at that
+        step's leaf 3b.
         """
         with app.app_context():
             td = transfer_data
@@ -2486,7 +2497,7 @@ class TestMovingATransferBetweenAccounts:
     def test_the_source_move_carries_the_expense_leg_and_its_name(
         self, app, db, transfer_data
     ):
-        """The mirror of the case above, on the other leg."""
+        """The mirror of the case above, on the other leg (class 4 likewise)."""
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
@@ -2507,22 +2518,25 @@ class TestMovingATransferBetweenAccounts:
             )
             assert income.name == f"Transfer from {elsewhere.name}"
 
-    def test_an_update_naming_no_account_leaves_the_pair_where_it_is(
+    def test_an_update_naming_no_account_leaves_the_transfer_where_it_is(
         self, app, db, transfer_data
     ):
-        """The firing control: an ordinary edit moves neither leg nor name.
+        """The control: an ordinary edit moves neither endpoint.
 
-        Both legs' names are derived from the endpoints, so an arm that
-        re-derived them unconditionally would look correct here -- until an
-        owner renamed an account and every unrelated edit silently rewrote the
-        labels of rows it was not asked about.  The arm is gated on a real
-        MOVE, and this pins that.
+        **It also pinned, until plan step ``balance:X-bi-6-4d-3``, that the edit
+        left the two shadow rows' STORED names alone** after an owner renamed
+        an account: the arm re-wrote those names only on a real MOVE, so an
+        unrelated edit could not silently re-label rows it was not asked about.
+        That half has no subject now (ruling R-BAL167 class 1): a leg's name is
+        composed from the endpoints' CURRENT names (``TransferLeg.name``, since
+        plan step ``balance:X-bi-6-1``), so the rename itself re-labels the leg,
+        by design and with no edit at all, and the gated re-write goes with the
+        shadows at that step's leaf 3b.  The endpoint half stands.  Renamed
+        from ``test_an_update_naming_no_account_leaves_the_pair_where_it_is``.
         """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
-            expense, income = self._legs(xfer)
-            before = (expense.name, income.name)
             td["savings_account"].name = "Renamed Since"
             db.session.flush()
 
@@ -2533,8 +2547,6 @@ class TestMovingATransferBetweenAccounts:
 
             assert xfer.from_account_id == td["account"].id
             assert xfer.to_account_id == td["savings_account"].id
-            expense, income = self._legs(xfer)
-            assert (expense.name, income.name) == before
 
     def test_a_move_that_would_make_the_endpoints_equal_is_refused(
         self, app, db, transfer_data
@@ -2599,6 +2611,10 @@ class TestMovingATransferBetweenAccounts:
         The legacy state is PLANTED, because the create door no longer produces
         it -- which is the point: the row exists on data written before the
         guard, and an edit must not be refused for a shape it does not change.
+        It is planted on the transfer alone since plan step
+        ``balance:X-bi-6-4d-3``, where it was planted on the transfer AND its
+        expense shadow: a leg is derived from its transfer, so there is no
+        second row to plant it on (ruling R-BAL167 class 1).
         """
         with app.app_context():
             td = transfer_data
@@ -2609,10 +2625,8 @@ class TestMovingATransferBetweenAccounts:
             )
             elsewhere = self._other_savings(td, name="New Destination")
             xfer = _create_basic_transfer(td)
-            expense, _ = self._legs(xfer)
             # The pre-guard shape: money leaving a loan.
             xfer.from_account = loan
-            expense.account = loan
             db.session.flush()
 
             transfer_service.update_transfer(
@@ -2714,9 +2728,13 @@ class TestMovingATransferBetweenAccounts:
         a loan payment's split reversal, so this exact payload moved the pair
         and reversed a ledger correction before deciding the edit was illegal.
 
-        Asserts the whole pair, not just the parent: a half-applied move leaves
-        the legs on accounts the money does not move between, and their display
-        names saying so.
+        Asserts the legs, not just the transfer's columns: a half-applied move
+        leaves the legs on accounts the money does not move between, and their
+        display names saying so.  The legs were two shadow rows until plan
+        step ``balance:X-bi-6-4d-3`` (ruling R-BAL167 class 4, :meth:`_legs`).
+        Measured at that step's checkpoint 2e-1: with the amount's refusal
+        moved below the endpoint apply, this case fails on the transfer's own
+        destination column, the move already flushed when the refusal raised.
         """
         with app.app_context():
             td = transfer_data
@@ -2743,14 +2761,17 @@ class TestMovingATransferBetweenAccounts:
                 expense.name, income.name,
             ) == before
 
-    def test_a_refused_move_leaves_all_three_rows_untouched(
+    def test_a_refused_move_leaves_the_transfer_and_its_legs_untouched(
         self, app, db, transfer_data
     ):
         """An endpoint refusal itself writes nothing either.
 
         The complementary half: the endpoint gates are read-only, so a move
         refused for its OWN reason -- here, endpoints that would end up equal --
-        leaves the pair exactly as it was.
+        leaves the transfer and both its legs exactly as they were.  Renamed
+        from ``test_a_refused_move_leaves_all_three_rows_untouched``: the
+        legs were the transfer's two shadow rows until plan step
+        ``balance:X-bi-6-4d-3`` (ruling R-BAL167 class 4, :meth:`_legs`).
         """
         with app.app_context():
             td = transfer_data
