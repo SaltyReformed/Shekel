@@ -83,7 +83,8 @@ CLAIM_PREFIX = "refs/claims/"
 #: the ~20 seconds L1 measured, so a slow read is waited out and a stuck one
 #: is reported rather than waited on forever.
 BOARD_WAIT_SECONDS = 60
-_POLL_SECONDS = 5
+#: How often a board that lags a write is read again.
+POLL_SECONDS = 5
 #: A connection GitHub caps per card (a parent holds at most 100 sub-issues).
 _PAGE = 100
 #: GitHub's issue search serves at most this many results of one query, whatever its
@@ -132,12 +133,17 @@ _COMMENT_FIELDS = "author { login } createdAt body"
 
 
 def _all_cards(place: Place) -> str:
-    """The listing of every card of ``place``, open and closed, each with its body and its
-    first hundred comments (and how many it has)."""
+    """The listing of every card of ``place``, open and closed, each with its body, its
+    milestone's number and its first hundred comments (and how many it has).
+
+    Only X-cx's migration reads it, and only it reads a milestone (L7 draft 4 s.12): the
+    milestone is selected HERE, not in :data:`_CARD_FIELDS`, which every other query
+    selects and whose text the recordings replay word for word."""
     return (
         """query($after: String) { repository(owner: "%s", name: "%s") {
   issues(first: 100, after: $after, states: [OPEN, CLOSED]) {
     pageInfo { hasNextPage endCursor } nodes { %s body
+      milestone { number }
       comments(first: 100) { totalCount nodes { %s } } } } } }"""
         % (place.owner, place.name, _CARD_FIELDS, _COMMENT_FIELDS)
     )
@@ -271,12 +277,24 @@ class Claim:
 
 @dataclass(frozen=True)
 class WholeCard:
-    """A card with its text: its :class:`Card`, its body and every comment on it, oldest
-    first (X-cx's migration reads every card this way, L7)."""
+    """A card with its text: its :class:`Card`, its body, every comment on it, oldest
+    first, and the number of its milestone, None for none (X-cx's migration reads every
+    card this way, L7)."""
 
     card: Card
     body: str
     comments: tuple[Comment, ...]
+    milestone: int | None
+
+
+@dataclass(frozen=True)
+class Milestone:
+    """One of a tracker's milestones: its number, title and description (X-cx's migration
+    gives each outcome one, ruling ``balance:R-BAL243``)."""
+
+    number: int
+    title: str
+    description: str
 
 
 class NumberState(Enum):
@@ -463,6 +481,23 @@ def board_of(github: GitHub, place: Place) -> str:
     return board_id
 
 
+def read_until(read: Callable[[], list[tuple[int, str]]],
+               holds: Callable[[list[tuple[int, str]]], bool],
+               sleep: Callable[[float], None]) -> tuple[list[tuple[int, str]], bool]:
+    """Read the board (``read``, :meth:`Board.order`) every :data:`POLL_SECONDS` until a read
+    of it ``holds``, for at most :data:`BOARD_WAIT_SECONDS`: the board's lag waited out in
+    one place.  The last read, and whether it holds."""
+    waited = 0
+    while True:
+        order = read()
+        if holds(order):
+            return order, True
+        if waited >= BOARD_WAIT_SECONDS:
+            return order, False
+        sleep(POLL_SECONDS)
+        waited += POLL_SECONDS
+
+
 class Board:
     """``place``'s board: the steps and questions in the developer's drag order (R-BAL177).
 
@@ -515,31 +550,28 @@ class Board:
 
     def shows(self, item: str, after: str | None) -> bool:
         """Read the board until ``item`` sits right after ``after`` (first when None),
-        for at most :data:`BOARD_WAIT_SECONDS`."""
-        waited = 0
-        while True:
-            items = [item_id for _, item_id in self.order()]
-            if item in items:
-                index = items.index(item)
-                if (after is None and index == 0) or (index and items[index - 1] == after):
-                    return True
-            if waited >= BOARD_WAIT_SECONDS:
+        for at most :data:`BOARD_WAIT_SECONDS` (:func:`read_until`)."""
+        def placed(order: list[tuple[int, str]]) -> bool:
+            items = [item_id for _, item_id in order]
+            if item not in items:
                 return False
-            self._sleep(_POLL_SECONDS)
-            waited += _POLL_SECONDS
+            index = items.index(item)
+            return (after is None and index == 0) or bool(index and items[index - 1] == after)
+        return read_until(self.order, placed, self._sleep)[1]
 
 
 class Tracker:  # pylint: disable=too-many-public-methods
     """A tracker as the App sees it: its cards and claims, and its :class:`Board`.
 
-    Pylint: ``too-many-public-methods`` (26/20) -- ``connect``, then **one
+    Pylint: ``too-many-public-methods`` (29/20) -- ``connect``, then **one
     method per read or write quill makes of the tracker** (most one
     request, ``claim`` four; this module is the one place it speaks to
     GitHub), the board's own writes already apart in :class:`Board`.  Three
     of them, the filing mark's read and its removal (R-BAL202) and a leaf's
     unlink (R-BAL205), took it past 20; ``show``'s read of a card's comments
     is the fourth; X-cx's migration (L7) reads every card whole and asks GitHub
-    what a number is, the fifth and sixth.
+    what a number is, the fifth and sixth, and reads and makes milestones and
+    closes a ruling with its mark's removal in one write, the seventh to ninth.
     The claims' three (``claims``, ``claim``, ``release``: git references, not
     cards) could stand apart the same way; that split is not this change's.
 
@@ -609,8 +641,35 @@ class Tracker:  # pylint: disable=too-many-public-methods
             number, held = node["number"], node["comments"]
             comments = ([_comment(each) for each in held["nodes"]]
                         if held["totalCount"] <= len(held["nodes"]) else self.comments(number))
-            cards[number] = WholeCard(self._card(node), node["body"] or "", tuple(comments))
+            cards[number] = WholeCard(self._card(node), node["body"] or "", tuple(comments),
+                                      (node["milestone"] or {}).get("number"))
         return cards
+
+    def milestones(self) -> dict[str, Milestone]:
+        """Every milestone, open and closed, by title, read page by page.
+
+        X-cx's migration finds each outcome's milestone by its title (L7 draft 4 s.11
+        V3-5), so a lost create's answer is found rather than made twice.
+
+        Raises:
+            TrackerError: When two milestones share a title, which would make the one
+                found by it a guess.
+        """
+        found, page = {}, 1
+        while True:
+            more = "" if page == 1 else f"&page={page}"
+            listed = self.github.rest(
+                "GET", f"{self.place.path}/milestones?state=all&per_page=100{more}") or []
+            for node in listed:
+                if node["title"] in found:
+                    raise TrackerError(f"two milestones of {self.place.full_name} are titled "
+                                       f"{node['title']!r}: #{found[node['title']].number} and "
+                                       f"#{node['number']}")
+                found[node["title"]] = Milestone(node["number"], node["title"],
+                                                 node["description"] or "")
+            if len(listed) < 100:
+                return found
+            page += 1
 
     def number_state(self, number: int) -> NumberState:
         """What GitHub answers a REST read of issue ``number`` with (:func:`numbering`).
@@ -763,11 +822,16 @@ class Tracker:  # pylint: disable=too-many-public-methods
 
     # -- writes --------------------------------------------------------------
 
-    def create(self, kind: str, title: str, body: str, labels: Iterable[str]) -> int:
+    def create(self, kind: str, title: str, body: str, labels: Iterable[str],
+               milestone: int | None = None) -> int:
         """File a card, marked :data:`setup_tracker.FILING` beside ``labels`` in this, its
         first write (R-BAL202): every card quill files is born marked, and its
         filing's last write, :meth:`unmark`, removes the mark.  Its number, once GitHub's
-        answer shows the type and labels sent.
+        answer shows the type, labels and milestone sent.
+
+        ``milestone``: the number of the milestone the card is filed in, which only X-cx's
+        migration sets (L7 draft 4 s.3: a scope step's create carries its outcome's).
+        None sends no milestone at all, so every other create's request is what it was.
 
         A create naming a label the tracker lacks makes that label (grey, no description;
         measured 2026-10-04 on the mark itself, before it existed; ``setup_tracker.py
@@ -781,14 +845,25 @@ class Tracker:  # pylint: disable=too-many-public-methods
         (``_filing._same_filing``); this answer is the re-sent create's card.
         """
         labels = sorted({*labels, FILING})
-        issue = self.github.rest("POST", f"{self.place.path}/issues",
-                                 {"title": title, "body": body, "type": kind, "labels": labels})
+        sent = {"title": title, "body": body, "type": kind, "labels": labels}
+        if milestone is not None:
+            sent["milestone"] = milestone
+        issue = self.github.rest("POST", f"{self.place.path}/issues", sent)
         got = ((issue.get("type") or {}).get("name"), sorted(l["name"] for l in issue["labels"]))
         if got != (kind, labels):
             raise TrackerError(
                 f"plan#{issue['number']} was filed as {got}, not {(kind, labels)}: fix it by hand"
             )
+        held = (issue.get("milestone") or {}).get("number")
+        if held != milestone:
+            raise TrackerError(f"plan#{issue['number']} was filed in milestone {held}, not "
+                               f"{milestone}: fix it by hand")
         return issue["number"]
+
+    def create_milestone(self, title: str, description: str) -> int:
+        """Make a milestone (X-cx's migration, one per outcome, R-BAL243); its number."""
+        return self.github.rest("POST", f"{self.place.path}/milestones",
+                                {"title": title, "description": description})["number"]
 
     def retype(self, number: int, kind: str) -> None:
         """Change a card's kind, reading it back."""
@@ -824,6 +899,26 @@ class Tracker:  # pylint: disable=too-many-public-methods
     def unmark(self, number: int) -> None:
         """Remove a card's :data:`setup_tracker.FILING` mark: its filing's last write."""
         self.github.rest("DELETE", f"{self.place.path}/issues/{number}/labels/{FILING}")
+
+    def close_unmarked(self, number: int, labels: Iterable[str]) -> None:
+        """Close a card as completed AND remove its :data:`setup_tracker.FILING` mark, in ONE
+        write: a migrated ruling's last (L7 draft 4 s.11 V3-8, one write where
+        :meth:`close` and :meth:`unmark` are two).  ``labels`` are the card's as read; the
+        write sets them without the mark, so it is sent only during the cutover's freeze,
+        when nothing else labels a card.  GitHub's answer is read back.
+
+        Raises:
+            TrackerError: When the answer shows the card open, closed for another reason,
+                or labelled otherwise.
+        """
+        kept = sorted(set(labels) - {FILING})
+        issue = self.github.rest("PATCH", f"{self.place.path}/issues/{number}", {
+            "state": "closed", "state_reason": "completed", "labels": kept})
+        got = (issue["state"], issue.get("state_reason"),
+               sorted(label["name"] for label in issue["labels"]))
+        if got != ("closed", "completed", kept):
+            raise TrackerError(f"plan#{number} reads {got} after its close and unmark, not "
+                               f"{('closed', 'completed', kept)}: fix it by hand")
 
     def add_child(self, parent: int, child: Card) -> None:
         """Make ``child`` a sub-issue of ``parent``."""

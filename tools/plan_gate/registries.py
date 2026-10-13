@@ -10,6 +10,11 @@ this module re-exports them, and holds no logic and no name of its own (ruling
 readers it exposes; until then ``tools/quill`` depends on ``tools/plan_gate``, beside
 R-BAL223's layering (both import ``tools/ci``, which imports neither).
 
+The migration reads each registry as a COMMIT holds it, so a card never quotes text its
+commit lacks: it reads the file at each path (``STEPS``, ``LEDGER``, ``RULINGS``, the
+paths' one spelling) from git and hands the text to the reader's ``text`` (rulings
+``balance:R-BAL257`` and ``R-BAL259``, which amend R-BAL244 again).
+
 A name is added here only with the coordinator's clearance.  ``outcome_scopes`` is read
 for MEMBERSHIP only: R-BAL243 keeps the outcomes' priority in the board's order.
 """
@@ -18,13 +23,16 @@ from __future__ import annotations
 from tools.plan_gate._classes import decomposition_leaf_keys, identity_class
 from tools.plan_gate._order import outcome_scopes
 from tools.plan_gate._plan_gate import NON_STEP_OWNERS, OWNER_RX, split_owners
-from tools.plan_gate._registry import ledger_rows, step_rows
-from tools.plan_gate._rulings import ruling_rows
+from tools.plan_gate._registry import LEDGER, STEPS, ledger_rows, step_rows
+from tools.plan_gate._rulings import RULINGS, ruling_rows
 from tools.plan_gate._tables import LedgerRow, RulingRow, StepRow
 
 __all__ = [
+    "LEDGER",
     "NON_STEP_OWNERS",
     "OWNER_RX",
+    "RULINGS",
+    "STEPS",
     "LedgerRow",
     "RulingRow",
     "StepRow",

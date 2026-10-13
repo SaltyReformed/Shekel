@@ -144,7 +144,7 @@ root; never silence it with a bare disable.
   doctrine.
 - **PR-guard hook** (`scripts/hooks/guard-pr-actions.sh`) turns `gh pr create` / `gh pr merge` into
   a permission prompt outside the coordinator session (which exports `SHEKEL_PR_COORDINATOR=1`);
-  `git push` is never gated. Advisory by design, the ask-decision shape of the migration guard.
+  `git push` is never gated. Advisory by design: an ask decision, never a deny.
 - **Stop hook** runs full `pylint app/` -- the only place cross-file `duplicate-code` is caught --
   and hard-blocks once `scripts/hooks/ENFORCE_PYLINT_FLOOR` exists (the 10.00/10 lock-in).
 - **Custom checkers:** `tools/pylint/shekel_checkers/` (+ tests), loaded via `.pylintrc`. Add one

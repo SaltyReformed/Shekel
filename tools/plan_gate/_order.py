@@ -326,7 +326,7 @@ def ready_count_violation() -> list[str]:
     ready = sum(
         1 for row in registry.step_rows()
         if not row.shipped and not row.is_container
-        and row.blocked.split(" / ")[0].strip() == "NOW"
+        and row.starts_head == "NOW"
     )
     if int(match.group("ready")) == ready:
         return []
@@ -359,7 +359,7 @@ def starts_violations() -> list[str]:
     for row in rows:
         if row.shipped:
             continue
-        head = row.blocked.split(" / ")[0].strip()
+        head = row.starts_head
         match = STARTS_HEAD_RX.match(head)
         if match is None:
             problems.append(
@@ -498,13 +498,17 @@ def row_order_violations() -> list[str]:
     return problems
 
 
-def outcome_scopes() -> list[tuple[str, list[str]]]:
+def outcome_scopes(*, text: str | None = None) -> list[tuple[str, list[str]]]:
     """Return ``(outcome, scope keys)`` per row of ``steps.md``'s OUTCOMES table.
 
     The scope cell carries the ``aliases`` / ``blocked by`` grammar -- a
     ``/``-separated list of ``arc:id`` keys -- and is read by the same
     function, because a third spelling of "a list of step keys" is the
     denormalization these registries exist to remove.
+
+    Args:
+        text: ``steps.md``'s text to read, which X-cx's migration passes as a
+            commit holds it (ruling ``balance:R-BAL257``); None reads the file.
 
     Returns:
         The rows in document order, which is the developer's priority order.
@@ -513,7 +517,8 @@ def outcome_scopes() -> list[tuple[str, list[str]]]:
         AssertionError: When the table is missing -- a missing table is not an
             empty one (:func:`_tables.rows_under`).
     """
-    text = registry.STEPS.read_text()
+    if text is None:
+        text = registry.STEPS.read_text()
     return [
         (row[0], tables.key_list(row[1]))
         for row in tables.rows_under(text, tables.OUTCOMES_HEADER)

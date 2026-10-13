@@ -133,7 +133,18 @@ CAPS = {
     # lane's merge deliberately -- both edit the same README region, and
     # doing them at once manufactures the conflict two sessions have twice
     # avoided.  The 3.4-lines-per-open-step calibration still allows ~1350.
-    "balance": 1330,
+    # **RAISED 1330 -> 1380 by the developer, 2026-10-11 (R-BAL270)**: "Raise the cap on
+    # the balance README and the pay-calendar plan", answering the coordinator's report
+    # that outcome O7's filing (R-BAL263) had used every spare line: when he was asked,
+    # the README sat at 1310 of an effective 1310, with about 129 balance steps open.  **His
+    # words named no figure; 1380 is the coordinator's application of them**, by this
+    # file's own calibration -- 3.4 lines per open step plus the 20-line headroom -- which
+    # would allow about 1769 (129 x 3.4 + 20 over 1310), so 1380 stays well
+    # under it: 50 lines of room above the 20 of headroom.  **Rule 5's archive escape was
+    # NOT spent first**, because `balance:X-cx`'s L8 deletes these specification sections
+    # when the plan moves to the tracker, so an archive pass now condenses text that the
+    # cutover removes anyway.
+    "balance": 1380,
     # **RAISED 850 -> 900 by the developer, 2026-09-03**, on rule 4's terms and
     # by the same calibration that raised the balance README.  The cap BOUND
     # while minting `recurrence:R7d-h`: the document sat at 843 with 23 open
@@ -155,7 +166,14 @@ CAPS = {
     # Deliberately NOT back to the 560 this document carried before the
     # registries left; that space was removed on purpose and 520 does not
     # return it.
-    "pay_calendar": 520,
+    # **RAISED 520 -> 550 by the developer, 2026-10-11 (R-BAL270)**, in the same words and
+    # on the same terms as the balance raise above: when he was asked, the plan sat at 500
+    # of an effective 500, with about 18 pay-calendar steps open.  The figure is the
+    # coordinator's application of his words, which named none; the calibration would
+    # allow about 581 (18 x 3.4 + 20 over 500), so 550 stays under it: 30 lines
+    # of room above the 20 of headroom.  Rule 5's archive escape was NOT spent first, for
+    # the same reason: `balance:X-cx`'s L8 deletes these specification sections.
+    "pay_calendar": 550,
     "credit_card": 400,
     # **RAISED 200 -> 260 by the developer, 2026-08-30**, on rule 4's own
     # terms: the cap BOUND, and rule 5's escape was spent first.  The shipped
