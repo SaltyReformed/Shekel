@@ -35,10 +35,11 @@ shadow is asked of the transfer, or of its legs through the producers that
 price them, with its figures unchanged (ruling **R-BAL167** class 1), and the
 one case that planted a shadow -- a figure on it -- asserts the database
 refuses it (class 2).  Three claims were not re-asked, and each case says so:
-the AD-HOC case's ownership read, which the transfer's own CHECK makes
-infallible and which a refusal replaces; the two FORM cases' per-leg period
-reads, because a leg's period IS its transfer's (``leg_of``); and the per-leg
-"stores nothing", because no leg row is left to store anything.
+the two AD-HOC cases' ownership reads -- the retype case's and the
+owner-stated amount case's -- which the transfer's own CHECK makes infallible
+on an ad-hoc row, a refusal replacing the first; the two FORM cases' per-leg
+period reads, because a leg's period IS its transfer's (``leg_of``); and the
+per-leg "stores nothing", because no leg row is left to store anything.
 """
 
 import re
@@ -331,18 +332,23 @@ class TestWhoOwnsTheFigureAfterAnEdit:
             assert owns_its_amount(edited) is False
             assert transfer_amount(edited) == Decimal("400.00")
 
-    def test_an_owner_stated_amount_makes_both_legs_own_it(
+    def test_an_owner_stated_amount_is_what_the_transfer_stores_and_resolves(
         self, app, db, seed_user, seed_periods,
     ):
-        """``is_override`` in the same call takes the figure back for the pair.
+        """An owner-stated amount, ``is_override`` in the same call, lands on the transfer.
 
         Ruling **R-IO**: the figure a human types always wins.  The door
         translates the caller's own statement into the model's column -- it does
         not READ the stored flag to decide a price, which is finding N-262's
-        rule; ``is_override`` here is the kwarg this call carried.
+        rule; ``is_override`` here is the kwarg this call carried.  The same
+        call took the figure back for both shadow legs until plan step
+        balance:X-bi-6-4d-3.
 
-        **Its ownership read went at plan step balance:X-bi-6-4d-3** (ruling
-        **R-BAL167** class 1, the cp2c review's L-4 applied to this case).
+        **Renamed at plan step balance:X-bi-6-4d-3's checkpoint 2d-a** (it was
+        ``test_an_owner_stated_amount_makes_both_legs_own_it``, a claim about
+        the legs it no longer asserts).  **Its ownership read went at
+        checkpoint 2c-a** (ruling **R-BAL167** class 1, the cp2c review's L-4
+        applied to this case).
         The fixture is AD-HOC, whose legs were born derived and were TAKEN by
         this statement; the transfer owns its figure from birth
         (``ck_transfers_adhoc_owns_amount``), so ``owns_its_amount`` asked of
@@ -764,7 +770,9 @@ class TestWhoOwnsTheFigureAfterAnEdit:
         against.
 
         **"The row still owns it" is a REFUSAL, not an ``owns_its_amount``
-        read** (ruling **R-BAL167** class 2, the cp2c review's L-4).
+        read** (ruling **R-BAL167** class 1 with a refusal ADDED, the cp2c
+        review's L-4: the case planted nothing, so the refusal is a shape it
+        adds, not one it planted; labelled class 2 until checkpoint 2d-a).
         ``ck_transfers_adhoc_owns_amount`` refuses an ad-hoc transfer that
         declares a derived figure, so ``owns_its_amount`` is ``True`` for every
         ad-hoc row the database holds and the two reads it took could not

@@ -44,8 +44,11 @@ a case that priced a shadow asks the TRANSFER, or prices its legs through
 ``leg_amounts_by_key`` -- each leg worth ``resolve_transfer_amount`` on its
 parent (**R-BAL13**), which is what rule 5 answered for the shadow -- with its
 figures unchanged (ruling **R-BAL167** class 1), and a case that planted a
-shadow asserts the database refuses the shape it planted (class 2).  Each
-case says which, and the commit that made the change lists them.
+shadow asserts the database refuses the shape it planted (class 2).  Rule 5
+itself -- a twin's dispatch to its parent and its refusal of an orphan --
+still ships until plan step balance:X-bi-6-5, so the cases that graded it
+ask a twin built UNSAVED (class 4, the fixture alone changed).  Each case
+says which, and the commits that made the change list them.
 """
 
 from datetime import date
@@ -310,10 +313,12 @@ def _refused_by(row):
     """Add *row*, flush, and return the name of the constraint that refused it.
 
     For a ruling **R-BAL167** class-2 case whose planted twin carries
-    something more or less than :func:`~tests._test_helpers.a_twin_of`'s --
-    a figure it owns, or its parent link gone -- so a different CHECK refuses
-    it than the bare twin's, and the case asserts its own.  The session is
-    rolled back after the refusal, so the caller commits first.
+    something more than :func:`~tests._test_helpers.a_twin_of`'s -- a figure
+    it owns -- so the case asserts which CHECK refuses its own shape.  The
+    session is rolled back after the refusal, so the caller commits first.
+    The two orphan cases planted the twin with its parent link gone through
+    it until their re-expression at plan step balance:X-bi-6-4d-3's
+    checkpoint 2d-a, which asks the resolver of that twin unsaved instead.
 
     Args:
         row: The unsaved row to plant.
@@ -652,15 +657,22 @@ class TestWhichRulePricesARow:
 
         **Renamed and re-expressed at plan step balance:X-bi-6-4d-3** (it was
         ``test_a_loan_payment_SHADOW_is_priced_by_its_parent_like_any_other``;
-        ruling **R-BAL167** class 2).  The row it classified was the
-        payment's expense twin, and the database refuses a twin
-        (``ck_transactions_names_no_transfer``, ruling **R-BAL258**), so no
-        stored row of a loan payment can take rule 4 by being its shadow: the
-        case asserts that refusal on a derive-mode payment's twin, beside the
-        generic transfer's case below, which asserts it on another parent.
+        ruling **R-BAL167** class 4, with a refusal added).  It planted
+        nothing: it classified the expense shadow the ENGINE made, and no
+        shadow is born now.  Its subject stands -- rule 5's dispatch,
+        ``_rule_is_parent_transfer`` answering TRANSFER for a twin whatever its
+        parent is -- and is asked of the same twin built UNSAVED
+        (:func:`~tests._test_helpers.a_twin_of`), the one fixture change.  The
+        added refusal is why that twin exists only in memory: the database
+        refuses it (``ck_transactions_names_no_transfer``, ruling
+        **R-BAL258**), so no stored row of a loan payment can take rule 4 by
+        being its shadow.  The generic transfer's case below asks the same of
+        another parent.  The case goes with rule 5, at plan step
+        balance:X-bi-6-5.
         """
         xfer = _loan_payment(seed_user, derive=True)
         db.session.commit()
+        assert amount_rule(a_twin_of(xfer, is_income=False)) is AmountRule.TRANSFER
         assert_a_twin_is_refused(db.session, xfer, is_income=False)
 
     def test_a_loan_payment_TRANSFER_beats_the_series_rule(
@@ -684,15 +696,20 @@ class TestWhichRulePricesARow:
     def test_a_generic_transfer_shadow_is_refused(
         self, app, db, seed_user, seed_periods,
     ):
-        """A shadow with no loan settings behind it cannot be stored.
+        """A twin with no loan settings behind it takes the transfer rule, and cannot be stored.
 
         **Renamed and re-expressed at plan step balance:X-bi-6-4d-3** (it was
         ``test_a_generic_transfer_shadow_is_priced_by_its_parent``; ruling
-        **R-BAL167** class 2).  It classified a generic transfer's expense
-        twin as taking the transfer rule; the database refuses that twin
-        (``ck_transactions_names_no_transfer``, ruling **R-BAL258**), so the
-        case asserts the refusal, and what the twin answered is asked of the
-        transfer's legs in :class:`TestWhatEachRuleAnswers`.
+        **R-BAL167** class 4, with a refusal added).  It planted nothing: it
+        classified the expense shadow the ENGINE made, and no shadow is born
+        now.  Its subject -- rule 5's dispatch, the twin of a generic transfer
+        taking the transfer rule -- is asked of the same twin built UNSAVED
+        (:func:`~tests._test_helpers.a_twin_of`), the one fixture change, and
+        the database's refusal of that twin is added
+        (``ck_transactions_names_no_transfer``, ruling **R-BAL258**).  What
+        the twin answered is asked of the transfer's legs in
+        :class:`TestWhatEachRuleAnswers`.  The case goes with rule 5, at plan
+        step balance:X-bi-6-5.
         """
         savings = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("5000.00"),
@@ -701,6 +718,7 @@ class TestWhichRulePricesARow:
             seed_user, seed_periods[_PAYCHECK_UNDER_OLD_PRICE], savings,
         )
         db.session.commit()
+        assert amount_rule(a_twin_of(xfer, is_income=False)) is AmountRule.TRANSFER
         assert_a_twin_is_refused(db.session, xfer, is_income=False)
 
     def test_a_row_that_took_its_figure_back_owns_it_again(
@@ -722,7 +740,10 @@ class TestWhichRulePricesARow:
     def test_a_shadow_that_took_its_figure_back_is_refused(
         self, app, db, seed_user, seed_periods,
     ):
-        """The same on the shadow side -- 12 such rows exist on the production clone.
+        """A twin that owns a figure is refused: no shadow takes its figure back now.
+
+        It was the case above on the shadow side, a shape production held,
+        until plan step balance:X-bi-6-4d-3 deleted every twin.
 
         **Renamed and re-expressed at plan step balance:X-bi-6-4d-3** (it was
         ``test_a_shadow_that_took_its_figure_back_owns_it_again``; ruling
@@ -1288,19 +1309,28 @@ class TestEveryRefusalFires:
     def test_a_shadow_whose_parent_is_gone_is_refused(
         self, app, db, seed_user, seed_periods,
     ):
-        """An orphaned shadow has nothing for its amount to be equal to.
+        """An orphaned twin has nothing for its amount to be equal to.
 
-        Reached the way it is reachable -- the parent deleted in this session
-        while the shadow still carries its id -- rather than by assigning a
-        state the FK forbids.
+        It was reached on the ENGINE's shadow with its parent detached in
+        memory (``shadow.transfer = None``), never flushed, rather than by
+        storing a state the key forbids.
 
         **Re-expressed at plan step balance:X-bi-6-4d-3** (ruling **R-BAL167**
-        class 2).  The guard it reached was rule 5's refusal of a derived
-        shadow whose parent was gone, asked of a shadow row; no shadow is
-        born, so the planted shape -- the expense twin with its parent link
-        gone, deriving from a parent it no longer names -- is put to the
-        database, which refuses it as a row with no pricing link at all
-        (``ck_transactions_one_pricing_link``; run before it was asserted).
+        class 4; its subject and its assertion unchanged).  No shadow is born,
+        so the orphan is the expense twin built UNSAVED
+        (:func:`~tests._test_helpers.a_twin_of`) with its parent link gone,
+        and rule 5's guard refuses it exactly as it refused the detached
+        shadow.  An unsaved row loads no parent whether or not it carries the
+        link (measured), so the cleared link states the orphan rather than
+        causing it.  The guard is live: the orphan TWIN cannot be stored (a row
+        naming no link at all is refused by
+        ``ck_transactions_one_pricing_link``, pinned by
+        ``tests/test_models/test_template_row_needs_due_date.py``'s
+        ``test_an_undated_row_that_names_no_link_at_all_is_refused``), but a
+        definition's row declaring ``PARENT_TRANSFER`` passes every CHECK, is
+        stored, and reaches this guard (measured at this step).  No door
+        writes one.  The case goes with the guard, at plan step
+        balance:X-bi-6-5.
         """
         savings = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("5000.00"),
@@ -1311,7 +1341,10 @@ class TestEveryRefusalFires:
         db.session.commit()
         orphan = a_twin_of(xfer, is_income=False)
         orphan.transfer_id = None
-        assert _refused_by(orphan) == "ck_transactions_one_pricing_link"
+        basis = _basis_for(seed_user)
+        with pytest.raises(AmountUnresolvable, match="could not be loaded"):
+            resolve_transaction_amount(orphan, basis)
+        assert orphan not in db.session
 
     def test_a_generated_transfer_with_no_stated_price_is_refused(
         self, app, db, seed_user, seed_periods,
@@ -1632,37 +1665,41 @@ class TestTheDefinitionPriceIsTheRowsOwnRule:
 
 
 class TestAShadowWithNoParentRefuses:
-    """Rule 5's orphan refusal, which every derived shadow now stands on."""
+    """Rule 5's orphan refusal, graded on an unsaved twin since no shadow is born."""
 
     def test_a_shadow_whose_parent_is_gone_refuses_rather_than_guessing(
         self, app, db, seed_user, seed_periods,
     ):
-        """A leg with no parent has nothing to be equal to, so it REFUSES.
+        """A twin with no parent has nothing to be equal to, so rule 5 REFUSES.
 
         Advertised in ``_transfer_answer``'s own ``Raises:`` and in
         ``tests._test_helpers.shadow_amount``'s, and graded nowhere until an
-        adversarial review of plan step X-au-g-2c-2 counted it.  It matters more
-        after that step than before: EVERY transfer shadow is derived now, so
-        rule 5 is the terminal answer for every one of them, and a fallback here
-        would publish ``None`` into a money path for a pair that has broken
-        Transfer Invariant 2.
+        adversarial review of plan step X-au-g-2c-2 counted it.  It mattered
+        more after that step than before: every transfer shadow was derived
+        then, so rule 5 was the terminal answer for every one of them, and a
+        fallback here would have published ``None`` into a money path for a
+        pair that had broken Transfer Invariant 2.
 
-        The parent is detached in memory rather than deleted, because
-        ``transactions.transfer_id`` is ``ON DELETE CASCADE`` -- the database
-        cannot hold an orphan, which is what makes this a defensive refusal
-        rather than a reachable state, and is worth saying beside the case.
+        The parent was detached in memory rather than deleted, because
+        ``transactions.transfer_id`` was ``ON DELETE CASCADE`` -- the database
+        could not hold an orphan shadow, which made this a defensive refusal
+        rather than a reachable state.
 
         **Re-expressed at plan step balance:X-bi-6-4d-3** (ruling **R-BAL167**
-        class 2, with its precondition class 1).  No shadow is born, so the
-        precondition -- the leg is priced, at the manual payment's
-        ``$1,300.00`` -- is asked of the TRANSFER whose rule the shadow
-        answered, and the planted shape -- the expense twin with its parent
-        link gone -- is put to the database, which refuses it as a row with
-        no pricing link at all (``ck_transactions_one_pricing_link``; run
-        before it was asserted).  The paragraph above is the shadow-era
-        argument for detaching the parent in memory.
-        :class:`TestEveryRefusalFires` plants the same shape under a generic
-        transfer.
+        class 4, its precondition class 1; the refusal asserted unchanged).
+        No shadow is born, so the precondition -- the side is priced, at the
+        manual payment's ``$1,300.00`` -- is asked of the TRANSFER whose rule
+        the shadow answered, and the orphan is the expense twin built UNSAVED
+        (:func:`~tests._test_helpers.a_twin_of`) with its parent link gone.
+        The guard is still reachable by a STORED row: a definition's row
+        declaring ``PARENT_TRANSFER`` passes every CHECK (measured at this
+        step; no door writes one), while the orphan twin itself is a row
+        naming no link, which ``ck_transactions_one_pricing_link`` refuses
+        (pinned by ``tests/test_models/test_template_row_needs_due_date.py``'s
+        ``test_an_undated_row_that_names_no_link_at_all_is_refused``).
+        :meth:`TestEveryRefusalFires.test_a_shadow_whose_parent_is_gone_is_refused`
+        grades the same guard under a generic transfer.  Both go with the
+        guard, at plan step balance:X-bi-6-5.
         """
         savings = create_savings_account(
             seed_user, db.session, "Sinking", Decimal("500.00"),
@@ -1676,7 +1713,9 @@ class TestAShadowWithNoParentRefuses:
         db.session.commit()
         orphan = a_twin_of(xfer, is_income=False)
         orphan.transfer_id = None
-        assert _refused_by(orphan) == "ck_transactions_one_pricing_link"
+        with pytest.raises(AmountUnresolvable, match="could not be loaded"):
+            resolve_transaction_amount(orphan, basis)
+        assert orphan not in db.session
 
 
 class TestTheBatchTier:
@@ -1714,8 +1753,10 @@ class TestTheBatchTier:
         # X-au-f-2 (ruling R-BAL10).
         assert amount_rule(paycheck) is AmountRule.SALARY
         assert transfer_amount_rule(xfer) is AmountRule.LOAN_PAYMENT
-        # And each derivation answers its own row, which is what "apart"
-        # means: not two empty maps, but two that do not cross.
+        # And each derivation answers its own row.  "Apart" also meant that
+        # the two do not CROSS -- the salary derivation answered nothing for
+        # the loan payment's shadow -- and that clause went with the shadow
+        # (the docstring), so this asserts each answers, not that they part.
         assert income_service.salary_net_for(
             paycheck, basis.salary,
         ) != Decimal(_NOT_AN_ANSWER)
@@ -1778,9 +1819,12 @@ class TestTheBatchTier:
         payment's two shadow rows sat in ``amounts_by_id`` beside the
         paychecks; no shadow is born, and a screen holds a transfer's LEGS in
         the same map by ``leg.cell_key`` (``leg_amounts_by_key``, since plan
-        step ``balance:X-bi-6-1``).  The one producer that merges the two is
-        the grid's ``build_amount_maps``, so it is asked rather than its merge
-        restated here.
+        step ``balance:X-bi-6-1``).  The case asks the GRID's merge,
+        ``build_amount_maps``, rather than restating it here.  It is not the
+        only spelling: the dashboard pulse builds the same rows-plus-legs map
+        inline (``dashboard_service/_pulse.py``), a second home for one
+        derived map (CLAUDE.md rule 14), reported at plan step
+        balance:X-bi-6-4d-3 rather than moved in this tests-only step.
         """
         template, _profile = _salary_template(seed_user)
         paycheck = _template_row(
@@ -2086,21 +2130,23 @@ class TestTheBasisIsOneDerivationPerReadPass:
         **It asks the RESOLVER since plan step X-au-g-2c-2**, where it asked
         ``basis.loans.live_cash``.  That is a wider claim rather than a
         translation: the memo it grades is still ``LoanPricing._loan``, but the
-        path now runs through ``amount_rule`` and rule 4, so a second leg that
-        re-read its transfer or re-resolved its template would show up here too.
-        Both legs are ``_touch``-ed first, so the relationship loads are not
-        what the count measures.
+        path ran through ``amount_rule`` and rule 4, so a second shadow that
+        re-read its transfer or re-resolved its template showed up here too.
+        Both shadows were ``_touch``-ed first, so the relationship loads were
+        not what the count measured.
 
         **Renamed and re-expressed at plan step balance:X-bi-6-4d-3** (it was
         ``test_the_loan_resolve_runs_ONCE_however_many_shadows_ask``; ruling
         **R-BAL167** class 1).  The two asks are the payment's two LEGS, each
         priced by ``leg_amounts_by_key``, where they were its two shadow rows
         priced by the resolver.  Both legs hold ONE transfer, so the second
-        cannot re-read it; what it could still re-do is its rule's own reads
-        -- the definition, its settings, the loan -- and those are what the
-        empty second count says it did not.  The legs are built after the
-        commit and before either capture, which reads the transfer's columns
-        back where ``_touch`` read each row's.
+        cannot re-read it.  What the empty second count can see is a
+        STATEMENT: a loan resolved again, or any explicit query.  The
+        definition and its settings are relationships the first ask loaded,
+        so reading them again issues none, and this count cannot say whether
+        the second ask re-read them.  The legs are built after the commit and
+        before either capture, which reads the transfer's columns back where
+        ``_touch`` read each row's.
         """
         xfer = _loan_payment(seed_user, derive=True)
         db.session.commit()

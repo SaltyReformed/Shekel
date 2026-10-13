@@ -272,7 +272,7 @@ def _first_payment(loan_id, scenario_id, due_date=None):
 
     Where these cases found the loan-side SHADOW row due that day (or the
     first by id), until plan step balance:X-bi-6-4d-3 stopped the shadows
-    being born (ruling **R-BAL167** class 1): the shadow copied its due date
+    being born (ruling **R-BAL167** class 4): the shadow copied its due date
     and pay period off this transfer, and its leg on the loan is
     ``transfer_legs.leg_of(xfer, loan_id)``.  With *due_date* it insists on
     exactly one, as the shadow lookup did.
@@ -437,22 +437,26 @@ def test_derived_transfer_due_date_matches_loan_due_date(
             assert xfer.due_date.day == 1
 
 
-def test_derived_override_is_per_shadow_date_aware(
+def test_derived_override_is_per_leg_date_aware(
     app, db, seed_user, seed_periods,
 ):
-    """A future-dated escrow version changes only the shadows due on/after its date.
+    """A future-dated escrow version changes only the legs due on/after its date.
 
     Loan $200k / 6% / 360mo, P&I 1,199.10.  Escrow $3,600/yr (300/mo) from
     origination (2026-01-01), then a NEW version $4,800/yr (400/mo) effective
-    2026-03-15 on the SAME line.  The live override resolves escrow per shadow
-    INSTALLMENT: a shadow due before 2026-03-15 keeps PITI 1,499.10; one due on
-    or after picks up 1,599.10.  A single figure per loan (today's escrow for
-    every shadow) would wrongly give them all 1,599.10 -- the bug this
-    per-shadow resolution fixes, and the cash side of the cash==split invariant
-    for future-dated escrow.
+    2026-03-15 on the SAME line.  The live price resolves escrow per payment
+    INSTALLMENT: a payment due before 2026-03-15 keeps PITI 1,499.10 on both
+    legs; one due on or after picks up 1,599.10.  A single figure per loan
+    (today's escrow for every payment) would wrongly give them all 1,599.10 --
+    the bug this per-installment resolution fixes, and the cash side of the
+    cash==split invariant for future-dated escrow.
+
+    **Renamed at plan step balance:X-bi-6-4d-3's checkpoint 2d-a** (it was
+    ``test_derived_override_is_per_shadow_date_aware``; the shadows it
+    partitioned are not born since that step).
 
     The partition is by DUE date (ruling D5's contract time, finding N-34); this
-    fixture's shadows are due 02-01 / 03-01 / 04-01 / 05-01 against pay periods
+    fixture's payments are due 02-01 / 03-01 / 04-01 / 05-01 against pay periods
     starting 01-30 / 02-27 / 03-27 / 04-24, so the two keyings happen to group
     them identically here.  The test that DISCRIMINATES them is
     :func:`test_live_cash_and_split_agree_on_a_mid_window_escrow_change`, which
@@ -748,14 +752,15 @@ def test_settling_derived_loan_payment_captures_live_amount(
     interest 1,000.00 (200,000 * 0.06 / 12), escrow 300.00, and principal
     199.10 (= P&I 1,199.10 - interest 1,000.00).
 
-    **The shadow's own ``estimated_amount`` is NULL and that is the point of
-    the cutover** (plan step X-au-g-2c-2).  It held the generated ``$1.00`` and
-    was deliberately left alone, because it was the base the deleted
-    ``_manual_shadow_amount`` derived from -- so a settle that wrote it would
-    have made the next settle derive from its own output (finding N-259's
-    shape).  The column is empty on a derived row, so that hazard has no state
-    to occur in, and what a PROJECTED shadow is worth is asked of the amount
-    model rather than of the column.
+    **The shadow's own ``estimated_amount`` was NULL, and that was the point
+    of the cutover** (plan step X-au-g-2c-2).  It had held the generated
+    ``$1.00`` and was deliberately left alone, because it was the base the
+    deleted ``_manual_shadow_amount`` derived from -- so a settle that wrote
+    it would have made the next settle derive from its own output (finding
+    N-259's shape).  The column was empty on a derived row, so that hazard had
+    no state to occur in, and what a PROJECTED shadow was worth was asked of
+    the amount model rather than of the column; no shadow is born since plan
+    step balance:X-bi-6-4d-3, and the paragraph below says what is asked now.
 
     After the settle, the transfer's status is the one status and each side's
     record holds the captured figure, where both were read off the twin rows
@@ -843,11 +848,16 @@ def test_settled_loan_payment_freeze_is_one_shot(
     settle act runs only on the way INTO the settled band, so a re-settle never
     reaches a derivation at all; and what a settled row is worth is read from
     its own settlement RECORD (``row_valuation.fixed_contribution``) before any
-    producer is asked, so even a direct ask answers the frozen figure rather
-    than a fresh one.  The second is asserted here in place of the deleted
+    producer is asked.  The second is asserted here in place of the deleted
     ``live_cash(settled) is None``: a ``None`` proved the producer would not
     fire, and what matters is the stronger statement that the recorded cash is
-    what the row is worth.
+    what the row is worth -- the ``leg_settled_contribution`` reads below.
+    The model's PLAN price asked beside them (``_derived_cash``) cannot grade
+    either guard: nothing moves the escrow between the settle and the ask, so
+    it answers ``$1,499.10`` whether or not the freeze is one-shot, and so did
+    the shadow-row ask it replaced.  One-shot-ness is graded by the re-settle
+    at the end (an adversarial review of plan step balance:X-bi-6-4d-3's
+    checkpoint 2d, which this paragraph corrects).
 
     The settled payment is read as the transfer and its loan side's record,
     where it was read off the loan-side twin row (ruling R-BAL167 class 1,
@@ -878,10 +888,10 @@ def test_settled_loan_payment_freeze_is_one_shot(
             db.session, transfer_id, loan.id,
         ) == Decimal("1499.10")
 
-        # The freeze is one-shot: a settled side answers from its own RECORD,
-        # so even asking the model directly cannot produce a fresher figure to
-        # overwrite it with.  The model is asked of the loan-side LEG, which
-        # it prices off its transfer; the record is read off the side.
+        # The plan price of the loan-side LEG, which the model prices off its
+        # transfer, still the contract's (it cannot tell a one-shot freeze from
+        # a repeated one; see the docstring), and the side's worth, read off
+        # its RECORD: the frozen figure.
         assert _derived_cash(seed_user, [_side_leg(transfer_id, loan.id)])[
             (transfer_id, loan.id)
         ] == Decimal("1499.10")
@@ -1299,10 +1309,15 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
         ) == Decimal("1499.10")
 
 
-def test_each_shadows_cash_is_its_own_installments_pi(
+def test_each_payments_cash_is_its_own_installments_pi(
     app, db, seed_user, seed_periods,
 ):
-    """A shadow's P&I is its INSTALLMENT's, not the read date's (ruling R-IJ).
+    """A payment's P&I is its INSTALLMENT's, not the read date's (ruling R-IJ).
+
+    **Renamed at plan step balance:X-bi-6-4d-3's checkpoint 2d-a** (it was
+    ``test_each_shadows_cash_is_its_own_installments_pi``; the shadows it
+    priced are not born since that step, and each payment's two legs answer
+    its one figure).
 
     Finding **N-40**, closed structurally at plan step X-au-g-2b.  The
     derivation resolved ONE ``compute_monthly_payment_baseline(..., as_of)``
@@ -1322,7 +1337,7 @@ def test_each_shadows_cash_is_its_own_installments_pi(
         installment on/after it       -> 1,500.00 + 300.00 = 1,800.00
 
     Both figures must appear, and the split must fall on the recast date.  A
-    fixture whose shadows all landed on one side of the boundary would assert
+    fixture whose payments all landed on one side of the boundary would assert
     the same thing about a producer that read one clock, which is why the
     boundary itself is asserted rather than the figures alone.
 
