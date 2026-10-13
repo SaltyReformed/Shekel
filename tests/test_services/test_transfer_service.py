@@ -23,7 +23,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
 from app.models.journal_entry import JournalEntry, Posting
-from app.models.ref import AccountType, Status, TransactionType
+from app.models.ref import AccountType, Status
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
@@ -552,19 +552,32 @@ class TestCreateTransferValidation:
 class TestUpdateTransfer:
     """Tests for transfer_service.update_transfer."""
 
-    def test_amount_syncs_shadows(self, app, db, transfer_data):
-        """Updating amount propagates to both shadows' estimated_amount."""
+    def test_an_amount_edit_reprices_both_legs(self, app, transfer_data):
+        """An amount edit reprices the transfer, and both legs with it.
+
+        It priced the two shadow rows until plan step
+        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
+        over them ran over none (a vacuous read, measured at its checkpoint
+        2e-2a-2).  Each leg is priced as the grid prices its cell now: a
+        PROJECTION read, separated from the transfer's own amount only by a
+        defect in how a leg is priced.  The update's mirror onto the shadows,
+        what it graded, goes with that arm at the step's leaf 3b.  Renamed
+        from ``test_amount_syncs_shadows``.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, amount_ownership=AmountOwnership.own(Decimal("400.00")), )
+                xfer.id, td["user"].id,
+                amount_ownership=AmountOwnership.own(Decimal("400.00")),
+            )
 
             assert xfer.amount == Decimal("400.00")
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            for s in shadows:
-                assert shadow_amount(s) == Decimal("400.00")
+            assert _leg_amounts(xfer) == {
+                (xfer.id, xfer.from_account_id): Decimal("400.00"),
+                (xfer.id, xfer.to_account_id): Decimal("400.00"),
+            }
 
     def test_status_syncs_shadows(self, app, db, transfer_data):
         """Updating status moves the transfer and records both its sides.
@@ -589,8 +602,18 @@ class TestUpdateTransfer:
                     db.session, xfer.id, account_id,
                 ) is not None
 
-    def test_period_syncs_shadows(self, app, db, transfer_data):
-        """Updating period propagates to both shadows."""
+    def test_a_period_edit_moves_both_legs(self, app, transfer_data):
+        """A period edit moves the transfer, and both legs with it.
+
+        It read the two shadow rows' periods until plan step
+        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
+        over them ran over none (a vacuous read, measured at its checkpoint
+        2e-2a-2).  Each leg's period is read now: a PROJECTION read,
+        separated from the transfer's own period only by a defect in the
+        leg's projection of it.  The update's mirror onto the shadows, what
+        it graded, goes with that arm at the step's leaf 3b.  Renamed from
+        ``test_period_syncs_shadows``.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
@@ -601,48 +624,74 @@ class TestUpdateTransfer:
             )
 
             assert xfer.pay_period_id == new_period.id
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            for s in shadows:
-                assert s.pay_period_id == new_period.id
+            for is_income in (False, True):
+                assert transfer_side_leg(
+                    xfer, is_income=is_income,
+                ).pay_period_id == new_period.id
 
-    def test_category_updates_both_shadows(self, app, db, transfer_data):
-        """Category update propagates to both expense and income shadows."""
+    def test_a_category_edit_files_the_transfer_and_both_legs_under_it(
+        self, app, transfer_data,
+    ):
+        """A category edit files the transfer under the new category, and both legs.
+
+        It read the two shadow rows' categories until plan step
+        ``balance:X-bi-6-4d-3``, whose create door stopped writing them
+        (ruling R-BAL167 class 1).  **Its edit moved nothing**: the transfer
+        is created under Rent and the edit named Rent, a no-op in the shadow
+        version too; re-pointed onto the transfer and its legs, it PASSED with
+        the edit's category arm deleted (measured at checkpoint 2e-2a-2).  The edit
+        names Groceries now, a category the transfer is not under (the
+        coordinator's ruling, 2026-10-13), and the case asserts the
+        transfer's category, which it never did, beside each leg's.  The two
+        leg reads are PROJECTION reads, as in :class:`TestCreateTransfer`'s
+        ``test_with_category``.  Renamed from
+        ``test_category_updates_both_shadows``.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
-            rent_cat = td["categories"]["Rent"]
+            groceries = td["categories"]["Groceries"]
+            # A guard on the INPUT, not a read: the edit must move the
+            # category, or the case grades nothing it names.
+            assert xfer.category_id != groceries.id
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, category_id=rent_cat.id
+                xfer.id, td["user"].id, category_id=groceries.id
             )
 
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
-            income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
+            assert xfer.category_id == groceries.id
+            for is_income in (False, True):
+                assert transfer_side_leg(
+                    xfer, is_income=is_income,
+                ).category_id == groceries.id
 
-            assert expense.category_id == rent_cat.id
-            assert income.category_id == rent_cat.id
+    def test_a_notes_edit_leaves_both_legs_priced_as_they_were(
+        self, app, transfer_data,
+    ):
+        """A notes edit changes the transfer's notes and leaves both legs' price alone.
 
-    def test_notes_does_not_touch_shadows(self, app, db, transfer_data):
-        """Notes update changes only the transfer, not shadows."""
+        It compared the two shadow rows' amounts before and after the edit
+        until plan step ``balance:X-bi-6-4d-3``, and from that step's create
+        door on both reads ran over none (a vacuous read, measured at its
+        checkpoint 2e-2a-2).  Each leg is priced as the grid prices its cell
+        now, before the edit and after it.  Renamed from
+        ``test_notes_does_not_touch_shadows``.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
-
-            # Record shadow state before.
-            shadows_before = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            amounts_before = {s.id: s.estimated_amount for s in shadows_before}
+            priced = {
+                (xfer.id, xfer.from_account_id): Decimal("250.00"),
+                (xfer.id, xfer.to_account_id): Decimal("250.00"),
+            }
+            assert _leg_amounts(xfer) == priced
 
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, notes="Updated notes"
             )
 
             assert xfer.notes == "Updated notes"
-            shadows_after = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            for s in shadows_after:
-                assert s.estimated_amount == amounts_before[s.id]
+            assert _leg_amounts(xfer) == priced
 
     def test_a_figure_on_an_UNSETTLED_transfer_is_REFUSED(self, app, db, transfer_data):
         """A figure records a settle, so an unsettled pair cannot be handed one.
@@ -658,6 +707,11 @@ class TestUpdateTransfer:
         row.  To record a figure, settle the transfer -- the same act that
         records one.  Stated here rather than quietly rewritten, because it is a
         BEHAVIOUR change and belongs in the commit message.
+
+        "Before any write" is read off each SIDE's payment record since plan
+        step ``balance:X-bi-6-4d-3``, where it asked each of the two shadow
+        rows, which that step's create door no longer writes (ruling R-BAL167
+        class 1).
         """
         with app.app_context():
             td = transfer_data
@@ -668,13 +722,25 @@ class TestUpdateTransfer:
                     xfer.id, td["user"].id, figure=typed(Decimal("245.00"))
                 )
 
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            assert len(shadows) == 2
-            for shadow in shadows:
-                assert status_seam.recorded_settlement(shadow) is None
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                assert transfer_side_record(
+                    db.session, xfer.id, account_id,
+                ) is None
 
-    def test_is_override_syncs_shadows(self, app, db, transfer_data):
-        """is_override update propagates to transfer and both shadows."""
+    def test_an_override_edit_reaches_the_transfer_and_both_legs(
+        self, app, transfer_data,
+    ):
+        """An override edit flags the transfer, and both legs read the flag.
+
+        It read the two shadow rows' flags until plan step
+        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
+        over them ran over none (a vacuous read, measured at its checkpoint
+        2e-2a-2).  Each leg's flag is read now: a PROJECTION read, separated
+        from the transfer's own flag only by a defect in the leg's projection
+        of it.  The update's mirror onto the shadows, what it graded, goes
+        with that arm at the step's leaf 3b.  Renamed from
+        ``test_is_override_syncs_shadows``.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
@@ -684,9 +750,10 @@ class TestUpdateTransfer:
             )
 
             assert xfer.is_override is True
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            for s in shadows:
-                assert s.is_override is True
+            for is_income in (False, True):
+                assert transfer_side_leg(
+                    xfer, is_income=is_income,
+                ).is_override is True
 
     def test_wrong_user_rejected(self, app, db, transfer_data, second_user):
         """Update by non-owner raises NotFoundError."""
@@ -696,14 +763,18 @@ class TestUpdateTransfer:
 
             with pytest.raises(NotFoundError):
                 transfer_service.update_transfer(
-                    xfer.id, second_user["user"].id, amount_ownership=AmountOwnership.own(Decimal("100")), )
+                    xfer.id, second_user["user"].id,
+                    amount_ownership=AmountOwnership.own(Decimal("100")),
+                )
 
     def test_nonexistent_rejected(self, app, db, transfer_data):
         """Update of non-existent transfer raises NotFoundError."""
         with app.app_context():
             with pytest.raises(NotFoundError):
                 transfer_service.update_transfer(
-                    99999, transfer_data["user"].id, amount_ownership=AmountOwnership.own(Decimal("100")), )
+                    99999, transfer_data["user"].id,
+                    amount_ownership=AmountOwnership.own(Decimal("100")),
+                )
 
     def test_validates_positive_amount(self, app, db, transfer_data):
         """Update with zero amount raises ValidationError."""
@@ -736,8 +807,20 @@ class TestUpdateTransfer:
                     xfer.id, td["user"].id, pay_period_id=other_periods[0].id
                 )
 
-    def test_category_set_to_none_propagates_none(self, app, db, transfer_data):
-        """Setting category_id=None propagates None to both shadow transactions."""
+    def test_a_category_cleared_to_none_clears_both_legs(
+        self, app, transfer_data,
+    ):
+        """Clearing the category leaves the transfer, and both legs, under none.
+
+        It read the two shadow rows' categories until plan step
+        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
+        over them ran over none (a vacuous read, measured at its checkpoint
+        2e-2a-2).  Each leg's category is read now: a PROJECTION read,
+        separated from the transfer's own category only by a defect in the
+        leg's projection of it.  The update's mirror onto the shadows, what
+        it graded, goes with that arm at the step's leaf 3b.  Renamed from
+        ``test_category_set_to_none_propagates_none``.
+        """
         with app.app_context():
             td = transfer_data
             rent_cat = td["categories"]["Rent"]
@@ -760,9 +843,10 @@ class TestUpdateTransfer:
             )
 
             assert xfer.category_id is None
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            for shadow in shadows:
-                assert shadow.category_id is None
+            for is_income in (False, True):
+                assert transfer_side_leg(
+                    xfer, is_income=is_income,
+                ).category_id is None
 
     def test_a_REVERT_is_what_clears_a_settled_transfers_figure(
         self, app, db, transfer_data,
@@ -955,13 +1039,20 @@ class TestUpdateTransfer:
 class TestDeleteTransfer:
     """Tests for transfer_service.delete_transfer."""
 
-    def test_hard_removes_shadows(self, app, db, transfer_data):
-        """Hard delete removes transfer and both shadows via CASCADE."""
+    def test_hard_removes_the_transfer(self, app, db, transfer_data):
+        """Hard delete removes the transfer row.
+
+        It also collected the transfer's two shadow rows and asserted each
+        was gone, until plan step ``balance:X-bi-6-4d-3``; from that step's
+        create door on the transfer holds none, so the collection was empty
+        and the loop over it ran over none (a vacuous read, measured at its
+        checkpoint 2e-2a-2), and it is dropped.  Renamed from
+        ``test_hard_removes_shadows``.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
             xfer_id = xfer.id
-            shadow_ids = [s.id for s in xfer.shadow_transactions]
             db.session.commit()
 
             transfer_service.delete_transfer(xfer_id, td["user"].id, soft=False)
@@ -969,28 +1060,52 @@ class TestDeleteTransfer:
             db.session.expire_all()
 
             assert db.session.get(Transfer, xfer_id) is None
-            for sid in shadow_ids:
-                assert db.session.get(Transaction, sid) is None
 
-    def test_soft_marks_shadows_deleted(self, app, db, transfer_data):
-        """Soft delete flags transfer and both shadows as is_deleted."""
+    def test_soft_hides_the_transfer_and_both_legs(self, app, transfer_data):
+        """Soft delete flags the transfer deleted, and neither endpoint plans a leg of it.
+
+        It counted the transfer's two shadow rows and read each one's flag
+        until plan step ``balance:X-bi-6-4d-3``, whose create door stopped
+        writing them (ruling R-BAL167 class 1).  A leg is derived from its
+        transfer now, so a deleted transfer's legs leave the plan: each
+        endpoint's plan loader, the read the balance fold plans legs with,
+        held one before the delete and holds none after it.  The two loader
+        reads after the delete are PROJECTION reads, separated from the
+        transfer's own flag only by a defect in the loader's filter.  Renamed
+        from ``test_soft_marks_shadows_deleted``.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
             xfer_id = xfer.id
+            endpoints = (xfer.from_account_id, xfer.to_account_id)
+            for account_id in endpoints:
+                assert [
+                    leg.transfer.id for leg in planned_transfer_legs(
+                        account_id, td["scenario"].id, options=(),
+                    )
+                ] == [xfer_id], "precondition: each endpoint plans its leg"
 
             result = transfer_service.delete_transfer(
                 xfer_id, td["user"].id, soft=True
             )
 
             assert result.is_deleted is True
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer_id).all()
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.is_deleted is True
+            for account_id in endpoints:
+                assert planned_transfer_legs(
+                    account_id, td["scenario"].id, options=(),
+                ) == []
 
     def test_hard_on_already_soft_deleted(self, app, db, transfer_data):
-        """Hard delete after soft delete physically removes all records."""
+        """Hard delete after soft delete physically removes the transfer.
+
+        It also counted the shadow rows naming the transfer afterwards (0)
+        until plan step ``balance:X-bi-6-4d-3``; from that step's create door
+        on no row can name one (``ck_transactions_names_no_transfer``, ruling
+        R-BAL258), so the count was 0 before the first delete as well as
+        after the last (a vacuous read, measured at its checkpoint 2e-2a-2),
+        and it is dropped.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
@@ -1005,8 +1120,6 @@ class TestDeleteTransfer:
             db.session.expire_all()
 
             assert db.session.get(Transfer, xfer_id) is None
-            remaining = db.session.query(Transaction).filter_by(transfer_id=xfer_id).count()
-            assert remaining == 0
 
     def test_wrong_user_rejected(self, app, db, transfer_data, second_user):
         """Delete by non-owner raises NotFoundError."""
@@ -1246,14 +1359,26 @@ class TestSoftDeleteHandling:
 
             with pytest.raises(NotFoundError, match="not found"):
                 transfer_service.update_transfer(
-                    xfer_id, td["user"].id, amount_ownership=AmountOwnership.own(Decimal("500.00")), )
+                    xfer_id, td["user"].id,
+                    amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                )
 
-    def test_delete_soft_deleted_transfer_is_idempotent(self, app, db, transfer_data):
+    def test_delete_soft_deleted_transfer_is_idempotent(self, app, transfer_data):
         """Verify that calling delete_transfer(soft=True) on an already
         soft-deleted transfer succeeds idempotently without raising
         NotFoundError.  Repeated soft-delete must not break the template
         deactivation workflow, which may process the same transfers
         multiple times.
+
+        It read the shadow rows' flags afterwards ("still soft-deleted")
+        until plan step ``balance:X-bi-6-4d-3``; from that step's create door
+        on no row can name the transfer (``ck_transactions_names_no_transfer``,
+        ruling R-BAL258), so ``all()`` ran over none, before the first delete
+        as after the second (a vacuous read, measured at its checkpoint
+        2e-2a-2).  What it meant is asked of the plan now: after the second
+        delete neither endpoint's plan loader holds a leg of the transfer, a
+        PROJECTION read as in :class:`TestDeleteTransfer`'s
+        ``test_soft_hides_the_transfer_and_both_legs``.
         """
         with app.app_context():
             td = transfer_data
@@ -1267,19 +1392,23 @@ class TestSoftDeleteHandling:
             )
             assert result.is_deleted is True
 
-            # Shadows are still soft-deleted.
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer_id)
-                .all()
-            )
-            assert all(s.is_deleted for s in shadows)
+            # Still out of the plan on both sides.
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                assert planned_transfer_legs(
+                    account_id, td["scenario"].id, options=(),
+                ) == []
 
     def test_hard_delete_soft_deleted_transfer_succeeds(self, app, db, transfer_data):
         """Verify that hard-deleting a previously soft-deleted transfer
-        succeeds and removes the transfer and both shadows from the
-        database via CASCADE.  The hard-delete path must work regardless
-        of the is_deleted flag.
+        succeeds and removes the transfer from the database.  The
+        hard-delete path must work regardless of the is_deleted flag.
+
+        It also counted the shadow rows naming the transfer afterwards (0)
+        until plan step ``balance:X-bi-6-4d-3``; from that step's create door
+        on no row can name one (``ck_transactions_names_no_transfer``, ruling
+        R-BAL258), so the count was 0 before the first delete as well as
+        after the last (a vacuous read, measured at its checkpoint 2e-2a-2),
+        and it is dropped.
         """
         with app.app_context():
             td = transfer_data
@@ -1295,12 +1424,6 @@ class TestSoftDeleteHandling:
             db.session.expire_all()
 
             assert db.session.get(Transfer, xfer_id) is None
-            remaining = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer_id)
-                .count()
-            )
-            assert remaining == 0
 
 
 class TestADeleteReturnsAPaidTransferToAPlan:
