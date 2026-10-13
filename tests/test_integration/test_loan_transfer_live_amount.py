@@ -848,16 +848,27 @@ def test_settled_loan_payment_freeze_is_one_shot(
     settle act runs only on the way INTO the settled band, so a re-settle never
     reaches a derivation at all; and what a settled row is worth is read from
     its own settlement RECORD (``row_valuation.fixed_contribution``) before any
-    producer is asked.  The second is asserted here in place of the deleted
-    ``live_cash(settled) is None``: a ``None`` proved the producer would not
-    fire, and what matters is the stronger statement that the recorded cash is
-    what the row is worth -- the ``leg_settled_contribution`` reads below.
-    The model's PLAN price asked beside them (``_derived_cash``) cannot grade
-    either guard: nothing moves the escrow between the settle and the ask, so
-    it answers ``$1,499.10`` whether or not the freeze is one-shot, and so did
-    the shadow-row ask it replaced.  One-shot-ness is graded by the re-settle
-    at the end (an adversarial review of plan step balance:X-bi-6-4d-3's
-    checkpoint 2d, which this paragraph corrects).
+    producer is asked.  The case stood in for the deleted
+    ``live_cash(settled) is None`` with the stronger statement that the
+    recorded cash is what the row is worth.
+
+    **What this case can and cannot grade** (corrected at plan step
+    balance:X-bi-6-4d-3's checkpoints 2d-a and 2d-b, after the adversarial
+    reviews of 2d and 2d-a, both measured).  Nothing moves the escrow between
+    the settle, the asks and the re-settle, so every figure here is
+    ``$1,499.10`` whether or not the freeze is one-shot: with either guard
+    off, or both, this case still passes.  The model's PLAN price
+    (``_derived_cash``) cannot grade either guard, and neither could the
+    shadow-row ask it replaced; the ``leg_settled_contribution`` reads assert
+    the RECORD's figure, not that a settled leg is VALUED from it; and the
+    re-settle cannot grade one-shot-ness.  What it grades is that a settle
+    and a stale-tab re-settle both leave the record at the captured
+    contract.  The two guards are graded elsewhere, each measured failing
+    under its own mutation by the review of 2d-a: the first by
+    ``test_transfer_settle_freeze``'s
+    ``test_settling_an_ALREADY_settled_transfer_writes_nothing``, the second
+    by ``test_transfer_legs``'
+    ``test_a_settled_leg_is_worth_its_record_and_not_its_plan``.
 
     The settled payment is read as the transfer and its loan side's record,
     where it was read off the loan-side twin row (ruling R-BAL167 class 1,
@@ -889,9 +900,8 @@ def test_settled_loan_payment_freeze_is_one_shot(
         ) == Decimal("1499.10")
 
         # The plan price of the loan-side LEG, which the model prices off its
-        # transfer, still the contract's (it cannot tell a one-shot freeze from
-        # a repeated one; see the docstring), and the side's worth, read off
-        # its RECORD: the frozen figure.
+        # transfer, still the contract's, and the figure its RECORD holds.
+        # Neither tells a one-shot freeze from a repeated one (the docstring).
         assert _derived_cash(seed_user, [_side_leg(transfer_id, loan.id)])[
             (transfer_id, loan.id)
         ] == Decimal("1499.10")
