@@ -24,8 +24,9 @@ factory-boy==3.3.3
 time-machine==3.5.1
 
 # YAML parsing for the deploy-layer tests (tests/test_deploy/*) that
-# assert the structure of docker-compose / nginx config.  Test-only:
-# the application itself never imports yaml, so this stays out of
+# assert the structure of docker-compose / nginx config, and for the
+# release tool (tools/release), which reads the dev compose file.  The
+# application itself never imports yaml, so this stays out of
 # requirements.txt.  Pinned to the version the suite is validated
 # against locally.
 PyYAML==6.0.3

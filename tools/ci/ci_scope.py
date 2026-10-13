@@ -13,10 +13,12 @@ outcome can have moved.
 This module says which change sets are that.  ``ci.yml``'s ``scope`` job asks
 it once, and every code-grading JOB is skipped unless the answer is ``full``;
 the plan gate itself (``pytest tools/plan_gate`` and its pylint
-floor) runs in BOTH scopes, as do this package's own tests and the tracker
-tool's, and the ``polyglot-lint`` job (rumdl, typos and the rest) is untouched
-and still lints every Markdown file.  Approved by the developer 2026-09-11 as
-its own tooling PR; moved here from ``tools/plan_gate`` by step X-cx's L4.
+floor) runs in BOTH scopes, as do this package's own tests, the tracker
+tool's, and the release tool's (``tools/release``, which reads ``steps.md``
+as each commit holds it until the cutover), and the ``polyglot-lint`` job
+(rumdl, typos and the rest) is untouched and still lints every Markdown file.
+Approved by the developer 2026-09-11 as its own tooling PR; moved here from
+``tools/plan_gate`` by step X-cx's L4.
 
 **The boundary is DERIVED, not spelled.**  A registry-only change set may
 touch only: the registries' directory (``docs/plans``, which also holds five
