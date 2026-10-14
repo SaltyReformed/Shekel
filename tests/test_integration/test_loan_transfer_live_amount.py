@@ -50,8 +50,9 @@ from app.services.loan_loaders import (
     loan_payment_due_date,
 )
 from app.services.installment_calendar import monthly_due_date
-from app.services.balance_at import BalanceContext
+from app.services.balance_at import BalanceContext, cash_balance_at
 from app.services.generation_schedule import GenerationSchedule
+from app.utils.dates import display_today
 from tests._test_helpers import (
     add_escrow_line,
     create_loan_account,
@@ -834,62 +835,85 @@ def test_settling_derived_loan_payment_captures_live_amount(
         assert split.excess == Decimal("0.00")
 
 
-def test_a_paid_loan_payment_keeps_its_recorded_amount_when_the_plan_changes(
+def _checking_today(seed_user):
+    """Return what the owner's checking account holds on the app's today.
+
+    The cash balance of the fixture's checking account on
+    :func:`~app.utils.dates.display_today`, the day a leg's Mark Paid settles
+    on (it states no day), so a payment paid in the case is inside it.
+
+    Args:
+        seed_user: The owner fixture; its account and user pin the read.
+
+    Returns:
+        The balance, a ``Decimal``.
+    """
+    return cash_balance_at(
+        seed_user["account"], BalanceContext.build(seed_user["user"].id),
+        display_today(),
+    )
+
+
+def test_nothing_after_the_settle_moves_what_a_loan_payment_paid(
     app, db, auth_client, seed_user, seed_periods,
 ):
-    """A paid loan payment counts what it RECORDED when its plan later moves.
+    """Once a loan payment is paid, nothing that happens later moves what it paid.
 
-    Capture-on-settle records the payment's live price once, at the settle:
-    P&I 1,199.10 + escrow 300.00 = **1,499.10**.  The owner then sets a
-    standing extra principal of $100.00 a month through the loan's
-    payment-settings door -- a live parameter with no date, so the plan of
-    every payment the definition makes, the paid one's included, reads
-        1,199.10 + 300.00 + 100.00 = **1,599.10**
-    and the paid payment must still count the 1,499.10 that left checking.
-    An app valuing a settled payment at its plan would count 1,599.10 and
-    leave checking $100.00 low.
+    Designed from scratch by ruling **R-BAL284** (Josh, 2026-10-14), after
+    rulings R-BAL276 and R-BAL283 each rested on a premise measured false.
+    Its one question: once a mortgage payment is paid, can anything that
+    happens LATER change what it paid?  Two later events are realistic: the
+    plan changes, and "paid" is clicked again from an old tab.
 
-    **Ruling R-BAL283 re-heard ruling R-BAL276** at plan step
-    balance:X-bi-6-4d-3's checkpoint 2d-c, and this case was
-    ``test_settled_loan_payment_freeze_is_one_shot`` until then: a settle and
-    a stale-tab re-settle with nothing moving between them, so every figure
-    was 1,499.10 whatever the app did.  R-BAL276 had an escrow version dated
-    before this payment's installment added between the two clicks.
-    Measured, the escrow door refuses that version
-    (``routes/loan/escrow_rates._reject_effective_date``: a change takes
-    effect after the latest settled payment's due date), so the case could
-    reach it only by writing the row past the door.  The extra is a change
-    the door accepts, and it writes the payment's definition and nothing in
-    the posted ledger (measured).
+    Checking holds 1,000.00.  The Feb 1 payment is paid through its leg's
+    Mark Paid at P&I 1,199.10 + escrow 300.00 = **1,499.10**, so checking
+    reads 1,000.00 - 1,499.10 = **-499.10**.  The owner then sets a standing
+    extra principal of $100.00 a month through the payment-settings door.
+    The extra has no date, so the unpaid payments now plan
+    1,199.10 + 300.00 + 100.00 = **1,599.10**, and so does the paid one's
+    own plan.  Then the Feb 1 leg's Mark Paid is posted again, as an old tab
+    would post it.
 
-    **What it grades, each read failing FIRST under a one-point mutation of
-    the app (measured):**
+    **Each check fails FIRST under its own one-point mutation of the app
+    (measured on these bytes; the commit that wrote this case names each
+    first-fail line):**
 
-    * the plan reads 1,599.10, so the read after it can tell a record from a
-      plan: it fails when the derive-mode price stops adding the standing
-      extra (``_loan_installment``'s P&I + escrow + extra sum);
-    * the paid leg's WORTH, asked through the cash fold's valuation
-      (``cash_ledger.leg_contribution_of``), is its record's 1,499.10: it
-      fails when that valuation stops asking the record before any producer
-      (``leg_fixed_contribution`` skipped), alone or with the first guard
-      below also off.
+    * checking reads -499.10 after the pay, the starting point: it fails
+      when the derive-mode price drops its escrow term
+      (``_loan_installment``'s sum), so the pay books 1,199.10 and checking
+      reads -199.10;
+    * the UNPAID Mar 1 payment plans 1,599.10, so the change took: it fails
+      when the derive-mode price drops the extra (``_loan_installment``'s
+      P&I + escrow + extra sum) and when the settings door redirects
+      without saving it;
+    * the calendar's day cells and the dashboard's bills
+      (``cash_ledger.leg_contributions_by_key``, the map both index) still
+      show the PAID Feb 1 payment at 1,499.10: it fails when
+      ``leg_contribution_of`` stops asking the record first
+      (``leg_fixed_contribution`` skipped) and shows the plan's 1,599.10;
+    * the repeat click is answered 200: it fails when the transfer
+      workflow loses its ``done -> done`` identity edge and refuses the
+      click;
+    * checking still reads -499.10 after it: it fails when the repeat
+      click is taken as a $0.00 close (``status_seam._side``'s
+      ``withdraws`` without its ``settlement is not None`` term), which
+      takes the paid 1,499.10 off the books and leaves checking at
+      1,000.00.
 
-    **The stale-tab re-settle and its two reads went with R-BAL283**, because
-    no one-point mutation failed them first.  With the valuation's record
-    step skipped, the worth read above fails before them.  With the first
-    guard off (``enters_settled_band`` in ``_update._dispatch_settle``, so a
-    ``done -> done`` re-settle runs the settle act again) the case passed
-    and the re-settle wrote nothing: the act values the paid leg through
-    that same valuation (``_settle.settle``), and the leg's Mark Paid states
-    no figure and no day.  That guard is graded by
+    **Left out, each measured:** checking, the loan's split and the grid's
+    paid cell right after the plan change, which none of the one-point
+    mutations measured moves (each reads only the money that moved); the
+    PAID payment's own planned figure, the grid's budget figure for it,
+    which reads 1,599.10 beside its 1,499.10 record and is an open question
+    of its own, not settled here; and the first guard itself
+    (``enters_settled_band`` skipped, so a repeat click runs the settle act
+    again), which alone changes nothing this case reads and is graded by
     ``test_transfer_settle_freeze``'s
-    ``test_settling_an_ALREADY_settled_transfer_writes_nothing``, whose
-    replay states a figure and a day.
+    ``test_settling_an_ALREADY_settled_transfer_writes_nothing``.
 
-    The settled payment is read as the transfer and its loan side's record
-    (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2), and the model
-    is asked of the payment's leg on the loan, the first TRANSFER into it
-    (plan step balance:X-bi-6-4d-3, ruling R-BAL167 class 1).
+    The payments are the TRANSFERS due 2026-02-01 and 2026-03-01, each read
+    through its leg on the loan (plan step balance:X-bi-6-4d-3, ruling
+    R-BAL167 class 1).
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -901,39 +925,44 @@ def test_a_paid_loan_payment_keeps_its_recorded_amount_when_the_plan_changes(
             ), scenario_id,
         )
         db.session.commit()
+        paid_id = _first_payment(loan.id, scenario_id, date(2026, 2, 1)).id
+        unpaid_id = _first_payment(loan.id, scenario_id, date(2026, 3, 1)).id
 
-        transfer_id = _first_payment(loan.id, scenario_id).id
-
-        resp = _mark_done_from_leg(auth_client, transfer_id, loan.id)
+        # STEP 1: pay Feb 1.  Checking: 1,000.00 - 1,499.10 = -499.10.
+        resp = _mark_done_from_leg(auth_client, paid_id, loan.id)
         assert resp.status_code == 200, resp.data
         db.session.expire_all()
-        assert db.session.get(Transfer, transfer_id).status.is_settled is True
-        assert transfer_side_figure(
-            db.session, transfer_id, loan.id,
-        ) == Decimal("1499.10")
+        assert _checking_today(seed_user) == Decimal("-499.10")
 
-        # After the payment is paid, the owner starts paying $100.00 a month
-        # extra, through the dashboard's payment card.  The door redirects
-        # whether or not it saved, so the plan read below is what says the
-        # extra took.
+        # STEP 2: a standing extra of $100.00 a month, through the dashboard's
+        # payment card.  The door redirects whether or not it saved, so the
+        # unpaid payment's plan below is what says the extra took.
         resp = auth_client.post(
             f"/accounts/{loan.id}/loan/payments/{template.id}/settings",
             data={"extra_principal": "100.00"},
         )
         assert resp.status_code == 302, resp.data
         db.session.expire_all()
-
-        # The plan of the paid payment's leg: 1,199.10 + 300.00 + 100.00.
-        assert _derived_cash(seed_user, [_side_leg(transfer_id, loan.id)])[
-            (transfer_id, loan.id)
+        # The unpaid Mar 1 payment plans 1,199.10 + 300.00 + 100.00.
+        unpaid = db.session.get(Transfer, unpaid_id)
+        assert _derived_cash(seed_user, [transfer_legs.leg_of(unpaid, loan.id)])[
+            (unpaid_id, loan.id)
         ] == Decimal("1599.10")
-        # What the paid leg is WORTH to the balance is still its record.
-        assert cash_ledger.leg_contribution_of(
-            _side_leg(transfer_id, loan.id),
+        # The calendar and the dashboard's bills still show the paid Feb 1
+        # payment at what it paid, not at its plan's 1,599.10.
+        assert cash_ledger.leg_contributions_by_key(
+            [_side_leg(paid_id, loan.id)],
             cash_ledger.derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             ),
-        ) == Decimal("1499.10")
+        )[(paid_id, loan.id)] == Decimal("1499.10")
+
+        # STEP 3: Feb 1's Mark Paid again, from an old tab.  Accepted as the
+        # no-op it is, and checking still -499.10: the paid 1,499.10 stays.
+        resp = _mark_done_from_leg(auth_client, paid_id, loan.id)
+        assert resp.status_code == 200, resp.data
+        db.session.expire_all()
+        assert _checking_today(seed_user) == Decimal("-499.10")
 
 
 def test_a_definitions_standing_extra_is_read_off_its_own_settings_row(
