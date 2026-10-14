@@ -1102,9 +1102,9 @@ class TestDeleteTransfer:
         It also counted the shadow rows naming the transfer afterwards (0)
         until plan step ``balance:X-bi-6-4d-3``; from that step's create door
         on no row can name one (``ck_transactions_names_no_transfer``, ruling
-        R-BAL258), so the count was 0 before the first delete as well as
-        after the last (a vacuous read, measured at its checkpoint 2e-2a-2),
-        and it is dropped.
+        R-BAL258), so the count it took after the last delete read none (a
+        vacuous read; a probe counted such rows 0 before the first delete and
+        after the last, at checkpoint 2e-2a-2), and it is dropped.
         """
         with app.app_context():
             td = transfer_data
@@ -1157,7 +1157,7 @@ class TestDeleteTransfer:
 
 
 class TestInvariants:
-    """Tests that directly verify the five core invariants.
+    """Tests that directly verify four of the five core invariants.
 
     Invariant 2's case, ``test_shadows_cannot_exist_without_transfer``, was
     deleted at plan step ``balance:X-bi-6-4d-3`` (ruling R-BAL278, the
@@ -1373,10 +1373,10 @@ class TestSoftDeleteHandling:
         It read the shadow rows' flags afterwards ("still soft-deleted")
         until plan step ``balance:X-bi-6-4d-3``; from that step's create door
         on no row can name the transfer (``ck_transactions_names_no_transfer``,
-        ruling R-BAL258), so ``all()`` ran over none, before the first delete
-        as after the second (a vacuous read, measured at its checkpoint
-        2e-2a-2).  What it meant is asked of the plan now: after the second
-        delete neither endpoint's plan loader holds a leg of the transfer, a
+        ruling R-BAL258), so ``all()`` ran over none after the second delete
+        (a vacuous read; a probe counted such rows 0 before the first delete
+        and after the second, at checkpoint 2e-2a-2).  What it meant is asked
+        of the plan now: neither endpoint's plan loader holds a leg of it, a
         PROJECTION read as in :class:`TestDeleteTransfer`'s
         ``test_soft_hides_the_transfer_and_both_legs``.
         """
@@ -1406,9 +1406,9 @@ class TestSoftDeleteHandling:
         It also counted the shadow rows naming the transfer afterwards (0)
         until plan step ``balance:X-bi-6-4d-3``; from that step's create door
         on no row can name one (``ck_transactions_names_no_transfer``, ruling
-        R-BAL258), so the count was 0 before the first delete as well as
-        after the last (a vacuous read, measured at its checkpoint 2e-2a-2),
-        and it is dropped.
+        R-BAL258), so the count it took after the last delete read none (a
+        vacuous read; a probe counted such rows 0 before the first delete and
+        after the last, at checkpoint 2e-2a-2), and it is dropped.
         """
         with app.app_context():
             td = transfer_data
