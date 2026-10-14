@@ -258,7 +258,10 @@ def test_a_stray_reopens_of_a_leaf_dropped_long_ago_blocks_nothing(repo):
     tracker = FakeTracker()
     _group(tracker, leaves=(51, 52, 53))
     tracker.close(53, "not_planned")
-    assert _judge(repo, base, cut, tracker).verdict.status == CLEAN
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert verdict.status == CLEAN
+    assert {step.key: step.groups for step in verdict.carried.steps} == {
+        "plan#51": ("plan#50",), "plan#53": ()}
 
 
 def test_an_offered_cut_still_shipping_a_leaf_dropped_since_is_held_to_its_group(repo):
@@ -386,6 +389,40 @@ def test_a_step_reverted_and_split_since_is_judged_by_its_own_label(repo):
     assert [(s.key, s.money, s.undone) for s in verdict.carried.steps] == [
         ("plan#60", True, True)]
     assert verdict.status == CLEAN
+
+
+def test_a_group_leaf_reverted_and_split_since_is_held_to_its_group(repo):
+    """The second delta review's HIGH: #51 undone, then re-planned as #511 and #512; the
+    split #51 stands in group #50 for its own code, so production keeping #52 without it
+    is refused."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#51", "Ships: plan#52")
+    cut = _merge(repo, base, "Reopens: plan#51")
+    tracker = FakeTracker()
+    _group(tracker)
+    for leaf in (511, 512):
+        tracker.add(leaf)
+        tracker.add_child(51, tracker.cards_by_number[leaf])
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert verdict.carried.steps[0].groups == ("plan#50",)
+    assert verdict.status == REFUSED
+
+
+def test_a_split_card_whose_leaf_carries_the_money_label_moves_money(repo):
+    """A person moved #60's money label onto its new leaf #61: the undo of #60 still
+    counts as a money change (fails closed), so with #41 the release carries two."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#60")
+    cut = _merge(repo, base, "Reopens: plan#60", "Ships: plan#41")
+    tracker = FakeTracker()
+    tracker.add(60)
+    tracker.add(61, labels=MONEY)
+    tracker.add(62)
+    for leaf in (61, 62):
+        tracker.add_child(60, tracker.cards_by_number[leaf])
+    tracker.add(41, labels=MONEY)
+    assert _judge(repo, base, cut, tracker).verdict.refusals == (
+        "it carries 2 steps that move money (plan#41, plan#60); a release carries one at most",)
 
 
 def test_a_card_of_no_type_is_refused(repo):

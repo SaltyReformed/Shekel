@@ -41,10 +41,12 @@ every leaf or none (R-BAL288): a release taking a whole group out is whole too.
   trailer landed (until that check exists, a mistyped number too);
 - a trailer naming a card of a kind no commit ships (a ruling, a question, a card of no
   type; quill's ``SHIPPABLE``): read as work it would pass as moving no money.  A step
-  split into leaves since its trailer landed is judged by its OWN moves-money label, the
-  code the trailer names having been its own while it was work (quill forbids splitting
-  a shipped step, so it was undone first; a split writes the step only its sub-issue
-  link, so its labels stay, ``tools/quill/test_quill_file.py``; the coordinator, under
+  split into leaves since its trailer landed is judged as the work it was: it moves money
+  when it or a leaf below it is so labelled, and it stands in each deploy-together group
+  its leaves are in, the code the trailer names having been its own (quill splits no
+  step ``dev`` says shipped, so it was undone first, or split before its ship merged; a
+  split writes the step only its sub-issue link, so its labels stay,
+  ``tools/quill/test_quill_file.py``; the coordinator, under
   R-BAL207, 2026-10-14).  L9d's landing check refuses a trailer naming a card that is no
   work when it lands, so a mistyped one never reaches here;
 - a value of neither form, which CI's trailer check refuses before it lands.
@@ -112,16 +114,26 @@ def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
     held = tracker.cards(named)
     closure = with_closure(tracker, dict(held))
     shipped = set(_standing(root, cut))
+    work = {number for number, card in held.items() if card.kind in SHIPPABLE}
+    # A named card split since its trailer landed: its code was its own, so it stands
+    # in each group its leaves are in, and it moves money if it or a leaf below it is
+    # labelled so (a label a person moved onto a leaf still counts: fails closed).
+    split = {number: {leaf.number for leaf in leaves_below(held[number], closure, shipped)}
+             for number in work}
+    split = {number: below for number, below in split.items() if below}
     groups = {}
     for number, card in closure.items():
         if DEPLOY_TOGETHER_LABEL in card.labels:
             leaves = tuple(leaf.number for leaf in leaves_below(card, closure, shipped))
+            leaves += tuple(step for step, below in sorted(split.items())
+                            if below.intersection(leaves))
             if named.intersection(leaves):
                 groups[number] = leaves
     gone = frozenset(leaf for leaves in groups.values() for leaf in leaves
                      if dropped(leaf, closure, shipped))
-    work = {number for number, card in held.items() if card.kind in SHIPPABLE}
-    return Cards({number: MOVES_MONEY_LABEL in held[number].labels for number in work},
+    return Cards({number: any(MOVES_MONEY_LABEL in closure[each].labels
+                              for each in (number, *split.get(number, ())))
+                  for number in work},
                  groups, gone,
                  {number: _what(card.kind) for number, card in held.items()
                   if number not in work})
