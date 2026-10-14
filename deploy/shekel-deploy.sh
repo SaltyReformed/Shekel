@@ -6,11 +6,20 @@
 #   shekel-deploy.sh sha256:abc...     # deploy that specific digest
 #   shekel-deploy.sh --no-verify       # skip cosign (emergencies only)
 #   shekel-deploy.sh --dry-run         # show the plan, change nothing
+#   shekel-deploy.sh --dump-only       # dump the database, print the dump's path
 #   shekel-deploy.sh -h | --help
 #
 # Every run dumps the database before it touches the pin, and refuses to
 # re-pin when the previous image cannot resolve the schema revision the
 # database has been left at.  The notes below say why.
+#
+# --dump-only takes no other argument (-h aside).  It takes the same dump a
+# deploy takes, through the same function, and prints the dump's path as its
+# last line.  Beyond the daemon check, the database's running-check, the
+# dump and its readback it makes no call: it pulls nothing, writes no pin,
+# and starts, stops or recreates no container.  The same-day production dump a release rehearsal
+# restores is taken here and nowhere else (card X-cx L9, the coordinator's
+# ruling under R-BAL207).
 
 # ── Which copy of this file is actually running ────────────────────
 # The canonical copy is `deploy/shekel-deploy.sh` in the Shekel repository.
@@ -123,7 +132,10 @@ MOVING_TAG="${SHEKEL_MOVING_TAG:-latest}"
 # Pre-deploy dump target.  The directory and naming match the predeploy dumps
 # the operator has been taking by hand before each migration-bearing release
 # (~/shekel-backups/shekel_prod_predeploy_<label>_<ts>.dump); this automates
-# that habit rather than inventing a second convention beside it.
+# that habit rather than inventing a second convention beside it.  A
+# --dump-only dump keeps the directory and changes the label, as
+# shekel_prod_dump_<current pin>_<ts>.dump, so it is never mistaken for the
+# restore point a deploy took.
 DB_CONTAINER="${SHEKEL_DB_CONTAINER:-shekel-prod-db}"
 DB_USER="${SHEKEL_DB_USER:-shekel_user}"
 DB_NAME="${SHEKEL_DB_NAME:-shekel}"
@@ -155,12 +167,14 @@ usage() {
 
 verify=true
 dryrun=false
+dumponly=false
 explicit_digest=""
 for a in "$@"; do
     case "$a" in
         -h | --help) usage 0 ;;
         --no-verify) verify=false ;;
         --dry-run) dryrun=true ;;
+        --dump-only) dumponly=true ;;
         sha256:*)
             if [ -n "$explicit_digest" ]; then
                 echo "ERROR: more than one digest argument given." >&2
@@ -174,6 +188,12 @@ for a in "$@"; do
             ;;
     esac
 done
+# A dump taken beside a digest, --dry-run or --no-verify would read as a
+# deploy, a plan or a skipped check that never happened.
+if $dumponly && [ "$#" -ne 1 ]; then
+    echo "ERROR: --dump-only takes no other argument." >&2
+    exit 2
+fi
 
 # ── Helpers ────────────────────────────────────────────────────────
 log() { printf '[shekel-deploy] %s\n' "$*"; }
@@ -455,9 +475,12 @@ repin_is_safe() {
     image_resolves_revisions "$OLD_MIGRATIONS" "$stamped"
 }
 
-take_predeploy_dump() {
-    # pg_dump -Fc the whole database, then prove the artifact is readable.
+take_dump() {
+    # take_dump <label>: pg_dump -Fc the whole database into
+    # shekel_prod_<label>_<ts>.dump, then prove the artifact is readable.
     # Sets DUMP_PATH.  Any failure is fatal and happens BEFORE the pin moves.
+    # A deploy's label is predeploy_<target>; --dump-only's is
+    # dump_<current pin>.
     #
     # Written to a .part file and renamed only after the archive DECODES: a
     # truncated dump that wears a valid name is worse than no dump, because it
@@ -473,9 +496,9 @@ take_predeploy_dump() {
     # then stops.  -f decodes every data block, which is the -Fc analogue of
     # the gzip integrity decode `_backup_lib.sh:validate_backup_artifact` does
     # for the nightly backups.
-    local ts
+    local label="$1" ts
     ts=$(date +%Y%m%d_%H%M%S)
-    DUMP_PATH="${BACKUP_DIR}/shekel_prod_predeploy_${new_short}_${ts}.dump"
+    DUMP_PATH="${BACKUP_DIR}/shekel_prod_${label}_${ts}.dump"
     DUMP_PART="${DUMP_PATH}.part"
 
     mkdir -p "$BACKUP_DIR" || die "cannot create backup directory $BACKUP_DIR."
@@ -773,15 +796,29 @@ report_installed_copy
 # the value is the same for the whole run.
 whoami_name=$(id -un)
 [ -r "$ENV_FILE" ] || die "$ENV_FILE not readable."
-[ -w "$ENV_FILE" ] || die "$ENV_FILE not writable by ${whoami_name}."
+# Only a run that writes the pin needs it writable; a dump-only run reads it.
+$dumponly || [ -w "$ENV_FILE" ] || die "$ENV_FILE not writable by ${whoami_name}."
 docker info >/dev/null 2>&1 || die "docker daemon unreachable for ${whoami_name}."
 
 old_digest=$(read_env_digest)
 [ -n "$old_digest" ] || die "no SHEKEL_IMAGE_DIGEST in $ENV_FILE."
-case "$old_digest" in
-    sha256:*) : ;;
-    *) die "current SHEKEL_IMAGE_DIGEST is not sha256:... (got '$old_digest')." ;;
-esac
+# The whole digest, not its prefix: a dump-only run names its file for it
+# and makes no later call that would refuse a malformed one.
+[[ "$old_digest" =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || die "current SHEKEL_IMAGE_DIGEST is not sha256:<64 hex digits> (got '$old_digest')."
+# Captured once rather than substituted inside each message, for the same
+# reason as ``whoami_name`` above.
+old_short=$(short "$old_digest")
+
+# ── Dump only ──────────────────────────────────────────────────────
+# Before the pull: a dump-only run reads the pin and the database, nothing
+# else.  No pre-flight either, since listing an image's migrations starts a
+# container.
+if $dumponly; then
+    take_dump "dump_${old_short}"
+    printf '%s\n' "$DUMP_PATH"
+    exit 0
+fi
 
 # ── Resolve target digest ──────────────────────────────────────────
 if [ -n "$explicit_digest" ]; then
@@ -810,8 +847,7 @@ else
     new_digest=${BASH_REMATCH[0]}
 fi
 
-# Short forms captured once, for the same reason as ``whoami_name`` above.
-old_short=$(short "$old_digest")
+# Captured once, as ``old_short`` is above.
 new_short=$(short "$new_digest")
 
 log "current pin: $old_digest"
@@ -905,7 +941,7 @@ fi
 # taken for every release, not only migration-bearing ones, because "this
 # release could not have moved the schema" is a claim about the image, and
 # the dump costs about half a megabyte.
-take_predeploy_dump
+take_dump "predeploy_${new_short}"
 
 # ── Deploy ─────────────────────────────────────────────────────────
 log "rewriting SHEKEL_IMAGE_DIGEST in $ENV_FILE ..."

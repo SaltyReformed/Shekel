@@ -32,7 +32,7 @@ of a card are made from its row OUTSIDE it, and graded apart, against this check
 its title's alias (``Item.alias``, the row's id), which is its key, so a
 card is found by it (``_migrate_plan.card_key``, ``_migrate_plan.py:179``) and its title
 is compared exactly (:func:`differences`); and its labels (``Item.labels``: the arc's, and
-for a step ``moves-money`` from its sentence, ``_migrate_source._step_labels``,
+for a step ``moves-money`` from its sentence, ``_migrate_source.step_labels``,
 ``_migrate_source.py:480``), which the plan holds equal to the item's
 (``_migrate_plan._Grading._unlike``, ``_migrate_plan.py:655``).
 

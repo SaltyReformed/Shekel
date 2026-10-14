@@ -95,7 +95,7 @@ env:
 # ── Jobs ──────────────────────────────────────────────────────────
 jobs:
   scope:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       scope: ${{ steps.scope.outputs.scope }}
       base: ${{ steps.scope.outputs.base }}
@@ -183,7 +183,7 @@ jobs:
 
   commit-trailers:
     needs: scope
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # The undone commit a revert names can be anywhere in history, so this
       # checkout is full; the trailers are only READ.
@@ -217,7 +217,7 @@ jobs:
         run: python -m tools.ci.commit_trailers "${BASE_SHA}" "${HEAD_SHA}"
 
   plan-gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # ── 1. Check out the repository ──────────────────────────────
       - name: Checkout code
@@ -276,6 +276,11 @@ jobs:
       # list the gate and the tool read; step X-cx's L4) is graded here too.
       # A change to it is never registry-only, but every registry pass RUNS
       # its classifier, so its tests are not left to the scope they grade.
+      #
+      # ``tools/release`` (what a release carries; step X-cx's L9a) reads
+      # steps.md as each commit holds it until the cutover, so, like quill's,
+      # its tests run in every scope rather than being skipped by a
+      # registry-only change set.
       - name: Plan gate (every scope)
         run: |
           pylint tools/plan_gate/ --fail-under=10 --fail-on=E,F --output-format=colorized
@@ -284,9 +289,11 @@ jobs:
           pytest tools/quill -c /dev/null -q
           pylint tools/ci/ --fail-under=10 --fail-on=E,F --output-format=colorized
           pytest tools/ci -c /dev/null -q
+          pylint tools/release/ --fail-under=10 --fail-on=E,F --output-format=colorized
+          pytest tools/release -c /dev/null -q
 
   tax-law:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -341,7 +348,7 @@ jobs:
   lint:
     needs: scope
     if: needs.scope.outputs.scope != 'registry-only'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -467,7 +474,7 @@ jobs:
   test:
     needs: scope
     if: needs.scope.outputs.scope != 'registry-only'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # One red shard must not cancel the others: a failing merge gate should
       # report every failure it has, not the first shard's.
@@ -594,7 +601,7 @@ jobs:
   lint-and-test:
     needs: [scope, commit-trailers, plan-gate, tax-law, lint, test]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -627,7 +634,7 @@ jobs:
   # required checks to make the floor block merges (it runs on every PR
   # regardless).
   polyglot-lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
