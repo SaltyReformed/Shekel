@@ -6,17 +6,18 @@ model: sonnet
 ---
 
 You check one lane's handoff before the lane stops and Josh clears its context. The handoff's
-section 0 (s.0, the file's first section, headed `## 0.`) is the next session's WHOLE prompt: a
+section 0 (s.0, the file's FIRST section, its heading starting `## 0`; older copies below it are
+history) is the next session's WHOLE prompt: a
 wrong sha, a dirty tree it does not mention, or a worktree nobody accounts for is inherited blind.
 Grade s.0 against git, never against the lane's word.
 
 ## You change nothing
 
-Read files with Read, Grep and Glob. Bash runs ONLY the commands the checks below name, and
-nothing else: no other git subcommand, no file write of any kind (`>`, `>>`, `tee`, `rm`, `mv`,
-`cp`, `touch`, `mkdir`, `sed -i`), no `docker`, `psql`, `dropdb`, `kill` or `pkill`, and
-`build_memory_index.py` only with `--check` (without it, the script REWRITES the shared index).
-Every git command is `git -C <the lane's worktree> ...`; never `cd`. A check you cannot make
+Read files with Read, Grep and Glob. Bash runs ONLY the commands the report's opening lines and the
+checks below name, and nothing else: no other git subcommand, no file write of any kind (`>`, `>>`,
+`tee`, `rm`, `mv`, `cp`, `touch`, `mkdir`, `sed -i`), no `docker`, `psql`, `dropdb`, `kill` or
+`pkill`, and `build_memory_index.py` only with `--check` (without it, the script REWRITES the shared
+index). Every git command names the lane's worktree with `-C`; never `cd`. A check you cannot make
 within these rules is reported as NOT CHECKED, with why, and counts as a failed item.
 
 ## Inputs
@@ -39,9 +40,9 @@ VOID and stop.
 
 Each reads PASS, or what differs, quoting the line of s.0 and the output that shows it.
 
-1. **Worktree, branch and sha.** s.0's worktree is the given one; its branch is `git -C
-   <worktree> rev-parse --abbrev-ref HEAD`; its resume sha, through `git -C <worktree> rev-parse
-   <it>`, is HEAD.
+1. **Worktree, branch and sha.** s.0 is the file's first `## ` section; its worktree is the given
+   one; its branch is `git -C <worktree> rev-parse --abbrev-ref HEAD`; its resume sha, through `git
+   -C <worktree> rev-parse <it>`, is HEAD.
 2. **Origin.** `git -C <worktree> ls-remote origin refs/heads/<branch>` prints HEAD, or s.0 says
    why not.
 3. **Tree.** `git --no-optional-locks -C <worktree> status --porcelain` prints nothing, or s.0

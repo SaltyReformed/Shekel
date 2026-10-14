@@ -27,7 +27,8 @@ Commit what is clean. Then read whether a pull request from the branch is open; 
 it, so an open one means do NOT push, and s.0 says so:
 
 ```bash
-gh pr list --head "$(git symbolic-ref --short HEAD)" --state open; echo "exit=$?"
+b=$(git symbolic-ref --short HEAD) || exit 1
+gh pr list --head "$b" --state open; echo "exit=$?"
 ```
 
 Nothing listed: push the branch by an explicit refspec (a pushed branch is a backup, not a request
@@ -39,14 +40,15 @@ b=$(git symbolic-ref --short HEAD) && case "$b" in dev|main) echo "not a lane br
     && git push origin "$(git rev-parse HEAD):refs/heads/$b"; echo "exit=$?"
 ```
 
-A commit made later (a fix the check asks for) is pushed the same way before the re-check.
+A commit made later (a fix the check asks for) is pushed the same way, and s.0's items 1 and 4
+re-read from git, before the re-check.
 
 ## 3. Rewrite s.0
 
-The file is `~/projects/shekel-handoffs/HANDOFF-<lane>.md`. s.0 is its FIRST section, the only
-one whose heading starts `## 0.`: rewrite it whole, headed with the time `date` prints and the
-session's name, and keep no superseded copy as a second `## 0` section. Sections 1 onward stay.
-s.0 holds:
+The file is `~/projects/shekel-handoffs/HANDOFF-<lane>.md`. s.0 is its FIRST section, whose
+heading starts `## 0`: write the new one there, headed with the time `date` prints and the
+session's name. A superseded s.0 is never deleted (the folder is not in git); it stays below as
+history. s.0 holds:
 
 1. The worktree, the branch, HEAD's sha and origin's state (equal, or why not), each read from
    git (`git rev-parse`), never typed from memory.
@@ -54,10 +56,11 @@ s.0 holds:
 3. Every worktree, branch and database clone this session made, a review subagent's worktree and
    its `worktree-agent-*` branch included: removed, or listed with its state and who removes it.
 4. What is done, each commit by its sha, and what is not.
-5. The next session's FIRST act: `pwd` and `git rev-parse --show-toplevel` print item 1's
-   worktree, `git rev-parse --abbrev-ref HEAD` and `git rev-parse HEAD` print its branch and sha,
-   and `git status --porcelain` prints only item 2's paths; any difference is a STOP to report.
-   Then the next leaf and the first command it runs.
+5. The next session's FIRST act: when `pwd` is not item 1's worktree, `EnterWorktree` into it once
+   (Josh cannot relaunch a terminal from the web); then `pwd` and `git rev-parse --show-toplevel`
+   print item 1's worktree, `git rev-parse --abbrev-ref HEAD` and `git rev-parse HEAD` print its
+   branch and sha, and `git status --porcelain` prints only item 2's paths; any difference is a STOP
+   to report. Then the next leaf and the first command it runs.
 6. What the next session must not do (push while a pull request is open, say), and the traps
    learned or review findings that recurred.
 
@@ -79,12 +82,13 @@ Exit 0. It refuses an index over its byte budget: shorten the hook first.
 ## 5. The check
 
 Spawn the `handoff-checker` agent: a fresh agent by that name, never a fork, and with no
-`isolation` (it reads the lane's own worktree and writes nothing). Give it the handoff's path, the
-worktree's path, the memory file's path, and the list of every worktree, branch and database clone
-this session made, taken from the session's own tool results. Its report opens with the worktree,
-its toplevel and its HEAD; a report without them is VOID: run it once more, and a second VOID is a
-failed check. PASS ends the check. A list: fix each item, then run it ONCE more; a second list is a
-failed check.
+`isolation`: it reads the lane's own worktree and writes nothing, and the harness refuses an
+isolated agent's `git -C` into any other worktree (measured 2026-10-14). Give it the handoff's path,
+the worktree's path, the memory file's path, and the list of every worktree, branch and database
+clone this session made, taken from the session's own tool results. Its report opens with the
+worktree, its toplevel and its HEAD; a report without them is VOID: run it once more, and a second
+VOID is a failed check. PASS ends the check. A list: fix each item, then run it ONCE more; a second
+list is a failed check.
 
 ## 6. The alert
 
