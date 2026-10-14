@@ -24,12 +24,15 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import text as sa_text
+from sqlalchemy import select, text as sa_text
 
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import Account
+from app.models.category import Category
+from app.models.pay_period import PayPeriod
+from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.amount_ownership import AmountOwnership
@@ -163,6 +166,46 @@ def _balance_on(account, scenario, day):
     return balances_at(assembled_fold(account, ctx), [day])[day]
 
 
+def _shown(leg, basis):
+    """What *leg* shows of its transfer: the projection table's one row."""
+    return {
+        "account_id": leg.account_id,
+        "is_income": leg.is_income,
+        "amount": leg_amounts_by_key([leg], basis)[leg.cell_key],
+        "status_id": leg.status_id,
+        "status": leg.status,
+        "pay_period_id": leg.pay_period_id,
+        "pay_period": leg.pay_period,
+        "due_date": leg.due_date,
+        "category_id": leg.category_id,
+        "category": leg.category,
+        "is_override": leg.is_override,
+        "notes": leg.notes,
+    }
+
+
+def _held(stored, is_income):
+    """What the side *is_income* names of the *stored* row, as :func:`_shown` keys it.
+
+    *stored* is the row read by SQL, so its values are the database's own;
+    the status, period and category ROWS are the ones its id columns name.
+    """
+    return {
+        "account_id": stored["to_account_id" if is_income else "from_account_id"],
+        "is_income": is_income,
+        "amount": stored["amount"],
+        "status_id": stored["status_id"],
+        "status": db.session.get(Status, stored["status_id"]),
+        "pay_period_id": stored["pay_period_id"],
+        "pay_period": db.session.get(PayPeriod, stored["pay_period_id"]),
+        "due_date": stored["due_date"],
+        "category_id": stored["category_id"],
+        "category": db.session.get(Category, stored["category_id"]),
+        "is_override": stored["is_override"],
+        "notes": stored["notes"],
+    }
+
+
 class TestLegOf:
     """Which side of a transfer an account is on decides the leg's direction."""
 
@@ -187,11 +230,57 @@ class TestLegOf:
         with pytest.raises(ValueError, match="neither side of transfer 7"):
             leg_of(transfer, 3)
 
+    def test_a_leg_reads_its_parents_columns_not_its_relationships(self, app):
+        """A leg reads its parent's foreign-key COLUMNS, never their relationships.
+
+        Every column the leg's code (``transfer_legs._leg``) reads that has a
+        relationship on :class:`~app.models.transfer.Transfer` is here: the
+        status, the category, the scenario, the period and the two
+        endpoints, read on both sides.  (The owner's column is read too, and
+        has no relationship on a transfer.)  The transfer is never added to
+        a session: it holds the columns and none of the rows they name, so a
+        leg that read a relationship's id would raise here.
+        :class:`TestBothSidesShowTheTransfer` cannot tell the two reads
+        apart, because it reads a committed, re-read row, where a column and
+        its relationship always agree.  The edit door writes a period or a
+        category to the column alone (``transfer_service._update``; the
+        status seam expires ``status`` after its write), so until the row is
+        flushed and re-read that relationship can still name the old row;
+        whether any reader asks a leg inside that window is not measured.
+
+        The status is the Projected one, born as a transfer is; its id is
+        the seed's, so a guard checks first that no two of the transfer's
+        ids coincide, and a read of the wrong column cannot agree.
+        """
+        with app.app_context():
+            transfer = Transfer(
+                id=7, from_account_id=31, to_account_id=37,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                category_id=5, scenario_id=13, pay_period_id=11,
+            )
+            ids = (
+                transfer.id, transfer.from_account_id, transfer.to_account_id,
+                transfer.status_id, transfer.category_id, transfer.scenario_id,
+                transfer.pay_period_id,
+            )
+            assert len(set(ids)) == len(ids), (
+                f"precondition: two of the transfer's ids coincide: {ids}"
+            )
+
+            assert [
+                (leg.account_id, leg.status_id, leg.category_id,
+                 leg.scenario_id, leg.pay_period_id)
+                for leg in (leg_of(transfer, 31), leg_of(transfer, 37))
+            ] == [
+                (31, transfer.status_id, 5, 13, 11),
+                (37, transfer.status_id, 5, 13, 11),
+            ]
+
 
 class TestBothSidesShowTheTransfer:
     """What a side of a transfer shows is what the transfer's row holds (ruling R-BAL290)."""
 
-    def test_both_sides_show_every_field_the_transfer_row_holds(
+    def test_both_sides_show_the_row_in_every_field_the_table_names(
         self, app, seed_user, seed_periods,
     ):
         """ONE fact, one test: each side shows the stored row's value, field by field.
@@ -203,103 +292,156 @@ class TestBothSidesShowTheTransfer:
         2026-10-14).  This is that reader's one test; a door's test checks
         what the door wrote on the row.
 
-        The transfer is written through the doors with a value in every field
-        that is not the field's default: $437.19, Cancelled (neither the
-        Projected a transfer is usually created in nor a settled status,
-        which would write the payment records this case is not about), the
-        fourth period, a due date four days into it, Groceries, notes, and
-        the override flag set through the edit door, which the create door
-        does not take.  Committed and re-read, so each side reads what was
-        stored.  The five ids are checked distinct first, so a side reading
-        another field's column cannot agree by accident.
+        The table names nine of the row's columns -- the amount, status,
+        period, due date, category, override flag, notes and the two
+        endpoints, each side showing its own -- and the status, period and
+        category ROWS readers take through a side (the grid's cell its
+        status, the dashboard's bills its period and category).  Four more
+        of the row's columns are read through a side and are not in it: the
+        id (the side's cell key), the owner, the scenario and the delete
+        flag.
 
-        Each side is read through both constructions of a leg: by SIDE
+        Two transfers are written through the doors with a different value
+        in every one of those columns: Reserve to Savings at $437.19,
+        Cancelled, in the fourth period, due four days in, Groceries, with
+        notes and the override flag (set through the edit door, which the
+        create door does not take); and Savings to Reserve at $1,062.48,
+        Projected, in the sixth period, due nine days in, Rent, with other
+        notes and the flag clear.  Neither is settled: a settled status
+        writes the payment records this case is not about.  Both are
+        committed; each side is read off the re-read row, and what the table
+        expects is the row as independent SQL reads it.
+
+        Two guards on the input come first: the doors stored every stated
+        value, and over the two transfers each named column holds two
+        different values and its PAIR of values differs from every other
+        column's pair, the columns taken from the model's table
+        (``Transfer.__table__``) rather than listed here.
+        So a side that reads a named column off any other column of its row,
+        or answers one value whatever the row, disagrees with the table on at
+        least one of the two transfers.  That is the guard's whole reach: it
+        says nothing of a side reading another table, a computed value, or a
+        relationship in place of its column (a committed row's two always
+        agree; :class:`TestLegOf` pins the columns in memory), and the four
+        columns the table leaves out are outside it.  The Projected transfer
+        is created first because the guard refuses the other order on this
+        seed: the two transfers' ids then pair exactly as their status ids
+        do.
+
+        Each side is read through two of the doors to a leg: by SIDE
         (``transfer_side_leg``, how the transfer service reads one) and by
         ACCOUNT (``grid_transfer_leg``, through ``leg_of``, how the grid and
         the fold reach one), and its amount through ``leg_amounts_by_key``,
-        the producer the grid prices a leg's cell with.  It replaces
-        :class:`TestLegOf`'s ``test_a_leg_reads_its_period_and_due_date_off_the_parent``,
-        an in-memory read of two of these fields on one side.
+        the producer the grid prices a leg's cell with.
         """
         with app.app_context():
+            owner_id = seed_user["user"].id
             # Two fresh accounts, not the seeded checking: its id is the
-            # Cancelled status's on this seed, which the guard below refuses.
+            # Cancelled status's, which the guard below refuses.
             reserve = _savings(seed_user, name="Reserve")
             savings = _savings(seed_user)
-            period = seed_periods[3]
-            due = period.start_date + timedelta(days=4)
-            created = create_transfer_from_spec(TransferSpec(
-                user_id=seed_user["user"].id,
-                from_account_id=reserve.id,
-                to_account_id=savings.id,
-                pay_period_id=period.id,
-                scenario_id=seed_user["scenario"].id,
-                amount_ownership=AmountOwnership.own(Decimal("437.19")),
-                status_id=ref_cache.status_id(StatusEnum.CANCELLED),
-                category_id=seed_user["categories"]["Groceries"].id,
-                notes="Quarterly top-up",
-                due_date=due,
-            ))
-            update_transfer(created.id, seed_user["user"].id, is_override=True)
+            stated = {
+                "projected": {
+                    "amount": Decimal("1062.48"),
+                    "status_id": ref_cache.status_id(StatusEnum.PROJECTED),
+                    "pay_period_id": seed_periods[5].id,
+                    "due_date": seed_periods[5].start_date + timedelta(days=9),
+                    "category_id": seed_user["categories"]["Rent"].id,
+                    "is_override": False,
+                    "notes": "Insurance reserve",
+                    "from_account_id": savings.id,
+                    "to_account_id": reserve.id,
+                },
+                "cancelled": {
+                    "amount": Decimal("437.19"),
+                    "status_id": ref_cache.status_id(StatusEnum.CANCELLED),
+                    "pay_period_id": seed_periods[3].id,
+                    "due_date": seed_periods[3].start_date + timedelta(days=4),
+                    "category_id": seed_user["categories"]["Groceries"].id,
+                    "is_override": True,
+                    "notes": "Quarterly top-up",
+                    "from_account_id": reserve.id,
+                    "to_account_id": savings.id,
+                },
+            }
+            ids = {
+                label: create_transfer_from_spec(TransferSpec(
+                    user_id=owner_id,
+                    from_account_id=value["from_account_id"],
+                    to_account_id=value["to_account_id"],
+                    pay_period_id=value["pay_period_id"],
+                    scenario_id=seed_user["scenario"].id,
+                    amount_ownership=AmountOwnership.own(value["amount"]),
+                    status_id=value["status_id"],
+                    category_id=value["category_id"],
+                    notes=value["notes"],
+                    due_date=value["due_date"],
+                )).id
+                for label, value in stated.items()
+            }
+            update_transfer(ids["cancelled"], owner_id, is_override=True)
             db.session.commit()
             db.session.expire_all()
-            row = db.session.get(Transfer, created.id)
-
-            held = {
-                "amount": row.amount,
-                "status_id": row.status_id,
-                "pay_period_id": row.pay_period_id,
-                "due_date": row.due_date,
-                "category_id": row.category_id,
-                "is_override": row.is_override,
-                "notes": row.notes,
+            table = Transfer.__table__
+            stored = {
+                label: db.session.execute(
+                    select(table).where(table.c.id == transfer_id),
+                ).mappings().one()
+                for label, transfer_id in ids.items()
             }
-            # Guards on the INPUT, not reads: the row holds every stated value,
-            # and no two of its ids coincide.
-            assert held == {
-                "amount": Decimal("437.19"),
-                "status_id": ref_cache.status_id(StatusEnum.CANCELLED),
-                "pay_period_id": period.id,
-                "due_date": due,
-                "category_id": seed_user["categories"]["Groceries"].id,
-                "is_override": True,
-                "notes": "Quarterly top-up",
-            }, "precondition: the doors stored every stated value"
-            assert len({
-                row.status_id, row.pay_period_id, row.category_id,
-                row.from_account_id, row.to_account_id,
-            }) == 5, "precondition: no two of the row's ids coincide"
+
+            # Guards on the INPUT, not reads.
+            named = tuple(stated["cancelled"])
+            assert {
+                label: {column: row[column] for column in named}
+                for label, row in stored.items()
+            } == stated, "precondition: the doors stored every stated value"
+            pairs = {
+                column: (stored["cancelled"][column], stored["projected"][column])
+                for column in table.columns.keys()
+            }
+            assert (
+                [column for column in named if pairs[column][0] == pairs[column][1]],
+                [
+                    (column, other) for column in named for other in pairs
+                    if other != column and pairs[other] == pairs[column]
+                ],
+            ) == ([], []), (
+                "precondition: a named column holds one value on both "
+                "transfers, or the same pair as another column, so a wrong "
+                "read of it could agree with the table"
+            )
+
+            rows = {
+                label: db.session.get(Transfer, transfer_id)
+                for label, transfer_id in ids.items()
+            }
             basis = basis_for(reserve, seed_user["scenario"])
 
-            def shown(leg):
-                return {
-                    "account_id": leg.account_id,
-                    "is_income": leg.is_income,
-                    "amount": leg_amounts_by_key([leg], basis)[leg.cell_key],
-                    "status_id": leg.status_id,
-                    "pay_period_id": leg.pay_period_id,
-                    "due_date": leg.due_date,
-                    "category_id": leg.category_id,
-                    "is_override": leg.is_override,
-                    "notes": leg.notes,
-                }
-
-            expense = {**held, "account_id": row.from_account_id, "is_income": False}
-            income = {**held, "account_id": row.to_account_id, "is_income": True}
             assert {
-                "expense by side": shown(transfer_side_leg(row, is_income=False)),
-                "income by side": shown(transfer_side_leg(row, is_income=True)),
-                "expense by account": shown(
-                    grid_transfer_leg(row, row.from_account_id),
-                ),
-                "income by account": shown(
-                    grid_transfer_leg(row, row.to_account_id),
-                ),
+                label: {
+                    "expense by side": _shown(
+                        transfer_side_leg(row, is_income=False), basis,
+                    ),
+                    "income by side": _shown(
+                        transfer_side_leg(row, is_income=True), basis,
+                    ),
+                    "expense by account": _shown(
+                        grid_transfer_leg(row, row.from_account_id), basis,
+                    ),
+                    "income by account": _shown(
+                        grid_transfer_leg(row, row.to_account_id), basis,
+                    ),
+                }
+                for label, row in rows.items()
             } == {
-                "expense by side": expense,
-                "income by side": income,
-                "expense by account": expense,
-                "income by account": income,
+                label: {
+                    "expense by side": _held(row, is_income=False),
+                    "income by side": _held(row, is_income=True),
+                    "expense by account": _held(row, is_income=False),
+                    "income by account": _held(row, is_income=True),
+                }
+                for label, row in stored.items()
             }
 
 
@@ -1574,11 +1716,11 @@ class TestALegsDisplayProjections:
 
         And neither side names a transaction definition, though its transfer
         has one: the transfer carries a template link here, so a side that
-        read the link would answer it.  That half was asked only of a
-        generated transfer's two sides in ``test_transfer_service.py``'s
-        ``test_with_template_id`` until plan step ``balance:X-bi-6-4d-3``
-        (ruling R-BAL290 part 1 moves it here; the step's checkpoint 2e-2b-1b
-        drops it there).
+        read the link would answer it.  ``test_transfer_service.py``'s
+        ``test_with_template_id`` also asks a generated transfer's two sides
+        for the link, and for the link only, until plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b drops it there (ruling
+        R-BAL290 part 1 moves the question here).
         """
         savings = Account(name="Savings")
         checking = Account(name="Checking")
