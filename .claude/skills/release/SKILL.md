@@ -120,10 +120,17 @@ Then, line by line:
 - A step reading `moves money: UNREADABLE` was written already ticked. Read its flag from the
   lane's commit or handoff and re-run with `--declare <arc>:<id>=money@<source>` or
   `--declare <arc>:<id>=none@<source>`, the source being the commit sha or handoff path you read.
+  Before the cutover only: after it, every step is a card whose flag is its label (R-BAL287).
 - For each step reading `moves money: yes` and each `ADDED` migration, find the rehearsal kit its
   lane wrote (the lane's handoff names the kit's directory), and append each directory found to
   `current.sh` as `KITS="<dir> <dir> ..."`. For each with no kit, re-run with
-  `--unrehearsed <arc>:<id>` or `--unrehearsed <revision>`; `plan` then refuses the release for it.
+  `--unrehearsed <arc>:<id>` (a card after the cutover: `--unrehearsed plan#N`) or
+  `--unrehearsed <revision>`; `plan` then refuses the release for it.
+- After the cutover (the cut holds no `steps.md`), `plan` reads the cards through quill's App, so
+  a failed tracker read exits 2. A card reading `UNDONE` is a `Reopens:` taking it out of
+  production, judged as a ship is (R-BAL288): a money mover's undo needs its kit too. A refusal
+  naming an old-form `<arc>:<id>` claim or a card the tracker does not hold (R-BAL287,
+  R-BAL289) is no judgment for this run to make: STOP and report it to Josh.
 
 Re-run with every flag at once until nothing more changes; the last run is `plan.txt`.
 

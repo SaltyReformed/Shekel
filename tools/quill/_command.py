@@ -25,7 +25,7 @@ class Refused(Exception):
     """A command that will not run as asked; its message says why."""
 
 
-def _with_closure(tracker: Tracker, cards: dict[int, Card]) -> dict[int, Card]:
+def with_closure(tracker: Tracker, cards: dict[int, Card]) -> dict[int, Card]:
     """``cards`` plus every card a decision over them reads (blockers, parents, children)."""
     while wanted := missing(cards):
         found = tracker.cards(wanted)

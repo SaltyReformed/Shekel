@@ -2,11 +2,13 @@
 and, when it is refused or carries two migrations, the newest earlier cut to offer.
 
 The rules are card ``plan#9``'s and the developer's (rulings ``balance:R-BAL279`` -
-``R-BAL281``):
+``R-BAL281``, ``R-BAL287`` and ``R-BAL288``):
 
-- **Refused** (exit 1): two steps that move money; a deploy-together group carried in
-  part (each missing leaf named); a carried step whose money flag cannot be read and is
-  not declared; a claim the pre-cutover reader cannot read; and each money mover
+- **Refused** (exit 1): two steps that move money, an undone one counting as one
+  (R-BAL288); a deploy-together group the release leaves production holding in part
+  (each leaf it lacks named; R-BAL288: wholly in production or wholly out); a carried
+  step whose money flag cannot be read and is not declared (declared only before the
+  cutover, R-BAL287); a claim the cut's reader cannot read; and each money mover
   (declared ones too) or added migration the skill names UNREHEARSED, because it found
   no rehearsal kit for it (R-BAL281's interim, as the developer confirmed it 2026-10-13:
   such a release is refused in R-BAL280's shape).  Whether a kit exists, and an
@@ -29,33 +31,32 @@ release to pull request #555 are all merges, one per pull request), so each cand
 ``dev`` after a whole pull request.  Cut at a feature branch's tip, the line is that
 branch's own commits, and an offered cut can hold a leaf's code without its claim.
 
-**Every candidate is judged with what the release's cut knows**
-(:class:`~tools.release._carried.Knowledge`): each step's flag read over the CUT's
-window (or declared), and the groups' leaves at the cut.  A candidate's own window is
-narrower and can miss a version that marks a step, or a leaf filed later, so judged on
-its own it could pass what the cut was refused for (the delta review of 2026-10-13
-built four such histories).  So a step the cut reads as a money mover is one at every
+**Every candidate is judged with what the release's cut knows**, read once by the one
+reader the cut's tree calls for: before the cutover
+(:class:`~tools.release._carried.Knowledge`), each step's flag read over the CUT's
+window (or declared) and the groups' leaves at the cut; after it
+(:class:`~tools.release._cards.Cards`), the cards the cut's window names, read from the
+tracker once.  Before the cutover, a candidate's own window is narrower and can miss a
+version that marks a step, or a leaf filed later, so judged on its own it could pass
+what the cut was refused for (the delta review of 2026-10-13 built four such
+histories).  So a step the cut reads as a money mover is one at every
 candidate, a name the skill gave as unrehearsed refuses every candidate carrying it, and
 a candidate that adds a migration the cut does not add is refused, since the skill
 judged no rehearsal of it.
 """
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from tools.ci.gitcmd import git
-from tools.release._carried import (
-    Carried,
-    Declaration,
-    Registry,
-    ReleaseError,
-    carried,
-    knowledge,
-    released,
-)
+from tools.quill.door import Tracker
+from tools.release import _cards
+from tools.release._carried import Declaration, Registry, carried, knowledge, released
 from tools.release._migrations import ADDED, Migration, migrations
+from tools.release._model import Carried, Group, ReleaseError, steps_blob
 
 CLEAN, REFUSED, NEEDS_APPROVAL = 0, 1, 3
 
@@ -103,6 +104,36 @@ class Plan:
     one_migration: Verdict | None
 
 
+@dataclass(frozen=True)
+class Inputs:
+    """What the skill gives a judgment: each money mover or added migration it found no
+    rehearsal kit for; each flag it declared, which only a cut before the cutover takes
+    (L8 deletes it with that reader, R-BAL287); and how to reach the tracker, which only a
+    cut after the cutover reads.  No connection is made unless one is given: the command
+    line gives quill's App (:data:`tools.release.release.TRACKER`), so nothing else, a
+    test above all, reaches the live tracker by default."""
+
+    unrehearsed: Collection[str] = ()
+    declared: Collection[Declaration] = ()
+    connect: Callable[[], Tracker] | None = None
+
+
+def _split(group: Group) -> str | None:
+    """Why a cut leaves production holding part of ``group``; None when, released, it
+    leaves production holding every leaf or none (R-BAL288)."""
+    held = group.carried + group.released
+    if not held or not group.undone + group.missing:
+        return None
+    if not group.undone:
+        return (f"it carries part of the deploy-together group {group.key} "
+                f"({', '.join(group.carried)}) without {', '.join(group.missing)}; the "
+                "group ships whole")
+    return (f"it takes {', '.join(group.undone)} of the deploy-together group {group.key} "
+            f"out of production and keeps {', '.join(held)}"
+            + (f", without {', '.join(group.missing)}" if group.missing else "")
+            + "; the group ships whole")
+
+
 def _refusals(found: Carried, changed: tuple[Migration, ...], unrehearsed: Collection[str],
               cut_adds: Collection[str]) -> list[str]:
     """Why a cut carrying ``found`` and changing the migrations ``changed`` is refused;
@@ -117,9 +148,7 @@ def _refusals(found: Carried, changed: tuple[Migration, ...], unrehearsed: Colle
     if len(movers) > 1:
         reasons.append(f"it carries {len(movers)} steps that move money ({', '.join(movers)}); "
                        "a release carries one at most")
-    reasons += [f"it carries part of the deploy-together group {group.key} "
-                f"({', '.join(group.carried)}) without {', '.join(group.missing)}; the "
-                "group ships whole" for group in found.groups if group.missing]
+    reasons += [why for why in map(_split, found.groups) if why]
     reasons += [f"{key} moves money and has no rehearsal kit" for key in movers
                 if key in unrehearsed]
     reasons += [f"migration {m.revision} ({m.path}) has no rehearsal kit"
@@ -151,28 +180,40 @@ def _approvals(found: Carried, changed: tuple[Migration, ...]) -> list[str]:
 
 class Judge:
     """Judges the release ``<base>..<cut>`` and the earlier cuts offered in its place, each
-    with what the release's cut knows (:class:`~tools.release._carried.Knowledge`), so an
-    offered cut carries nothing the cut was refused for that it reads differently."""
+    with what the release's cut knows (:class:`~tools.release._carried.Knowledge` before
+    the cutover, :class:`~tools.release._cards.Cards` after it), so an offered cut carries
+    nothing the cut was refused for that it reads differently."""
 
-    def __init__(self, root: Path, base: str, cut: str,
-                 inputs: tuple[Collection[str], Collection[Declaration]]) -> None:
-        """Resolve ``base`` and ``cut``, read what ``base`` released and what ``cut``
-        knows; ``inputs`` are the skill's unrehearsed names and declarations."""
-        unrehearsed, declared = inputs
+    def __init__(self, root: Path, base: str, cut: str, inputs: Inputs) -> None:
+        """Resolve ``base`` and ``cut`` and read what ``cut`` knows, by the one reader its
+        tree calls for (T-a a1): the registries' when it holds ``steps.md``, with what
+        ``base`` released and the skill's declarations; the tracker's cards when it holds
+        none, the cutover being behind it (the tracker is reached only then)."""
         self.root = root
         self.base = git(root, "rev-parse", "--verify", f"{base}^{{commit}}").strip()
         self.cut = git(root, "rev-parse", "--verify", f"{cut}^{{commit}}").strip()
-        self.unrehearsed = frozenset(unrehearsed)
-        self._released = released(root, self.base)
-        self._known = knowledge(Registry(root), self.base, self.cut,
-                                {declaration.key: declaration for declaration in declared})
+        self.unrehearsed = frozenset(inputs.unrehearsed)
+        self._carried: Callable[[str], Carried]
+        if steps_blob(root, self.cut) is None:
+            if inputs.connect is None:
+                raise ReleaseError(f"{self.cut[:12]} is after the cutover, whose cards are the "
+                                   "tracker's, and no way to reach the tracker was given")
+            self._carried = partial(_cards.carried, root, self.base,
+                                    known=_cards.read(root, self.base, self.cut,
+                                                      inputs.connect()))
+        else:
+            declared = {declaration.key: declaration for declaration in inputs.declared}
+            self._carried = partial(carried, root, self.base,
+                                    known=knowledge(Registry(root), self.base, self.cut,
+                                                    declared),
+                                    shipped=released(root, self.base))
         self._cut_adds = frozenset(m.revision for m in _added(migrations(root, self.base,
                                                                          self.cut)))
 
     def verdict(self, cut: str, subject: str) -> Verdict:
         """``cut`` (the release's, or an earlier one) judged; ``subject`` is its commit's
         subject, for display."""
-        found = carried(self.root, self.base, cut, self._known, self._released)
+        found = self._carried(cut)
         changed = migrations(self.root, self.base, cut)
         return Verdict(cut, subject, found, changed,
                        tuple(_refusals(found, changed, self.unrehearsed, self._cut_adds)),
@@ -195,23 +236,27 @@ def _unknown(verdict: Verdict, unrehearsed: Collection[str]) -> list[str]:
     return sorted(name for name in unrehearsed if name not in known)
 
 
-def plan(root: Path, base: str, cut: str, unrehearsed: Collection[str] = (),
-         declared: Collection[Declaration] = ()) -> Plan:
+def plan(root: Path, base: str, cut: str, inputs: Inputs = Inputs()) -> Plan:
     """The release ``<base>..<cut>`` judged, with the cuts to offer.
 
     Raises:
         ReleaseError: when the range holds no commit; when an unrehearsed name is neither
             a money mover the cut carries nor a migration it adds; when a declaration
-            names no carried step whose flag no version holds; or when the cut is after
-            the cutover or a version of steps.md in the window does not parse.
+            names no carried step whose flag no version holds (every declaration, on a
+            cut after the cutover); or when a version of steps.md in the window does not
+            parse.
+        tools.quill.door.TrackerError, tools.quill.door.GitHubError,
+            requests.RequestException, OSError: when the tracker cannot be read, for a cut
+            after the cutover.
         tools.ci.gitcmd.GitError: when git cannot read the range.
     """
+    declared = inputs.declared
     if len({declaration.key for declaration in declared}) != len(declared):
         raise ReleaseError("a step is declared twice: each carried step takes one "
                            "declaration, so no value can be dropped unseen")
     if not git(root, "rev-list", "--max-count=1", f"{base}..{cut}").strip():
         raise ReleaseError(f"{base}..{cut} holds no commit: nothing to release")
-    judge = Judge(root, base, cut, (unrehearsed, declared))
+    judge = Judge(root, base, cut, inputs)
     line = judge.line(judge.cut)
     verdict = judge.verdict(*line[0])
     unknown = _unknown(verdict, judge.unrehearsed)

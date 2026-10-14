@@ -22,7 +22,7 @@ from tools.quill._command import (
     _outside_parent,
     _read,
     _shipped,
-    _with_closure,
+    with_closure,
 )
 from tools.quill._state import (
     filing_ended,
@@ -92,7 +92,7 @@ class _Filing:
 
     ``draft``: the card.  ``parent``: its owner, or the step it splits, read by
     number; None for a top-level card.  ``cards``: every card a decision over
-    that parent reads (:func:`_with_closure`: the cards linked under it among
+    that parent reads (:func:`with_closure`: the cards linked under it among
     them, each read by number), and ``shipped``: the cards git says shipped --
     both empty with no parent.  ``asked``: for a ruling converted from a
     question, that question as read.
@@ -122,7 +122,7 @@ def _filing_for(args, tracker: Tracker, root: Path) -> _Filing:
     if parent is not None:
         _, found, _ = _shipped(root)
         shipped = frozenset(found)
-        cards = _with_closure(tracker, {parent.number: parent})
+        cards = with_closure(tracker, {parent.number: parent})
         owner = Owner(parent.kind, is_live(parent.number, cards, shipped))
     asked = None
     if args.kind in ("step", "question"):
