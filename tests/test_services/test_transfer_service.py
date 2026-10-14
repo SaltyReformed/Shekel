@@ -483,8 +483,6 @@ class TestCreateTransferValidation:
         with app.app_context():
             td = transfer_data
             # Create a period for the second user.
-            from app.services import pay_period_service
-            from datetime import date
             other_periods = record_paydays_across_a_hole(
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 1, 2),
@@ -792,8 +790,6 @@ class TestUpdateTransfer:
             td = transfer_data
             xfer = _create_basic_transfer(td)
 
-            from app.services import pay_period_service
-            from datetime import date
             other_periods = record_paydays_across_a_hole(
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 6, 1),
@@ -2136,8 +2132,6 @@ class TestDueDateAndSettleDayShadows:
 
     def test_shadow_due_date_propagation(self, app, db, transfer_data):
         """create_transfer with due_date sets the parent and both shadows."""
-        from datetime import date
-
         with app.app_context():
             td = transfer_data
             xfer = transfer_service.create_transfer(
@@ -2199,8 +2193,6 @@ class TestDueDateAndSettleDayShadows:
 
     def test_shadow_due_date_update(self, app, db, transfer_data):
         """update_transfer with due_date sets the parent and both shadows."""
-        from datetime import date
-
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
