@@ -147,6 +147,13 @@ class TestTheWorkflowIsWiredToTheAnswer:
         assert "pylint tools/ci/ --fail-under=10 --fail-on=E,F" in run
         assert "pytest tools/ci -c /dev/null -q" in run
 
+    def test_the_release_tool_is_linted_and_tested_in_both_scopes(self):
+        """``tools/release`` reads steps.md at a commit until the cutover, so a registry-only
+        change set must not skip its floor or its tests (step X-cx's L9a)."""
+        run = _steps("plan-gate")["Plan gate (every scope)"]["run"]
+        assert "pylint tools/release/ --fail-under=10 --fail-on=E,F" in run
+        assert "pytest tools/release -c /dev/null -q" in run
+
     def test_no_code_running_job_escapes_the_guard(self):
         """A job that runs pytest, pylint, a script or ``test.sh`` is guarded or named here."""
         for name, job in _jobs().items():

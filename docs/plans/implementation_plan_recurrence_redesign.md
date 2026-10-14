@@ -283,12 +283,12 @@ it), and drop `due_date`; every live row keeps its date. ONE accessor -- the sta
 `R5-a`'s formula over the occurrence -- is read by every price, screen and loan reader and the
 `TransferLeg` proxy; the owner doors write `due_on`, and a one-off keeps `occurs_on` through
 `one_off.state_due_date`. `DerivedRowFields.due_date`, `DerivedTransferFields.due_date`, the
-maintain rewrite and `compute_due_date` itself are DELETED, and `build_transient_rule` is
-re-examined: its last callers are tests needing a rule only because `compute_due_date` takes one
-(carried from `R-F6`'s entry, archived 2026-08-19).
-**AN OPEN QUESTION for the developer at this re-derivation:** **R-R94**'s picked words say both
-`ck_*_template_row_needs_due_date` CHECKs (set up by **balance:R-BAL6**) are deleted, while the
-lane's precise form keeps them as
+maintain rewrite, `compute_due_date` itself and both doors' `_reject_generated_due_date_edit`
+(**balance:R-BAL263**) are DELETED, and `build_transient_rule` is re-examined: its last callers are
+tests needing a rule only because `compute_due_date` takes one (carried from `R-F6`'s entry,
+archived 2026-08-19). **AN OPEN QUESTION for the developer at this re-derivation:** **R-R94**'s
+picked words say both `ck_*_template_row_needs_due_date` CHECKs (set up by **balance:R-BAL6**) are
+deleted, while the lane's precise form keeps them as
 `template_id IS NULL OR occurs_on IS NOT NULL OR due_on IS NOT NULL` until `R19-b` binds `occurs_on`
 NOT NULL; the two differ and he has not been told, so he rules which before either is built.
 `idx_transactions_due_date` is re-examined. The downgrade can restore `due_date` from the accessor,
@@ -814,3 +814,25 @@ one -- no loan step is pulled forward for the card.
       arm's final-installment residual (re-owned here 2026-09-11). Shrunk by R7d-g-3: the loan page
       reads the seam's plan, not the composer's committed slice, and `project_forward` has no
       `monthly_override`.
+- [ ] **R29 -- the recurrence form's field vocabulary has one declaration.** Outcome O7
+      (**balance:R-BAL263**; the 2026-10-11 fence census). A refusal names the schema field rather
+      than a string key, and the authoring spec's fields are read from the table's columns, so a
+      refusal no form shows and a column the door never writes cannot exist; the two form-error
+      censuses and the authoring coverage test are deleted. It waits for `R7e`, whose uniform
+      `replace` may cover the spec-read half. `$0.00`.
+- [ ] **R30 -- one fact is stated in one field.** Outcome O7 (**balance:R-BAL263**; the 2026-10-11
+      fence census). The value objects that state one fact in two fields become tagged variants
+      (Locked, or Open with its bound), so a contradictory pair cannot be constructed, and their
+      constructor checks that the halves disagree are deleted. It waits for `R5-b` and `R8-c`, which
+      edit the same modules. `$0.00`.
+- [ ] **R31 -- the developer answers whether a loan rule's start date stays stored.** A QUESTION
+      step of outcome O7 (**balance:R-BAL263**; the 2026-10-11 fence census), filed by
+      **balance:R-BAL267**; owns **REC-562**. A loan payment rule's start date is stored and
+      re-copied from the loan at the loan doors (`loan_recurrence_sync.sync_loan_payment_start`),
+      because **R-R29** kept `starts_on` written as the cadence anchor, a ruling that predates
+      **balance:R-IY**'s 'a derivable column is deleted, not maintained'. From scratch the start is
+      read from the loan's own terms when needed, as `loan_payment_window` already reads the end,
+      and the re-copy goes. The lane asks, with worked numbers, whether the owner states the date
+      (keep) or it copies the loan's terms (derive). It ships at the commit that files the answer in
+      `rulings.md` with, on a yes, the deletion as its own step, or, on a no, the re-copy as kept in
+      O7's record (`../audits/fence_census_2026-10-11.md`).

@@ -53,13 +53,13 @@ alembic==1.20.0
 bcrypt==5.0.0
 pyotp==2.10.0
 qrcode[pil]==8.2
-cryptography==50.0.1
+cryptography==50.0.2
 
 # Input validation
 marshmallow==4.3.1
 
 # Environment
-python-dotenv==1.2.3
+python-dotenv==1.2.4
 
 # Logging
 python-json-logger==4.2.0
