@@ -30,6 +30,18 @@ everything with a person or a judgment in it is here.
   moving to the worktree, and each value a step learns is appended to it (a later line wins). Python
   is the venv's by path, `.venv/bin/python`: a bare `python` lacks the app's packages and crashes
   (trap gg).
+- **A block refuses a run value it reads but no step wrote.** Its first line names `W` as
+  `cd "${W:?}"`, and its second line names every other value it reads, as `: "${R:?}" "${PR:?}"`;
+  a block you compose from this skill's prose opens with the same two lines. An empty or missing
+  value stops the whole call at that line, naming it (`PR: parameter not set`, exit 1), so nothing
+  after it runs. Name values on that line only: inside `$(...)` or a redirection's file name the
+  same expansion fails just that one command, and the call runs on. A value is missing when the
+  step that appends it has not run, or ran in the same call AFTER the source line (10-14: a `PR=`
+  append and step 6's watch block run as one call read an empty `PR`, and `gh pr checks ""` fell
+  back to the current branch's pull request): run the appending step in a call of its own first.
+  It is never an earlier run's value: every run ends by moving `current.sh` into its record (step
+  13), and the start block refuses while one exists (a run that never got there). Two blocks are
+  exempt from the first-line rule: the start block and step 13's move, which source no `W`.
 - Read every exit status UNPIPED: `cmd > "$R/file.txt" 2>&1; echo "exit=$?"`. A pipe reports its
   last command's status, not yours.
 - The long waits (the pull request's checks and main's CI, whose test shards took 8-12 minutes on
@@ -38,29 +50,31 @@ everything with a person or a judgment in it is here.
 - Production figures (counts, balances, day counts, dates measured in production) stay out of
   commit messages and rulings (R-BAL132); the record lives outside the repository.
 - Each question to Josh is an AskUserQuestion that stands alone (the text before it may never
-  render), plain words before ids, and goes out with a PushNotification naming it (R-BAL282).
+  render), plain words before ids, and its alert goes first (CLAUDE.md, Multi-session operation).
 - A run that ends early after a kit ran (a STOP, or "Not now" at step 5) still runs step 12's
   census (without `--release-branch` when no branch was pushed) and writes step 13's record. A
   kit that FAILED is left out of that census (no `--kit` for it), so its clones and worktrees list
   as `other` and stay for its lane to read; the record names them. A run that stopped after
   opening its pull request names the PR and the release branch in the record and leaves both
-  open.
+  open. Every run, however it ends, ends with step 13's last act: `current.sh` moves into `$R`.
 
 Start the run from the session's worktree (a resumed run, step 1's case, copies its record's
 `current.sh` back instead):
 
 ```bash
+[ ! -e ~/projects/shekel-handoffs/releases/current.sh ] \
+    || { echo "an unfinished run: $(head -n 1 ~/projects/shekel-handoffs/releases/current.sh)"; exit 1; }
 [ "$(git symbolic-ref --short HEAD)" = dev ] && [ "$(git rev-parse --show-toplevel)" != ~/projects/Shekel ] \
     || { echo "not a dev worktree"; exit 1; }
 R=~/projects/shekel-handoffs/releases/$(date +%F)    # -2, -3 for a later release the same day
-mkdir -p "$R" && printf 'R="%s"\nW="%s"\n' "$R" "$(git rev-parse --show-toplevel)" \
+mkdir "$R" && printf 'R="%s"\nW="%s"\n' "$R" "$(git rev-parse --show-toplevel)" \
     > ~/projects/shekel-handoffs/releases/current.sh
 ```
 
 ## 1. Check production, then pin the cut
 
 ```bash
-. ~/projects/shekel-handoffs/releases/current.sh && cd "$W" || exit 1
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
 git fetch --prune origin || exit 1
 C=$(sed -n 's/^CONTAINER_NAME="\${SHEKEL_CONTAINER_NAME:-\(.*\)}"$/\1/p' ~/projects/Shekel/deploy/shekel-deploy.sh)
 P=$(docker inspect "$C" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
@@ -78,6 +92,9 @@ release, since `plan` would not see what `main` holds beyond production:
   `CONTAINER_NAME` line changed): STOP and tell Josh.
 - A release whose record ends at "Not now" at step 10: resume it at step 9 by copying its record's
   `current.sh` back.
+- The start block refused with `an unfinished run`: a run that never reached step 13 (a lost
+  session, say) still holds `current.sh`. Read its record folder and Josh's last answer, then
+  resume it at its next step, or end it by step 13. Never delete the file.
 - A release whose deploy rolled back or refused (step 11): STOP and tell Josh; it is never re-run
   from here.
 
@@ -88,7 +105,8 @@ request.
 ## 2. Judge the cut
 
 ```bash
-. ~/projects/shekel-handoffs/releases/current.sh && cd "$W" || exit 1
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${R:?}" "${BASE:?}" "${CUT:?}"
 .venv/bin/python -m tools.release.release plan --base "$BASE" --cut "$CUT" \
     > "$R/plan.txt" 2>&1; echo "exit=$?"
 ```
@@ -128,7 +146,8 @@ The answer moves the cut, so this comes before any rehearsal.
 `docker exec ... pg_dump`):
 
 ```bash
-. ~/projects/shekel-handoffs/releases/current.sh && cd "$W" || exit 1
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${R:?}"
 shekel-deploy --dump-only > "$R/dump.txt" 2> "$R/dump_err.txt"; rc=$?; echo "exit=$rc"
 [ "$rc" = 0 ] && echo "DUMP=\"$(tail -n 1 "$R/dump.txt")\"" >> ~/projects/shekel-handoffs/releases/current.sh
 ```
@@ -142,7 +161,8 @@ i).
 **Each kit**, by the command its README names, on `$DUMP`, its exit read unpiped and appended:
 
 ```bash
-. ~/projects/shekel-handoffs/releases/current.sh && cd "$W" || exit 1
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${R:?}" "${DUMP:?}"
 echo "kit <its directory>: <the kit's command> $DUMP" >> "$R/rehearsal.txt"
 <the kit's command> "$DUMP" >> "$R/rehearsal.txt" 2>&1; echo "KIT_EXIT=$?" >> "$R/rehearsal.txt"
 ```
@@ -192,12 +212,14 @@ Options: "Approve this release" or "Not now". "Not now" merges nothing (step 0's
 ## 6. Merge into main
 
 ```bash
-. ~/projects/shekel-handoffs/releases/current.sh && cd "$W" || exit 1
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${CUT:?}"
 echo "B=\"release/$(date +%F)\"" >> ~/projects/shekel-handoffs/releases/current.sh  # -2, -3 later
 git merge-base --is-ancestor origin/main "$CUT"; echo "exit=$?"
 ```
 
-Exit 0: push the cut as the release branch, bracing each variable (trap r):
+Each command below is a block of its own, opening with the source line and
+`: "${CUT:?}" "${B:?}"`. Exit 0: push the cut as the release branch, bracing each variable (trap r):
 `git push origin "${CUT}:refs/heads/${B}"`. Exit 1, `main` holds a merge `dev` lacks (trap j):
 `git switch -c "$B" "$CUT" && git merge --no-ff origin/main -m "Merge origin/main into $B"`, then
 `git diff --quiet "$CUT" HEAD; echo "exit=$?"` must print `exit=0` (the tree is the cut's; any
@@ -205,7 +227,8 @@ other exit is a STOP), then `git push origin "$B" && git switch dev`. Branch nam
 across worktrees: chain with `&&` (trap hh).
 
 ```bash
-. ~/projects/shekel-handoffs/releases/current.sh && cd "$W" || exit 1
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${B:?}"
 gh pr create --base main --head "$B" --title "release: $(date +%F)" --body "<plan.txt's carried steps and migrations>"
 echo "PR=\"<the number it printed>\"" >> ~/projects/shekel-handoffs/releases/current.sh
 ```
@@ -213,7 +236,8 @@ echo "PR=\"<the number it printed>\"" >> ~/projects/shekel-handoffs/releases/cur
 Then, in the background (a long wait):
 
 ```bash
-. ~/projects/shekel-handoffs/releases/current.sh && cd "$W" || exit 1
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${R:?}" "${PR:?}"
 gh pr checks "$PR" --watch > /dev/null 2>&1; gh pr checks "$PR" > "$R/checks_$PR.txt" 2>&1; echo "exit=$?"
 ```
 
@@ -223,8 +247,10 @@ the first attempt. A failure near the diff is a STOP. Then merge with a MERGE CO
 or rebase (commits are cited by sha), and append the merge sha as `M`:
 
 ```bash
-. ~/projects/shekel-handoffs/releases/current.sh && cd "$W" || exit 1
-gh pr merge "$PR" --merge --match-head-commit "$(git rev-parse "origin/$B")"; rc=$?; echo "exit=$rc"
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${PR:?}" "${B:?}"
+H=$(git rev-parse --verify "origin/${B}^{commit}") || exit 1
+gh pr merge "$PR" --merge --match-head-commit "$H"; rc=$?; echo "exit=$rc"
 [ "$rc" = 0 ] && echo "M=\"$(gh pr view "$PR" --json mergeCommit -q .mergeCommit.oid)\"" \
     >> ~/projects/shekel-handoffs/releases/current.sh
 ```
@@ -234,9 +260,20 @@ A non-zero merge is a STOP: nothing is appended, and nothing reached `main`.
 ## 7. The image build
 
 ```bash
-. ~/projects/shekel-handoffs/releases/current.sh && cd "$W" || exit 1
-gh run list --workflow docker-publish.yml --branch main --limit 3 --json databaseId,headSha
-gh run watch <the run whose headSha is $M> --exit-status > "$R/build_<run>.txt" 2>&1; echo "exit=$?"
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${M:?}"
+gh run list --workflow docker-publish.yml --branch main --limit 3 --json databaseId,headSha \
+    --jq ".[] | select(.headSha == \"$M\") | .databaseId"; echo "exit=$?"
+```
+
+It prints the build's run id, the run whose `headSha` is `$M`. Nothing printed means the run is not
+listed yet (on 10-14 it was listed about 20 seconds after the merge): run the block again until it
+prints one, never taking another run. Then, `<run>` being that id:
+
+```bash
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${R:?}"
+gh run watch <run> --exit-status > "$R/build_<run>.txt" 2>&1; echo "exit=$?"
 gh run view <run> --log > "$R/build_log_<run>.txt" 2>&1; echo "exit=$?"
 echo "DIGEST=\"$(sed -n 's/.*Image digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' "$R/build_log_<run>.txt")\"" \
     >> ~/projects/shekel-handoffs/releases/current.sh
@@ -251,13 +288,17 @@ production; say so in the report.
 ## 8. Bring dev and production's checkout to main
 
 ```bash
-. ~/projects/shekel-handoffs/releases/current.sh && cd "$W" || exit 1
-git fetch origin && git merge --ff-only origin/dev && git merge origin/main && git push origin dev
-git -C ~/projects/Shekel status --porcelain --branch
-git -C ~/projects/Shekel fetch origin && git -C ~/projects/Shekel merge --ff-only origin/main
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+git fetch origin && git merge --ff-only origin/dev && git merge origin/main && git push origin dev; echo "exit=$?"
+[ -z "$(git -C ~/projects/Shekel status --porcelain)" ] \
+    && [ "$(git -C ~/projects/Shekel symbolic-ref --short HEAD)" = main ] \
+    || { echo "~/projects/Shekel is not clean on main"; exit 1; }
+git -C ~/projects/Shekel fetch origin && git -C ~/projects/Shekel merge --ff-only origin/main; echo "exit=$?"
 ```
 
-`dev` fast-forwards to `main` unless a pull request merged into it after the cut; then the merge is
+Each `exit=` line judges its line. The push into `dev` may print `Bypassed rule violations for
+refs/heads/dev` and `Cannot update this protected ref` and still exit 0 (10-14): that is the admin
+bypass of `dev`'s protection, not a failure. `dev` fast-forwards to `main` unless a pull request merged into it after the cut; then the merge is
 a merge commit, as CLAUDE.md's Git Workflow resyncs `dev`. `~/projects/Shekel` must be clean on
 `main` before its fast-forward. A `deploy/` change is live from this moment: `shekel-deploy` runs
 that checkout's copy (trap u).
@@ -265,7 +306,8 @@ that checkout's copy (trap u).
 ## 9. The dry run
 
 ```bash
-. ~/projects/shekel-handoffs/releases/current.sh && cd "$W" || exit 1
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${R:?}"
 shekel-deploy --dry-run > "$R/dryrun.txt" 2>&1; echo "exit=$?"
 ```
 
@@ -289,7 +331,8 @@ record says so, and the next `/release` stops at step 1 until this one resumes h
 ## 11. Deploy, verify, read main's CI
 
 ```bash
-. ~/projects/shekel-handoffs/releases/current.sh && cd "$W" || exit 1
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${R:?}" "${C:?}"
 date -Iseconds > "$R/deploy_since.txt"
 shekel-deploy > "$R/deploy.txt" 2>&1; echo "exit=$?"
 ~/projects/Shekel/deploy/verify_prod_deploy.sh "$(cat "$R/deploy_since.txt")" > "$R/verify.txt" 2>&1; echo "exit=$?"
@@ -311,10 +354,14 @@ docker inspect "$C" --format '{{.Config.Image}} {{.State.Health.Status}} {{.Rest
 ## 12. Clean up
 
 ```bash
-. ~/projects/shekel-handoffs/releases/current.sh && cd "$W" || exit 1
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${R:?}" "${B:?}"
 .venv/bin/python -m tools.release.release census --release-branch "$B" --kit <each of $KITS> \
     > "$R/cleanup.txt" 2>&1; echo "exit=$?"
 ```
+
+With no release branch pushed (step 0's early end), leave out `--release-branch` and `"${B:?}"`.
+With kits, the guard names `"${KITS:?}"` too, and each directory gets a `--kit` of its own.
 
 - **Exit 0 or 4:** remove each thing marked `MADE`, and nothing else: a worktree with `git worktree
   remove <path>`; a local branch with `git branch -D <name>`; the release branch on origin with
@@ -335,7 +382,17 @@ docker inspect "$C" --format '{{.Config.Image}} {{.State.Health.Status}} {{.Rest
 `$R/README.md`: the base (production's commit), the cut, the release branch, the PR, the merge
 sha, the image digest old -> new, the dry run's stamp, the dump's path, and each verdict with its
 exit (plan, each kit, the checks, the build, the dry run, the deploy, verify, main's CI, the
-census); a run that ended early says where and why, and names what it left open. Beside it: a
-copy of `current.sh`, `plan.txt`, `dump.txt`, `dump_err.txt` and `rehearsal.txt` (when rehearsed),
-`checks_<PR>.txt`, `build_<run>.txt`, `build_log_<run>.txt`, `dryrun.txt`, `deploy_since.txt`,
-`deploy.txt`, `verify.txt`, `main_ci_<run>.txt`, `cleanup.txt`.
+census); a run that ended early says where and why, and names what it left open. Beside it:
+`plan.txt`, `dump.txt`, `dump_err.txt` and `rehearsal.txt` (when rehearsed), `checks_<PR>.txt`,
+`build_<run>.txt`, `build_log_<run>.txt`, `dryrun.txt`, `deploy_since.txt`, `deploy.txt`,
+`verify.txt`, `main_ci_<run>.txt`, `cleanup.txt`.
+
+The last act of every run, however it ended, moves `current.sh` into the record, so no later block
+reads this run's values: each sources a file that is gone and stops (`exit 1`). A resumed run
+(step 1) copies it back.
+
+```bash
+. ~/projects/shekel-handoffs/releases/current.sh || exit 1
+: "${R:?}"
+mv ~/projects/shekel-handoffs/releases/current.sh "$R/current.sh"; echo "exit=$?"
+```
