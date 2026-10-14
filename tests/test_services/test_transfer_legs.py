@@ -236,10 +236,13 @@ class TestLegOf:
         Every column the leg's code (``transfer_legs._leg``) reads that has a
         relationship on :class:`~app.models.transfer.Transfer` is here: the
         status, the category, the scenario, the period and the two
-        endpoints, read on both sides.  (The owner's column is read too, and
-        has no relationship on a transfer.)  The transfer is never added to
-        a session: it holds the columns and none of the rows they name, so a
-        leg that read a relationship's id would raise here.
+        endpoints, read on both sides.  The owner's column is here as well,
+        though it has no relationship on a transfer: a leg's money is booked
+        in its owner's ledger, and :class:`TestBothSidesShowTheTransfer`'s
+        two transfers share one owner, so they cannot grade that read.  The
+        transfer is never added to a session: it holds the columns and none
+        of the rows they name, so a leg that read a relationship's id would
+        raise here.
         :class:`TestBothSidesShowTheTransfer` cannot tell the two reads
         apart, because it reads a committed, re-read row, where a column and
         its relationship always agree.  The edit door writes a period or a
@@ -256,12 +259,12 @@ class TestLegOf:
             transfer = Transfer(
                 id=7, from_account_id=31, to_account_id=37,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                category_id=5, scenario_id=13, pay_period_id=11,
+                category_id=5, scenario_id=13, pay_period_id=11, user_id=17,
             )
             ids = (
                 transfer.id, transfer.from_account_id, transfer.to_account_id,
                 transfer.status_id, transfer.category_id, transfer.scenario_id,
-                transfer.pay_period_id,
+                transfer.pay_period_id, transfer.user_id,
             )
             assert len(set(ids)) == len(ids), (
                 f"precondition: two of the transfer's ids coincide: {ids}"
@@ -269,11 +272,11 @@ class TestLegOf:
 
             assert [
                 (leg.account_id, leg.status_id, leg.category_id,
-                 leg.scenario_id, leg.pay_period_id)
+                 leg.scenario_id, leg.pay_period_id, leg.user_id)
                 for leg in (leg_of(transfer, 31), leg_of(transfer, 37))
             ] == [
-                (31, transfer.status_id, 5, 13, 11),
-                (37, transfer.status_id, 5, 13, 11),
+                (31, transfer.status_id, 5, 13, 11, 17),
+                (37, transfer.status_id, 5, 13, 11, 17),
             ]
 
 
@@ -299,7 +302,8 @@ class TestBothSidesShowTheTransfer:
         status, the dashboard's bills its period and category).  Four more
         of the row's columns are read through a side and are not in it: the
         id (the side's cell key), the owner, the scenario and the delete
-        flag.
+        flag; :class:`TestLegOf`'s in-memory case grades the owner's and the
+        scenario's reads.
 
         Two transfers are written through the doors with a different value
         in every one of those columns: Reserve to Savings at $437.19,
@@ -318,8 +322,8 @@ class TestBothSidesShowTheTransfer:
         column's pair, the columns taken from the model's table
         (``Transfer.__table__``) rather than listed here.
         So a side that reads a named column off any other column of its row,
-        or answers one value whatever the row, disagrees with the table on at
-        least one of the two transfers.  That is the guard's whole reach: it
+        or answers a constant, disagrees with the table on at least one of
+        the two transfers.  That is the guard's whole reach: it
         says nothing of a side reading another table, a computed value, or a
         relationship in place of its column (a committed row's two always
         agree; :class:`TestLegOf` pins the columns in memory), and the four
