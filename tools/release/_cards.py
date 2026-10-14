@@ -1,5 +1,5 @@
 """Which cards a release carries after the cutover, whether each moves money, and which
-deploy-together group each is a leaf of: the release tool's card reader (step X-cx's
+deploy-together groups each is under: the release tool's card reader (step X-cx's
 L9a-1b, T-a a1; rulings ``balance:R-BAL287`` - ``R-BAL289``).
 
 **What a release carries is git's answer**: every card a ``Ships: plan#N`` or a
@@ -13,16 +13,40 @@ ruling ``R-BAL181``); one the window names that is not is UNDONE.
 **A card moves money when it carries the moves-money label**, as the tracker holds it
 when the release is judged.  A label is no sentence a tick rewrites, so a card keeps its
 flag after it ships (the registries' ``recurrence:R20`` shape, which the pre-cutover
-reader reads around, has no counterpart here).
+reader reads around, has no counterpart here).  A step split into leaves since its
+trailer landed is judged as the work it was: it moves money when it or a leaf below it is
+so labelled, the code the trailer names having been its own (a split writes the step
+only its sub-issue link, so its labels stay, ``tools/quill/test_quill_file.py``; the
+coordinator, under R-BAL207, 2026-10-14).
 
-**A group is a card labelled deploy-together** among the cards a decision over the named
-ones reads (quill's closure, :func:`tools.quill.door.with_closure`, which holds every step
-above each of them); its leaves are quill's own (``leaves_below``: work in any state, a
-leaf split again counting as its own leaves), less each one dropped that production
-holds neither before nor after the release judged: a leaf dropped never ships, but one
-undone by the release and then abandoned was in production, and its siblings must not
-stay there without it.  A release naming one of its leaves must leave production holding
-every leaf or none (R-BAL288): a release taking a whole group out is whole too.
+**A group is a card labelled deploy-together**, and its members are its leaves AS THEY
+ARE NOW, by quill's one rule and by nothing else (``leaves_below``: work in any state, a
+leaf split again counting as its own leaves), less each one that will never ship --
+dropped, or under a step that was (quill's ``dropped`` and ``dropped_above``; R-BAL185: a
+person's close of a split step is a drop its leaves inherit, never copied onto them) --
+unless production holds it before or after the release judged: one undone by the
+release and then abandoned was in production, and its siblings must not stay there
+without it.  A release TOUCHES each group a card it names is under: the card itself or a
+step above it, by quill's one walk up the steps a card splits
+(:func:`tools.quill.door.above`; quill's closure, :func:`tools.quill.door.with_closure`,
+holds every one).  That card is a leaf, a step re-planned into leaves since its trailer
+landed (quill splits no step ``dev`` says shipped, so it was undone first, or split
+before its ship merged), or a finding: a finding under a group touches it and is never a
+member; a fix the group cannot ship without is a leaf (the coordinator, under R-BAL207,
+2026-10-14).  A card the release names that will never ship touches nothing, by the same
+rule.  A release touching a group must leave production holding every member or none
+(R-BAL288): a release taking a whole group out is whole too.
+
+**No refusal of a group is permanent**: every member is a leaf that can still ship, or
+one production holds on a side of the release.  A member a refusal names as missing
+stops refusing once it ships, or once it is dropped (production holding it on neither
+side, it is no member).  One it names as undone -- production held it at the base, and
+the release takes it out -- stops refusing once the same release takes the rest of the
+group out too, or ships it back; and after a release that takes it out, production holds
+it on neither side, so it is no member of the group in any later release.  No card
+stands in for the leaves it was re-planned into: the delta review of 2026-10-14 built
+three histories in which such a stand-in, a member never back in production, refused
+every later release.
 
 **What it cannot read refuses the release**, and nothing is declared after the cutover
 (R-BAL287, R-BAL289):
@@ -40,15 +64,9 @@ every leaf or none (R-BAL288): a release taking a whole group out is whole too.
   reader and before the cutover), so what reaches here is a card deleted after its
   trailer landed (until that check exists, a mistyped number too);
 - a trailer naming a card of a kind no commit ships (a ruling, a question, a card of no
-  type; quill's ``SHIPPABLE``): read as work it would pass as moving no money.  A step
-  split into leaves since its trailer landed is judged as the work it was: it moves money
-  when it or a leaf below it is so labelled, and it stands in each deploy-together group
-  its leaves are in, the code the trailer names having been its own (quill splits no
-  step ``dev`` says shipped, so it was undone first, or split before its ship merged; a
-  split writes the step only its sub-issue link, so its labels stay,
-  ``tools/quill/test_quill_file.py``; the coordinator, under
-  R-BAL207, 2026-10-14).  L9d's landing check refuses a trailer naming a card that is no
-  work when it lands, so a mistyped one never reaches here;
+  type; quill's ``SHIPPABLE``): read as work it would pass as moving no money.  L9d's
+  landing check refuses a trailer naming a card that is no work when it lands, so
+  a mistyped one never reaches here;
 - a value of neither form, which CI's trailer check refuses before it lands.
 
 **The tracker is read once, at the release's cut** (:func:`read`), and every earlier cut
@@ -58,13 +76,21 @@ not hold.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
 from tools.ci import trailers
-from tools.quill.door import SHIPPABLE, Tracker, dropped, leaves_below, with_closure
+from tools.quill.door import (
+    SHIPPABLE,
+    Tracker,
+    above,
+    dropped,
+    dropped_above,
+    leaves_below,
+    with_closure,
+)
 from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, MOVES_MONEY_LABEL
 from tools.release._model import Carried, Group, Step, first_parent_line, steps_blob
 
@@ -72,11 +98,14 @@ from tools.release._model import Carried, Group, Step, first_parent_line, steps_
 @dataclass(frozen=True)
 class Cards:
     """What the release's cut knows of the cards its window names, read from the tracker
-    once: whether each one that is work moves money; each deploy-together group one of
-    them is a leaf of, with every leaf in any state; which of those leaves were dropped;
-    and what each named card that is no work is."""
+    once: whether each one that is work moves money; each one's line up (itself, the step
+    it splits, that step's, ...); each deploy-together group the read holds that has a
+    leaf, with its leaves as they are now, every leaf in any state; which of those leaves
+    and named cards were dropped, or are under a step that was; and what each named card
+    that is no work is."""
 
     money: Mapping[int, bool]
+    lines: Mapping[int, tuple[int, ...]]
     groups: Mapping[int, tuple[int, ...]]
     dropped: frozenset[int]
     no_work: Mapping[int, str]
@@ -103,11 +132,13 @@ def _standing(root: Path, cut: str) -> frozenset[int]:
 
 def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
     """What ``cut`` knows of the release ``<base>..<cut>``: every card its trailers name,
-    read by number, and every card a decision over them reads, read once.
+    read by number, and every card a decision over them reads, read once.  ``base`` and
+    ``cut`` are resolved shas: the window and the shipped sets are cached by them.
 
     Raises:
         tools.quill.door.TrackerError: when a card one of them links to is not there.
         tools.quill.door.GitHubError: when GitHub answers a read with an error.
+        requests.RequestException, OSError: when the tracker cannot be reached.
         tools.ci.gitcmd.GitError: when git cannot read the range.
     """
     named = {trailer.card for trailer in _window(root, base, cut).trailers}
@@ -115,26 +146,21 @@ def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
     closure = with_closure(tracker, dict(held))
     shipped = set(_standing(root, cut))
     work = {number for number, card in held.items() if card.kind in SHIPPABLE}
-    # A named card split since its trailer landed: its code was its own, so it stands
-    # in each group its leaves are in, and it moves money if it or a leaf below it is
-    # labelled so (a label a person moved onto a leaf still counts: fails closed).
-    split = {number: {leaf.number for leaf in leaves_below(held[number], closure, shipped)}
+    lines = {number: (number, *(step.number for step in above(held[number], closure)))
              for number in work}
-    split = {number: below for number, below in split.items() if below}
-    groups = {}
-    for number, card in closure.items():
-        if DEPLOY_TOGETHER_LABEL in card.labels:
-            leaves = tuple(leaf.number for leaf in leaves_below(card, closure, shipped))
-            leaves += tuple(step for step, below in sorted(split.items())
-                            if below.intersection(leaves))
-            if named.intersection(leaves):
-                groups[number] = leaves
-    gone = frozenset(leaf for leaves in groups.values() for leaf in leaves
-                     if dropped(leaf, closure, shipped))
-    return Cards({number: any(MOVES_MONEY_LABEL in closure[each].labels
-                              for each in (number, *split.get(number, ())))
+    groups = {number: tuple(leaf.number for leaf in leaves_below(card, closure, shipped))
+              for number, card in closure.items() if DEPLOY_TOGETHER_LABEL in card.labels}
+    groups = {group: leaves for group, leaves in groups.items() if leaves}
+    gone = frozenset(number for number in {*work, *(leaf for leaves in groups.values()
+                                                    for leaf in leaves)}
+                     if dropped(number, closure, shipped)
+                     or dropped_above(closure[number], closure, shipped) is not None)
+    # A named card split since its trailer landed moves money if it or a leaf below it is
+    # labelled so (a label a person moved onto a leaf still counts: fails closed).
+    return Cards({number: any(MOVES_MONEY_LABEL in card.labels for card in
+                              (held[number], *leaves_below(held[number], closure, shipped)))
                   for number in work},
-                 groups, gone,
+                 lines, groups, gone,
                  {number: _what(card.kind) for number, card in held.items()
                   if number not in work})
 
@@ -173,20 +199,43 @@ def _unreadable(root: Path, base: str, cut: str, found: trailers.History,
     return lines + list(found.malformed)
 
 
-def _group(group: int, leaves: tuple[int, ...], named: set[int],
-           standing: frozenset[int]) -> Group:
-    """One group a release touches, each leaf sorted by whether the window names it and
-    whether production holds it after the release."""
-    def which(in_window: bool, in_production: bool) -> tuple[str, ...]:
-        return tuple(f"plan#{leaf}" for leaf in leaves
-                     if (leaf in named) == in_window and (leaf in standing) == in_production)
-    return Group(f"plan#{group}", carried=which(True, True), released=which(False, True),
-                 missing=which(False, False), undone=which(True, False))
+def _counts(number: int, known: Cards, held: frozenset[int]) -> bool:
+    """Whether a card -- a leaf, or a card the window names -- counts in a release whose
+    production ``held`` on one side or the other: one that will never ship (``known``'s
+    dropped) counts only while production holds it, undone by the release and abandoned
+    since (judged per cut, so an offered cut that still ships it is held to its
+    siblings)."""
+    return number not in known.dropped or number in held
+
+
+def _group(group: int, known: Cards, touching: Mapping[int, tuple[int, ...]],
+           before: frozenset[int], after: frozenset[int]) -> Group:
+    """One group a release touches: each of its leaves that counts (:func:`_counts`),
+    sorted by whether the window names it and whether production holds it ``before`` the
+    release (at its base) and ``after`` it (at the judged cut) -- carried in by it,
+    released before it, taken out by it (undone), or held on neither side (missing) --
+    and each card the window names under the group that is no leaf of it, with the steps
+    between (the group's own card names itself).  ``touching`` maps each card the window
+    names to the groups it touches."""
+    leaves = tuple(leaf for leaf in known.groups[group] if _counts(leaf, known, before | after))
+
+    def keys(test: Callable[[int], bool]) -> tuple[str, ...]:
+        return tuple(f"plan#{leaf}" for leaf in leaves if test(leaf))
+    return Group(f"plan#{group}",
+                 carried=keys(lambda leaf: leaf in touching and leaf in after),
+                 released=keys(lambda leaf: leaf not in touching and leaf in after),
+                 missing=keys(lambda leaf: leaf not in before and leaf not in after),
+                 undone=keys(lambda leaf: leaf in before and leaf not in after),
+                 through=tuple(" under ".join(f"plan#{step}"
+                                              for step in walk[:walk.index(group) or 1])
+                               for number, walk in sorted(known.lines.items())
+                               if group in touching.get(number, ()) and number not in leaves))
 
 
 def carried(root: Path, base: str, cut: str, known: Cards) -> Carried:
     """What ``<base>..<cut>`` carries, judged with ``known``, the release's cut's
-    :class:`Cards` (``cut`` is that cut or an earlier one on its first-parent line).
+    :class:`Cards` (``cut`` is that cut or an earlier one on its first-parent line; both
+    are resolved shas, as :func:`read` takes them).
 
     Raises:
         tools.ci.gitcmd.GitError: when git cannot read the range.
@@ -197,20 +246,19 @@ def carried(root: Path, base: str, cut: str, known: Cards) -> Carried:
         shas = named.setdefault(trailer.card, [])
         if trailer.sha not in shas:
             shas.append(trailer.sha)
-    standing = _standing(root, cut)
-    held = standing | _standing(root, base)
-    # A dropped leaf is part of its group only while production holds it on one side of
-    # this release: undone by it, and abandoned since (judged per cut, so an offered cut
-    # that still ships it is held to its siblings).
-    live = {group: tuple(leaf for leaf in leaves if leaf not in known.dropped or leaf in held)
-            for group, leaves in known.groups.items()}
+    standing, before = _standing(root, cut), _standing(root, base)
+    held = standing | before
+    # The groups each named card touches, nearest first: none for one that does not count.
+    touching = {number: tuple(step for step in known.lines.get(number, ())
+                              if step in known.groups) if _counts(number, known, held) else ()
+                for number in named}
     steps = tuple(
         Step(f"plan#{number}", tuple(shas), known.money[number],
-             tuple(f"plan#{group}" for group, leaves in live.items() if number in leaves),
-             undone=number not in standing)
+             tuple(f"plan#{group}" for group in touching[number]),
+             undone=number in before and number not in standing)
         for number, shas in sorted(named.items()) if number in known.money)
-    groups = tuple(_group(group, leaves, set(named), standing)
-                   for group, leaves in live.items() if named.keys() & set(leaves))
+    groups = tuple(_group(group, known, touching, before, standing)
+                   for group in sorted({group for each in touching.values() for group in each}))
     unread = {number: (shas, known.no_work.get(number)) for number, shas in named.items()
               if number not in known.money}
     return Carried(steps, groups, tuple(_unreadable(root, base, cut, found, unread)))

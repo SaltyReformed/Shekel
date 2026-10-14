@@ -8,7 +8,7 @@ from dataclasses import replace
 import pytest
 
 from tools.quill.door import FakeTracker, GitHubError
-from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, MOVES_MONEY_LABEL
+from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, FILING, MOVES_MONEY_LABEL
 from tools.release import release
 from tools.release._carried import Declaration
 from tools.release._model import STEPS_PATH, ReleaseError
@@ -248,6 +248,78 @@ def test_an_offered_cut_is_judged_by_what_production_holds_at_it(repo):
     assert judged.passing.cut == first
 
 
+def test_an_offered_cut_is_held_to_a_leaf_a_person_closed_after_it_shipped(repo):
+    """#52 ships at the cut and a person closes it as completed: git says it shipped, so it
+    is no dropped leaf (R-BAL181), and the offered cut shipping #51 without it is refused
+    as any cut shipping part of the group is; the cut before it is offered."""
+    base, cutover = _after_cutover(repo)
+    first = _merge(repo, cutover, "Ships: plan#40")
+    half = _merge(repo, first, "Ships: plan#51")
+    cut = _merge(repo, half, "Ships: plan#52", "Ships: plan#41")
+    tracker = FakeTracker()
+    tracker.add(40, labels=MONEY)
+    tracker.add(41, labels=MONEY)
+    _group(tracker)
+    tracker.cards_by_number[52] = replace(tracker.cards_by_number[52], is_open=False,
+                                          state_reason="COMPLETED", touched_by_hand=True)
+    judged = _judge(repo, base, cut, tracker)
+    assert judged.verdict.status == REFUSED
+    assert judged.passing.cut == first
+
+
+def test_a_still_marked_leaf_shipped_at_the_cut_is_a_leaf(repo):
+    """#53, closed by a person while its filing mark stayed, ships alone: quill reads it as
+    a leaf only because git says it shipped AT THE CUT, so production holding it without
+    #51 is refused."""
+    base, cutover = _after_cutover(repo)
+    cut = _merge(repo, cutover, "Ships: plan#53")
+    tracker = FakeTracker()
+    _group(tracker, leaves=(51, 53))
+    tracker.cards_by_number[53] = replace(tracker.cards_by_number[53],
+                                          labels=("balance", FILING), is_open=False,
+                                          state_reason="COMPLETED", touched_by_hand=True)
+    assert _judge(repo, base, cut, tracker).verdict.refusals == (
+        "it carries part of the deploy-together group plan#50 (plan#53) without plan#51; "
+        "the group ships whole",)
+
+
+def test_a_leaf_of_nested_groups_is_held_to_each(repo):
+    """Group #40 holds #41 and group #45 (#46, #47): shipping #46 and #47 leaves #45 whole
+    and #40 without #41, so every group above a leaf judges it."""
+    base, cutover = _after_cutover(repo)
+    cut = _merge(repo, cutover, "Ships: plan#46", "Ships: plan#47")
+    tracker = FakeTracker()
+    _group(tracker, container=40, leaves=(41,))
+    tracker.add(45, labels=("balance", DEPLOY_TOGETHER_LABEL))
+    tracker.add_child(40, tracker.cards_by_number[45])
+    _replan(tracker, 45, (46, 47))
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert verdict.carried.steps[0].groups == ("plan#45", "plan#40")
+    assert [(group.key, group.missing) for group in verdict.carried.groups] == [
+        ("plan#40", ("plan#41",)), ("plan#45", ())]
+    assert verdict.refusals == (
+        "it carries part of the deploy-together group plan#40 (plan#46, plan#47) without "
+        "plan#41; the group ships whole",)
+
+
+def test_a_leaf_production_never_held_is_missing_and_never_undone(repo):
+    """The review's E4: #51 and #52 in production; a stray Reopens names #53, a leaf that
+    never shipped.  The group stays partial, and the refusal says so without claiming the
+    release takes #53 out of production."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#51", "Ships: plan#52")
+    cut = _merge(repo, base, "Reopens: plan#53")
+    tracker = FakeTracker()
+    _group(tracker, leaves=(51, 52, 53))
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert [(step.key, step.undone) for step in verdict.carried.steps] == [("plan#53", False)]
+    (group,) = verdict.carried.groups
+    assert (group.missing, group.undone) == (("plan#53",), ())
+    assert verdict.refusals == (
+        "it leaves production holding plan#51, plan#52 of the deploy-together group plan#50 "
+        "without plan#53; the group ships whole",)
+
+
 def test_a_stray_reopens_of_a_leaf_dropped_long_ago_blocks_nothing(repo):
     """The delta review's case: #53 was dropped and never shipped; a mistyped Reopens
     names it beside a follow-up fix to #51.  Production never held #53, so the group is
@@ -391,21 +463,168 @@ def test_a_step_reverted_and_split_since_is_judged_by_its_own_label(repo):
     assert verdict.status == CLEAN
 
 
+def _replan(tracker, step, leaves):
+    """``step`` split into ``leaves``, each a new step linked under it."""
+    for leaf in leaves:
+        tracker.add(leaf)
+        tracker.add_child(step, tracker.cards_by_number[leaf])
+
+
 def test_a_group_leaf_reverted_and_split_since_is_held_to_its_group(repo):
-    """The second delta review's HIGH: #51 undone, then re-planned as #511 and #512; the
-    split #51 stands in group #50 for its own code, so production keeping #52 without it
-    is refused."""
+    """The second delta review's HIGH (the third's P1): #51 undone, then re-planned as #511
+    and #512, neither shipped.  #51 is under group #50, so the undo touches it, and the
+    group's leaves as they are now are #52, #511 and #512: production keeping #52 without
+    the other two is refused."""
     _, cutover = _after_cutover(repo)
     base = _merge(repo, cutover, "Ships: plan#51", "Ships: plan#52")
     cut = _merge(repo, base, "Reopens: plan#51")
     tracker = FakeTracker()
     _group(tracker)
-    for leaf in (511, 512):
-        tracker.add(leaf)
-        tracker.add_child(51, tracker.cards_by_number[leaf])
+    _replan(tracker, 51, (511, 512))
     verdict = _judge(repo, base, cut, tracker).verdict
     assert verdict.carried.steps[0].groups == ("plan#50",)
     assert verdict.status == REFUSED
+    assert verdict.refusals == (
+        "it leaves production holding plan#52 of the deploy-together group plan#50 without "
+        "plan#511, plan#512 (it names plan#51, under the group but no leaf of it); the group "
+        "ships whole",)
+
+
+def test_a_group_leaf_reverted_and_split_since_is_whole_once_its_new_leaves_ship(repo):
+    """The third delta review's P5, k1's own workflow: #51 undone and re-planned as #511
+    and #512, both shipped in the same window.  Production holds every leaf the group has
+    now, so the release is clean; a stand-in judging #51 as a member refused every cut."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#51", "Ships: plan#52")
+    undo = _merge(repo, base, "Reopens: plan#51")
+    cut = _merge(repo, undo, "Ships: plan#511", "Ships: plan#512")
+    tracker = FakeTracker()
+    _group(tracker)
+    _replan(tracker, 51, (511, 512))
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert verdict.status == CLEAN
+    (group,) = verdict.carried.groups
+    assert (group.carried, group.released, group.missing, group.undone, group.through) == (
+        ("plan#511", "plan#512"), ("plan#52",), (), (), ("plan#51",))
+
+
+def test_a_group_card_reverted_and_split_since_is_judged_by_its_new_leaves(repo):
+    """The third delta review's P6: #70, the deploy-together card itself, released,
+    reverted, then split into #701 and #702, both shipped.  #70 touches its own group,
+    which is whole: it is no member of itself."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#70")
+    undo = _merge(repo, base, "Reopens: plan#70")
+    cut = _merge(repo, undo, "Ships: plan#701", "Ships: plan#702")
+    tracker = FakeTracker()
+    tracker.add(70, labels=("balance", DEPLOY_TOGETHER_LABEL))
+    _replan(tracker, 70, (701, 702))
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert verdict.status == CLEAN
+    (group,) = verdict.carried.groups
+    assert (group.key, group.carried, group.through) == (
+        "plan#70", ("plan#701", "plan#702"), ("plan#70",))
+
+
+def test_a_card_split_since_into_a_group_below_it_touches_no_group_itself(repo):
+    """The third delta review's P7: #80 released, reverted, then split into #81, labelled
+    deploy-together, whose leaves #811 and #812 shipped.  #81 is BELOW #80, so #80 is under
+    no group; the group #81 is whole."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#80")
+    undo = _merge(repo, base, "Reopens: plan#80")
+    cut = _merge(repo, undo, "Ships: plan#811", "Ships: plan#812")
+    tracker = FakeTracker()
+    tracker.add(80)
+    tracker.add(81, labels=("balance", DEPLOY_TOGETHER_LABEL))
+    tracker.add_child(80, tracker.cards_by_number[81])
+    _replan(tracker, 81, (811, 812))
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert verdict.status == CLEAN
+    assert {step.key: step.groups for step in verdict.carried.steps} == {
+        "plan#80": (), "plan#811": ("plan#81",), "plan#812": ("plan#81",)}
+
+
+def test_leaves_under_a_split_step_a_person_closed_are_no_members(repo):
+    """A person closed #52, split into #521 and #522, on the web: a drop its leaves inherit
+    and never carry (R-BAL185), so quill never offers either.  A follow-up fix to #51 is
+    judged without them; counting them refused every release touching the group until a
+    person closed both by hand."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#51")
+    cut = _merge(repo, base, "Ships: plan#51")
+    tracker = FakeTracker()
+    _group(tracker)
+    _replan(tracker, 52, (521, 522))
+    tracker.cards_by_number[52] = replace(tracker.cards_by_number[52], is_open=False,
+                                          state_reason="NOT_PLANNED", touched_by_hand=True)
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert verdict.status == CLEAN
+    assert verdict.carried.groups[0].carried == ("plan#51",)
+    assert verdict.carried.groups[0].missing == ()
+
+
+def test_a_finding_under_a_group_touches_it_and_is_held_to_its_leaves(repo):
+    """Group #50 released whole as #51; #52 filed under it since.  #55, a finding filed
+    under #51, ships: it touches the group (never a member: a fix the group cannot ship
+    without is a leaf), and production would keep #51 without #52."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#51")
+    cut = _merge(repo, base, "Ships: plan#55")
+    tracker = FakeTracker()
+    _group(tracker)
+    tracker.add(55, kind="finding")
+    tracker.add_child(51, tracker.cards_by_number[55])
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert verdict.carried.steps[0].groups == ("plan#50",)
+    assert verdict.refusals == (
+        "it leaves production holding plan#51 of the deploy-together group plan#50 without "
+        "plan#52 (it names plan#55 under plan#51, under the group but no leaf of it); the "
+        "group ships whole",)
+
+
+def test_a_stray_reopens_of_a_finding_dropped_under_a_group_touches_nothing(repo):
+    """Group #50 released whole as #51, #52 filed under it since; a mistyped Reopens names
+    #56, a finding under #51 dropped and never shipped.  Production never held #56, so the
+    release changes nothing of the group's and is not held to it."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#51")
+    cut = _merge(repo, base, "Reopens: plan#56")
+    tracker = FakeTracker()
+    _group(tracker)
+    tracker.add(56, kind="finding")
+    tracker.add_child(51, tracker.cards_by_number[56])
+    tracker.close(56, "not_planned")
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert verdict.status == CLEAN
+    assert (verdict.carried.steps[0].groups, verdict.carried.groups) == ((), ())
+
+
+def test_a_deploy_together_step_with_no_leaf_is_no_group(repo):
+    """A step labelled deploy-together before it is split has no leaf to hold together:
+    shipping it touches no group."""
+    base, cutover = _after_cutover(repo)
+    cut = _merge(repo, cutover, "Ships: plan#70")
+    tracker = FakeTracker()
+    tracker.add(70, labels=("balance", DEPLOY_TOGETHER_LABEL))
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert (verdict.carried.steps[0].groups, verdict.carried.groups) == ((), ())
+
+
+def test_a_finding_shipped_into_a_group_production_holds_none_of_is_clean(repo):
+    """#55, a finding under #51, ships before any leaf of group #50: production holds the
+    group wholly out, and a finding is no member of it."""
+    base, cutover = _after_cutover(repo)
+    cut = _merge(repo, cutover, "Ships: plan#55")
+    tracker = FakeTracker()
+    _group(tracker)
+    tracker.add(55, kind="finding")
+    tracker.add_child(51, tracker.cards_by_number[55])
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert verdict.status == CLEAN
+    (group,) = verdict.carried.groups
+    assert (group.carried, group.missing, group.through) == (
+        (), ("plan#51", "plan#52"), ("plan#55 under plan#51",))
 
 
 def test_a_split_card_whose_leaf_carries_the_money_label_moves_money(repo):
@@ -485,6 +704,20 @@ def test_plan_prints_an_undone_card(repo, capsys):
     out = capsys.readouterr().out.splitlines()
     assert out[3].startswith("  plan#40  moves money: no  UNDONE: a Reopens: leaves it out of "
                              "production  (claimed at ")
+
+
+def test_plan_prints_each_card_named_under_a_group_that_is_no_leaf_of_it(repo, capsys):
+    """The group's line says why a release touching it through no leaf lists it."""
+    base, cutover = _after_cutover(repo)
+    cut = _merge(repo, cutover, "Ships: plan#55")
+    tracker = FakeTracker()
+    _group(tracker)
+    tracker.add(55, kind="finding")
+    tracker.add_child(51, tracker.cards_by_number[55])
+    assert release.main(["plan", "--base", base, "--cut", cut], root=repo.root,
+                        connect=lambda: tracker) == CLEAN
+    assert ("group plan#50: carried none; released none; missing plan#51, plan#52; named "
+            "under it plan#55 under plan#51") in capsys.readouterr().out.splitlines()
 
 
 def test_plan_given_no_connection_exits_2_on_a_cut_after_the_cutover(repo, capsys):

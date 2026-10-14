@@ -130,6 +130,12 @@ def _split(group: Group) -> str | None:
     held = group.carried + group.released
     if not held or not group.undone + group.missing:
         return None
+    if not group.undone and not group.carried:
+        return (f"it leaves production holding {', '.join(held)} of the deploy-together group "
+                f"{group.key} without {', '.join(group.missing)}"
+                + (f" (it names {', '.join(group.through)}, under the group but no leaf of it)"
+                   if group.through else "")
+                + "; the group ships whole")
     if not group.undone:
         return (f"it carries part of the deploy-together group {group.key} "
                 f"({', '.join(group.carried)}) without {', '.join(group.missing)}; the "
@@ -246,8 +252,9 @@ def plan(root: Path, base: str, cut: str, inputs: Inputs = Inputs()) -> Plan:
         ReleaseError: when the range holds no commit; when an unrehearsed name is neither
             a money mover the cut carries nor a migration it adds; when a declaration
             names no carried step whose flag no version holds (every declaration, on a
-            cut after the cutover); or when a version of steps.md in the window does not
-            parse.
+            cut after the cutover); when the cut is after the cutover and ``inputs``
+            gives no way to reach the tracker; or when a version of steps.md in the
+            window does not parse.
         tools.quill.door.TrackerError, tools.quill.door.GitHubError,
             requests.RequestException, OSError: when the tracker cannot be read, for a cut
             after the cutover.

@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from tools.ci.scratch import run
+from tools.release import release
 from tools.release._carried import STEPS_PATH, Declaration, ReleaseError
 from tools.release._plan import CLEAN, NEEDS_APPROVAL, REFUSED, Inputs, Judge, plan
 from tools.release.conftest import migration, steps
@@ -245,6 +246,17 @@ def test_a_group_carried_in_part_is_refused_naming_the_missing_leaf(repo):
         f"{GROUP}-3; the group ships whole",)
     assert {s.key: s.groups for s in verdict.carried.steps} == {
         f"{GROUP}-2": (GROUP,), "balance:X-zz-1": ()}
+
+
+def test_the_report_prints_a_group_before_the_cutover_as_it_did(repo, capsys):
+    """The cards named under a group that are no leaf of it are the card reader's alone:
+    before the cutover a group's line is what it was."""
+    base, rows = _group_base(repo)
+    cut = _ship(repo, base, _tick(rows, f"{GROUP}-2", "balance:X-zz-1"),
+                f"{GROUP}-2", "balance:X-zz-1")
+    assert release.main(["plan", "--base", base, "--cut", cut], root=repo.root) == REFUSED
+    assert (f"group {GROUP}: carried {GROUP}-2; released {GROUP}-1; missing {GROUP}-3"
+            in capsys.readouterr().out.splitlines())
 
 
 def test_a_group_carried_whole_with_its_released_leaf_is_clean(repo):

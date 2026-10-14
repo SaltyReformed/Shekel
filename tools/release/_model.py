@@ -48,10 +48,12 @@ def first_parent_line(root: Path, base: str, cut: str) -> list[tuple[str, str]]:
 class Step:
     """One piece of work a release carries: its key, the commits in the range that name it
     (newest first), whether it moves money (None when no version holds it open and it is
-    not declared), the deploy-together groups it is a leaf of, the source of its
+    not declared), the deploy-together groups it is a leaf of (after the cutover, each it
+    is under, nearest first: a card re-planned since its trailer landed, or a finding, is
+    under a group without being a leaf of it), the source of its
     declaration when its flag was declared (None when it was read), and whether the
-    release leaves it out of production (a ``Reopens:`` undid it, ruling
-    ``balance:R-BAL288``)."""
+    release takes it out of production: held there at the base and not at the cut (a
+    ``Reopens:`` undid it, ruling ``balance:R-BAL288``)."""
 
     key: str
     claims: tuple[str, ...]
@@ -63,15 +65,18 @@ class Step:
 
 @dataclass(frozen=True)
 class Group:
-    """A deploy-together container one of whose leaves a release carries, and each of its
-    leaves: carried into production by this release, released before it, missing from
-    both, or taken out of production by it (undone)."""
+    """A deploy-together container a release touches, and each of its leaves: carried into
+    production by this release, released before it, held by production on neither side
+    (missing), or taken out of production by it (undone); and, after the cutover, each
+    card the release names under it that is no leaf of it, with the steps between
+    (``through``)."""
 
     key: str
     carried: tuple[str, ...]
     released: tuple[str, ...]
     missing: tuple[str, ...]
     undone: tuple[str, ...] = ()
+    through: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

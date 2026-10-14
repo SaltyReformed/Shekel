@@ -131,7 +131,9 @@ def _verdict_lines(verdict: Verdict) -> list[str]:
         lines.append(f"group {group.key}: carried {', '.join(group.carried) or 'none'}; "
                      f"released {', '.join(group.released) or 'none'}; missing "
                      f"{', '.join(group.missing) or 'none'}"
-                     + (f"; undone {', '.join(group.undone)}" if group.undone else ""))
+                     + (f"; undone {', '.join(group.undone)}" if group.undone else "")
+                     + (f"; named under it {', '.join(group.through)}" if group.through
+                        else ""))
     lines.append(f"migrations ({len(verdict.migrations)}):")
     lines += [f"  {m.change:<7} {m.revision or '(no revision id)'}  {m.path}"
               for m in verdict.migrations]
