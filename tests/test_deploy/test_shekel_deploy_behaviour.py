@@ -178,6 +178,11 @@ def _write_fake_docker(bin_dir: pathlib.Path) -> None:
                         printf 'fake pg_dump: %s\\n' "$FAKE_PGDUMP_ERR" >&2
                         exit "$FAKE_PGDUMP_RC"
                     }}
+                    # What the backup directory holds while the archive is
+                    # written: only a .part file, or a Ctrl-C here would
+                    # leave a truncated dump wearing a valid name.
+                    saw=$(ls -A "$FAKE_BACKUP_DIR")
+                    printf 'pg_dump-saw %s\\n' "${{saw//$'\\n'/ }}" >>"$FAKE_LOG"
                     # A truncated archive keeps the header (so a TOC-only
                     # read still succeeds) and loses the terminator.
                     if [ "$FAKE_DUMP_TRUNCATED" = "1" ]; then
@@ -305,6 +310,7 @@ class _Stack:
             image_inspect_rc: str = "0",
             db_inspect_rc: str = "0",
             script: pathlib.Path | None = None,
+            args: list[str] | None = None,
             ) -> subprocess.CompletedProcess:
         """Run the real deploy script against this stack.
 
@@ -344,6 +350,9 @@ class _Stack:
                 running-check (non-zero: docker cannot find it).
             script: The script to run, a symlink or copy; defaults to the
                 repository's ``deploy/shekel-deploy.sh``.
+            args: The script's arguments, given whole; when absent they are
+                ``--no-verify``, then ``--dry-run`` per *dry_run*, then
+                *target* unless *pull_latest*.
 
         Returns:
             The completed process, stdout and stderr captured separately.
@@ -358,7 +367,11 @@ class _Stack:
             else repo_digests,
             encoding="utf-8",
         )
-        env = dict(os.environ)
+        # No SHEKEL_* variable is inherited: the script reads every target
+        # from one, so an exported SHEKEL_ENV_FILE would aim these runs at
+        # that file's pin.
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith("SHEKEL_")}
         env.update({
             "PATH": f"{self.bin_dir}:{env['PATH']}",
             "SHEKEL_DIR": str(self.shekel_dir),
@@ -398,14 +411,15 @@ class _Stack:
             "FAKE_STOP_RC": stop_rc,
             "FAKE_STAMP_REREAD_RC": stamp_reread_rc,
         })
-        argv = ["bash", str(script or _DEPLOY_SCRIPT), "--no-verify"]
-        if dry_run:
-            argv.append("--dry-run")
-        if not pull_latest:
-            argv.append(target)
+        if args is None:
+            args = ["--no-verify"]
+            if dry_run:
+                args.append("--dry-run")
+            if not pull_latest:
+                args.append(target)
         return subprocess.run(
-            argv, env=env, capture_output=True, text=True, timeout=120,
-            check=False,
+            ["bash", str(script or _DEPLOY_SCRIPT), *args], env=env,
+            capture_output=True, text=True, timeout=120, check=False,
         )
 
 
@@ -512,6 +526,30 @@ _STEP_3_ROLLED_BACK = {
 _REFUSAL_LINE = "Cash posting resync refused (ruling R-BAL104): transfer(s) [7]"
 
 
+class TestTheHarnessInheritsNoTarget:
+    """The stack's runs read no ``SHEKEL_*`` variable from the test's environment.
+
+    The script takes every target from one (``SHEKEL_ENV_FILE``,
+    ``SHEKEL_DB_CONTAINER``, ...), and ``_Stack.run`` sets only some of them,
+    so one exported in the shell that runs the suite would aim a deploy at
+    whatever it names: a production pin, written by a test.
+    """
+
+    def test_an_exported_env_file_is_not_the_one_deployed(
+        self, stack, tmp_path, monkeypatch,
+    ):
+        """A deploy with ``SHEKEL_ENV_FILE`` exported pins the stack's file, not that one."""
+        decoy = tmp_path / "decoy.env"
+        decoy.write_text(f"SHEKEL_IMAGE_DIGEST={_OLD}\n", encoding="utf-8")
+        monkeypatch.setenv("SHEKEL_ENV_FILE", str(decoy))
+        result = stack.run(health="healthy", **_NO_MIGRATIONS)
+        calls = stack.invocations
+        assert result.returncode == 0, _said(result, calls)
+        assert stack.pin == _NEW, _said(result, calls)
+        assert decoy.read_text(encoding="utf-8") == f"SHEKEL_IMAGE_DIGEST={_OLD}\n", (
+            _said(result, calls))
+
+
 class TestTheScriptIsInTheRepository:
     """Finding F-14: the path that rolls production used to be untracked.
 
@@ -607,6 +645,172 @@ class TestNoDumpNoDeploy:
         assert not any(c.startswith("compose") for c in calls), (
             _said(result, calls)
         )
+
+
+#: The four docker calls a dump-only run makes, in order, and no other: the
+#: daemon check, the database's running-check, the dump and its readback.
+_DUMP_ONLY_CALLS = [
+    "info",
+    "inspect --format {{.State.Running}} probe-db",
+    "exec probe-db pg_dump -U shekel_user -d shekel -Fc",
+    "exec -i probe-db pg_restore -f /dev/null",
+]
+
+
+def _docker_calls(calls: list[str]) -> list[str]:
+    """Return *calls* without the stub's own ``*-saw*`` markers.
+
+    Args:
+        calls: The stub's invocation log, in order.
+
+    Returns:
+        The docker invocations alone.
+    """
+    return [call for call in calls if "-saw" not in call.split(" ", 1)[0]]
+
+
+def _dump_written_as_part(
+    calls: list[str], dump: pathlib.Path, result: subprocess.CompletedProcess,
+) -> None:
+    """Assert that while pg_dump wrote, the backup directory held only *dump*'s ``.part``.
+
+    Args:
+        calls: The stub's invocation log, in order.
+        dump: The completed dump the run left.
+        result: The completed run, rendered on failure.
+    """
+    assert f"pg_dump-saw {dump.name}.part" in calls, _said(result, calls)
+
+
+class TestDumpOnlyTakesTheDeploysDumpAndNothingElse:
+    """``--dump-only``: the same-day dump a release rehearsal restores (card X-cx L9).
+
+    The deploy's own dump function, with its ``.part`` file and its decode of
+    every data block, run alone: no pull, no cosign, no pre-flight (listing
+    an image's migrations starts a container), no pin written, and no
+    container started, stopped or recreated.  The dump's path is the last
+    line printed, for a caller to read.
+    """
+
+    def test_it_dumps_prints_the_path_and_makes_no_other_call(self, stack):
+        """One decoded dump named for the current pin, its path last, four calls.
+
+        .env is not rewritten, not even with the same bytes: its inode,
+        modification time and change time are unchanged.
+        """
+        env_before = stack.env_file.read_bytes()
+        stat_before = stack.env_file.stat()
+        result = stack.run(args=["--dump-only"])
+        calls = stack.invocations
+        assert result.returncode == 0, _said(result, calls)
+        assert _docker_calls(calls) == _DUMP_ONLY_CALLS, _said(result, calls)
+        assert len(stack.dumps) == 1, _said(result, calls)
+        assert re.fullmatch(
+            rf"shekel_prod_dump_{_OLD[7:19]}_\d{{8}}_\d{{6}}\.dump",
+            stack.dumps[0].name,
+        ), stack.dumps[0].name
+        _dump_written_as_part(calls, stack.dumps[0], result)
+        assert result.stdout.splitlines()[-1] == str(stack.dumps[0]), (
+            _said(result, calls)
+        )
+        assert list(stack.backup_dir.glob("*.part")) == [], _said(result, calls)
+        stat_after = stack.env_file.stat()
+        assert stack.env_file.read_bytes() == env_before, (
+            f"--dump-only rewrote .env.  {_said(result, calls)}"
+        )
+        assert (stat_after.st_ino, stat_after.st_mtime_ns,
+                stat_after.st_ctime_ns) == (
+            stat_before.st_ino, stat_before.st_mtime_ns, stat_before.st_ctime_ns,
+        ), f"--dump-only replaced or touched .env.  {_said(result, calls)}"
+
+    def test_a_read_only_env_file_still_dumps(self, stack):
+        """It writes no pin, so it needs .env readable, not writable."""
+        stack.env_file.chmod(0o400)
+        result = stack.run(args=["--dump-only"])
+        calls = stack.invocations
+        assert result.returncode == 0, _said(result, calls)
+        assert len(stack.dumps) == 1, _said(result, calls)
+
+    def test_a_deploy_still_refuses_a_read_only_env_file(self, stack):
+        """The control: a deploy writes the pin, so it refuses before any call."""
+        stack.env_file.chmod(0o400)
+        result = stack.run(health="healthy", **_NO_MIGRATIONS)
+        calls = stack.invocations
+        assert result.returncode == 1, _said(result, calls)
+        assert "not writable by" in result.stderr, _said(result, calls)
+        assert calls == [], _said(result, calls)
+        assert stack.pin == _OLD, _said(result, calls)
+
+    @pytest.mark.parametrize("failure, says", [
+        ({"pgdump_rc": "1"}, "pg_dump exited 1"),
+        ({"dump_truncated": "1"}, "does not decode end to end"),
+        ({"db_running": "false"}, "is not running; no dump"),
+        ({"db_inspect_rc": "1"}, "is not running; no dump"),
+    ], ids=["pg_dump-fails", "truncated", "database-down", "database-unknown"])
+    def test_a_dump_that_fails_leaves_no_file_and_prints_no_path(
+        self, stack, failure, says,
+    ):
+        """Each dump refusal these tests drive for a deploy refuses here too, with no path."""
+        result = stack.run(args=["--dump-only"], **failure)
+        calls = stack.invocations
+        assert result.returncode == 1, _said(result, calls)
+        assert says in _flat(result.stdout + result.stderr), _said(result, calls)
+        assert stack.dumps == [], _said(result, calls)
+        assert list(stack.backup_dir.glob("*.part")) == [], _said(result, calls)
+        # The path line a caller reads; the log may name the dump it tried.
+        assert not [
+            line for line in result.stdout.splitlines()
+            if line.startswith(str(stack.backup_dir))
+        ], _said(result, calls)
+
+    @pytest.mark.parametrize("env_text", [
+        "OTHER=1\n", "SHEKEL_IMAGE_DIGEST=\n", "SHEKEL_IMAGE_DIGEST=latest\n",
+        "SHEKEL_IMAGE_DIGEST=sha256:\n", "SHEKEL_IMAGE_DIGEST=sha256:zz\n",
+        f"SHEKEL_IMAGE_DIGEST={_OLD}0\n",
+    ], ids=["no-pin-line", "empty-pin", "not-a-digest", "bare-prefix", "not-hex",
+            "too-long"])
+    def test_a_pin_it_cannot_read_dumps_nothing(self, stack, env_text):
+        """The dump is named for the current pin, so no readable pin, no dump."""
+        stack.env_file.write_text(env_text, encoding="utf-8")
+        result = stack.run(args=["--dump-only"])
+        calls = stack.invocations
+        assert result.returncode == 1, _said(result, calls)
+        assert "SHEKEL_IMAGE_DIGEST" in result.stderr, _said(result, calls)
+        assert stack.dumps == [], _said(result, calls)
+        assert not [c for c in calls if c.startswith("exec")], (
+            _said(result, calls)
+        )
+
+    @pytest.mark.parametrize("args", [
+        ["--dump-only", "--dry-run"],
+        ["--dry-run", "--dump-only"],
+        ["--dump-only", "--no-verify"],
+        ["--dump-only", _NEW],
+        [_NEW, "--dump-only"],
+        ["--dump-only", "--dump-only"],
+    ])
+    def test_it_takes_no_other_argument(self, stack, args):
+        """Beside a digest, a dry run or a skipped check it would read as one: refused first."""
+        result = stack.run(args=args)
+        calls = stack.invocations
+        assert result.returncode == 2, _said(result, calls)
+        assert "--dump-only takes no other argument" in result.stderr, (
+            _said(result, calls)
+        )
+        assert calls == [], _said(result, calls)
+        assert stack.dumps == [], _said(result, calls)
+
+    def test_a_deploy_s_dump_is_still_named_for_its_target(self, stack):
+        """The shared function keeps the deploy's own name: predeploy, then the TARGET."""
+        result = stack.run(health="healthy", **_NO_MIGRATIONS)
+        calls = stack.invocations
+        assert result.returncode == 0, _said(result, calls)
+        assert len(stack.dumps) == 1, _said(result, calls)
+        assert re.fullmatch(
+            rf"shekel_prod_predeploy_{_NEW[7:19]}_\d{{8}}_\d{{6}}\.dump",
+            stack.dumps[0].name,
+        ), stack.dumps[0].name
+        _dump_written_as_part(calls, stack.dumps[0], result)
 
 
 class TestTheMigrationBearingReleaseIsNotRePinned:

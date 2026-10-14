@@ -83,7 +83,8 @@ Measured against the running maintainer host 2026-08-08. The nginx row differs b
 
 | Script | Purpose | Usage |
 |--------|---------|-------|
-| `shekel-deploy` | **Production deploy** (digest-pinned GHCR image + cosign) | `shekel-deploy [sha256:... ] [--dry-run] [--no-verify]` |
+| `shekel-deploy` | **Production deploy** (digest-pinned GHCR image + cosign) | `shekel-deploy [sha256:... ] [--dry-run] [--no-verify]`, or `shekel-deploy --dump-only` |
+| `deploy/verify_prod_deploy.sh` | Read-only check of production after a deploy | `deploy/verify_prod_deploy.sh [SINCE]` |
 | `scripts/deploy.sh` | Self-hosted **source-build** deploy (NOT the production path) | `./scripts/deploy.sh [--skip-pull] [--skip-backup]` |
 | `scripts/backup.sh` | Create database backup | `./scripts/backup.sh [--no-nas] [--local-dir DIR]` |
 | `scripts/restore.sh` | Restore database from backup | `./scripts/restore.sh <backup_file>` |
@@ -144,7 +145,14 @@ self-hosted installs that build from source.
 shekel-deploy                  # pull :latest, deploy if the digest is new
 shekel-deploy sha256:abc...    # deploy one specific digest
 shekel-deploy --dry-run        # resolve, verify, report the pre-flight, change nothing
+shekel-deploy --dump-only      # step 4's dump alone, its path printed last; nothing else
 ```
+
+`--dump-only` takes no other argument (`-h` aside). Beyond the daemon check, the database's
+running-check, the dump and its readback it makes no call: no pull, no pre-flight, no pin written,
+and no container started, stopped or recreated. It names its dump
+`shekel_prod_dump_<current pin>_<ts>.dump`, never `predeploy`, so a release rehearsal's same-day
+dump is never mistaken for a deploy's restore point.
 
 **What it does (in order):**
 
@@ -166,6 +174,10 @@ shekel-deploy --dry-run        # resolve, verify, report the pre-flight, change 
 6. Polls the container healthcheck for up to 4 minutes; ntfy ping either way.
 7. **On failure**, stops the new container, re-reads the stamp, and either re-pins the previous
    digest or refuses (2.3).
+
+After a deploy, `deploy/verify_prod_deploy.sh <the deploy's start time>`, run from this checkout,
+checks production read-only: health, the login gate's redirects, and the log since the deploy. Its
+header names its checks, and the one false failure it knows (BAL-628, after an in-place restart).
 
 **The canonical copy is `deploy/shekel-deploy.sh` in this repo**, and
 `/opt/docker/scripts/shekel-deploy.sh` is a symlink to it. That means
