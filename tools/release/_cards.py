@@ -18,9 +18,10 @@ reader reads around, has no counterpart here).
 **A group is a card labelled deploy-together** among the cards a decision over the named
 ones reads (quill's closure, :func:`tools.quill.door.with_closure`, which holds every step
 above each of them); its leaves are quill's own (``leaves_below``: work in any state, a
-leaf split again counting as its own leaves), less each one dropped, which never ships.
-A leaf the window names counts even once dropped (undone, then abandoned), since this
-release changed it.  A release naming one of its leaves must leave production holding
+leaf split again counting as its own leaves), less each one dropped that production
+holds neither before nor after the release judged: a leaf dropped never ships, but one
+undone by the release and then abandoned was in production, and its siblings must not
+stay there without it.  A release naming one of its leaves must leave production holding
 every leaf or none (R-BAL288): a release taking a whole group out is whole too.
 
 **What it cannot read refuses the release**, and nothing is declared after the cutover
@@ -38,9 +39,14 @@ every leaf or none (R-BAL288): a release taking a whole group out is whole too.
   lands, by a trailer check reading the tracker (X-cx's piece L9d, built after this
   reader and before the cutover), so what reaches here is a card deleted after its
   trailer landed (until that check exists, a mistyped number too);
-- a trailer naming a card that is no work (a step split into leaves, a ruling, a
-  question; quill's ``is_work``): no commit ships one, and read as work it would pass as
-  moving no money;
+- a trailer naming a card of a kind no commit ships (a ruling, a question, a card of no
+  type; quill's ``SHIPPABLE``): read as work it would pass as moving no money.  A step
+  split into leaves since its trailer landed is judged by its OWN moves-money label, the
+  code the trailer names having been its own while it was work (quill forbids splitting
+  a shipped step, so it was undone first; a split writes the step only its sub-issue
+  link, so its labels stay, ``tools/quill/test_quill_file.py``; the coordinator, under
+  R-BAL207, 2026-10-14).  L9d's landing check refuses a trailer naming a card that is no
+  work when it lands, so a mistyped one never reaches here;
 - a value of neither form, which CI's trailer check refuses before it lands.
 
 **The tracker is read once, at the release's cut** (:func:`read`), and every earlier cut
@@ -56,7 +62,7 @@ from functools import cache
 from pathlib import Path
 
 from tools.ci import trailers
-from tools.quill.door import Tracker, dropped, is_work, leaves_below, with_closure
+from tools.quill.door import SHIPPABLE, Tracker, dropped, leaves_below, with_closure
 from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, MOVES_MONEY_LABEL
 from tools.release._model import Carried, Group, Step, first_parent_line, steps_blob
 
@@ -65,18 +71,18 @@ from tools.release._model import Carried, Group, Step, first_parent_line, steps_
 class Cards:
     """What the release's cut knows of the cards its window names, read from the tracker
     once: whether each one that is work moves money; each deploy-together group one of
-    them is a leaf of, with its leaves; and what each named card that is no work is."""
+    them is a leaf of, with every leaf in any state; which of those leaves were dropped;
+    and what each named card that is no work is."""
 
     money: Mapping[int, bool]
     groups: Mapping[int, tuple[int, ...]]
+    dropped: frozenset[int]
     no_work: Mapping[int, str]
 
 
 def _what(kind: str | None) -> str:
-    """What a card of ``kind`` that no commit ships is, for a refusal (a step is no work
-    only when it is split into leaves)."""
-    return ("a step split into leaves" if kind == "step"
-            else f"a {kind}" if kind else "a card of no type")
+    """What a card of ``kind``, a kind no commit ships, is, for a refusal."""
+    return f"a {kind}" if kind else "a card of no type"
 
 
 @cache
@@ -109,17 +115,14 @@ def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
     groups = {}
     for number, card in closure.items():
         if DEPLOY_TOGETHER_LABEL in card.labels:
-            # A leaf dropped never ships, so the group is whole without it; but one the
-            # window names was changed by this release (shipped, or undone and then
-            # dropped), and production must not keep its siblings without it.
-            leaves = tuple(leaf.number for leaf in leaves_below(card, closure, shipped)
-                           if leaf.number in named
-                           or not dropped(leaf.number, closure, shipped))
+            leaves = tuple(leaf.number for leaf in leaves_below(card, closure, shipped))
             if named.intersection(leaves):
                 groups[number] = leaves
-    work = {number for number, card in held.items() if is_work(card, closure, shipped)}
+    gone = frozenset(leaf for leaves in groups.values() for leaf in leaves
+                     if dropped(leaf, closure, shipped))
+    work = {number for number, card in held.items() if card.kind in SHIPPABLE}
     return Cards({number: MOVES_MONEY_LABEL in held[number].labels for number in work},
-                 groups,
+                 groups, gone,
                  {number: _what(card.kind) for number, card in held.items()
                   if number not in work})
 
@@ -183,14 +186,19 @@ def carried(root: Path, base: str, cut: str, known: Cards) -> Carried:
         if trailer.sha not in shas:
             shas.append(trailer.sha)
     standing = _standing(root, cut)
+    held = standing | _standing(root, base)
+    # A dropped leaf is part of its group only while production holds it on one side of
+    # this release: undone by it, and abandoned since (judged per cut, so an offered cut
+    # that still ships it is held to its siblings).
+    live = {group: tuple(leaf for leaf in leaves if leaf not in known.dropped or leaf in held)
+            for group, leaves in known.groups.items()}
     steps = tuple(
         Step(f"plan#{number}", tuple(shas), known.money[number],
-             tuple(f"plan#{group}" for group, leaves in known.groups.items()
-                   if number in leaves),
+             tuple(f"plan#{group}" for group, leaves in live.items() if number in leaves),
              undone=number not in standing)
         for number, shas in sorted(named.items()) if number in known.money)
     groups = tuple(_group(group, leaves, set(named), standing)
-                   for group, leaves in known.groups.items() if named.keys() & set(leaves))
+                   for group, leaves in live.items() if named.keys() & set(leaves))
     unread = {number: (shas, known.no_work.get(number)) for number, shas in named.items()
               if number not in known.money}
     return Carried(steps, groups, tuple(_unreadable(root, base, cut, found, unread)))

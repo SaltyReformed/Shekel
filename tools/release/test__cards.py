@@ -248,6 +248,38 @@ def test_an_offered_cut_is_judged_by_what_production_holds_at_it(repo):
     assert judged.passing.cut == first
 
 
+def test_a_stray_reopens_of_a_leaf_dropped_long_ago_blocks_nothing(repo):
+    """The delta review's case: #53 was dropped and never shipped; a mistyped Reopens
+    names it beside a follow-up fix to #51.  Production never held #53, so the group is
+    whole without it, and no release from then on is refused for it."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#51", "Ships: plan#52")
+    cut = _merge(repo, base, "Ships: plan#51", "Reopens: plan#53")
+    tracker = FakeTracker()
+    _group(tracker, leaves=(51, 52, 53))
+    tracker.close(53, "not_planned")
+    assert _judge(repo, base, cut, tracker).verdict.status == CLEAN
+
+
+def test_an_offered_cut_still_shipping_a_leaf_dropped_since_is_held_to_its_group(repo):
+    """#51 shipped at m1, undone at m2, dropped since.  The cut and m2 are refused (money);
+    m1 would leave production holding #51 without #52, so it is refused too, and the cut
+    offered is the cutover's own, which carries nothing: a dropped leaf counts at each cut
+    whose production holds it."""
+    base, cutover = _after_cutover(repo)
+    first = _merge(repo, cutover, "Ships: plan#51")
+    second = _merge(repo, first, "Reopens: plan#51", "Ships: plan#40", "Ships: plan#42")
+    cut = _merge(repo, second, "Ships: plan#41")
+    tracker = FakeTracker()
+    for number in (40, 41, 42):
+        tracker.add(number, labels=MONEY)
+    _group(tracker)
+    tracker.close(51, "not_planned")
+    judged = _judge(repo, base, cut, tracker)
+    assert judged.verdict.status == REFUSED
+    assert judged.passing.cut == cutover
+
+
 def test_a_dropped_leaf_is_no_part_of_the_group(repo):
     """A leaf closed as not planned never ships, so the group is whole without it."""
     base, cutover = _after_cutover(repo)
@@ -338,19 +370,36 @@ def test_a_trailer_naming_a_card_that_is_no_work_is_refused(repo, kind, what):
         "work whose flag can be read",)
 
 
-def test_a_trailer_naming_a_split_step_is_refused_though_its_leaves_move_money(repo):
-    """The review's case: the container of two money leaves, named by a Ships, passed as a
-    clean step moving no money."""
-    base, cutover = _after_cutover(repo)
-    typo = repo.commit("work", {"app.py": "1"}, trailers=("Ships: plan#50",),
-                       parents=(cutover,))
+def test_a_step_reverted_and_split_since_is_judged_by_its_own_label(repo):
+    """The delta review's case: #60 (money) released, reverted, then split into #61 and
+    #62.  Its trailer was valid when it landed; the code it names was #60's own, so #60's
+    own label judges it: an undone money change, never a block on every later release."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#60")
+    cut = _merge(repo, base, "Reopens: plan#60")
     tracker = FakeTracker()
-    _group(tracker)
-    for leaf in (51, 52):
-        tracker.cards_by_number[leaf] = replace(tracker.cards_by_number[leaf], labels=MONEY)
-    assert _judge(repo, base, typo, tracker).verdict.refusals == (
-        f"plan#50 (named at {typo[:12]}) is a step split into leaves, which no commit ships, "
-        "so it names no work whose flag can be read",)
+    tracker.add(60, labels=MONEY)
+    for leaf in (61, 62):
+        tracker.add(leaf)
+        tracker.add_child(60, tracker.cards_by_number[leaf])
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert [(s.key, s.money, s.undone) for s in verdict.carried.steps] == [
+        ("plan#60", True, True)]
+    assert verdict.status == CLEAN
+
+
+def test_a_card_of_no_type_is_refused(repo):
+    """quill never clears a card's type (its one retype makes a question a ruling), so a
+    card of no type is a person's doing; its kind unread, it is refused, never read as
+    moving no money."""
+    base, cutover = _after_cutover(repo)
+    cut = repo.commit("work", {"app.py": "1"}, trailers=("Ships: plan#12",),
+                      parents=(cutover,))
+    tracker = FakeTracker()
+    tracker.add(12, kind=None)
+    assert _judge(repo, base, cut, tracker).verdict.refusals == (
+        f"plan#12 (named at {cut[:12]}) is a card of no type, which no commit ships, so it "
+        "names no work whose flag can be read",)
 
 
 def test_a_malformed_value_after_the_cutover_is_refused(repo):

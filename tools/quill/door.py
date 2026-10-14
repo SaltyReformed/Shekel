@@ -21,8 +21,9 @@ Each name, and who reads it:
   every card a decision over them reads, by quill's one closure read.
 - ``leaves_below`` and ``dropped``: ``tools/release._cards``, for a deploy-together
   group's leaves by quill's own leaf rule, less each one dropped.
-- ``is_work``: ``tools/release._cards``, which refuses a trailer naming a card no commit
-  ships (a container, a ruling, a question), by quill's one predicate.
+- ``SHIPPABLE``: ``tools/release._cards``, which refuses a trailer naming a card of a
+  kind no commit ships (a ruling, a question, a card of no type), by quill's one list
+  of the kinds a commit ships.
 - ``GitHubError`` and ``TrackerError``: ``tools/release.release``, which reports a failed
   read of the tracker as a release judged on nothing.
 - ``FakeTracker``: ``tools/release``'s tests, which drive the card reader against quill's
@@ -36,16 +37,16 @@ from tools.quill._command import with_closure
 from tools.quill._fake import FakeTracker
 from tools.quill._github import GitHubError
 from tools.quill._migrate_source import step_labels
-from tools.quill._state import dropped, is_work, leaves_below
+from tools.quill._state import SHIPPABLE, dropped, leaves_below
 from tools.quill._tracker import Tracker, TrackerError
 
 __all__ = [
+    "SHIPPABLE",
     "FakeTracker",
     "GitHubError",
     "Tracker",
     "TrackerError",
     "dropped",
-    "is_work",
     "leaves_below",
     "step_labels",
     "with_closure",
