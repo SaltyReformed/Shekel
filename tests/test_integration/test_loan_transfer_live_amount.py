@@ -834,49 +834,62 @@ def test_settling_derived_loan_payment_captures_live_amount(
         assert split.excess == Decimal("0.00")
 
 
-def test_settled_loan_payment_freeze_is_one_shot(
+def test_a_paid_loan_payment_keeps_its_recorded_amount_when_the_plan_changes(
     app, db, auth_client, seed_user, seed_periods,
 ):
-    """A re-settle never rewrites an already-frozen loan payment's actual cash.
+    """A paid loan payment counts what it RECORDED when its plan later moves.
 
-    Capture-on-settle is ONE-SHOT.  A stale-tab re-POST of ``mark_done`` --
-    admitted by the ``done -> done`` identity transition on the still-present
-    mark-paid button -- leaves the frozen figure untouched.
+    Capture-on-settle records the payment's live price once, at the settle:
+    P&I 1,199.10 + escrow 300.00 = **1,499.10**.  The owner then sets a
+    standing extra principal of $100.00 a month through the loan's
+    payment-settings door -- a live parameter with no date, so the plan of
+    every payment the definition makes, the paid one's included, reads
+        1,199.10 + 300.00 + 100.00 = **1,599.10**
+    and the paid payment must still count the 1,499.10 that left checking.
+    An app valuing a settled payment at its plan would count 1,599.10 and
+    leave checking $100.00 low.
 
-    **The two guards holding that are BOTH structural since plan step
-    X-au-g-2c-2**, where one was a producer's ``is_projected`` gate.  The
-    settle act runs only on the way INTO the settled band, so a re-settle never
-    reaches a derivation at all; and what a settled row is worth is read from
-    its own settlement RECORD (``row_valuation.fixed_contribution``) before any
-    producer is asked.  The case stood in for the deleted
-    ``live_cash(settled) is None`` with the stronger statement that the
-    recorded cash is what the row is worth.
+    **Ruling R-BAL283 re-heard ruling R-BAL276** at plan step
+    balance:X-bi-6-4d-3's checkpoint 2d-c, and this case was
+    ``test_settled_loan_payment_freeze_is_one_shot`` until then: a settle and
+    a stale-tab re-settle with nothing moving between them, so every figure
+    was 1,499.10 whatever the app did.  R-BAL276 had an escrow version dated
+    before this payment's installment added between the two clicks.
+    Measured, the escrow door refuses that version
+    (``routes/loan/escrow_rates._reject_effective_date``: a change takes
+    effect after the latest settled payment's due date), so the case could
+    reach it only by writing the row past the door.  The extra is a change
+    the door accepts, and it writes the payment's definition and nothing in
+    the posted ledger (measured).
 
-    **What this case can and cannot grade** (corrected at plan step
-    balance:X-bi-6-4d-3's checkpoints 2d-a and 2d-b, after the adversarial
-    reviews of 2d and 2d-a, both measured).  Nothing moves the escrow between
-    the settle, the asks and the re-settle, so every figure here is
-    ``$1,499.10`` whether or not the freeze is one-shot: with either guard
-    off, or both, this case still passes.  The model's PLAN price
-    (``_derived_cash``) cannot grade either guard, and neither could the
-    shadow-row ask it replaced; the ``leg_settled_contribution`` reads assert
-    the RECORD's figure, not that a settled leg is VALUED from it; and the
-    re-settle cannot grade one-shot-ness.  What it grades is that a settle
-    and a stale-tab re-settle both leave the record at the captured
-    contract.  The two guards are graded elsewhere, each measured failing
-    under its own mutation by the review of 2d-a: the first by
+    **What it grades, each read failing FIRST under a one-point mutation of
+    the app (measured):**
+
+    * the plan reads 1,599.10, so the read after it can tell a record from a
+      plan: it fails when the derive-mode price stops adding the standing
+      extra (``_loan_installment``'s P&I + escrow + extra sum);
+    * the paid leg's WORTH, asked through the cash fold's valuation
+      (``cash_ledger.leg_contribution_of``), is its record's 1,499.10: it
+      fails when that valuation stops asking the record before any producer
+      (``leg_fixed_contribution`` skipped), alone or with the first guard
+      below also off.
+
+    **The stale-tab re-settle and its two reads went with R-BAL283**, because
+    no one-point mutation failed them first.  With the valuation's record
+    step skipped, the worth read above fails before them.  With the first
+    guard off (``enters_settled_band`` in ``_update._dispatch_settle``, so a
+    ``done -> done`` re-settle runs the settle act again) the case passed
+    and the re-settle wrote nothing: the act values the paid leg through
+    that same valuation (``_settle.settle``), and the leg's Mark Paid states
+    no figure and no day.  That guard is graded by
     ``test_transfer_settle_freeze``'s
-    ``test_settling_an_ALREADY_settled_transfer_writes_nothing``, the second
-    by ``test_transfer_legs``'
-    ``test_a_settled_leg_is_worth_its_record_and_not_its_plan``.
+    ``test_settling_an_ALREADY_settled_transfer_writes_nothing``, whose
+    replay states a figure and a day.
 
-    The settled payment is read as the transfer and its loan side's record,
-    where it was read off the loan-side twin row (ruling R-BAL167 class 1,
-    plan step balance:X-bi-6-4d-2).  The payment is the first TRANSFER into
-    the loan, where it was the first loan-side shadow, and the model is asked
-    of its leg on the loan, where it was asked of that shadow row, until plan
-    step balance:X-bi-6-4d-3 (ruling R-BAL167 class 1): the row priced the
-    plan off its transfer, as the leg does.
+    The settled payment is read as the transfer and its loan side's record
+    (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2), and the model
+    is asked of the payment's leg on the loan, the first TRANSFER into it
+    (plan step balance:X-bi-6-4d-3, ruling R-BAL167 class 1).
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -899,25 +912,27 @@ def test_settled_loan_payment_freeze_is_one_shot(
             db.session, transfer_id, loan.id,
         ) == Decimal("1499.10")
 
-        # The plan price of the loan-side LEG, which the model prices off its
-        # transfer, still the contract's, and the figure its RECORD holds.
-        # Neither tells a one-shot freeze from a repeated one (the docstring).
+        # After the payment is paid, the owner starts paying $100.00 a month
+        # extra, through the dashboard's payment card.  The door redirects
+        # whether or not it saved, so the plan read below is what says the
+        # extra took.
+        resp = auth_client.post(
+            f"/accounts/{loan.id}/loan/payments/{template.id}/settings",
+            data={"extra_principal": "100.00"},
+        )
+        assert resp.status_code == 302, resp.data
+        db.session.expire_all()
+
+        # The plan of the paid payment's leg: 1,199.10 + 300.00 + 100.00.
         assert _derived_cash(seed_user, [_side_leg(transfer_id, loan.id)])[
             (transfer_id, loan.id)
-        ] == Decimal("1499.10")
-        assert leg_settled_contribution(
+        ] == Decimal("1599.10")
+        # What the paid leg is WORTH to the balance is still its record.
+        assert cash_ledger.leg_contribution_of(
             _side_leg(transfer_id, loan.id),
-        ) == Decimal("1499.10")
-
-        # A stale-tab re-settle leaves the frozen figure untouched.
-        resp2 = _mark_done_from_leg(auth_client, transfer_id, loan.id)
-        assert resp2.status_code == 200, resp2.data
-        db.session.expire_all()
-        assert transfer_side_figure(
-            db.session, transfer_id, loan.id,
-        ) == Decimal("1499.10")
-        assert leg_settled_contribution(
-            _side_leg(transfer_id, loan.id),
+            cash_ledger.derived_amount_basis(
+                seed_user["user"].id, seed_user["scenario"].id,
+            ),
         ) == Decimal("1499.10")
 
 
