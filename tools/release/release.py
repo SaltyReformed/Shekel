@@ -12,28 +12,33 @@ writes nothing.
 carries, each step's money flag and deploy-together group, the migrations it adds, edits
 or deletes; what refuses it; what the developer's approval question must name; and, on a
 refusal or two added migrations, the newest earlier cut to offer him.  ``census`` lists
-every worktree, every branch ``main`` already holds and every dev database, marking what
-this release made (:mod:`tools.release._census`).
+every worktree, every branch ``main`` already holds or a kit names, and every dev
+database, marking what this release made: its ``release/<date>`` branch and what each
+rehearsal kit's manifest names (:mod:`tools.release._census`).
 
 Usage, from the repository root, after ``git fetch origin``::
 
     python -m tools.release.release plan --cut SHA [--base origin/main]
         [--unrehearsed KEY|REVISION ...] [--declare KEY=money|none@SOURCE ...]
     python -m tools.release.release census [--main origin/main] [--release-branch release/DATE]
-        [--kit-worktrees DIR] [--kit-databases NAME-PREFIX]
+        [--kit DIR ...]
 
 ``--unrehearsed`` names a money-moving step (``<arc>:<id>``) or an added migration's
 revision for which the skill found no rehearsal kit; the release is refused for it.
 ``--declare`` gives the flag of a carried step no version of ``steps.md`` holds open
 (one written already ticked), with the commit or handoff it was read from; the approval
 question must name each declaration, and a declaration for any other step stops the
-command.
+command.  ``--kit`` names a rehearsal kit's directory, which holds the kit's
+``release-manifest.txt``: one line per thing the kit made, written before it made it.
 
 Exit status, ``plan``: 0 clean; 1 refused, each reason printed with the cut to offer;
 3 the approval question must name what is printed; 2 nothing was judged (the command
 line, git, an unrehearsed name that names nothing, or a cut after the cutover, whose
-reader is X-cx's piece L9a-1b).  ``census``: 0 listed; 2 git, the compose file or the
+reader is X-cx's piece L9a-1b).  ``census``: 0 listed, every kit's manifest accepted; 4
+listed, but a kit was refused (each reason printed), so the cleanup is NOT proven and
+nothing that kit names is marked, whoever else names it; 2 git, the compose file or the
 docker listing failed.
+A judged run's last line on stdout is its ``verdict:``; exit 2 and a crash print none.
 """
 from __future__ import annotations
 
@@ -48,7 +53,14 @@ import yaml
 from tools.ci.arcs import REPO
 from tools.ci.gitcmd import GitError
 from tools.release._carried import Declaration, ReleaseError
-from tools.release._census import RELEASE_PREFIX, Census, Made, census, docker_listing
+from tools.release._census import (
+    RELEASE_PREFIX,
+    UNPROVEN,
+    Census,
+    Made,
+    census,
+    docker_listing,
+)
 from tools.release._plan import CLEAN, NEEDS_APPROVAL, REFUSED, Plan, Verdict, plan
 
 CANNOT = 2
@@ -91,9 +103,9 @@ def parser() -> argparse.ArgumentParser:
     listed.add_argument("--main", default="origin/main", help="the branch released into")
     listed.add_argument("--release-branch", type=_release_branch,
                         help="this release's branch, release/<date>")
-    listed.add_argument("--kit-worktrees", metavar="DIR",
-                        help="the directory the kit makes its worktrees in")
-    listed.add_argument("--kit-databases", help="the name prefix of the kit's clones")
+    listed.add_argument("--kit", action="append", default=[], metavar="DIR",
+                        help="a rehearsal kit's directory, holding its release-manifest.txt; "
+                        f"a kit refused exits {UNPROVEN}: the cleanup is not proven")
     return top
 
 
@@ -147,14 +159,30 @@ def plan_lines(judged: Plan) -> list[str]:
 
 
 def census_lines(found: Census) -> list[str]:
-    """``census``'s report: each thing listed, MADE or other, with what locates it."""
+    """``census``'s report, ending with its verdict: each thing listed, MADE or other,
+    with what locates it; then each kit, accepted with what it names that is GONE, or
+    REFUSED with each reason and each entry it names, present or absent."""
     lines = [f"census (read-only) after a release into {found.main}"]
     for title, things in (("worktrees", found.worktrees),
-                          (f"branches whose tip {found.main[:12]} holds", found.branches),
+                          (f"branches whose tip {found.main[:12]} holds, or a kit names",
+                           found.branches),
                           ("dev databases", found.databases)):
         lines.append(f"{title} ({len(things)}):")
         lines += [f"  {'MADE ' if thing.made else 'other'} {thing.name}"
                   + (f"  ({thing.where})" if thing.where else "") for thing in things]
+    for kit in found.kits:
+        if kit.refusals:
+            lines += [f"kit {kit.directory}: REFUSED -- {reason}" for reason in kit.refusals]
+            lines += [f"  named {entry.kind} {entry.name} "
+                      f"({'present' if entry.present else 'absent'})" for entry in kit.entries]
+        else:
+            lines.append(f"kit {kit.directory}: accepted, {len(kit.entries)} named")
+            lines += [f"  GONE  {entry.kind} {entry.name}"
+                      for entry in kit.entries if not entry.present]
+    refused = sum(1 for kit in found.kits if kit.refusals)
+    lines.append("verdict: proven (exit 0)" if found.proven else
+                 f"verdict: cleanup NOT proven, {refused} of {len(found.kits)} kits refused "
+                 f"(exit {UNPROVEN})")
     return lines
 
 
@@ -168,9 +196,9 @@ def main(argv: list[str] | None = None, root: Path = REPO,
             judged = plan(root, args.base, args.cut, args.unrehearsed, args.declare)
             print("\n".join(plan_lines(judged)))
             return judged.verdict.status
-        made = Made(args.release_branch, args.kit_worktrees, args.kit_databases)
-        print("\n".join(census_lines(census(root, args.main, made, listing))))
-        return 0
+        found = census(root, args.main, Made(args.release_branch, tuple(args.kit)), listing)
+        print("\n".join(census_lines(found)))
+        return 0 if found.proven else UNPROVEN
     except (ReleaseError, GitError, OSError, UnicodeDecodeError, yaml.YAMLError,
             subprocess.CalledProcessError) as error:
         print(f"release {args.command}: nothing was judged: {error}", file=sys.stderr)
