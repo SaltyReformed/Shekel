@@ -137,7 +137,7 @@ CAPS = {
     # the balance README and the pay-calendar plan", answering the coordinator's report
     # that outcome O7's filing (R-BAL263) had used every spare line: when he was asked,
     # the README sat at 1310 of an effective 1310, with about 129 balance steps open.  **His
-    # words named no figure; 1380 is the coordinator's application of them**, by this
+    # words named no figure; 1380 is the coordinator's application of them**, under this
     # file's own calibration -- 3.4 lines per open step plus the 20-line headroom -- which
     # would allow about 1769 (129 x 3.4 + 20 over 1310), so 1380 stays well
     # under it: 50 lines of room above the 20 of headroom.  **Rule 5's archive escape was
