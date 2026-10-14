@@ -38,7 +38,7 @@ everything with a person or a judgment in it is here.
 - Production figures (counts, balances, day counts, dates measured in production) stay out of
   commit messages and rulings (R-BAL132); the record lives outside the repository.
 - Each question to Josh is an AskUserQuestion that stands alone (the text before it may never
-  render), plain words before ids, and goes out with a PushNotification naming it (R-BAL282).
+  render), plain words before ids, and its alert goes first (CLAUDE.md, Multi-session operation).
 - A run that ends early after a kit ran (a STOP, or "Not now" at step 5) still runs step 12's
   census (without `--release-branch` when no branch was pushed) and writes step 13's record. A
   kit that FAILED is left out of that census (no `--kit` for it), so its clones and worktrees list
