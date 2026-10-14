@@ -48,7 +48,6 @@ import argparse
 import subprocess
 import sys
 from collections.abc import Callable
-from functools import partial
 from pathlib import Path
 
 import requests
@@ -57,7 +56,7 @@ import yaml
 from tools.ci.arcs import REPO
 from tools.ci.gitcmd import GitError
 from tools.quill.door import GitHubError, Tracker, TrackerError
-from tools.quill.setup_tracker import PLAN
+from tools.quill.quill import CONNECT
 from tools.release._carried import Declaration
 from tools.release._census import (
     RELEASE_PREFIX,
@@ -71,9 +70,6 @@ from tools.release._model import ReleaseError
 from tools.release._plan import CLEAN, NEEDS_APPROVAL, REFUSED, Inputs, Plan, Verdict, plan
 
 CANNOT = 2
-#: How ``plan`` reaches the tracker for a cut after the cutover: quill's App, narrowed to
-#: the plan's repository.  The command line is the one place a live connection is made.
-TRACKER = partial(Tracker.connect, PLAN)
 #: A declared flag's two values.
 DECLARED = {"money": True, "none": False}
 
@@ -127,7 +123,7 @@ def _verdict_lines(verdict: Verdict) -> list[str]:
         money = {True: "yes", False: "no", None: "UNREADABLE"}[step.money] + (
             f" (declared from {step.declared})" if step.declared else "")
         groups = f"  deploy-together: {', '.join(step.groups)}" if step.groups else ""
-        undone = "  UNDONE: a Reopens: takes it out of production" if step.undone else ""
+        undone = "  UNDONE: a Reopens: leaves it out of production" if step.undone else ""
         claims = ", ".join(sha[:12] for sha in step.claims)
         lines.append(f"  {step.key}  moves money: {money}{groups}{undone}  "
                      f"(claimed at {claims})")
@@ -202,9 +198,12 @@ def census_lines(found: Census) -> list[str]:
 
 def main(argv: list[str] | None = None, root: Path = REPO,
          listing: Callable[[list[str]], list[str]] = docker_listing,
-         connect: Callable[[], Tracker] = TRACKER) -> int:
+         connect: Callable[[], Tracker] | None = None) -> int:
     """Run one command on the repository at ``root``, listing the dev databases with
-    ``listing`` and reaching the tracker with ``connect``; its exit status."""
+    ``listing`` and reaching the tracker with ``connect`` (none given: a cut after the
+    cutover judges nothing; only the command line, run as ``python -m``, gives quill's
+    :data:`~tools.quill.quill.CONNECT`, so no other caller, a test above all, reaches the
+    live tracker unless it says so); its exit status."""
     args = parser().parse_args(argv)
     try:
         if args.command == "plan":
@@ -223,4 +222,4 @@ def main(argv: list[str] | None = None, root: Path = REPO,
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(connect=CONNECT))

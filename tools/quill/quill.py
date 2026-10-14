@@ -120,6 +120,9 @@ from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, FILING, MOVES_MONEY
 
 #: Branches a claim may never name: nothing is built on them directly.
 _SHARED_BRANCHES = ("dev", "main")
+#: How a command reaches the plan's tracker: quill's App, narrowed to its repository.  The
+#: release tool's command line reaches it the same way (``tools/release/release.py``).
+CONNECT = partial(Tracker.connect, PLAN)
 _CARD_REF = re.compile(r"(?:plan#|#)?([1-9][0-9]*)")
 
 
@@ -896,8 +899,7 @@ COMMANDS: dict[str, Callable[..., int]] = {
 }
 
 
-def main(argv: list[str] | None = None,
-         connect: Callable[[], Tracker] = partial(Tracker.connect, PLAN),
+def main(argv: list[str] | None = None, connect: Callable[[], Tracker] = CONNECT,
          root: Path | None = None) -> int:
     """Run one command; its exit status."""
     args = parser().parse_args(argv)

@@ -3,6 +3,8 @@
 tracker.  No network, no docker, never a real checkout."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from tools.quill.door import FakeTracker, GitHubError
@@ -189,8 +191,8 @@ def test_undoing_one_leaf_of_a_released_group_is_refused(repo):
     tracker = FakeTracker()
     _group(tracker)
     assert _judge(repo, base, cut, tracker).verdict.refusals == (
-        "it takes plan#51 of the deploy-together group plan#50 out of production and keeps "
-        "plan#52; the group ships whole",)
+        "it leaves plan#51 of the deploy-together group plan#50 out of production (a "
+        "Reopens: names it) and keeps plan#52; the group ships whole",)
 
 
 def test_undoing_a_whole_group_is_clean(repo):
@@ -203,6 +205,47 @@ def test_undoing_a_whole_group_is_clean(repo):
     verdict = _judge(repo, base, cut, tracker).verdict
     assert verdict.carried.groups[0].undone == ("plan#51", "plan#52")
     assert verdict.status == CLEAN
+
+
+def test_undoing_one_leaf_of_a_released_group_and_dropping_it_is_refused(repo):
+    """The review's HIGH-1: #51 reverted, then dropped; production must not keep #52
+    without it, so a dropped leaf the window names still counts."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#51", "Ships: plan#52")
+    cut = _merge(repo, base, "Reopens: plan#51")
+    tracker = FakeTracker()
+    _group(tracker)
+    tracker.close(51, "not_planned")
+    assert _judge(repo, base, cut, tracker).verdict.status == REFUSED
+
+
+def test_a_shipped_leaf_a_person_closed_is_no_dropped_leaf(repo):
+    """Real cards are closed by hand too: #52 shipped and closed by a person is a leaf
+    production holds, judged by git's answer at the cut, never read as dropped."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#51", "Ships: plan#52")
+    cut = _merge(repo, base, "Reopens: plan#51")
+    tracker = FakeTracker()
+    _group(tracker)
+    tracker.cards_by_number[52] = replace(tracker.cards_by_number[52], is_open=False,
+                                          state_reason="COMPLETED", touched_by_hand=True)
+    assert _judge(repo, base, cut, tracker).verdict.status == REFUSED
+
+
+def test_an_offered_cut_is_judged_by_what_production_holds_at_it(repo):
+    """Refused for two money movers, the cut offers the newest earlier cut that passes:
+    not the one shipping #51 without #52 (whole only at the cut), but the one before it."""
+    base, cutover = _after_cutover(repo)
+    first = _merge(repo, cutover, "Ships: plan#40")
+    half = _merge(repo, first, "Ships: plan#51")
+    cut = _merge(repo, half, "Ships: plan#52", "Ships: plan#41")
+    tracker = FakeTracker()
+    tracker.add(40, labels=MONEY)
+    tracker.add(41, labels=MONEY)
+    _group(tracker)
+    judged = _judge(repo, base, cut, tracker)
+    assert judged.verdict.status == REFUSED
+    assert judged.passing.cut == first
 
 
 def test_a_dropped_leaf_is_no_part_of_the_group(repo):
@@ -231,18 +274,92 @@ def test_a_leaf_split_again_counts_as_its_own_leaves(repo):
 
 def test_an_old_form_claim_after_the_cutover_names_the_cut_to_release_first(repo):
     """R-BAL287: a step ticked before the cutover and not released by its freeze has no
-    card; only a cut holding steps.md can judge it, and the refusal names the newest."""
+    card; only a cut holding steps.md can judge it, and the refusal names the NEWEST such
+    cut holding the claim (two hold steps.md after it here)."""
     base = repo.plan((("balance:A-1", "Do it.", "#1", "--"),), parents=())
     tick = repo.plan((("balance:A-1", "Did it.", "SHIPPED", "`0123abcd`"),), parents=(base,),
                      ships=("balance:A-1",))
-    cutover = repo.commit("cutover", {STEPS_PATH: None}, parents=(tick,))
+    later = repo.plan((("balance:A-1", "Did it.", "SHIPPED", "`0123abcd`"),
+                       ("balance:A-2", "Do more.", "#1", "--")), parents=(tick,))
+    cutover = repo.commit("cutover", {STEPS_PATH: None}, parents=(later,))
     cut = _merge(repo, cutover, "Ships: plan#40")
     tracker = FakeTracker()
     tracker.add(40)
     assert _judge(repo, base, cut, tracker).verdict.refusals == (
         f"{tick[:12]} claims `balance:A-1` in the old form, which only a cut holding steps.md "
         "can judge (R-BAL287: the cutover's freeze ends with a release of every one): "
-        f"release {tick[:12]} first, with the release tool as that cut holds it",)
+        f"release {later[:12]} first, with the release tool as that cut holds it",)
+
+
+def test_an_old_form_claim_merged_after_the_cutover_names_no_cut(repo):
+    """A claim on a branch merged after the cutover: the cut before the cutover holds
+    steps.md but not the claim, so releasing it could not carry it; none is named."""
+    base = repo.plan((("balance:A-1", "Do it.", "#1", "--"),), parents=())
+    before = repo.plan((("balance:A-1", "Do it.", "#1", "--"),
+                        ("balance:A-2", "Do more.", "#2", "--")), parents=(base,))
+    cutover = repo.commit("cutover", {STEPS_PATH: None}, parents=(before,))
+    late = repo.commit("late", {"app.py": "1"}, ships=("balance:A-1",), parents=(base,))
+    # The merge keeps the cutover's deletion, as git's does (the branch never touched it).
+    cut = repo.commit("Merge pull request", {"app.py": "1"}, parents=(cutover, late))
+    (refusal,) = _judge(repo, base, cut, FakeTracker()).verdict.refusals
+    assert refusal.startswith(f"{late[:12]} claims `balance:A-1` in the old form")
+    assert refusal.endswith("no cut on dev's line in this window holds steps.md and this "
+                            "commit, so no release can judge it: it was merged after the "
+                            "cutover")
+
+
+def test_an_old_form_reopens_after_the_cutover_is_refused(repo):
+    """An undo of a step with no card: no reader judges it, so it never passes unseen."""
+    base, cutover = _after_cutover(repo)
+    undo = repo.commit("revert", {"app.py": "1"}, trailers=("Reopens: balance:A-1",
+                                                            "Ships: plan#41"),
+                       parents=(cutover,))
+    tracker = FakeTracker()
+    tracker.add(41, labels=MONEY)
+    assert _judge(repo, base, undo, tracker, ["plan#41"]).verdict.refusals[0] == (
+        f"{undo[:12]} carries `Reopens: balance:A-1` in the old form: it undoes a step that "
+        "has no card, so no reader judges what it takes out of production (R-BAL287, "
+        "R-BAL288)")
+
+
+@pytest.mark.parametrize(("kind", "what"), [("ruling", "a ruling"), ("question", "a question")])
+def test_a_trailer_naming_a_card_that_is_no_work_is_refused(repo, kind, what):
+    """A ruling or a question is never shipped; read as work it would pass as moving no
+    money."""
+    base, cutover = _after_cutover(repo)
+    typo = repo.commit("work", {"app.py": "1"}, trailers=("Ships: plan#12",),
+                       parents=(cutover,))
+    tracker = FakeTracker()
+    tracker.add(12, kind=kind)
+    verdict = _judge(repo, base, typo, tracker).verdict
+    assert not verdict.carried.steps
+    assert verdict.refusals == (
+        f"plan#12 (named at {typo[:12]}) is {what}, which no commit ships, so it names no "
+        "work whose flag can be read",)
+
+
+def test_a_trailer_naming_a_split_step_is_refused_though_its_leaves_move_money(repo):
+    """The review's case: the container of two money leaves, named by a Ships, passed as a
+    clean step moving no money."""
+    base, cutover = _after_cutover(repo)
+    typo = repo.commit("work", {"app.py": "1"}, trailers=("Ships: plan#50",),
+                       parents=(cutover,))
+    tracker = FakeTracker()
+    _group(tracker)
+    for leaf in (51, 52):
+        tracker.cards_by_number[leaf] = replace(tracker.cards_by_number[leaf], labels=MONEY)
+    assert _judge(repo, base, typo, tracker).verdict.refusals == (
+        f"plan#50 (named at {typo[:12]}) is a step split into leaves, which no commit ships, "
+        "so it names no work whose flag can be read",)
+
+
+def test_a_malformed_value_after_the_cutover_is_refused(repo):
+    """A value of neither form claims nothing readable."""
+    base, cutover = _after_cutover(repo)
+    cut = repo.commit("work", {"app.py": "1"}, trailers=("Ships: plan#4a",),
+                      parents=(cutover,))
+    assert _judge(repo, base, cut, FakeTracker()).verdict.refusals == (
+        f"{cut[:12]} Ships: 'plan#4a' is not plan#<number>",)
 
 
 def test_a_trailer_naming_a_card_the_tracker_does_not_hold_is_refused(repo):
@@ -280,8 +397,17 @@ def test_plan_prints_an_undone_card(repo, capsys):
     assert release.main(["plan", "--base", base, "--cut", cut], root=repo.root,
                         connect=lambda: tracker) == CLEAN
     out = capsys.readouterr().out.splitlines()
-    assert out[3].startswith("  plan#40  moves money: no  UNDONE: a Reopens: takes it out of "
+    assert out[3].startswith("  plan#40  moves money: no  UNDONE: a Reopens: leaves it out of "
                              "production  (claimed at ")
+
+
+def test_plan_given_no_connection_exits_2_on_a_cut_after_the_cutover(repo, capsys):
+    """The command line's caller reaches the live tracker only by passing it (``python -m``
+    does); a caller passing none judges nothing."""
+    base, cutover = _after_cutover(repo)
+    cut = _merge(repo, cutover, "Ships: plan#40")
+    assert release.main(["plan", "--base", base, "--cut", cut], root=repo.root) == 2
+    assert "no way to reach the tracker was given" in capsys.readouterr().err
 
 
 def test_plan_exits_2_when_the_tracker_cannot_be_read(repo, capsys):

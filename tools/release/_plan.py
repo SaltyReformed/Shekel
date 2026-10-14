@@ -56,7 +56,13 @@ from tools.quill.door import Tracker
 from tools.release import _cards
 from tools.release._carried import Declaration, Registry, carried, knowledge, released
 from tools.release._migrations import ADDED, Migration, migrations
-from tools.release._model import Carried, Group, ReleaseError, steps_blob
+from tools.release._model import (
+    Carried,
+    Group,
+    ReleaseError,
+    first_parent_line,
+    steps_blob,
+)
 
 CLEAN, REFUSED, NEEDS_APPROVAL = 0, 1, 3
 
@@ -109,9 +115,9 @@ class Inputs:
     """What the skill gives a judgment: each money mover or added migration it found no
     rehearsal kit for; each flag it declared, which only a cut before the cutover takes
     (L8 deletes it with that reader, R-BAL287); and how to reach the tracker, which only a
-    cut after the cutover reads.  No connection is made unless one is given: the command
-    line gives quill's App (:data:`tools.release.release.TRACKER`), so nothing else, a
-    test above all, reaches the live tracker by default."""
+    cut after the cutover reads.  No connection is made unless one is given: only the
+    command line, run as ``python -m``, gives quill's App
+    (:data:`tools.quill.quill.CONNECT`)."""
 
     unrehearsed: Collection[str] = ()
     declared: Collection[Declaration] = ()
@@ -128,8 +134,8 @@ def _split(group: Group) -> str | None:
         return (f"it carries part of the deploy-together group {group.key} "
                 f"({', '.join(group.carried)}) without {', '.join(group.missing)}; the "
                 "group ships whole")
-    return (f"it takes {', '.join(group.undone)} of the deploy-together group {group.key} "
-            f"out of production and keeps {', '.join(held)}"
+    return (f"it leaves {', '.join(group.undone)} of the deploy-together group {group.key} "
+            f"out of production (a Reopens: names it) and keeps {', '.join(held)}"
             + (f", without {', '.join(group.missing)}" if group.missing else "")
             + "; the group ships whole")
 
@@ -221,11 +227,8 @@ class Judge:
 
     def line(self, cut: str) -> list[tuple[str, str]]:
         """``(sha, subject)`` for each cut ``dev`` stood at in ``<base>..<cut>``, newest
-        first, ``cut`` itself included."""
-        out = git(self.root, "log", "--first-parent", "--format=%H%x01%s",
-                  f"{self.base}..{cut}")
-        return [(sha, subject) for sha, _, subject in
-                (entry.partition("\x01") for entry in out.splitlines() if entry)]
+        first, ``cut`` itself included (:func:`~tools.release._model.first_parent_line`)."""
+        return first_parent_line(self.root, self.base, cut)
 
 
 def _unknown(verdict: Verdict, unrehearsed: Collection[str]) -> list[str]:

@@ -19,12 +19,14 @@ stands.  An undo (a revert) is always built on what it undoes, so a
 way ``tools/plan_gate/_shipped.py`` reads ``Ships: <arc>:<id>`` until step
 X-cx's cutover, L8, deletes it): a sentence that mentions ``plan#7`` claims
 nothing.  A value is ``plan#<number>``, or the old ``<arc>:<id>`` form the
-plan gate reads, or it is reported as malformed.  An old-form ``Ships:`` is
+plan gate reads, or it is reported as malformed.  An old-form trailer is
 returned as its own record (:class:`OldFormClaim`) for the release tool,
-which asks what a release carries over a range; it decides nothing here, and
-an old-form ``Reopens:`` is accepted and not returned (none exists).  The plan
-gate's own walk (``_shipped._shipping_claims``) is the second reader of that
-form, and L8 deletes it with the plan gate's arms.
+which asks what a release carries over a range: a ``Ships:`` in
+:attr:`History.old_form`, a ``Reopens:`` in :attr:`History.old_form_reopens`
+(none exists, measured 2026-10-14; after the cutover the release tool's card
+reader refuses either, ruling ``balance:R-BAL287``).  Neither decides anything
+here.  The plan gate's own walk (``_shipped._shipping_claims``) is the second
+reader of the old-form ``Ships:``, and L8 deletes it with the plan gate's arms.
 
 **A shallow clone is refused**: its history stops short, and every card
 shipped before the cut would read as unshipped.
@@ -66,11 +68,13 @@ class Trailer:
 @dataclass(frozen=True)
 class OldFormClaim:
     """One ``Ships: <arc>:<id>`` trailer, the form a step was claimed in before the
-    cutover (ruling ``balance:R-BAL134``): the commit, the arc and the step's id."""
+    cutover (ruling ``balance:R-BAL134``): the commit, the arc and the step's id; or,
+    with ``trailer`` :data:`REOPENS`, one ``Reopens: <arc>:<id>``."""
 
     sha: str
     arc: str
     ident: str
+    trailer: str = SHIPS
 
     @property
     def key(self) -> str:
@@ -81,16 +85,18 @@ class OldFormClaim:
 @dataclass(frozen=True)
 class History:
     """Every card trailer on a branch, every value that is neither ``plan#N`` nor the
-    old ``<arc>:<id>`` form, and every old-form ``Ships:`` claim."""
+    old ``<arc>:<id>`` form, every old-form ``Ships:`` claim, and every old-form
+    ``Reopens:``."""
 
     trailers: tuple[Trailer, ...]
     malformed: tuple[str, ...]
     old_form: tuple[OldFormClaim, ...] = ()
+    old_form_reopens: tuple[OldFormClaim, ...] = ()
 
 
 def history(root: Path, ref: str = DEV) -> History:
     """Every ``Ships:`` and ``Reopens:`` trailer naming a card, and every old-form
-    ``Ships:`` claim, on ``ref``.
+    ``Ships:`` and ``Reopens:``, on ``ref``.
 
     One ``git log`` over everything ``ref`` names -- a branch, or a range such
     as ``base..head`` -- reading each message's trailer block as git parses it.
@@ -108,30 +114,29 @@ def history(root: Path, ref: str = DEV) -> History:
         f"--format=%H{_FIELD}%s{_FIELD}%(trailers:key={SHIPS},valueonly,separator=%x02)"
         f"{_FIELD}%(trailers:key={REOPENS},valueonly,separator=%x02){_RECORD}",
     )
-    found: list[Trailer | OldFormClaim | str | None] = []
+    found: list[Trailer | OldFormClaim | str] = []
     for record in filter(str.strip, out.split(_RECORD)):
         sha, subject, ships, reopens = record.strip("\n").split(_FIELD)
         for key, values in ((SHIPS, ships), (REOPENS, reopens)):
             found += [_read(key, value, sha, subject)
                       for value in filter(None, (v.strip() for v in values.split(_VALUE)))]
+    old = [read for read in found if isinstance(read, OldFormClaim)]
     return History(tuple(read for read in found if isinstance(read, Trailer)),
                    tuple(read for read in found if isinstance(read, str)),
-                   tuple(read for read in found if isinstance(read, OldFormClaim)))
+                   tuple(claim for claim in old if claim.trailer == SHIPS),
+                   tuple(claim for claim in old if claim.trailer == REOPENS))
 
 
-def _read(key: str, value: str, sha: str, subject: str) -> Trailer | OldFormClaim | str | None:
-    """What one trailer's value is: a card trailer; an old-form ``Ships:`` claim; the line
-    reporting a value that is neither form; or None, an old-form ``Reopens:``, which is
-    accepted and returned nowhere."""
+def _read(key: str, value: str, sha: str, subject: str) -> Trailer | OldFormClaim | str:
+    """What one trailer's value is: a card trailer; an old-form ``Ships:`` or ``Reopens:``;
+    or the line reporting a value that is neither form."""
     card = _CARD.fullmatch(value)
     if card:
         return Trailer(key, int(card.group(1)), sha, subject)
     if not _OLD_FORM.fullmatch(value):
         return f"{sha[:12]} {key}: {value!r} is not plan#<number>"
-    if key == SHIPS:
-        arc, _, ident = value.partition(":")
-        return OldFormClaim(sha, arc, ident)
-    return None
+    arc, _, ident = value.partition(":")
+    return OldFormClaim(sha, arc, ident, key)
 
 
 def is_ancestor(root: Path, older: str, newer: str) -> bool:

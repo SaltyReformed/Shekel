@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tools.ci.arcs import REPO
-from tools.ci.gitcmd import run
+from tools.ci.gitcmd import git, run
 from tools.plan_gate.registries import STEPS
 
 #: ``steps.md``'s path inside a commit's tree, which tells a cut before the cutover from
@@ -34,6 +34,14 @@ def steps_blob(root: Path, commit: str) -> str | None:
     commit is after the cutover)."""
     found = run(root, "rev-parse", "--verify", "--quiet", f"{commit}:{STEPS_PATH}")
     return None if found.returncode else found.stdout.strip()
+
+
+def first_parent_line(root: Path, base: str, cut: str) -> list[tuple[str, str]]:
+    """``(sha, subject)`` for each cut ``dev`` stood at in ``<base>..<cut>``, newest first,
+    ``cut`` itself included: its first-parent line, one state per pull request merged."""
+    out = git(root, "log", "--first-parent", "--format=%H%x01%s", f"{base}..{cut}")
+    return [(sha, subject) for sha, _, subject in
+            (entry.partition("\x01") for entry in out.splitlines() if entry)]
 
 
 @dataclass(frozen=True)

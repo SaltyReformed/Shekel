@@ -19,8 +19,9 @@ reader reads around, has no counterpart here).
 ones reads (quill's closure, :func:`tools.quill.door.with_closure`, which holds every step
 above each of them); its leaves are quill's own (``leaves_below``: work in any state, a
 leaf split again counting as its own leaves), less each one dropped, which never ships.
-A release naming one of its leaves must leave production holding every leaf or none
-(R-BAL288): a release taking a whole group out is whole too.
+A leaf the window names counts even once dropped (undone, then abandoned), since this
+release changed it.  A release naming one of its leaves must leave production holding
+every leaf or none (R-BAL288): a release taking a whole group out is whole too.
 
 **What it cannot read refuses the release**, and nothing is declared after the cutover
 (R-BAL287, R-BAL289):
@@ -28,12 +29,18 @@ A release naming one of its leaves must leave production holding every leaf or n
 - an old-form ``Ships: <arc>:<id>``: the cutover's freeze ends with a release, so
   production held every one before the registries went (R-BAL287), and one here was
   merged after the freeze or missed by it.  Only a cut holding ``steps.md`` can judge
-  it, so the refusal names the newest one in the window, to release first with the
-  release tool as that cut holds it;
+  it, so the refusal names the newest one in the window whose history holds the claim,
+  to release first with the release tool as that cut holds it (none, for a claim merged
+  after the cutover);
+- an old-form ``Reopens: <arc>:<id>``: it undoes a step that has no card, so no reader
+  judges what it takes out of production;
 - a trailer naming a card the tracker does not hold: R-BAL289 refuses one before it
-  lands, by a trailer check reading the tracker that X-cx builds after this reader and
-  before the cutover, so what reaches here is a card deleted after its trailer landed
-  (until that check exists, a mistyped number too);
+  lands, by a trailer check reading the tracker (X-cx's piece L9d, built after this
+  reader and before the cutover), so what reaches here is a card deleted after its
+  trailer landed (until that check exists, a mistyped number too);
+- a trailer naming a card that is no work (a step split into leaves, a ruling, a
+  question; quill's ``is_work``): no commit ships one, and read as work it would pass as
+  moving no money;
 - a value of neither form, which CI's trailer check refuses before it lands.
 
 **The tracker is read once, at the release's cut** (:func:`read`), and every earlier cut
@@ -45,28 +52,45 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 from tools.ci import trailers
-from tools.ci.gitcmd import git
-from tools.quill.door import Tracker, dropped, leaves_below, with_closure
+from tools.quill.door import Tracker, dropped, is_work, leaves_below, with_closure
 from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, MOVES_MONEY_LABEL
-from tools.release._model import Carried, Group, Step, steps_blob
+from tools.release._model import Carried, Group, Step, first_parent_line, steps_blob
 
 
 @dataclass(frozen=True)
 class Cards:
     """What the release's cut knows of the cards its window names, read from the tracker
-    once: whether each card the tracker holds moves money, and each deploy-together
-    group one of them is a leaf of, with its leaves."""
+    once: whether each one that is work moves money; each deploy-together group one of
+    them is a leaf of, with its leaves; and what each named card that is no work is."""
 
     money: Mapping[int, bool]
     groups: Mapping[int, tuple[int, ...]]
+    no_work: Mapping[int, str]
 
 
-def _standing(root: Path, cut: str) -> set[int]:
-    """Every card shipped at ``cut``: what production runs once ``cut`` is released."""
-    return set(trailers.shipped(root, trailers.history(root, cut))[0])
+def _what(kind: str | None) -> str:
+    """What a card of ``kind`` that no commit ships is, for a refusal (a step is no work
+    only when it is split into leaves)."""
+    return ("a step split into leaves" if kind == "step"
+            else f"a {kind}" if kind else "a card of no type")
+
+
+@cache
+def _window(root: Path, base: str, cut: str) -> trailers.History:
+    """The trailers on ``<base>..<cut>``, read once per range: the judge passes resolved
+    shas, which name commits that never change."""
+    return trailers.history(root, f"{base}..{cut}")
+
+
+@cache
+def _standing(root: Path, cut: str) -> frozenset[int]:
+    """Every card shipped at ``cut``: what production runs once ``cut`` is released; read
+    once per cut, as :func:`_window` is."""
+    return frozenset(trailers.shipped(root, trailers.history(root, cut))[0])
 
 
 def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
@@ -78,47 +102,64 @@ def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
         tools.quill.door.GitHubError: when GitHub answers a read with an error.
         tools.ci.gitcmd.GitError: when git cannot read the range.
     """
-    named = {trailer.card for trailer in trailers.history(root, f"{base}..{cut}").trailers}
+    named = {trailer.card for trailer in _window(root, base, cut).trailers}
     held = tracker.cards(named)
     closure = with_closure(tracker, dict(held))
-    shipped = _standing(root, cut)
+    shipped = set(_standing(root, cut))
     groups = {}
     for number, card in closure.items():
         if DEPLOY_TOGETHER_LABEL in card.labels:
+            # A leaf dropped never ships, so the group is whole without it; but one the
+            # window names was changed by this release (shipped, or undone and then
+            # dropped), and production must not keep its siblings without it.
             leaves = tuple(leaf.number for leaf in leaves_below(card, closure, shipped)
-                           if not dropped(leaf.number, closure, shipped))
+                           if leaf.number in named
+                           or not dropped(leaf.number, closure, shipped))
             if named.intersection(leaves):
                 groups[number] = leaves
-    return Cards({number: MOVES_MONEY_LABEL in card.labels for number, card in held.items()},
-                 groups)
+    work = {number for number, card in held.items() if is_work(card, closure, shipped)}
+    return Cards({number: MOVES_MONEY_LABEL in held[number].labels for number in work},
+                 groups,
+                 {number: _what(card.kind) for number, card in held.items()
+                  if number not in work})
 
 
-def _judgeable(root: Path, base: str, cut: str) -> str | None:
+def _judgeable(root: Path, base: str, cut: str, claim: str) -> str | None:
     """The newest cut on ``dev``'s first-parent line in ``<base>..<cut>`` whose tree holds
-    ``steps.md``; None when none does."""
-    line = git(root, "rev-list", "--first-parent", f"{base}..{cut}").split()
-    return next((sha for sha in line if steps_blob(root, sha) is not None), None)
+    ``steps.md`` and whose history holds the commit ``claim``, so that releasing it
+    carries the claim; None when none does (the claim was merged after the cutover)."""
+    return next((sha for sha, _ in first_parent_line(root, base, cut)
+                 if steps_blob(root, sha) is not None
+                 and trailers.is_ancestor(root, claim, sha)), None)
 
 
 def _unreadable(root: Path, base: str, cut: str, found: trailers.History,
-                absent: Mapping[int, list[str]]) -> list[str]:
-    """Each thing this reader cannot read: an old-form claim, a card the tracker does not
-    hold, and a value of neither form."""
+                unread: Mapping[int, tuple[list[str], str | None]]) -> list[str]:
+    """Each thing this reader cannot read: an old-form claim; an old-form ``Reopens:``; a
+    card the tracker does not hold, or holds as no work; and a value of neither form."""
     lines = []
-    if found.old_form:
-        judgeable = _judgeable(root, base, cut)
+    for claim in found.old_form:
+        judgeable = _judgeable(root, base, cut, claim.sha)
         first = (f"release {judgeable[:12]} first, with the release tool as that cut holds it"
-                 if judgeable else "no cut on dev's line in this window holds steps.md")
-        lines += [f"{claim.sha[:12]} claims `{claim.key}` in the old form, which only a cut "
-                  "holding steps.md can judge (R-BAL287: the cutover's freeze ends with a "
-                  f"release of every one): {first}" for claim in found.old_form]
-    lines += [f"plan#{number} (named at {', '.join(sha[:12] for sha in shas)}) is a card the "
-              "tracker does not hold, so whether it moves money cannot be read (R-BAL289)"
-              for number, shas in sorted(absent.items())]
+                 if judgeable else "no cut on dev's line in this window holds steps.md and "
+                 "this commit, so no release can judge it: it was merged after the cutover")
+        lines.append(f"{claim.sha[:12]} claims `{claim.key}` in the old form, which only a cut "
+                     "holding steps.md can judge (R-BAL287: the cutover's freeze ends with a "
+                     f"release of every one): {first}")
+    lines += [f"{undo.sha[:12]} carries `Reopens: {undo.key}` in the old form: it undoes a "
+              "step that has no card, so no reader judges what it takes out of production "
+              "(R-BAL287, R-BAL288)" for undo in found.old_form_reopens]
+    for number, (shas, what) in sorted(unread.items()):
+        named = f"plan#{number} (named at {', '.join(sha[:12] for sha in shas)})"
+        lines.append(f"{named} is a card the tracker does not hold, so whether it moves "
+                     "money cannot be read (R-BAL289)" if what is None else
+                     f"{named} is {what}, which no commit ships, so it names no work whose "
+                     "flag can be read")
     return lines + list(found.malformed)
 
 
-def _group(group: int, leaves: tuple[int, ...], named: set[int], standing: set[int]) -> Group:
+def _group(group: int, leaves: tuple[int, ...], named: set[int],
+           standing: frozenset[int]) -> Group:
     """One group a release touches, each leaf sorted by whether the window names it and
     whether production holds it after the release."""
     def which(in_window: bool, in_production: bool) -> tuple[str, ...]:
@@ -135,7 +176,7 @@ def carried(root: Path, base: str, cut: str, known: Cards) -> Carried:
     Raises:
         tools.ci.gitcmd.GitError: when git cannot read the range.
     """
-    found = trailers.history(root, f"{base}..{cut}")
+    found = _window(root, base, cut)
     named: dict[int, list[str]] = {}
     for trailer in found.trailers:
         shas = named.setdefault(trailer.card, [])
@@ -150,5 +191,6 @@ def carried(root: Path, base: str, cut: str, known: Cards) -> Carried:
         for number, shas in sorted(named.items()) if number in known.money)
     groups = tuple(_group(group, leaves, set(named), standing)
                    for group, leaves in known.groups.items() if named.keys() & set(leaves))
-    absent = {number: shas for number, shas in named.items() if number not in known.money}
-    return Carried(steps, groups, tuple(_unreadable(root, base, cut, found, absent)))
+    unread = {number: (shas, known.no_work.get(number)) for number, shas in named.items()
+              if number not in known.money}
+    return Carried(steps, groups, tuple(_unreadable(root, base, cut, found, unread)))
