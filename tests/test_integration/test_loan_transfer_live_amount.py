@@ -875,8 +875,8 @@ def test_nothing_after_the_settle_moves_what_a_loan_payment_paid(
     would post it.
 
     **Each check fails FIRST under its own one-point mutation of the app
-    (measured on these bytes; the commit bodies that wrote and corrected
-    this case name each first-fail line):**
+    (measured at commit 1e778deea, whose body names each first-fail line
+    at that commit):**
 
     * checking reads -499.10 after the pay, the starting point: it fails
       when the derive-mode price drops its escrow term
@@ -911,8 +911,8 @@ def test_nothing_after_the_settle_moves_what_a_loan_payment_paid(
     ``leg_amounts_by_key``) shows the paid payment there at 1,599.10 with
     this case green.  ``test_calendar_service``'s
     ``test_a_settled_leg_is_a_paid_cell_worth_its_record`` catches that
-    swap.  The dashboard's bills load projected transfers only, so a paid
-    payment is never among them.
+    swap.  The dashboard's bills load only transfers still projected, so a
+    payment marked paid is not among them.
 
     **Left out, each measured:** checking, the loan's split and the record
     figure the grid's paid cell reads (``leg_settled_amounts_by_key``)
