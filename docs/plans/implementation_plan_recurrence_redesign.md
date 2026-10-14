@@ -274,7 +274,9 @@ record names both hashes and says why `R7c-c`, `R7c`, `R7a-2a` and `R-F1` stayed
 - [ ] **R5-b -- the stored date goes** (**R-R94**'s column half). It waits for `balance:X-bi-6-4`,
       which re-parents a transfer's record half and may delete the `transfer_service` shadow
       `due_date` mirror (`_create` / `_update` / `_restore`) and `TransferLeg.due_date` outright, so
-      this specification is RE-DERIVED on the tree that step leaves before anything is built.
+      this specification is RE-DERIVED on the tree that step leaves before anything is built. It
+      also waits for `balance:X-ek` (**balance:R-BAL271**): it extends the posted ledger's field
+      lists and relies on its deploy backfill, which that question may reopen.
 
 Add `due_on DATE NULL` to both row tables, backfilled exactly where the accessor would not reproduce
 the stored date (on the 2026-09-23 production clone: 10 live transactions, 3 live transfers and 51

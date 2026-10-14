@@ -332,9 +332,24 @@ record.
 - [ ] **C17-e -- coalesced nominal paydays are ONE paycheck** (**R-PC77**; closes **N-493**). Two
       nominal paydays a closed run displaces onto one cash day derive one paycheck wherever an era's
       grid is read; `reject_shift_on_short_cadence` is then deleted. `$0.00`, after `C17-d`.
-- [ ] **C23 -- the pay-period doors take a narrowed period** (O7, **balance:R-BAL263**).
+- [ ] **C23 -- the pay-period doors take a narrowed period** (O7, **balance:R-BAL263**). The two
+      locks it deletes are `test_generation_schedule.py`'s `TestNoOrmPayPeriodEntersTheSeam`, which
+      grades an IMPORT of the `PayPeriod` model in the generation seam, and
+      `test_pay_period_admin.py`'s `TestTheDestructiveDoorsHoldNoDerivedColumn`, which grades the
+      names `end_date` and `period_index` on any receiver in the destructive doors and still binds
+      because `DerivedPeriod` carries both (`app/services/pay_calendar/_derive.py:145`, `:147`). The
+      doors already take ids and counts and get their periods from `calendar_for`, and the seam
+      already takes period ids (`generation_schedule.py`'s `for_period_ids`), so a narrowed
+      parameter alone deletes neither lock: the trace re-derives the structure each lock stands in
+      for before anything is built. It waits for `recurrence:R5-b`, which rewrites the seam's
+      dating. `$0.00`.
 - [ ] **C24 -- every civil day through one pinned clock** (O7; closes **balance:N-191**,
-      **balance:N-197**).
+      **balance:N-197**). Every civil-day read in `app/` and `tests/` goes through one clock module
+      the suite pins by default, and `C10`'s process-clock checker extends to `tests/`, so neither
+      the process timezone nor the run date reaches a decision; CI's `TZ: Pacific/Kiritimati`
+      detector (`.github/workflows/ci.yml:93`) and the weekly `calendar-sweep.yml` are deleted,
+      while the checker stays. It waits for `C10` and `balance:X-dg`, whose far-future sweep date
+      this deletes; whether `X-dg` still adds it is the developer's question. `$0.00`.
 - [ ] **C25 -- the developer answers whether paycheck removal stops refusing** (O7; **PC-534**;
       `C16` waits on it, **balance:R-BAL271**, and on a yes is re-pointed onto, or cancelled by, the
       deletion step in the same commit).
@@ -438,6 +453,9 @@ Closes **P10**, **P46**.
       `c725b814` stripped it. Closed **P18**, **N-490**; opened **N-491**, owned by **C16**.
 
 - [ ] **C16 -- the ledger's two filing rules stop being one column to its reader.**
+
+It waits for `C25`'s answer (**balance:R-BAL271**): it rules the stored paycheck column on journal
+entries, which that question may reopen.
 
 **Starts with a ruling**, as C7 did. R-PC53 established that the column has two halves; this step
 decides what to do about one READER being unable to tell them apart.
