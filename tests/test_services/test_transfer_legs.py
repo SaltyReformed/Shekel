@@ -84,6 +84,7 @@ from app.services.transfer_legs import (
     recorded_transfer_legs,
     transfer_family_movements,
     transfer_movement_rows,
+    transfer_side_leg,
 )
 from app.services.transfer_service import (
     TransferSpec,
@@ -186,17 +187,120 @@ class TestLegOf:
         with pytest.raises(ValueError, match="neither side of transfer 7"):
             leg_of(transfer, 3)
 
-    def test_a_leg_reads_its_period_and_due_date_off_the_parent(self):
-        """The leg stores nothing: every column is the parent's."""
-        transfer = Transfer(
-            id=7, from_account_id=1, to_account_id=2, pay_period_id=11,
-            due_date=date(2026, 3, 4),
-        )
 
-        leg = leg_of(transfer, 1)
+class TestBothSidesShowTheTransfer:
+    """What a side of a transfer shows is what the transfer's row holds (ruling R-BAL290)."""
 
-        assert leg.pay_period_id == 11
-        assert leg.due_date == date(2026, 3, 4)
+    def test_both_sides_show_every_field_the_transfer_row_holds(
+        self, app, seed_user, seed_periods,
+    ):
+        """ONE fact, one test: each side shows the stored row's value, field by field.
+
+        A transfer is one stored row since plan step ``balance:X-bi-6-4d-3``,
+        and its two sides are read off it every time, so "both sides show the
+        transfer's amount" can break only in the code that READS a side,
+        never in an edit (ruling **R-BAL290** part 1, the developer,
+        2026-10-14).  This is that reader's one test; a door's test checks
+        what the door wrote on the row.
+
+        The transfer is written through the doors with a value in every field
+        that is not the field's default: $437.19, Cancelled (neither the
+        Projected a transfer is usually created in nor a settled status,
+        which would write the payment records this case is not about), the
+        fourth period, a due date four days into it, Groceries, notes, and
+        the override flag set through the edit door, which the create door
+        does not take.  Committed and re-read, so each side reads what was
+        stored.  The five ids are checked distinct first, so a side reading
+        another field's column cannot agree by accident.
+
+        Each side is read through both constructions of a leg: by SIDE
+        (``transfer_side_leg``, how the transfer service reads one) and by
+        ACCOUNT (``grid_transfer_leg``, through ``leg_of``, how the grid and
+        the fold reach one), and its amount through ``leg_amounts_by_key``,
+        the producer the grid prices a leg's cell with.  It replaces
+        :class:`TestLegOf`'s ``test_a_leg_reads_its_period_and_due_date_off_the_parent``,
+        an in-memory read of two of these fields on one side.
+        """
+        with app.app_context():
+            # Two fresh accounts, not the seeded checking: its id is the
+            # Cancelled status's on this seed, which the guard below refuses.
+            reserve = _savings(seed_user, name="Reserve")
+            savings = _savings(seed_user)
+            period = seed_periods[3]
+            due = period.start_date + timedelta(days=4)
+            created = create_transfer_from_spec(TransferSpec(
+                user_id=seed_user["user"].id,
+                from_account_id=reserve.id,
+                to_account_id=savings.id,
+                pay_period_id=period.id,
+                scenario_id=seed_user["scenario"].id,
+                amount_ownership=AmountOwnership.own(Decimal("437.19")),
+                status_id=ref_cache.status_id(StatusEnum.CANCELLED),
+                category_id=seed_user["categories"]["Groceries"].id,
+                notes="Quarterly top-up",
+                due_date=due,
+            ))
+            update_transfer(created.id, seed_user["user"].id, is_override=True)
+            db.session.commit()
+            db.session.expire_all()
+            row = db.session.get(Transfer, created.id)
+
+            held = {
+                "amount": row.amount,
+                "status_id": row.status_id,
+                "pay_period_id": row.pay_period_id,
+                "due_date": row.due_date,
+                "category_id": row.category_id,
+                "is_override": row.is_override,
+                "notes": row.notes,
+            }
+            # Guards on the INPUT, not reads: the row holds every stated value,
+            # and no two of its ids coincide.
+            assert held == {
+                "amount": Decimal("437.19"),
+                "status_id": ref_cache.status_id(StatusEnum.CANCELLED),
+                "pay_period_id": period.id,
+                "due_date": due,
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "is_override": True,
+                "notes": "Quarterly top-up",
+            }, "precondition: the doors stored every stated value"
+            assert len({
+                row.status_id, row.pay_period_id, row.category_id,
+                row.from_account_id, row.to_account_id,
+            }) == 5, "precondition: no two of the row's ids coincide"
+            basis = basis_for(reserve, seed_user["scenario"])
+
+            def shown(leg):
+                return {
+                    "account_id": leg.account_id,
+                    "is_income": leg.is_income,
+                    "amount": leg_amounts_by_key([leg], basis)[leg.cell_key],
+                    "status_id": leg.status_id,
+                    "pay_period_id": leg.pay_period_id,
+                    "due_date": leg.due_date,
+                    "category_id": leg.category_id,
+                    "is_override": leg.is_override,
+                    "notes": leg.notes,
+                }
+
+            expense = {**held, "account_id": row.from_account_id, "is_income": False}
+            income = {**held, "account_id": row.to_account_id, "is_income": True}
+            assert {
+                "expense by side": shown(transfer_side_leg(row, is_income=False)),
+                "income by side": shown(transfer_side_leg(row, is_income=True)),
+                "expense by account": shown(
+                    grid_transfer_leg(row, row.from_account_id),
+                ),
+                "income by account": shown(
+                    grid_transfer_leg(row, row.to_account_id),
+                ),
+            } == {
+                "expense by side": expense,
+                "income by side": income,
+                "expense by account": expense,
+                "income by account": income,
+            }
 
 
 class TestTransferLegs:
@@ -1466,9 +1570,21 @@ class TestALegsDisplayProjections:
     """The parent's columns read through the leg, and the label composition."""
 
     def test_the_label_is_composed_from_the_endpoints_current_names(self):
+        """Each side's label names the OTHER endpoint, as it is named now.
+
+        And neither side names a transaction definition, though its transfer
+        has one: the transfer carries a template link here, so a side that
+        read the link would answer it.  That half was asked only of a
+        generated transfer's two sides in ``test_transfer_service.py``'s
+        ``test_with_template_id`` until plan step ``balance:X-bi-6-4d-3``
+        (ruling R-BAL290 part 1 moves it here; the step's checkpoint 2e-2b-1b
+        drops it there).
+        """
         savings = Account(name="Savings")
         checking = Account(name="Checking")
-        transfer = Transfer(from_account=checking, to_account=savings)
+        transfer = Transfer(
+            from_account=checking, to_account=savings, transfer_template_id=5,
+        )
         transfer.from_account_id, transfer.to_account_id = 1, 2
         expense = TransferLeg(transfer=transfer, account_id=1, is_income=False)
         income = TransferLeg(transfer=transfer, account_id=2, is_income=True)
@@ -1482,7 +1598,9 @@ class TestALegsDisplayProjections:
 
         savings.name = "Emergency Fund"
         assert expense.name == "Transfer to Emergency Fund"
-        assert expense.template_id is None and expense.recurs is False
+        assert [(leg.template_id, leg.recurs) for leg in (expense, income)] == [
+            (None, False), (None, False),
+        ]
         assert expense.record is None
 
 
