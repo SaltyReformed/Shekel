@@ -875,8 +875,8 @@ def test_nothing_after_the_settle_moves_what_a_loan_payment_paid(
     would post it.
 
     **Each check fails FIRST under its own one-point mutation of the app
-    (measured on these bytes; the commit that wrote this case names each
-    first-fail line):**
+    (measured on these bytes; the commit bodies that wrote and corrected
+    this case name each first-fail line):**
 
     * checking reads -499.10 after the pay, the starting point: it fails
       when the derive-mode price drops its escrow term
@@ -886,11 +886,11 @@ def test_nothing_after_the_settle_moves_what_a_loan_payment_paid(
       when the derive-mode price drops the extra (``_loan_installment``'s
       P&I + escrow + extra sum) and when the settings door redirects
       without saving it;
-    * the calendar's day cells and the dashboard's bills
-      (``cash_ledger.leg_contributions_by_key``, the map both index) still
-      show the PAID Feb 1 payment at 1,499.10: it fails when
+    * the valuation the calendar's day cells index for a transfer leg
+      (``cash_ledger.leg_contributions_by_key``), asked of the PAID Feb 1
+      payment's leg on the loan, still reads 1,499.10: it fails when
       ``leg_contribution_of`` stops asking the record first
-      (``leg_fixed_contribution`` skipped) and shows the plan's 1,599.10;
+      (``leg_fixed_contribution`` skipped) and reads the plan's 1,599.10;
     * the repeat click is answered 200: it fails when the transfer
       workflow loses its ``done -> done`` identity edge and refuses the
       click;
@@ -900,12 +900,27 @@ def test_nothing_after_the_settle_moves_what_a_loan_payment_paid(
       takes the paid 1,499.10 off the books and leaves checking at
       1,000.00.
 
-    **Left out, each measured:** checking, the loan's split and the grid's
-    paid cell right after the plan change, which none of the one-point
-    mutations measured moves (each reads only the money that moved); the
-    PAID payment's own planned figure, the grid's budget figure for it,
-    which reads 1,599.10 beside its 1,499.10 record and is an open question
-    of its own, not settled here; and the first guard itself
+    The other two acts' acceptance reads are graded the same way: the
+    first click's 200 fails first when the transfer workflow loses its
+    ``projected -> done`` edge and refuses the click (400), and the
+    settings door's 302 when its definition gate never matches (404).
+
+    The third check grades that shared valuation, not the calendar's use
+    of it: the calendar draws the checking side's leg, and a swap at its
+    call site (``calendar_service._contributions`` asking
+    ``leg_amounts_by_key``) shows the paid payment there at 1,599.10 with
+    this case green.  ``test_calendar_service``'s
+    ``test_a_settled_leg_is_a_paid_cell_worth_its_record`` catches that
+    swap.  The dashboard's bills load projected transfers only, so a paid
+    payment is never among them.
+
+    **Left out, each measured:** checking, the loan's split and the record
+    figure the grid's paid cell reads (``leg_settled_amounts_by_key``)
+    right after the plan change, which none of the one-point mutations
+    measured moves (each reads only the money that moved); the PAID
+    payment's own planned figure (``leg_amounts_by_key``, the grid's budget
+    map), which reads 1,599.10 beside its 1,499.10 record and is an open
+    question of its own, not settled here; and the first guard itself
     (``enters_settled_band`` skipped, so a repeat click runs the settle act
     again), which alone changes nothing this case reads and is graded by
     ``test_transfer_settle_freeze``'s
@@ -948,8 +963,8 @@ def test_nothing_after_the_settle_moves_what_a_loan_payment_paid(
         assert _derived_cash(seed_user, [transfer_legs.leg_of(unpaid, loan.id)])[
             (unpaid_id, loan.id)
         ] == Decimal("1599.10")
-        # The calendar and the dashboard's bills still show the paid Feb 1
-        # payment at what it paid, not at its plan's 1,599.10.
+        # The valuation the calendar's day cells index still reads the paid
+        # Feb 1 payment at what it paid, not at its plan's 1,599.10.
         assert cash_ledger.leg_contributions_by_key(
             [_side_leg(paid_id, loan.id)],
             cash_ledger.derived_amount_basis(
