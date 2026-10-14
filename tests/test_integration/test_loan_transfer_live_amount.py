@@ -30,7 +30,6 @@ Every monetary expectation is hand-computed with the arithmetic shown.
 from datetime import date
 from decimal import Decimal
 
-from app import ref_cache
 from app.enums import AcctTypeEnum, LedgerAccountKindEnum
 from app.extensions import db
 from app.models.escrow_line import EscrowComponentVersion, EscrowLine
@@ -52,6 +51,9 @@ from app.services.loan_loaders import (
 from app.services.installment_calendar import monthly_due_date
 from app.services.balance_at import BalanceContext, cash_balance_at
 from app.services.generation_schedule import GenerationSchedule
+from app.services.recurring_transfer_query import loan_payment_config
+from app.services.row_valuation import leg_settled_contribution
+from app.services import template_amount_service
 from app.utils.dates import display_today
 from tests._test_helpers import (
     add_escrow_line,
@@ -64,8 +66,6 @@ from tests._test_helpers import (
     transfer_side_record,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
-from app.services.row_valuation import leg_settled_contribution
-from app.services import template_amount_service
 
 
 def _derived_cash(seed_user, legs):
@@ -414,7 +414,7 @@ def test_derived_transfer_due_date_matches_loan_due_date(
     to disagree; the parent's own assertions stand.
     """
     with app.app_context():
-        loan, _escrow, scenario_id, template, _rule, _periods = (
+        _loan, _escrow, scenario_id, template, _rule, _periods = (
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         created = transfer_recurrence.generate_for_template(
@@ -966,7 +966,7 @@ def test_nothing_after_the_settle_moves_what_a_loan_payment_paid(
 
 
 def test_a_definitions_standing_extra_is_read_off_its_own_settings_row(
-    app, db, seed_user, seed_periods,
+    app, db, seed_user,
 ):
     """A recurring payment's extra is ITS settings row's, 0.00 without one.
 
@@ -978,11 +978,6 @@ def test_a_definitions_standing_extra_is_read_off_its_own_settings_row(
     there): the extra rides inside each generated row's cash (amount rule 4),
     and no loan-level figure threads it any more.
     """
-    from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
-    from app.services.recurring_transfer_query import (  # pylint: disable=import-outside-toplevel
-        loan_payment_config,
-    )
-
     with app.app_context():
         loan, _escrow, _scenario_id, template, _rule, _periods = (
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
@@ -1181,7 +1176,7 @@ def test_manual_payment_without_extra_gets_no_override(
         assert all(v == Decimal("1499.10") for v in after.values())
 
 
-def test_a_DERIVE_payment_on_the_same_fixture_DOES_follow_the_escrow(
+def test_a_derive_payment_on_the_same_fixture_does_follow_the_escrow(
     app, db, seed_user, seed_periods,
 ):
     """The other half of the manual case's discrimination, asserted not argued.
