@@ -1,13 +1,16 @@
 """
 Shekel Budget App -- The Books Boundary
 
-ONE comparison: whether an account whose books open on a day may record money
-on another day (ruling **balance:R-HG**) -- and, beside it, the one statement
-of WHICH day of a planned row that comparison is asked of
-(:func:`row_books_day`, rulings **R-PC86** and **R-PC89**).  Pure date
-arithmetic -- no Flask, no
-SQLAlchemy, no clock -- so it imports cleanly into the recurrence package,
-which is pure by design, and into :mod:`app.services.cash_ledger` alike.
+ONE boundary, read two ways (ruling **balance:R-HG**: an account's books open
+at the CLOSE of their opening day).  They state a closing BALANCE for that day
+and every later one (:func:`books_state_balance`), and they hold MOVEMENT only
+from the day after (:func:`books_hold`, whose first day is
+:func:`first_movement_day`, the one spelling of "the day after") -- and,
+beside them, the one statement of WHICH day of a planned row the movement
+test is asked of (:func:`row_books_day`, rulings **R-PC86** and **R-PC89**).
+Pure date arithmetic -- no Flask, no SQLAlchemy, no clock -- so it imports
+cleanly into the recurrence package, which is pure by design, and into
+:mod:`app.services.cash_ledger` alike.
 
 **Why a module of its own** (plan step ``pay_calendar:C18-a``, ruling
 **R-PC85**).  :func:`books_hold` lived in ``cash_ledger._books`` while every
@@ -22,35 +25,96 @@ step over.  ``cash_ledger`` imports it back and re-exports it under its old
 name, so every existing ``cash_ledger.books_hold`` reader is unchanged.
 """
 
-from datetime import date
+from datetime import date, timedelta
+
+#: One civil day: the books open at the CLOSE of ``opened_on`` (ruling
+#: **R-HG**), so the first day they can hold a movement is the next one.
+_ONE_DAY = timedelta(days=1)
+
+
+def first_movement_day(opened_on: date) -> date:
+    """Return the first day books opening on *opened_on* may hold a movement.
+
+    **"The day after the books open", spelled ONCE** (rule 14, plan step
+    ``balance:X-f3c-2b-2c``).  The opening equity is the balance at the CLOSE
+    of ``opened_on`` (ruling **R-HG**), so a movement dated on it is already
+    inside the figure and the first day one may be dated is the next.  Two
+    readers ask it: :func:`books_hold`, and
+    :attr:`~app.services.balance_at.CashOutstandingDifference.span`, whose
+    :class:`~app.services.balance_at.BooksSpan` starts on it.  *That span
+    added a day of its own until this step, a second spelling of the boundary
+    that every claim "a day of the books span is a books day" rested on
+    staying in step with this one.*
+
+    Args:
+        opened_on: The day the account's books open.
+
+    Returns:
+        The day after *opened_on*.
+    """
+    return opened_on + _ONE_DAY
+
+
+def books_state_balance(opened_on: date, day: date) -> bool:
+    """Return whether books opening on *opened_on* state a balance for *day*.
+
+    **The BALANCE half of R-HG** (ruling **R-BAL286**, plan step
+    ``balance:X-f3c-2b-2c``).  The opening equity IS the closing balance of
+    ``opened_on``, so the books know their balance from that day on -- one
+    day EARLIER than they hold a movement (:func:`books_hold`).  A day before
+    it has no balance the books ever stated, because they did not exist yet:
+    no figure the fold carries there is a balance they held, whether the
+    opening level read flat backwards or a declaration back-dated below the
+    opening (finding **N-400**: under books opened Jan 1 at ``500.00``, the
+    app before this step showed ``500.00`` on Dec 19 and ``510.00`` on Dec 20,
+    the day a ``510.00`` declaration was dated).  The books-vs-bank
+    comparison (:mod:`app.services.bank_agreement`) is its one reader.
+
+    Args:
+        opened_on: The day the account's books open.
+        day: The civil day whose closing balance is asked about.
+
+    Returns:
+        ``True`` when *day* is the opening day or later.
+    """
+    return day >= opened_on
 
 
 def books_hold(opened_on: date, day: date) -> bool:
     """Return whether books opening on *opened_on* may record money on *day*.
 
-    **THE comparison the books boundary is about, stated once** (ruling
-    **R-HG**).  An account's opening equity is the balance at the CLOSE of
-    ``opened_on``, so a day on or before it is ALREADY INSIDE the figure and
-    recording money there counts it twice.  Every refusal in
+    **THE movement comparison the books boundary is about, stated once**
+    (ruling **R-HG**; the BALANCE reading beside it is
+    :func:`books_state_balance`).  An account's opening equity is the balance
+    at the CLOSE of ``opened_on``, so a day on or before it is ALREADY INSIDE
+    the figure and recording money there counts it twice.  Every refusal in
     ``cash_ledger._books`` asks this and none re-spells it.
 
-    **It is ``>`` and not ``>=``, and that is the whole of R-HG's ruled
-    half.**  The ruling weighed the start-of-day reading -- refuse only a
-    STRICTLY earlier movement -- and rejected it, because
+    **It is ``>`` and not ``>=`` -- spelled as "on or after**
+    :func:`first_movement_day` **" so the day after has one home -- and that
+    is the whole of R-HG's ruled half.**  The ruling weighed the start-of-day
+    reading -- refuse only a STRICTLY earlier movement -- and rejected it,
+    because
     ``account_service.create_account`` stores the balance a human typed *as
     of* a day, which is that day's close, and admitting a same-day movement
     leaves the harm alive for exactly the rows finding **N-378** measured: on
     a MODELLED account the correction that heals the double count books to
     ``unrealized_change``, so a transfer becomes market performance that never
     unwinds.  Stating it in one function is what stops the two readings
-    drifting apart across its five call sites in ``cash_ledger._books``, ONE
-    in ``statement_match`` (``_gaps._split_at_books_open``), ONE in the
-    recurrence walk (``recurrence._placement._lands_inside_the_books``, plan step
-    ``pay_calendar:C18-a``: ruling **R-PC86** chose this same strict reading
-    for a GENERATED row, so a bill due on the opening day is inside the
-    opening exactly as a movement settled that day is), and one SQL tier --
-    and the SQL tier states it once too, as ``budget.books_hold``, which
-    every predicate there asks rather than re-spelling.  *It said TWO in
+    drifting apart across its call sites -- every refusal in
+    ``cash_ledger._books``; ``statement_match`` (``_gaps._split_at_books_open``);
+    the recurrence walk (``recurrence._placement._lands_inside_the_books``,
+    plan step ``pay_calendar:C18-a``: ruling **R-PC86** chose this same strict
+    reading for a GENERATED row, so a bill due on the opening day is inside
+    the opening exactly as a movement settled that day is);
+    ``definition_unarchive`` (``own_day_held``, a planned row's own day); and
+    ``bank_agreement`` (on which days the books' MOVEMENT is known to the
+    books-vs-bank comparison, plan step ``balance:X-f3c-2b-2c``, rulings
+    **R-BAL285** and **R-BAL291**: a bank line on the opening day is inside
+    the opening, and every later day is the books'), the sites a grep finds
+    on 2026-10-14 -- and across the SQL tier, which
+    states it once too, as ``budget.books_hold``, which every predicate
+    there asks rather than re-spelling.  *It said TWO in
     ``statement_match``, the second being ``_undisposed.awaiting_review_count``
     open-coding the same ``>`` as a COLUMN EXPRESSION because a SQL filter
     cannot call a Python predicate.*  Plan step ``bank_import:X-gm`` deleted
@@ -66,10 +130,11 @@ def books_hold(opened_on: date, day: date) -> bool:
         day: The civil day money is claimed to have moved.
 
     Returns:
-        ``True`` when *day* falls after the books opened, so the movement is
-        outside the opening equity and may be recorded.
+        ``True`` when *day* falls after the books opened -- on or after
+        :func:`first_movement_day`, the one spelling of that day -- so the
+        movement is outside the opening equity and may be recorded.
     """
-    return day > opened_on
+    return day >= first_movement_day(opened_on)
 
 
 def row_books_day(due_on: date, period_end: date, *, is_envelope: bool) -> date:

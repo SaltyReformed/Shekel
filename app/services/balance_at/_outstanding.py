@@ -49,7 +49,7 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 """
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
@@ -58,23 +58,13 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.cash_ledger import dated_deltas
+from app.utils.books_boundary import first_movement_day
 from app.utils.money import round_money
 
 from . import _cash_fold
 from ._context import BalanceContext
 from ._fold import sample_cumulative
 from ._inputs import _require_scenario
-
-#: The books open at the CLOSE of ``opened_on`` (ruling **R-HG**), so the first
-#: day they can hold a movement is the one after it.
-#:
-#: **It is NOT the same constant as** :data:`~._cash_fold._ONE_DAY` **however
-#: identically it is spelled**, and a first draft claimed a kinship that
-#: neighbour's own text denies: that one is ruling **R-G**'s clamp floor, the
-#: earliest day a still-PROJECTED row may land on.  Two different rules that
-#: happen to share ``timedelta(days=1)``, and saying WHICH is the whole value
-#: of naming it at all.
-_ONE_DAY = timedelta(days=1)
 
 
 @dataclass(frozen=True)
@@ -89,11 +79,14 @@ class BooksSpan:
     spelled them consistently.
 
     Attributes:
-        first_day: The day AFTER the books opened.  An opening equity is the
-            CLOSING balance for ``opened_on`` (ruling **R-HG**), so that day is
-            already inside the level the difference is measured from and no
-            movement may be dated on it -- a deferrable constraint trigger
-            makes such a row unstorable since plan step X-f3c-2b-1.
+        first_day: The day AFTER the books opened
+            (:func:`~app.utils.books_boundary.first_movement_day`, the one
+            spelling of that day since plan step ``balance:X-f3c-2b-2c``).  An
+            opening equity is the CLOSING balance for ``opened_on`` (ruling
+            **R-HG**), so that day is already inside the level the difference
+            is measured from and no movement may be dated on it -- a
+            deferrable constraint trigger makes such a row unstorable since
+            plan step X-f3c-2b-1.
         last_day: The day of the account's latest assertion -- the declaration
             the difference is measured against.
     """
@@ -184,7 +177,8 @@ class CashOutstandingDifference:
             the assertion's own day.
         """
         return BooksSpan(
-            first_day=self.opened_on + _ONE_DAY, last_day=self.asserted_on,
+            first_day=first_movement_day(self.opened_on),
+            last_day=self.asserted_on,
         )
 
     @property

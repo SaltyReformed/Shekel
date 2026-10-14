@@ -138,18 +138,25 @@
      the one the figure above accumulated over -- not a statement's own period,
      which would let one reconciled week vouch for months nobody has read.
 
-     EACH SENTENCE IS ABOUT THE WHOLE SPAN, NEVER A PART OF A TOTAL.  The two
-     counts OVERLAP: a day before every recorded line is both un-imported and
-     un-compared, so a reader adding them would double-count.  They are
-     phrased "N of them" against the same denominator for that reason.
+     THE UNCOMPARED DAYS ARE TWO PARTS THAT SHARE NO DAY, ONE SENTENCE EACH.
+     A day is compared only when both records cover it (ruling R-BAL291), so
+     every compared day is an imported one and ``unchecked`` is
+     ``unimported`` plus ``imported_unchecked`` (plan step
+     balance:X-f3c-2b-2c, finding BAL-650).  The first sentence counts the
+     days no statement covers and the second only the imported days the
+     comparison did not draw, so neither recounts the other's.  *Until that
+     step the two counts overlapped and each was phrased as its own fact
+     about the whole span.*
 
-     "YOUR STATEMENTS' LINES" IS EXACT AND "YOUR STATEMENTS" WOULD NOT BE.  An
-     import records the span between its file's FIRST and LAST line day
-     (``statement_import._record``); no adapter stores the period a file
-     DECLARES.  So a March statement whose first transaction is the 5th does
-     not vouch for the 1st here even though it read it -- the count refuses
-     more than it must, never less, which is the safe direction for the gate
-     X-f3c-4 hangs on it.  Finding N-434 owns making it exact. #}
+     "YOUR STATEMENTS' LINES" REFUSES MORE THAN IT MUST, NEVER LESS.  An import
+     stores the window it DECLARES (``declared_start`` / ``declared_end``,
+     plan step bank_import:X-f6b-1, which closed finding N-434), and the SECU
+     CSV, the only adapter today, declares its own first..last line day.  So a
+     March statement whose first transaction is the 5th does not vouch for
+     the 1st here even though it read it -- the safe direction for the gate
+     X-f3c-4 hangs on it.  A feed declaring a wider window is covered, and
+     drawing the comparison over such a window's quiet edges is finding
+     bank_import:BI-513's. #}
   <div class="card-footer text-muted small">
     {% if d.span.is_empty %}
       Your books open on {{ d.opened_on.strftime('%b %-d, %Y') }}, on or after
@@ -171,11 +178,11 @@
       {{ r.last_day.strftime('%b %-d, %Y') }}.
       {% if r.unimported %}
       {{ r.unimported }} of them fall outside the lines of every statement you
-      have imported.
+      have imported, so they could not be compared.
       {% endif %}
-      {% if r.unchecked %}
-      {{ r.unchecked }} of them could not be compared &mdash; either your
-      records do not reach that far back, or they fall outside the range this
+      {% if r.imported_unchecked %}
+      {{ r.imported_unchecked }} of them fall inside an imported statement but
+      could not be compared, because they lie outside the range this
       comparison draws.
       {% endif %}
       {% if r.disagreeing %}
