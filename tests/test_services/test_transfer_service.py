@@ -277,10 +277,11 @@ class TestCreateTransfer:
         side names no TRANSACTION definition whatever its transfer's shape
         (the grid's row-key contract) is ``test_transfer_legs.py``'s
         ``TestALegsDisplayProjections``, which asks it in memory of a
-        generated, a placed and an ad-hoc transfer and, saved and settled,
-        of an engine-generated one, and that file's
-        ``TestBothSidesShowTheTransfer``, which asks it of committed ad-hoc
-        transfers.
+        generated, a placed and an ad-hoc transfer and, saved, of an
+        engine-generated one while it is still Projected (this read's own
+        state, asked there since checkpoint 2e-2b-1b-2c) and again once it
+        is settled, and that file's ``TestBothSidesShowTheTransfer``, which
+        asks it of committed ad-hoc transfers.
         **The link read is not graded by a mutant**: dropping the link at
         the create is refused there by the transfers' CHECK, so that mutant
         never reaches the read (measured on this read and on the one before
