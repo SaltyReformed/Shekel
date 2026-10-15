@@ -12,8 +12,8 @@ from pathlib import Path
 from tools.split._layout import Layout
 from tools.split._source import Refusal
 
-#: pylint's symbol for the cross-file duplicate check; a new one between parts is refused
-#: outright (ruling Fork 5, item 4), even though a single file cannot produce it before.
+#: pylint's symbol for the cross-file duplicate check, judged pair by pair in
+#: :mod:`tools.split._similar` (the coordinator's correction to Fork 5 item 4).
 DUPLICATE_CODE = "duplicate-code"
 
 
@@ -77,14 +77,13 @@ def pylint_counts(messages: list[dict]) -> Counter[str]:
 
 
 def compare_pylint(before: list[dict], after: list[dict]) -> list[str]:
-    """Failures where the parts hold a pylint message kind the source did not, more of one
-    kind than it did, or any duplicate-code between parts."""
+    """Failures where the parts hold a pylint message kind the source did not, or more of
+    one kind than it did.  duplicate-code is not counted here: the source's count of it is
+    structurally zero (pylint never compares a file with itself), so each pair between parts
+    is judged revealed or created by :mod:`tools.split._similar` instead."""
     was, now = pylint_counts(before), pylint_counts(after)
-    failures = [f"{symbol}: {now[symbol]} after, {was[symbol]} before"
-                for symbol in sorted(now) if now[symbol] > was[symbol]]
-    if now[DUPLICATE_CODE] and not any(DUPLICATE_CODE in f for f in failures):
-        failures.append(f"{DUPLICATE_CODE}: {now[DUPLICATE_CODE]} between parts")
-    return failures
+    return [f"{symbol}: {now[symbol]} after, {was[symbol]} before"
+            for symbol in sorted(now) if symbol != DUPLICATE_CODE and now[symbol] > was[symbol]]
 
 
 def new_kinds(before: list[dict], after: list[dict]) -> dict[str, list[str]]:

@@ -25,6 +25,7 @@ from pathlib import Path
 from tools.ci.arcs import REPO
 from tools.split import _dynamic as dynamic
 from tools.split import _run as run
+from tools.split import _similar as similar
 from tools.split._layout import Layout, resolve
 from tools.split._model import Plan, PlanError, load_plan
 from tools.split._prove import describe, prove_static
@@ -153,6 +154,7 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     after_pylint = run.pylint_messages(ctx.root, files)
     failures += [f"pylint: {f}" for f in dynamic.compare_pylint(ctx.read(_BEFORE_PYLINT),
                                                                after_pylint)]
+    failures += _duplicate_arm(ctx, layout, idmap, after_pylint, seen)
     importers = ctx.read(_META)["importers"]
     importer_kinds = dynamic.new_kinds(ctx.read(_BEFORE_IMPORTERS), run.pylint_messages(
         ctx.root, importers)) if importers else {}
@@ -162,8 +164,24 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     hits = dynamic.classify(ctx.root, run.census(ctx.root, layout.plan))
     print("\n".join(_report_moves(ctx, layout, idmap, seen)
                     + _report_lint(ctx, after_pylint, importer_kinds)
+                    + _report_duplicates(seen)
                     + _report_pointers(gate_line, hits)))
     return failures
+
+
+def _duplicate_arm(ctx: Context, layout: Layout, idmap: Path, after_pylint: list[dict],
+                   seen: dict) -> list[str]:
+    """Judge every duplicate-code pair between the parts; list the revealed ones beside the
+    id map (``<stem>.r0801.txt``) and return a failure for each created one."""
+    duplicates = similar.sort_pairs(layout, ctx.root, ctx.rules(), after_pylint,
+                                    (ctx.into / _SOURCE).read_text(encoding="utf-8"))
+    revealed = idmap.with_name(f"{ctx.plan.stem}.r0801.txt")
+    revealed.write_text("".join(
+        f"{a} ~ {b}  (source lines {sa[0] + 1}-{sa[1]} ~ {sb[0] + 1}-{sb[1]})\n"
+        for a, b, sa, sb in duplicates.revealed), encoding="utf-8")
+    seen["revealed"] = (len(duplicates.revealed), revealed)
+    return [f"duplicate-code CREATED by the split: {a} ~ {b}: {why}"
+            for a, b, why in duplicates.created]
 
 
 def _report_moves(ctx: Context, layout: Layout, idmap: Path, seen: dict) -> list[str]:
@@ -196,6 +214,14 @@ def _report_lint(ctx: Context, after_pylint: list[dict], importer_kinds: dict) -
         f"- importers re-pointed: {ctx.read(_META)['importers']}; kinds new to them: "
         f"{importer_kinds}",
     ]
+
+
+def _report_duplicates(seen: dict) -> list[str]:
+    """The proof block's duplicate-code line: every pair between parts, pre-existing."""
+    count, path = seen["revealed"]
+    return [f"- duplicate-code: {count} R0801 pairs, pre-existing, revealed not created "
+            f"(each mapped to two distinct source ranges pylint's own Symilar reports as a "
+            f"pair; listed in {path.name})"]
 
 
 def _report_pointers(gate_line: str, hits: list[dynamic.Hit]) -> list[str]:

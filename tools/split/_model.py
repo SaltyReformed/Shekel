@@ -63,7 +63,7 @@ class Plan:
 
     @property
     def dotted(self) -> str:
-        """The source module's dotted import path (``tests.test_routes.test_loan``)."""
+        """The source module's dotted import path (``tests.test_area.test_sample``)."""
         return ".".join(self.package.parts)
 
     @property

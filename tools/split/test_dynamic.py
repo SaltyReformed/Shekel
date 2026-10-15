@@ -150,12 +150,17 @@ class TestThePylintComparison:
     @pytest.mark.parametrize("after, why", [
         (("unused-import", "unused-import"), "unused-import: 2 after, 1 before"),
         (("unused-import", "line-too-long"), "line-too-long: 1 after, 0 before"),
-        (("unused-import", "duplicate-code"), "duplicate-code"),
     ])
     def test_each_increase_fails(self, after, why):
-        """A kind up, a new kind, and duplicate-code between parts."""
+        """A kind up, and a new kind."""
         failures = dynamic.compare_pylint(self.messages("unused-import"), self.messages(*after))
         assert any(why in f for f in failures)
+
+    def test_duplicate_code_is_left_to_the_pair_by_pair_arm(self):
+        """The source's duplicate-code count is structurally zero, so it is not counted here;
+        :mod:`tools.split._similar` judges each pair (test_similar.py shows it refusing)."""
+        assert not dynamic.compare_pylint(self.messages("unused-import"),
+                                          self.messages("unused-import", "duplicate-code"))
 
     def test_new_kinds_are_named_per_importer(self):
         """An edited importer's new kind is reported against its own file."""

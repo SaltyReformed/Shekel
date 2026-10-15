@@ -237,11 +237,9 @@ def _string(node: ast.AST) -> str | None:
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
-def _globals_key(node: ast.AST) -> str | None:
-    """The key ``node`` touches when it is ``<x>.setitem(globals(), "<key>", ...)``,
-    ``<x>.delitem(globals(), "<key>")`` or ``globals()["<key>"]``; else None."""
-    if isinstance(node, ast.Subscript) and _is_globals_call(node.value):
-        return _string(node.slice)
+def _patch_key(node: ast.AST) -> str | None:
+    """The key ``node`` patches when it is ``<x>.setitem(globals(), "<key>", ...)`` or
+    ``<x>.delitem(globals(), "<key>")`` (a patch its fixture undoes); else None."""
     if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
         return None
     if node.func.attr in {"setitem", "delitem"} and len(node.args) >= 2 and _is_globals_call(
@@ -251,12 +249,13 @@ def _globals_key(node: ast.AST) -> str | None:
 
 
 def globals_keys(nodes: tuple[ast.AST, ...]) -> set[str] | None:
-    """The keys every ``globals()`` call in ``nodes`` touches, or None when any call is used
-    in a shape :func:`_globals_key` cannot read a key from."""
+    """The keys the ``globals()`` calls in ``nodes`` patch, or None when any call is used in
+    another shape: a store or read through the dict (a store nothing undoes; a read of a key
+    a part may not bind), a computed key, or the dict itself."""
     walked = [sub for top in nodes for sub in ast.walk(top)]
     calls = sum(1 for sub in walked if _is_globals_call(sub))
-    keys = [key for key in map(_globals_key, walked) if key is not None]
-    return set(keys) if len(keys) == calls else None
+    patched = [key for key in map(_patch_key, walked) if key is not None]
+    return set(patched) if len(patched) == calls else None
 
 
 def _root_name(node: ast.AST) -> str | None:
@@ -307,26 +306,87 @@ def _check_nodes(output: Output, source: SourceModule) -> None:
                 raise Refusal(f"{piece.binds} (to {output.module}): {why}")
 
 
-def _check_globals(outputs: dict[str, Output], source: SourceModule) -> None:
-    """Refuse ``globals()`` unless each key it touches is an import alias read only by
-    pieces in the same output (the patch then reaches every reader, as it did before)."""
+def _patches_outside_a_test_body(unit_node: ast.AST, rules: CollectRules) -> bool:
+    """Whether a ``globals()`` patch in ``unit_node`` sits anywhere but directly in a test
+    function's body: the test function itself, or a test method of a test class (a patch
+    in a fixture is live for every test that requests it; one in a nested function runs
+    whenever that function does)."""
+    bodies: list[ast.AST] = []
+    if isinstance(unit_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        bodies = [unit_node]
+    elif isinstance(unit_node, ast.ClassDef):
+        bodies = [m for m in unit_node.body
+                  if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    inside = set()
+    for body in bodies:
+        if not rules.is_test_function(body.name):
+            continue
+        nested = {id(s) for n in ast.walk(body) if n is not body and isinstance(
+            n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef))
+            for s in ast.walk(n)}
+        inside |= {id(s) for s in ast.walk(body) if id(s) not in nested}
+    return any(_patch_key(s) is not None and id(s) not in inside for s in ast.walk(unit_node))
+
+
+def _reach(start: frozenset[str], frees: dict[str, set[str]], fixtures: set[str]) -> set[str]:
+    """Every source node reached from the names in ``start`` by name, transitively (a name
+    read as a value counts as much as a call), plus every module-level fixture."""
+    reached: set[str] = set()
+    pending = (set(start) | fixtures) & set(frees)
+    while pending:
+        name = pending.pop()
+        reached.add(name)
+        pending |= (frees[name] & set(frees)) - reached
+    return reached
+
+
+def _check_globals(outputs: dict[str, Output], source: SourceModule, rules: CollectRules
+                   ) -> None:
+    """Refuse a ``globals()`` patch whose reach the split could break (the reach rule, the
+    coordinator's correction to Fork 3 item 6).
+
+    ``<x>.setitem(globals(), k, v)`` rebinds ``k`` in the dict of the module that DEFINES
+    the calling test, only while that test runs (one test at a time per process; undone at
+    teardown).  The only code that reads that dict's ``k`` is code defined in the same
+    module and run during the test: everything the test reaches by name, transitively, and
+    (conservatively) every module-level fixture.  So each reached node that reads ``k`` must
+    land in the test's part; one landing anywhere else, ``_helpers.py`` and ``conftest.py``
+    included, would read its own module's ``k`` and miss the patch.  The patch must sit
+    directly in a test function's body, ``k`` must be an import alias, and a ``globals()``
+    used in any other shape is refused.
+    """
     bindings = source.import_bindings()
+    frees: dict[str, set[str]] = {}
+    homes: dict[str, set[str]] = {}
+    for output in outputs.values():
+        for piece in output.pieces:
+            name = piece.shape.name if piece.shape else piece.binds
+            frees.setdefault(name, set()).update(piece.free)
+            homes.setdefault(name, set()).add(output.module)
+    fixtures = {u.name for u in source.units if u.kind is Kind.FIXTURE}
     for output in outputs.values():
         for piece in output.pieces:
             if not any(_is_globals_call(s) for top in piece.nodes for s in ast.walk(top)):
                 continue
             keys = globals_keys(piece.nodes)
-            if keys is None:
-                raise Refusal(f"{piece.binds}: globals() in a shape whose key cannot be read")
+            if keys is None or piece.shape is not None:
+                raise Refusal(f"{piece.binds}: globals() in a shape the tool cannot prove a "
+                              "split keeps (only <x>.setitem / <x>.delitem with a literal "
+                              "key, outside a split class)")
+            if any(_patches_outside_a_test_body(n, rules) for n in piece.nodes):
+                raise Refusal(f"{piece.binds}: patches globals() outside a test function's "
+                              "body, where its reach is every test that runs that code")
+            reached = _reach(piece.free, frees, fixtures) - {piece.binds}
             for key in sorted(keys):
                 if key not in bindings:
                     raise Refusal(f"{piece.binds}: globals() key {key!r} is not an import "
                                   "alias, so a patch would miss a copy of it")
-                apart = sorted(f"{p.binds} ({o.module})" for o in outputs.values()
-                               for p in o.pieces if key in p.free and o is not output)
+                apart = sorted(f"{name} ({', '.join(sorted(homes[name]))})" for name in reached
+                               if key in frees[name] and homes[name] != {output.module})
                 if apart:
                     raise Refusal(f"{piece.binds} patches globals()[{key!r}], which "
-                                  f"{apart} also read: place them in {output.module}")
+                                  f"{apart} read within its reach: place them in "
+                                  f"{output.module}")
 
 
 def _resolve(outputs: dict[str, Output], source: SourceModule, home: dict[str, str]) -> None:
@@ -381,7 +441,7 @@ def resolve(source: SourceModule, plan: Plan, rules: CollectRules) -> Layout:
     for output in outputs.values():
         output.pieces.sort(key=lambda p: p.position)
         _check_nodes(output, source)
-    _check_globals(outputs, source)
+    _check_globals(outputs, source, rules)
     _resolve(outputs, source, home)
     _place_unused(outputs, source, plan)
     return Layout(source=source, plan=plan, outputs=outputs, home=home, split=shapes)

@@ -159,10 +159,38 @@ class TestTheLayoutRefuses:
         message = refusal(tmp_path, source, with_test_first("test_patches"))
         assert "patches globals()['helper_one']" in message
 
+    def test_a_transitive_reader_of_a_patched_key(self, tmp_path):
+        """T -> _outer -> _inner reads the key: _inner, in _helpers, would miss the patch."""
+        source = appended(
+            'def _inner(n):\n    """Inner."""\n    return helper_one(n)\n\n\n'
+            'def _outer(n):\n    """Outer."""\n    return _inner(n)\n\n\n'
+            'def test_patches(monkeypatch):\n    """Patch."""\n'
+            '    monkeypatch.setitem(globals(), "helper_one", lambda n: 0)\n'
+            '    assert _outer(5) == 0')
+        message = refusal(tmp_path, source, with_test_first("test_patches", "_outer"))
+        assert "['_inner (_helpers)'] read within its reach" in message
+
+    def test_a_reader_reached_only_as_a_callback_value(self, tmp_path):
+        """A helper passed, not called, still runs under the patch."""
+        source = appended(
+            'def _cb(n):\n    """Callback."""\n    return helper_one(n)\n\n\n'
+            'def test_patches(monkeypatch):\n    """Patch."""\n'
+            '    monkeypatch.setitem(globals(), "helper_one", lambda n: 0)\n'
+            '    assert list(map(_cb, [5])) == [0]')
+        message = refusal(tmp_path, source, with_test_first("test_patches"))
+        assert "['_cb (_helpers)'] read within its reach" in message
+
+    def test_a_patch_held_in_a_fixture(self, tmp_path):
+        """A fixture's patch is live for every test that requests it; reach cannot model it."""
+        source = sample_with('monkeypatch.setenv("SAMPLE", "1")',
+                             'monkeypatch.setitem(globals(), "helper_one", lambda n: 0)')
+        assert "patches globals() outside a test function's body" in refusal(tmp_path, source)
+
     def test_a_globals_call_whose_key_cannot_be_read(self, tmp_path):
         """A computed key could be any name."""
         source = appended('def test_any():\n    """Any."""\n    assert globals()')
-        assert "key cannot be read" in refusal(tmp_path, source, with_test_first("test_any"))
+        assert "a shape the tool cannot prove" in refusal(
+            tmp_path, source, with_test_first("test_any"))
 
     def test_inspect_on_a_moved_node(self, tmp_path):
         """inspect reads the file a node now sits in."""
@@ -184,6 +212,20 @@ class TestTheLayoutRefuses:
         source = appended(f'def test_long():\n    """Long."""\n{padding}')
         assert "over the 1000-line budget" in refusal(
             tmp_path, source, with_test_first("test_long"))
+
+
+def test_a_patch_whose_readers_are_out_of_reach_is_accepted(tmp_path):
+    """A reader the patching test cannot reach does not run while the patch is live, so it
+    may sit in another part (the reach rule, not a guess: every reached reader is checked)."""
+    source = appended(
+        'def test_patches(monkeypatch):\n    """Patch."""\n'
+        '    monkeypatch.setitem(globals(), "helper_one", lambda n: 0)\n'
+        '    assert helper_one(5) == 0\n\n\n'
+        'def test_reads():\n    """Reads the unpatched helper."""\n    assert helper_one(2) == 2')
+    plan = with_test_first("test_patches")
+    plan["parts"][2]["nodes"].append("test_reads")
+    root = build(tmp_path, source)
+    assert render_all(layout_of(root, plan), line_limit(root))
 
 
 def _split_class_source(member: str) -> str:
