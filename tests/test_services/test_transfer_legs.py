@@ -37,6 +37,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.amount_ownership import AmountOwnership
 from app.models.transfer import Transfer
+from app.models.transfer_template import TransferTemplate
 from app.services.balance_at._asset_contributions import (
     _recorded_contributions,
 )
@@ -243,7 +244,7 @@ class TestLegOf:
         endpoints, read on both sides.  The owner's column is here as well,
         though it has no relationship on a transfer: a leg's money is booked
         in its owner's ledger, and :class:`TestBothSidesShowTheTransfer`'s
-        two transfers share one owner, so they cannot grade that read.  The
+        three transfers share one owner, so they cannot grade that read.  The
         transfer is never added to a session: it holds the columns and none
         of the rows they name, so a leg that read a relationship's id would
         raise here.
@@ -1741,11 +1742,19 @@ class TestALegsDisplayProjections:
     def test_the_label_is_composed_from_the_endpoints_current_names(self):
         """Each side's label names the OTHER endpoint, as it is named now.
 
-        Whatever the transfer itself is named: it carries a custom name
-        here, so a side that read the transfer's name would answer it.  And
-        neither side names a transaction definition, though its transfer
-        has one: the transfer carries a template link here, so a side that
-        read the link would answer it.  ``test_transfer_service.py``'s
+        Whatever the transfer itself is named, generated or one-off: both
+        transfers here carry a custom name, one with a template link and one
+        without, so a side that read the transfer's name would answer it on
+        either (the one-off joined after the review of plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2: a side answering a
+        one-off's own name passed the linked transfer).  And
+        neither side names a transaction definition, though the first
+        transfer has one: it carries its template link on BOTH the column
+        and the relationship, so a side that read the link either way would
+        answer it.  Until the review of that checkpoint the link was on the
+        column alone, and a side reading the relationship passed this case
+        and every other test in the suite (the review's mutant TMPL-REL).
+        ``test_transfer_service.py``'s
         ``test_with_custom_name`` and ``test_with_template_id`` asked a
         created transfer's two sides those questions until plan step
         ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2, which moved them
@@ -1756,10 +1765,14 @@ class TestALegsDisplayProjections:
         savings = Account(name="Savings")
         checking = Account(name="Checking")
         transfer = Transfer(
-            from_account=checking, to_account=savings, transfer_template_id=5,
+            from_account=checking, to_account=savings,
+            template=TransferTemplate(id=5, name="Mortgage"),
             name="Mortgage Payment",
         )
         transfer.from_account_id, transfer.to_account_id = 1, 2
+        transfer.transfer_template_id = 5
+        # A guard on the INPUT: the link is on both of its spellings.
+        assert (transfer.transfer_template_id, transfer.template.id) == (5, 5)
         expense = TransferLeg(transfer=transfer, account_id=1, is_income=False)
         income = TransferLeg(transfer=transfer, account_id=2, is_income=True)
 
@@ -1769,6 +1782,14 @@ class TestALegsDisplayProjections:
             "Transfer to Savings", "Transfer from Checking",
         )
         assert expense.account is checking and income.account is savings
+        one_off = Transfer(
+            from_account=checking, to_account=savings, name="Rent Share",
+        )
+        one_off.from_account_id, one_off.to_account_id = 1, 2
+        assert [
+            TransferLeg(transfer=one_off, account_id=1, is_income=False).name,
+            TransferLeg(transfer=one_off, account_id=2, is_income=True).name,
+        ] == ["Transfer to Savings", "Transfer from Checking"]
 
         savings.name = "Emergency Fund"
         assert expense.name == "Transfer to Emergency Fund"

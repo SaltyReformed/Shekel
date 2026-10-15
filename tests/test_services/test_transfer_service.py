@@ -275,6 +275,10 @@ class TestCreateTransfer:
         definition whatever transfer definition generated its parent (the
         grid's row-key contract) is ``test_transfer_legs.py``'s
         ``TestALegsDisplayProjections``, whose transfer carries a link.
+        **The link read is not graded by a mutant**: dropping the link at
+        the create is refused there by the transfers' CHECK, so that mutant
+        never reaches the read (measured at that checkpoint, where it read
+        the object the engine returned).
         """
         with app.app_context():
             td = transfer_data
