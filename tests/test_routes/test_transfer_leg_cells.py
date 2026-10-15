@@ -31,7 +31,6 @@ from app.enums import StatusEnum
 from app.extensions import db
 from app.models.amount_ownership import AmountOwnership
 from app.models.ref import AccountType, Status
-from app.models.transaction import Transaction
 from app.services import account_service, transfer_service
 from app.services.grid_view_service import leg_dom_id
 from tests._test_helpers import (
@@ -83,15 +82,6 @@ def _create_transfer(seed_user, period, savings, amount=Decimal("200.00")):
     return xfer
 
 
-def _shadow_on(xfer, account_id):
-    """The transfer's shadow row on *account_id* (still exists this interval)."""
-    return (
-        db.session.query(Transaction)
-        .filter_by(transfer_id=xfer.id, account_id=account_id, is_deleted=False)
-        .one()
-    )
-
-
 def _cell(html, cell_id):
     """The desktop cell block whose wrapper is *cell_id*, to its ``</td>``."""
     start = html.index(f'id="{cell_id}"')
@@ -101,28 +91,29 @@ def _cell(html, cell_id):
 class TestTheGridDrawsALegOffItsParent:
     """The window holds the leg and not the shadow row, and the leg is the parent's."""
 
-    def test_the_cell_is_the_leg_and_no_shadow_row_is_drawn(
+    def test_the_cell_is_the_leg(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Checking's grid draws ``xfer-leg-<id>-<checking>``; the shadow's cell id is absent.
+        """Checking's grid draws ``xfer-leg-<id>-<checking>``, carrying the transfer's doors.
 
         The window is the set's OWN rows plus legs
-        (``cash_flow_set.own_rows_clause`` + ``grid_transfer_legs``): the
-        expense shadow that used to be drawn as ``txn-cell-<shadow id>`` is
-        loaded by nothing, and the leg's cell carries the transfer's doors.
+        (``cash_flow_set.own_rows_clause`` + ``grid_transfer_legs``).  Named
+        ``test_the_cell_is_the_leg_and_no_shadow_row_is_drawn`` until plan
+        step ``balance:X-bi-6-4d-3``, which births no shadow: it also
+        asserted the expense shadow's ``txn-cell-<shadow id>`` absent, and
+        with no such row there is no id to look for (ruling R-BAL167 class
+        1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today[4], savings)
             checking_id = seed_user["account"].id
-            shadow_id = _shadow_on(xfer, checking_id).id
             xfer_id = xfer.id
 
             html = auth_client.get("/grid").get_data(as_text=True)
 
         leg_id = leg_dom_id(xfer_id, checking_id)
         assert f'id="{leg_id}"' in html
-        assert f'id="txn-cell-{shadow_id}"' not in html
         cell = _cell(html, leg_id)
         assert f'data-xfer-id="{xfer_id}"' in cell
         assert f'data-leg-account-id="{checking_id}"' in cell
@@ -141,9 +132,13 @@ class TestTheGridDrawsALegOffItsParent:
         creation ("Transfer to Savings") and no rename touched it, so the old
         grid kept showing the stale name; a leg's label is composed from the
         endpoints' CURRENT names (``transfer_legs.leg_label``) at every
-        render.  The shadow row still exists this interval and still holds
-        the stale name, which is what makes the negative assertion mean
-        something.
+        render.  What makes the negative assertion mean something is the
+        grid BEFORE the rename, which drew the old name.  It also read the
+        shadow's stored name, still the old one, until plan step
+        ``balance:X-bi-6-4d-3``, which births no shadow; the label
+        assertions are kept, the case being one of three database-backed pins
+        that an in-session rename re-labels the derived leg (ruling R-BAL167
+        class 1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings(seed_user)
@@ -154,8 +149,6 @@ class TestTheGridDrawsALegOffItsParent:
 
             savings.name = "Emergency Fund"
             db.session.commit()
-            stale = _shadow_on(xfer, checking_id).name
-            assert stale == "Transfer to Savings", "fixture: the shadow keeps its name"
 
             after = auth_client.get("/grid").get_data(as_text=True)
             cell = _cell(after, leg_dom_id(xfer.id, checking_id))
