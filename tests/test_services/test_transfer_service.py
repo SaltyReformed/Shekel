@@ -10,9 +10,11 @@ two sides are read off it every time, so a door's test checks what the door
 WROTE, re-read from the database, and the side's own payment record, the one
 thing still stored per side (ruling R-BAL290 part 1, the developer,
 2026-10-14).  The edit group, :class:`TestUpdateTransfer`, reads so since
-that step's checkpoint 2e-2b-1b-1; the create, figure, move and restore
-groups move onto the same reads at its later checkpoints.  What each side
-shows of a Projected or Cancelled row is ``test_transfer_legs.py``'s
+that step's checkpoint 2e-2b-1b-1, and the create and figure groups,
+:class:`TestCreateTransfer` and :class:`TestTheFigureCorrectionDoorOnAPair`,
+since its checkpoint 2e-2b-1b-2; the move and restore groups move onto the
+same reads at its later checkpoints.  What each side shows of a Projected or
+Cancelled row is ``test_transfer_legs.py``'s
 ``TestBothSidesShowTheTransfer``, and a settled row's price that file's
 ``TestTheLegMapProducers::test_a_settled_leg_records_its_movements_figure``
 and ``TestTheLegContributionTwins::test_a_settled_leg_is_worth_its_record_and_not_its_plan``.
@@ -50,7 +52,6 @@ from app.services import (
     account_service,
     loan_posting_service,
     transfer_service,
-    status_seam,
 )
 from app.services.transfer_legs import (
     grid_transfer_leg,
@@ -208,58 +209,40 @@ class TestCreateTransfer:
         records the transfer's figure un-dated on both sides, passes every
         read above it, and fails this one first (measured at that step's
         checkpoint 2e-2a-1a, by the mutant its review named R-PROJ-RECORD).
-        Renamed from ``test_produces_two_shadows``.
+        Each field is read off the row re-read from the database since that
+        step's checkpoint 2e-2b-1b-2, where it read the object the door
+        returned (ruling R-BAL290 part 1).  Renamed from
+        ``test_produces_two_shadows``.
         """
         with app.app_context():
             td = transfer_data
-            xfer = _create_basic_transfer(td)
-            db.session.flush()
+            xfer_id = _create_basic_transfer(td).id
 
-            assert transfer_amount(xfer) == Decimal("250.00")
-            assert xfer.status_id == td["projected_status"].id
-            assert xfer.pay_period_id == td["periods"][0].id
-            assert xfer.scenario_id == td["scenario"].id
-            assert xfer.transfer_template_id is None
-            assert xfer.is_override is False
-            assert xfer.is_deleted is False
-            assert xfer.from_account_id == td["account"].id
-            assert xfer.to_account_id == td["savings_account"].id
-            for account_id in (xfer.from_account_id, xfer.to_account_id):
+            row = _reread(xfer_id)
+            assert transfer_amount(row) == Decimal("250.00")
+            assert row.status_id == td["projected_status"].id
+            assert row.pay_period_id == td["periods"][0].id
+            assert row.scenario_id == td["scenario"].id
+            assert row.transfer_template_id is None
+            assert row.is_override is False
+            assert row.is_deleted is False
+            assert row.from_account_id == td["account"].id
+            assert row.to_account_id == td["savings_account"].id
+            for account_id in (row.from_account_id, row.to_account_id):
                 assert transfer_side_record(
-                    db.session, xfer.id, account_id,
+                    db.session, xfer_id, account_id,
                 ) is None
 
-    def test_leg_names_reference_the_other_endpoint(
-        self, app, db, transfer_data,
-    ):
-        """Each leg's label names the account at the OTHER end of the transfer.
-
-        The from-side (expense) leg says where the money went, the to-side
-        (income) leg where it came from.  The labels were stored on two shadow
-        rows until plan step ``balance:X-bi-6-4d-3``; each leg's is composed
-        from the transfer's endpoints now (ruling R-BAL167 class 1).  Renamed
-        from ``test_shadow_names``.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            db.session.flush()
-
-            expense = transfer_side_leg(xfer, is_income=False)
-            income = transfer_side_leg(xfer, is_income=True)
-
-            assert td["savings_account"].name in expense.name
-            assert td["account"].name in income.name
-
-    def test_with_category(self, app, db, transfer_data):
-        """The transfer files under the user-selected category, and both legs with it.
+    def test_with_category(self, app, transfer_data):
+        """The transfer files under the user-selected category.
 
         It asserted the two shadow rows' categories, and nothing on the
         transfer, until plan step ``balance:X-bi-6-4d-3``; the transfer holds
-        the category and each leg reads it now (ruling R-BAL167 class 1).
-        The two leg reads are PROJECTION reads: what the grid files each leg
-        under, separated from the transfer's own read only by a defect in the
-        leg's projection of it.
+        the category now (ruling R-BAL167 class 1).  It also read both legs'
+        categories until that step's checkpoint 2e-2b-1b-2, which reads the
+        row re-read from the database instead (ruling R-BAL290 part 1); what
+        a side shows of the row's category is ``test_transfer_legs.py``'s
+        ``TestBothSidesShowTheTransfer``.
         """
         with app.app_context():
             td = transfer_data
@@ -277,44 +260,44 @@ class TestCreateTransfer:
                     category_id=rent_cat.id,
                 ),
             )
-            db.session.flush()
 
-            assert xfer.category_id == rent_cat.id
-            for is_income in (False, True):
-                assert transfer_side_leg(
-                    xfer, is_income=is_income,
-                ).category_id == rent_cat.id
+            assert _reread(xfer.id).category_id == rent_cat.id
 
     def test_with_template_id(self, app, transfer_data):
-        """A template-linked transfer has its link, and neither leg names a definition.
+        """A template-linked transfer holds its link.
 
         The linked transfer is the ENGINE's (:func:`generate_transfer_of`,
         plan step balance:X-ch), which reaches ``create_transfer`` with the
-        link in its spec the way the application does.  A leg's
-        ``template_id`` is ``None`` whatever transfer definition generated its
-        parent: it names no TRANSACTION definition (the grid's row-key
-        contract).  That was asked of the two shadow rows until plan step
-        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
-        over them ran over none (a vacuous read, measured at its checkpoint
-        2e-2a-1); it is asked of each leg now.
+        link in its spec the way the application does.  It also asked each
+        side for a definition until plan step ``balance:X-bi-6-4d-3``'s
+        checkpoint 2e-2b-1b-2, which reads the row re-read from the database
+        instead (ruling R-BAL290 part 1): that a side names no TRANSACTION
+        definition whatever transfer definition generated its parent (the
+        grid's row-key contract) is ``test_transfer_legs.py``'s
+        ``TestALegsDisplayProjections``, whose transfer carries a link.
         """
         with app.app_context():
             td = transfer_data
-            xfer = generate_transfer_of(td["transfer_template"], td["periods"][0])
+            xfer_id = generate_transfer_of(
+                td["transfer_template"], td["periods"][0],
+            ).id
 
-            assert xfer.transfer_template_id == td["transfer_template"].id
-            for is_income in (False, True):
-                assert transfer_side_leg(
-                    xfer, is_income=is_income,
-                ).template_id is None
+            assert _reread(xfer_id).transfer_template_id == (
+                td["transfer_template"].id
+            )
 
     def test_with_custom_name(self, app, transfer_data):
-        """A custom name names the transfer; each leg keeps its derived label.
+        """A custom name names the transfer.
 
         It asked the two shadow rows' names until plan step
         ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
         over them ran over none (a vacuous read, measured at its checkpoint
-        2e-2a-1); each leg's label is asked now, exactly.
+        2e-2a-1).  It then asked each side's label, exactly, until that
+        step's checkpoint 2e-2b-1b-2, which reads the row re-read from the
+        database instead (ruling R-BAL290 part 1): that a custom name leaves
+        each side's label composed from the endpoints is
+        ``test_transfer_legs.py``'s ``TestALegsDisplayProjections``, whose
+        transfer carries a name.
         """
         with app.app_context():
             td = transfer_data
@@ -332,13 +315,7 @@ class TestCreateTransfer:
                 ),
             )
 
-            assert xfer.name == "Mortgage Payment"
-            assert transfer_side_leg(xfer, is_income=False).name == (
-                f"Transfer to {td['savings_account'].name}"
-            )
-            assert transfer_side_leg(xfer, is_income=True).name == (
-                f"Transfer from {td['account'].name}"
-            )
+            assert _reread(xfer.id).name == "Mortgage Payment"
 
     def test_returns_transfer_object(self, app, db, transfer_data):
         """create_transfer returns a Transfer with a valid ID."""
@@ -347,13 +324,22 @@ class TestCreateTransfer:
             assert isinstance(xfer, Transfer)
             assert xfer.id is not None
 
-    def test_default_name_generated(self, app, db, transfer_data):
-        """Without a name, transfer gets 'from_account to to_account'."""
+    def test_default_name_generated(self, app, transfer_data):
+        """Without a name, transfer gets 'from_account to to_account'.
+
+        Read off the row re-read from the database since plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2, where it read the
+        object the door returned (ruling R-BAL290 part 1), and asked that
+        each account's name was IN it: a default naming the two accounts
+        the other way round passed (measured there), so it asks the whole
+        name now.
+        """
         with app.app_context():
             td = transfer_data
-            xfer = _create_basic_transfer(td)
-            assert td["account"].name in xfer.name
-            assert td["savings_account"].name in xfer.name
+            name = _reread(_create_basic_transfer(td).id).name
+            assert name == (
+                f"{td['account'].name} to {td['savings_account'].name}"
+            )
 
 # ── Validation Tests ───────────────────────────────────────────────
 
@@ -807,17 +793,17 @@ class TestUpdateTransfer:
     def test_a_category_cleared_to_none_leaves_the_transfer_under_none(
         self, app, transfer_data,
     ):
-        """Clearing the category leaves the row under none, and neither side shows one.
+        """Clearing the category leaves the row under none.
 
         What the edit wrote, re-read from the database (ruling R-BAL290
-        part 1).  **The two leg reads are kept, as PROJECTION reads**: what a
-        side shows of the row is ``test_transfer_legs.py``'s
-        ``TestBothSidesShowTheTransfer``, but both of its rows carry a
-        category, so a side that answered some category for a transfer filed
-        under NONE passes it and fails only these reads (measured at plan
-        step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-1, by a mutant
-        answering ``-1`` for a missing category).  They move into that table
-        with a row filed under no category at checkpoint 2e-2b-1b-2.
+        part 1).  It also read both legs' categories, as PROJECTION reads,
+        until plan step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2: both
+        rows of ``test_transfer_legs.py``'s ``TestBothSidesShowTheTransfer``
+        carried a category until then, so a side that answered some category
+        for a transfer filed under NONE failed only those reads (measured at
+        checkpoint 2e-2b-1b-1, by a mutant answering ``-1`` for a missing
+        category).  That table holds a transfer filed under no category
+        since checkpoint 2e-2b-1b-2, and grades what a side shows of it.
         Renamed from ``test_a_category_cleared_to_none_clears_both_legs``,
         and before that ``test_category_set_to_none_propagates_none``.
         """
@@ -842,12 +828,7 @@ class TestUpdateTransfer:
                 xfer.id, td["user"].id, category_id=None,
             )
 
-            row = _reread(xfer.id)
-            assert row.category_id is None
-            for is_income in (False, True):
-                assert transfer_side_leg(
-                    row, is_income=is_income,
-                ).category_id is None
+            assert _reread(xfer.id).category_id is None
 
     def test_a_REVERT_is_what_clears_a_settled_transfers_figure(
         self, app, db, transfer_data,
@@ -2262,7 +2243,7 @@ class TestTheFigureCorrectionDoorOnAPair:
 
     @staticmethod
     def _settled_transfer(td, amount="250.00"):
-        """Return a settled transfer and both its legs."""
+        """Return a transfer created Projected and then settled."""
         xfer = transfer_service.create_transfer(
             transfer_service.TransferSpec(
                 user_id=td["user"].id,
@@ -2284,21 +2265,12 @@ class TestTheFigureCorrectionDoorOnAPair:
         return xfer
 
     @staticmethod
-    def _legs(xfer_id):
-        return (
-            db.session.query(Transaction)
-            .filter_by(transfer_id=xfer_id, is_deleted=False)
-            .order_by(Transaction.id)
-            .all()
-        )
-
-    @staticmethod
     def _records(xfer):
         """Return the transfer's ``(from-side, to-side)`` payment records.
 
         What each side RECORDS since plan step ``balance:X-bi-6-4d-2``, read by
         independent SQL over the side links (ruling R-BAL167 class 4, plan
-        step balance:X-bi-6-4d-2); :meth:`_legs`' shadows held it until then.
+        step balance:X-bi-6-4d-2); its two shadow rows held it until then.
         """
         return tuple(
             transfer_side_record(db.session, xfer.id, account_id)
@@ -2315,7 +2287,10 @@ class TestTheFigureCorrectionDoorOnAPair:
         no such column: each side's record hangs off it by a side link.  Read
         off the sides' records since plan step ``balance:X-bi-6-4d-2``, where
         the shadows held them until then (ruling R-BAL167 class 1, plan step
-        balance:X-bi-6-4d-2).
+        balance:X-bi-6-4d-2).  The status is read off the row re-read from
+        the database since plan step ``balance:X-bi-6-4d-3``'s checkpoint
+        2e-2b-1b-2, where it read the object in the session (ruling R-BAL290
+        part 1).
         """
         with app.app_context():
             td = transfer_data
@@ -2329,9 +2304,9 @@ class TestTheFigureCorrectionDoorOnAPair:
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, figure=typed(Decimal("263.11")),
             )
-            db.session.flush()
 
-            for record in self._records(xfer):
+            row = _reread(xfer.id)
+            for record in self._records(row):
                 assert (record.amount, record.figure_source_id) == (
                     Decimal("263.11"), typed_id,
                 )
@@ -2347,7 +2322,7 @@ class TestTheFigureCorrectionDoorOnAPair:
             # is a silent no-op and only a SCHEMA change could fail such an
             # assertion -- the "``hasattr`` is not a test" shape plan step X-aa
             # already paid for (neutral review, 2026-08-18).
-            assert xfer.status_id == ref_cache.status_id(StatusEnum.DONE), (
+            assert row.status_id == ref_cache.status_id(StatusEnum.DONE), (
                 "the correction moved the pair's status"
             )
 
@@ -2364,6 +2339,20 @@ class TestTheFigureCorrectionDoorOnAPair:
 
         Shown to FIRE: the accompanying ``amount`` is asserted UNWRITTEN, so a
         gate moved below the field loop fails this test rather than passing it.
+        Both writes are read off the row re-read from the database since plan
+        step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2, where they read
+        the object in the session (ruling R-BAL290 part 1).
+
+        It also asked each of the transfer's shadow rows for a recorded
+        settlement until that checkpoint.  From that step's create door on no
+        row can name a transfer (``ck_transactions_names_no_transfer``), so
+        the loop ran over none (a vacuous read: such rows counted 0 before
+        the update and after it, measured at that checkpoint), and it is
+        dropped, not moved onto each side's record: with this gate deleted,
+        the status seam refuses the figure itself, in other words, before
+        either side records anything, and this case fails first at the
+        refusal's words, the flag and the amount left written (measured
+        there).
         """
         with app.app_context():
             td = transfer_data
@@ -2396,14 +2385,13 @@ class TestTheFigureCorrectionDoorOnAPair:
             # needed: ``is_override`` is applied FIRST and ``amount`` second, so
             # a gate that slipped BETWEEN them would leave one written and pass
             # a test that checked only the other.
-            assert xfer.is_override is False, (
+            row = _reread(xfer.id)
+            assert row.is_override is False, (
                 "the refusal ran AFTER the is_override write"
             )
-            assert xfer.amount == Decimal("250.00"), (
+            assert row.amount == Decimal("250.00"), (
                 "the refusal ran AFTER the amount write"
             )
-            for leg in self._legs(xfer.id):
-                assert status_seam.recorded_settlement(leg) is None
 
     def test_an_echo_leaves_the_resolved_source_standing(
         self, app, db, transfer_data,

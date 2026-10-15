@@ -188,7 +188,8 @@ def _held(stored, is_income):
     """What the side *is_income* names of the *stored* row, as :func:`_shown` keys it.
 
     *stored* is the row read by SQL, so its values are the database's own;
-    the status, period and category ROWS are the ones its id columns name.
+    the status, period and category ROWS are the ones its id columns name,
+    and a row filed under no category names no category row.
     """
     return {
         "account_id": stored["to_account_id" if is_income else "from_account_id"],
@@ -200,7 +201,10 @@ def _held(stored, is_income):
         "pay_period": db.session.get(PayPeriod, stored["pay_period_id"]),
         "due_date": stored["due_date"],
         "category_id": stored["category_id"],
-        "category": db.session.get(Category, stored["category_id"]),
+        "category": (
+            None if stored["category_id"] is None
+            else db.session.get(Category, stored["category_id"])
+        ),
         "is_override": stored["is_override"],
         "notes": stored["notes"],
     }
@@ -305,32 +309,39 @@ class TestBothSidesShowTheTransfer:
         flag; :class:`TestLegOf`'s in-memory case grades the owner's and the
         scenario's reads.
 
-        Two transfers are written through the doors with a different value
-        in every one of those columns: Reserve to Savings at $437.19,
-        Cancelled, in the fourth period, due four days in, Groceries, with
-        notes and the override flag (set through the edit door, which the
-        create door does not take); and Savings to Reserve at $1,062.48,
-        Projected, in the sixth period, due nine days in, Rent, with other
-        notes and the flag clear.  Neither is settled: a settled status
-        writes the payment records this case is not about.  Both are
-        committed; each side is read off the re-read row, and what the table
-        expects is the row as independent SQL reads it.
+        Three transfers are written through the doors: Savings to Reserve
+        at $1,062.48, Projected, in the sixth period, due nine days in,
+        Rent, with notes, the override flag clear; Reserve to Savings at
+        $437.19, Cancelled, in the fourth period, due four days in,
+        Groceries, with other notes and the flag set (through the edit door,
+        which the create door does not take); and Reserve to Savings at
+        $83.06, Projected, in the second period, the flag clear, with no due
+        date, no category and no notes.  The third is the row whose optional
+        columns are empty, so a side that answers something for an empty
+        one -- a default category, day or note -- disagrees with it.  It
+        joined the table at plan step ``balance:X-bi-6-4d-3``'s checkpoint
+        2e-2b-1b-2: until then both rows carried a category, and a side that
+        answered one for a transfer filed under none failed only
+        ``test_transfer_service.py``'s
+        ``test_a_category_cleared_to_none_leaves_the_transfer_under_none``,
+        whose two side reads were dropped there.  None of the three is
+        settled: a settled status writes the payment records this case is
+        not about.  All three are committed; each side is read off the
+        re-read row, and what the table expects is the row as independent
+        SQL reads it.
 
         Two guards on the input come first: the doors stored every stated
-        value, and over the two transfers each named column holds two
-        different values and its PAIR of values differs from every other
-        column's pair, the columns taken from the model's table
-        (``Transfer.__table__``) rather than listed here.
+        value, and over the three transfers no named column holds one value
+        on all three, and each named column's values, transfer by transfer,
+        differ from every other column's, the columns taken from the model's
+        table (``Transfer.__table__``) rather than listed here.
         So a side that reads a named column off any other column of its row,
         or answers a constant, disagrees with the table on at least one of
-        the two transfers.  That is the guard's whole reach: it
+        the three transfers.  That is the guard's whole reach: it
         says nothing of a side reading another table, a computed value, or a
         relationship in place of its column (a committed row's two always
         agree; :class:`TestLegOf` pins the columns in memory), and the four
-        columns the table leaves out are outside it.  The Projected transfer
-        is created first because the guard refuses the other order on this
-        seed: the two transfers' ids then pair exactly as their status ids
-        do.
+        columns the table leaves out are outside it.
 
         Each side is read through two of the doors to a leg: by SIDE
         (``transfer_side_leg``, how the transfer service reads one) and by
@@ -341,7 +352,8 @@ class TestBothSidesShowTheTransfer:
         with app.app_context():
             owner_id = seed_user["user"].id
             # Two fresh accounts, not the seeded checking: its id is the
-            # Cancelled status's, which the guard below refuses.
+            # Cancelled status's, the kind of coincidence the guard below
+            # refuses.
             reserve = _savings(seed_user, name="Reserve")
             savings = _savings(seed_user)
             stated = {
@@ -364,6 +376,17 @@ class TestBothSidesShowTheTransfer:
                     "category_id": seed_user["categories"]["Groceries"].id,
                     "is_override": True,
                     "notes": "Quarterly top-up",
+                    "from_account_id": reserve.id,
+                    "to_account_id": savings.id,
+                },
+                "unfiled": {
+                    "amount": Decimal("83.06"),
+                    "status_id": ref_cache.status_id(StatusEnum.PROJECTED),
+                    "pay_period_id": seed_periods[1].id,
+                    "due_date": None,
+                    "category_id": None,
+                    "is_override": False,
+                    "notes": None,
                     "from_account_id": reserve.id,
                     "to_account_id": savings.id,
                 },
@@ -400,19 +423,19 @@ class TestBothSidesShowTheTransfer:
                 label: {column: row[column] for column in named}
                 for label, row in stored.items()
             } == stated, "precondition: the doors stored every stated value"
-            pairs = {
-                column: (stored["cancelled"][column], stored["projected"][column])
+            values = {
+                column: tuple(row[column] for row in stored.values())
                 for column in table.columns.keys()
             }
             assert (
-                [column for column in named if pairs[column][0] == pairs[column][1]],
+                [column for column in named if len(set(values[column])) == 1],
                 [
-                    (column, other) for column in named for other in pairs
-                    if other != column and pairs[other] == pairs[column]
+                    (column, other) for column in named for other in values
+                    if other != column and values[other] == values[column]
                 ],
             ) == ([], []), (
-                "precondition: a named column holds one value on both "
-                "transfers, or the same pair as another column, so a wrong "
+                "precondition: a named column holds one value on every "
+                "transfer, or the same values as another column, so a wrong "
                 "read of it could agree with the table"
             )
 
@@ -1718,18 +1741,23 @@ class TestALegsDisplayProjections:
     def test_the_label_is_composed_from_the_endpoints_current_names(self):
         """Each side's label names the OTHER endpoint, as it is named now.
 
-        And neither side names a transaction definition, though its transfer
+        Whatever the transfer itself is named: it carries a custom name
+        here, so a side that read the transfer's name would answer it.  And
+        neither side names a transaction definition, though its transfer
         has one: the transfer carries a template link here, so a side that
         read the link would answer it.  ``test_transfer_service.py``'s
-        ``test_with_template_id`` also asks a generated transfer's two sides
-        for the link, and for the link only, until plan step
-        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b drops it there (ruling
-        R-BAL290 part 1 moves the question here).
+        ``test_with_custom_name`` and ``test_with_template_id`` asked a
+        created transfer's two sides those questions until plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2, which moved them
+        here (ruling R-BAL290 part 1); its
+        ``test_leg_names_reference_the_other_endpoint``, which asked only
+        each side's label, was deleted there.
         """
         savings = Account(name="Savings")
         checking = Account(name="Checking")
         transfer = Transfer(
             from_account=checking, to_account=savings, transfer_template_id=5,
+            name="Mortgage Payment",
         )
         transfer.from_account_id, transfer.to_account_id = 1, 2
         expense = TransferLeg(transfer=transfer, account_id=1, is_income=False)
