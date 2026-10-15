@@ -1552,7 +1552,7 @@ class TestInvestmentCrossPageEquality:
     cash-basis tile -- requires an anchor-in-past fixture that diverges on
     today's code, so it is added alongside the savings-tile reroute (the
     Model-from-anchor unification), not here.  The growth math itself is
-    covered by tests/test_services/test_balance_at.py.
+    covered by tests/test_services/test_balance_at/test_investment.py.
     """
 
     def test_all_surfaces_equal(
@@ -1625,7 +1625,7 @@ class TestInvestmentCrossPageEquality:
             # growth engine's per-period day-count convention; the EXACT value
             # is calendar-relative (the fixture builds its periods from today),
             # so it is pinned penny-exact -- with its arithmetic -- in
-            # tests/test_services/test_balance_at.py (the anchor-in-past
+            # tests/test_services/test_balance_at/test_investment.py (the anchor-in-past
             # kernel-equality cases), not here.  The upper bound is what an
             # "all surfaces == seam" check alone could not give: it catches a
             # shared over-compounding bug (wrong period count or rate) in the

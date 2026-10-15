@@ -78,7 +78,7 @@ class TestInterestByPeriodForAccount:
 
     The interest VALUE behavior (an account's per-period accrual matching
     the calculator) is locked end-to-end by the HYSA interest tests in
-    ``test_balance_at.py`` and the account-detail route tests in
+    ``test_balance_at/test_balance_maps.py`` and the account-detail route tests in
     ``test_accounts.py`` -- the accessor's only consumer is that page's
     "Interest, next 12 mo" chip.  (It was the year-end savings-progress
     section until plan step F2 deleted that package.)

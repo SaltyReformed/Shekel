@@ -814,7 +814,7 @@ class TestTheLoanChartKeepsTheMonthsOfACorrectedLoan:
     first installment after it (Jan 22).  Recorded as a tracking start, the
     state the door now refuses, the record would start Apr 1 and the grid
     would open at Apr 22.  The seam's figures for those months are pinned in
-    ``test_balance_at.py`` (``TestNoPaymentMovesTheRecordedStart``).
+    ``test_balance_at/test_loan_terms.py`` (``TestNoPaymentMovesTheRecordedStart``).
     """
 
     def test_the_grid_opens_at_the_first_installment_after_origination(
