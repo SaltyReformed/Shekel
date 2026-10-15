@@ -1,10 +1,11 @@
 # Runbook: the account-10 repair
 
-**STATUS: REHEARSED, NOT YET PERFORMED.** Rewritten by plan step `balance:X-f3c-2b-2c` (2026-10-09)
-for ruling **R-BAL3** as amended that day, and rehearsed on same-day copies of production. Nothing
-here has been done to production. The procedure this file used to carry (rehearsed 2026-09-01,
-superseded by R-BAL3 on 2026-09-05) is in git history, and so are its measurements; read it there
-as evidence, never as instructions.
+**STATUS: PERFORMED on production 2026-10-12** (stamp `2026-10-12_195633`), acts 1-10 as written
+here, from the runbook as rehearsed that day; its record is
+`../../plans/historical/balance_x_f3c_2b_2c_as_performed_2026-10-12.md`. Rewritten by plan step
+`balance:X-f3c-2b-2c` (2026-10-09) for ruling **R-BAL3** as amended that day. The procedure this
+file used to carry (rehearsed 2026-09-01, superseded by R-BAL3 on 2026-09-05) is in git history,
+and so are its measurements; read it there as evidence, never as instructions.
 
 ## What this is
 
@@ -21,9 +22,9 @@ money rows (ruling **R-HJ**). The acts, their order and their reasons are ruled 
 `../../plans/rulings.md` at **R-HJ**, **R-HK**, **R-HL**, **R-HM** and **R-BAL3**, amended
 2026-10-09 by **R-BAL249** (this file's split), **R-BAL250** (act 9 renames a category),
 **R-BAL255** (act 1 cancels rather than deletes) and **R-BAL256** (every Fidelity side is typed
-its own day). Until the step's tick files those four in `rulings.md`, and **BAL-622** in
-`../../plans/ledger.md`, their verbatim record is the step's handoff folder. This file is how to
-carry them out.
+its own day). The step's tick filed those four in `rulings.md`, and **BAL-622** in
+`../../plans/ledger.md`; before it their verbatim record was the step's handoff folder. This file
+is how to carry them out.
 
 **Where the amounts are (ruling R-BAL249).** This file names every amount by its ROLE ("Fidelity's
 close for 2026-03-25"), never by its figure. Every figure to type, and every figure to expect after
@@ -687,9 +688,9 @@ what the human typed.
   clicking (**N-453**). Both are owned by `balance:X-f4`.
 * **Checking's 2026-03-26 lines stay unmatched in the statement import.** The repair answers them
   with rows by hand and makes no match.
-* **`bank_agreement` still compares from an account's first cash fact rather than from the day
-  after its books open (BAL-616).** This step's own code leaf fixes it after the repair is
-  performed.
+* **`bank_agreement`'s comparison (BAL-616) was not fixed by the repair itself;** it was fixed after
+  it by the step's own code leaf, L1 `d62855733`: a day is compared only where both records cover it
+  (**R-BAL291**).
 * **The transfer card's two buttons reading "Cancel" (BAL-622).** Act 1 names the right one.
 
 ---

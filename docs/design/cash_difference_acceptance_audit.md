@@ -259,8 +259,10 @@ resolved:
 6. **The fold-in arm breaks on a matched row** -- `statement_match._accept._apply_day` re-dates a
    settled member to the bank's day, after which the reprice either destroys that bank-observed day
    or never converges.
-7. **`_opening_corroboration` issues queries `BankAgreement.imports`' own docstring forbids its
-   reader from issuing**, and re-derives `covered_runs`, which the report already carries.
+7. **`_opening_corroboration` issues queries `BankAgreement.runs`' own docstring forbids its reader
+   from issuing**, and re-derives `covered_runs`, which the report already carries as `runs` (this
+   item first named `BankAgreement.imports`, the runs' spans, which `balance:X-f3c-2b-2c` deleted at
+   `d6285573`).
 8. **No concurrency story**: two tabs both accepting produce an `IntegrityError`, and there is no
    staleness guard equivalent to `_reject_moved_since_review` on a money-moving door.
 9. **Undo, the grid, and spending analysis are unaddressed.** A soft-deleted row leaves the partial
