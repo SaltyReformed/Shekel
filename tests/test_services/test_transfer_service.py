@@ -2,10 +2,20 @@
 Shekel Budget App -- Transfer Service Tests
 
 Comprehensive tests for create_transfer, update_transfer, and
-delete_transfer.  Covers four of the five core invariants (Invariant 2's
-case was deleted at plan step ``balance:X-bi-6-4d-3``, ruling R-BAL278;
-see :class:`TestInvariants`), validation rules, edge cases, and
-cross-user isolation.
+delete_transfer: what each door writes on the transfer's row, validation
+rules, edge cases, and cross-user isolation.
+
+A transfer is one stored row since plan step ``balance:X-bi-6-4d-3``, and its
+two sides are read off it every time, so a door's test checks what the door
+WROTE, re-read from the database, and the side's own payment record, the one
+thing still stored per side (ruling R-BAL290 part 1, the developer,
+2026-10-14).  What each side shows of the row is ``test_transfer_legs.py``'s
+``TestBothSidesShowTheTransfer``; one leg per side, each on its own endpoint,
+is that file's ``TestTransferLegs::test_each_account_gets_its_own_side``; and
+the database's refusal of a second side row is
+``test_a_transfer_is_one_row.py``'s ``test_the_database_refuses_a_twin``.
+The ``TestInvariants`` class that checked them here was dissolved into those
+tests and this file's edit group at that step's checkpoint 2e-2b-1b-1.
 """
 
 from datetime import date, timedelta
@@ -33,7 +43,6 @@ from app.services import (
     transfer_service,
     status_seam,
 )
-from app.services.cash_ledger import derived_amount_basis, leg_amounts_by_key
 from app.services.transfer_legs import (
     grid_transfer_leg,
     planned_transfer_legs,
@@ -44,7 +53,6 @@ from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
     add_anchor_history,
     an_entered_day,
-    assert_a_twin_is_refused,
     create_loan_account,
     generate_transfer_of,
     on_both_sides,
@@ -155,25 +163,16 @@ def _create_basic_transfer(td):
     )
 
 
-def _leg_amounts(xfer):
-    """Return what each of *xfer*'s two legs is priced at, by its grid key.
+def _reread(xfer_id):
+    """Commit, expire every loaded object, and return the transfer's row re-read.
 
-    Each side's :class:`~app.services.transfer_legs.TransferLeg`
-    (``transfer_side_leg``) priced by ``leg_amounts_by_key``, the producer the
-    grid prices a leg's cell with, on a fresh basis so a case that edits and
-    re-reads sees the new figure.
-
-    Returns:
-        ``{(transfer id, account id): Decimal}`` for the from-side and the
-        to-side.
+    What a door WROTE is what the database holds after the commit, not what
+    the session's in-memory object says, so an edit case reads the row this
+    returns (ruling R-BAL290 part 1).
     """
-    legs = [
-        transfer_side_leg(xfer, is_income=is_income)
-        for is_income in (False, True)
-    ]
-    return leg_amounts_by_key(
-        legs, derived_amount_basis(xfer.user_id, xfer.scenario_id),
-    )
+    db.session.commit()
+    db.session.expire_all()
+    return db.session.get(Transfer, xfer_id)
 
 
 # ── Creation Tests ─────────────────────────────────────────────────
@@ -191,7 +190,9 @@ class TestCreateTransfer:
         plan step ``balance:X-bi-6-4d-3``, whose create door stopped writing
         them: a transfer is one row and its two legs are derived from it
         (ruling R-BAL167 class 1; one leg per side is
-        :class:`TestInvariants`').  It also asked each shadow for a recorded
+        ``test_transfer_legs.py``'s
+        ``TestTransferLegs::test_each_account_gets_its_own_side``).  It also
+        asked each shadow for a recorded
         settlement, and asks each SIDE now: a Projected create records
         nothing on either side.  That read is the case's own: a create that
         hands the status seam a settled status for an unsettled transfer
@@ -550,87 +551,88 @@ class TestCreateTransferValidation:
 class TestUpdateTransfer:
     """Tests for transfer_service.update_transfer."""
 
-    def test_an_amount_edit_reprices_both_legs(self, app, transfer_data):
-        """An amount edit reprices the transfer, and both legs with it.
+    def test_an_amount_edit_writes_the_transfers_amount(self, app, transfer_data):
+        """An amount edit writes the new amount on the transfer's row.
 
-        It priced the two shadow rows until plan step
-        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
-        over them ran over none (a vacuous read, measured at its checkpoint
-        2e-2a-2).  Each leg is priced as the grid prices its cell now: a
-        PROJECTION read, separated from the transfer's own amount only by a
-        defect in how a leg is priced.  The update's mirror onto the shadows,
-        what it graded, goes with that arm at the step's leaf 3b.  Renamed
-        from ``test_amount_syncs_shadows``.
+        What the edit wrote, re-read from the database (ruling R-BAL290
+        part 1).  It also priced both legs until plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-1; what a side shows of
+        the row's amount is ``test_transfer_legs.py``'s
+        ``TestBothSidesShowTheTransfer`` now.  The one copy of a pair: the
+        invariant group's ``test_amounts_always_match_after_update`` made the
+        same edit at $777.77 and was deleted there.  Renamed from
+        ``test_an_amount_edit_reprices_both_legs``, and before that
+        ``test_amount_syncs_shadows``.
         """
         with app.app_context():
             td = transfer_data
-            xfer = _create_basic_transfer(td)
+            xfer_id = _create_basic_transfer(td).id
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id,
+                xfer_id, td["user"].id,
                 amount_ownership=AmountOwnership.own(Decimal("400.00")),
             )
 
-            assert xfer.amount == Decimal("400.00")
-            assert _leg_amounts(xfer) == {
-                (xfer.id, xfer.from_account_id): Decimal("400.00"),
-                (xfer.id, xfer.to_account_id): Decimal("400.00"),
-            }
+            assert _reread(xfer_id).amount == Decimal("400.00")
 
-    def test_status_syncs_shadows(self, app, db, transfer_data):
-        """Updating status moves the transfer and records both its sides.
+    def test_a_paid_edit_settles_the_transfer_and_dates_both_sides_records(
+        self, app, db, transfer_data,
+    ):
+        """Marking Paid writes Paid on the transfer's row and a dated record on each side.
 
-        The transfer's status is the one status, and each side's payment
-        record is dated by the settle, where each shadow said Paid until plan
-        step ``balance:X-bi-6-4d-2`` (ruling R-BAL167 class 1, plan step
-        balance:X-bi-6-4d-2).
+        The transfer's status is the one status; each side's payment record
+        is the one thing still stored per side, read by its own SQL
+        (:func:`tests._test_helpers.transfer_side_settle_day`), where each
+        shadow said Paid until plan step ``balance:X-bi-6-4d-2`` (ruling
+        R-BAL167 class 1).  The row is re-read from the database since that
+        step's checkpoint 2e-2b-1b-1 (ruling R-BAL290 part 1).  The one copy
+        of a pair: the invariant group's line-for-line twin,
+        ``test_statuses_always_match_after_update``, was deleted there.
+        Renamed from ``test_status_syncs_shadows``.
         """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            sides = (xfer.from_account_id, xfer.to_account_id)
+            paid_id = ref_cache.status_id(StatusEnum.DONE)
 
-            done_status = db.session.query(Status).filter_by(name="Paid").one()
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, status_id=done_status.id
+                xfer_id, td["user"].id, status_id=paid_id,
             )
 
-            assert xfer.status_id == done_status.id
-            for account_id in (xfer.from_account_id, xfer.to_account_id):
+            assert _reread(xfer_id).status_id == paid_id
+            for account_id in sides:
                 assert transfer_side_settle_day(
-                    db.session, xfer.id, account_id,
+                    db.session, xfer_id, account_id,
                 ) is not None
 
-    def test_a_period_edit_moves_both_legs(self, app, transfer_data):
-        """A period edit moves the transfer, and both legs with it.
+    def test_a_period_edit_writes_the_transfers_period(self, app, transfer_data):
+        """A period edit writes the new period on the transfer's row.
 
-        It read the two shadow rows' periods until plan step
-        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
-        over them ran over none (a vacuous read, measured at its checkpoint
-        2e-2a-2).  Each leg's period is read now: a PROJECTION read,
-        separated from the transfer's own period only by a defect in the
-        leg's projection of it.  The update's mirror onto the shadows, what
-        it graded, goes with that arm at the step's leaf 3b.  Renamed from
+        What the edit wrote, re-read from the database (ruling R-BAL290
+        part 1).  It also read both legs' periods until plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-1; what a side shows of
+        the row's period is ``test_transfer_legs.py``'s
+        ``TestBothSidesShowTheTransfer`` now.  The one copy of a pair: the
+        invariant group's ``test_periods_always_match_after_update`` made the
+        same edit to the fourth period and was deleted there.  Renamed from
+        ``test_a_period_edit_moves_both_legs``, and before that
         ``test_period_syncs_shadows``.
         """
         with app.app_context():
             td = transfer_data
-            xfer = _create_basic_transfer(td)
+            xfer_id = _create_basic_transfer(td).id
             new_period = td["periods"][2]
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, pay_period_id=new_period.id
+                xfer_id, td["user"].id, pay_period_id=new_period.id,
             )
 
-            assert xfer.pay_period_id == new_period.id
-            for is_income in (False, True):
-                assert transfer_side_leg(
-                    xfer, is_income=is_income,
-                ).pay_period_id == new_period.id
+            assert _reread(xfer_id).pay_period_id == new_period.id
 
-    def test_a_category_edit_files_the_transfer_and_both_legs_under_it(
-        self, app, transfer_data,
-    ):
-        """A category edit files the transfer under the new category, and both legs.
+    def test_a_category_edit_files_the_transfer_under_it(self, app, transfer_data):
+        """A category edit writes the new category on the transfer's row.
 
         It read the two shadow rows' categories until plan step
         ``balance:X-bi-6-4d-3``, whose create door stopped writing them
@@ -639,57 +641,54 @@ class TestUpdateTransfer:
         version too; re-pointed onto the transfer and its legs, it PASSED with
         the edit's category arm deleted (measured at checkpoint 2e-2a-2).  The edit
         names Groceries now, a category the transfer is not under (the
-        coordinator's ruling, 2026-10-13), and the case asserts the
-        transfer's category, which it never did, beside each leg's.  The two
-        leg reads are PROJECTION reads, as in :class:`TestCreateTransfer`'s
-        ``test_with_category``.  Renamed from
-        ``test_category_updates_both_shadows``.
+        coordinator's ruling, 2026-10-13).  It also read both legs'
+        categories until that step's checkpoint 2e-2b-1b-1, which re-reads
+        the row from the database instead (ruling R-BAL290 part 1); what a
+        side shows of the row's category is ``test_transfer_legs.py``'s
+        ``TestBothSidesShowTheTransfer``.  Renamed from
+        ``test_a_category_edit_files_the_transfer_and_both_legs_under_it``,
+        and before that ``test_category_updates_both_shadows``.
         """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
-            groceries = td["categories"]["Groceries"]
+            groceries_id = td["categories"]["Groceries"].id
             # A guard on the INPUT, not a read: the edit must move the
             # category, or the case grades nothing it names.
-            assert xfer.category_id != groceries.id
+            assert xfer.category_id != groceries_id
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, category_id=groceries.id
+                xfer.id, td["user"].id, category_id=groceries_id,
             )
 
-            assert xfer.category_id == groceries.id
-            for is_income in (False, True):
-                assert transfer_side_leg(
-                    xfer, is_income=is_income,
-                ).category_id == groceries.id
+            assert _reread(xfer.id).category_id == groceries_id
 
-    def test_a_notes_edit_leaves_both_legs_priced_as_they_were(
+    def test_a_notes_edit_writes_the_notes_and_leaves_the_amount(
         self, app, transfer_data,
     ):
-        """A notes edit changes the transfer's notes and leaves both legs' price alone.
+        """A notes edit writes the transfer's notes and leaves its amount as it was.
 
         It compared the two shadow rows' amounts before and after the edit
         until plan step ``balance:X-bi-6-4d-3``, and from that step's create
         door on both reads ran over none (a vacuous read, measured at its
-        checkpoint 2e-2a-2).  Each leg is priced as the grid prices its cell
-        now, before the edit and after it.  Renamed from
-        ``test_notes_does_not_touch_shadows``.
+        checkpoint 2e-2a-2).  It then priced both legs before and after the
+        edit until that step's checkpoint 2e-2b-1b-1, which reads the row's
+        amount, re-read from the database (ruling R-BAL290 part 1): a side's
+        price is the row's amount, which ``test_transfer_legs.py``'s
+        ``TestBothSidesShowTheTransfer`` grades.  Renamed from
+        ``test_a_notes_edit_leaves_both_legs_priced_as_they_were``, and
+        before that ``test_notes_does_not_touch_shadows``.
         """
         with app.app_context():
             td = transfer_data
-            xfer = _create_basic_transfer(td)
-            priced = {
-                (xfer.id, xfer.from_account_id): Decimal("250.00"),
-                (xfer.id, xfer.to_account_id): Decimal("250.00"),
-            }
-            assert _leg_amounts(xfer) == priced
+            xfer_id = _create_basic_transfer(td).id
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, notes="Updated notes"
+                xfer_id, td["user"].id, notes="Updated notes",
             )
 
-            assert xfer.notes == "Updated notes"
-            assert _leg_amounts(xfer) == priced
+            row = _reread(xfer_id)
+            assert (row.notes, row.amount) == ("Updated notes", Decimal("250.00"))
 
     def test_a_figure_on_an_UNSETTLED_transfer_is_REFUSED(self, app, db, transfer_data):
         """A figure records a settle, so an unsettled pair cannot be handed one.
@@ -725,33 +724,26 @@ class TestUpdateTransfer:
                     db.session, xfer.id, account_id,
                 ) is None
 
-    def test_an_override_edit_reaches_the_transfer_and_both_legs(
-        self, app, transfer_data,
-    ):
-        """An override edit flags the transfer, and both legs read the flag.
+    def test_an_override_edit_flags_the_transfer(self, app, transfer_data):
+        """An override edit writes the flag on the transfer's row.
 
-        It read the two shadow rows' flags until plan step
-        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
-        over them ran over none (a vacuous read, measured at its checkpoint
-        2e-2a-2).  Each leg's flag is read now: a PROJECTION read, separated
-        from the transfer's own flag only by a defect in the leg's projection
-        of it.  The update's mirror onto the shadows, what it graded, goes
-        with that arm at the step's leaf 3b.  Renamed from
-        ``test_is_override_syncs_shadows``.
+        What the edit wrote, re-read from the database (ruling R-BAL290
+        part 1).  It also read both legs' flags until plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-1; what a side shows of
+        the row's flag is ``test_transfer_legs.py``'s
+        ``TestBothSidesShowTheTransfer`` now.  Renamed from
+        ``test_an_override_edit_reaches_the_transfer_and_both_legs``, and
+        before that ``test_is_override_syncs_shadows``.
         """
         with app.app_context():
             td = transfer_data
-            xfer = _create_basic_transfer(td)
+            xfer_id = _create_basic_transfer(td).id
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, is_override=True
+                xfer_id, td["user"].id, is_override=True,
             )
 
-            assert xfer.is_override is True
-            for is_income in (False, True):
-                assert transfer_side_leg(
-                    xfer, is_income=is_income,
-                ).is_override is True
+            assert _reread(xfer_id).is_override is True
 
     def test_wrong_user_rejected(self, app, db, transfer_data, second_user):
         """Update by non-owner raises NotFoundError."""
@@ -803,19 +795,22 @@ class TestUpdateTransfer:
                     xfer.id, td["user"].id, pay_period_id=other_periods[0].id
                 )
 
-    def test_a_category_cleared_to_none_clears_both_legs(
+    def test_a_category_cleared_to_none_leaves_the_transfer_under_none(
         self, app, transfer_data,
     ):
-        """Clearing the category leaves the transfer, and both legs, under none.
+        """Clearing the category leaves the row under none, and neither side shows one.
 
-        It read the two shadow rows' categories until plan step
-        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
-        over them ran over none (a vacuous read, measured at its checkpoint
-        2e-2a-2).  Each leg's category is read now: a PROJECTION read,
-        separated from the transfer's own category only by a defect in the
-        leg's projection of it.  The update's mirror onto the shadows, what
-        it graded, goes with that arm at the step's leaf 3b.  Renamed from
-        ``test_category_set_to_none_propagates_none``.
+        What the edit wrote, re-read from the database (ruling R-BAL290
+        part 1).  **The two leg reads are kept, as PROJECTION reads**: what a
+        side shows of the row is ``test_transfer_legs.py``'s
+        ``TestBothSidesShowTheTransfer``, but both of its rows carry a
+        category, so a side that answered some category for a transfer filed
+        under NONE passes it and fails only these reads (measured at plan
+        step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-1, by a mutant
+        answering ``-1`` for a missing category).  They move into that table
+        with a row filed under no category at checkpoint 2e-2b-1b-2.
+        Renamed from ``test_a_category_cleared_to_none_clears_both_legs``,
+        and before that ``test_category_set_to_none_propagates_none``.
         """
         with app.app_context():
             td = transfer_data
@@ -835,13 +830,14 @@ class TestUpdateTransfer:
             )
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, category_id=None
+                xfer.id, td["user"].id, category_id=None,
             )
 
-            assert xfer.category_id is None
+            row = _reread(xfer.id)
+            assert row.category_id is None
             for is_income in (False, True):
                 assert transfer_side_leg(
-                    xfer, is_income=is_income,
+                    row, is_income=is_income,
                 ).category_id is None
 
     def test_a_REVERT_is_what_clears_a_settled_transfers_figure(
@@ -1028,6 +1024,49 @@ class TestUpdateTransfer:
                     f"invariant is violated."
                 )
 
+    def test_a_combined_edit_writes_every_field_it_names(
+        self, app, db, transfer_data,
+    ):
+        """An amount, Paid and a period in ONE edit land on the row; both records hold the amount.
+
+        The settle runs after the amount is written (``_update`` applies the
+        caller's stated facts first, so the settle reads the post-edit state),
+        so each side records the $999.99 the same edit wrote, dated, where
+        the $250.00 the transfer was created at would be a settle that ran
+        first.  The row is re-read from the database and each side's record
+        read by its own SQL (:func:`tests._test_helpers.transfer_side_record`).
+        Moved here from the invariant group as
+        ``test_multiple_updates_maintain_invariants`` at plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-1 (ruling R-BAL290
+        part 1), where it read both legs' prices and periods, which
+        ``test_transfer_legs.py``'s ``TestBothSidesShowTheTransfer`` grades,
+        and not the records' amounts.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            sides = (xfer.from_account_id, xfer.to_account_id)
+            paid_id = ref_cache.status_id(StatusEnum.DONE)
+            period_id = td["periods"][4].id
+
+            transfer_service.update_transfer(
+                xfer_id, td["user"].id,
+                amount_ownership=AmountOwnership.own(Decimal("999.99")),
+                status_id=paid_id,
+                pay_period_id=period_id,
+            )
+
+            row = _reread(xfer_id)
+            assert (row.amount, row.status_id, row.pay_period_id) == (
+                Decimal("999.99"), paid_id, period_id,
+            )
+            for account_id in sides:
+                record = transfer_side_record(db.session, xfer_id, account_id)
+                assert (record.amount, record.settled_on is not None) == (
+                    Decimal("999.99"), True,
+                )
+
 
 # ── Delete Tests ───────────────────────────────────────────────────
 
@@ -1147,187 +1186,6 @@ class TestDeleteTransfer:
             # Second soft delete should not raise.
             result = transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
             assert result.is_deleted is True
-
-
-# ── Invariant Verification Tests ───────────────────────────────────
-
-
-class TestInvariants:
-    """Tests that directly verify four of the five core invariants.
-
-    Invariant 2's case, ``test_shadows_cannot_exist_without_transfer``, was
-    deleted at plan step ``balance:X-bi-6-4d-3`` (ruling R-BAL278, the
-    developer, 2026-10-13): a transfer is one row, so no shadow can outlive
-    it, and the case counted rows nothing can write.
-    """
-
-    def test_one_leg_per_side_and_no_twin(self, app, db, transfer_data):
-        """Invariant 1: a transfer has exactly one leg on each side, and no twin row.
-
-        **It measured nothing from plan step ``balance:X-bi-6-4d-3``'s create
-        door on**: it counted the transfer's two shadow rows, which that door
-        no longer writes, so it FAILED (``assert 0 == 2``).  Now the fold's
-        plan loader holds exactly one leg of it on each endpoint, and a twin
-        row on either side is refused by ``ck_transactions_names_no_transfer``
-        (ruling R-BAL258), the CHECK
-        ``test_a_transfer_is_one_row.py::TestTheUpgrade::test_the_database_refuses_a_twin``
-        pins with a raw insert (ruling R-BAL167 class 1 with a refusal
-        added).  Which side each leg is on is the next case's.  Renamed from
-        ``test_shadow_count_is_exactly_two``.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            # Committed, because the twin refusal rolls the session back.
-            db.session.commit()
-
-            for account_id in (xfer.from_account_id, xfer.to_account_id):
-                legs = planned_transfer_legs(
-                    account_id, td["scenario"].id, options=(),
-                )
-                assert [leg.transfer.id for leg in legs] == [xfer.id]
-            for is_income in (False, True):
-                assert_a_twin_is_refused(db.session, xfer, is_income)
-
-    def test_the_from_leg_is_an_expense_and_the_to_leg_an_income(
-        self, app, db, transfer_data,
-    ):
-        """Invariant 1: the from-side leg is an expense, the to-side leg an income.
-
-        Each on its own endpoint: the source and the destination.
-        **It measured nothing from plan step ``balance:X-bi-6-4d-3``'s create
-        door on**: it read the two shadow rows' transaction types, which that
-        door no longer writes, so it FAILED (``assert 2 in []``).  Now each
-        endpoint's leg is read from the fold's plan loader (ruling R-BAL167
-        class 1).  Renamed from
-        ``test_shadow_types_are_one_expense_one_income``.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            db.session.flush()
-
-            [expense] = planned_transfer_legs(
-                xfer.from_account_id, td["scenario"].id, options=(),
-            )
-            [income] = planned_transfer_legs(
-                xfer.to_account_id, td["scenario"].id, options=(),
-            )
-            assert (expense.transfer.id, expense.account_id, expense.is_expense) == (
-                xfer.id, xfer.from_account_id, True,
-            )
-            assert (income.transfer.id, income.account_id, income.is_income) == (
-                xfer.id, xfer.to_account_id, True,
-            )
-
-    def test_amounts_always_match_after_update(self, app, transfer_data):
-        """Invariant 3: both legs are priced at the transfer's amount after an edit.
-
-        It priced the two shadow rows until plan step
-        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
-        over them ran over none (a vacuous read, measured at its checkpoint
-        2e-2a-1).  Each leg is priced as the grid prices its cell now: a
-        PROJECTION read, separated from the transfer's own amount only by a
-        defect in how a leg is priced.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-
-            transfer_service.update_transfer(
-                xfer.id, td["user"].id, amount_ownership=AmountOwnership.own(Decimal("777.77")), )
-
-            assert xfer.amount == Decimal("777.77")
-            assert _leg_amounts(xfer) == {
-                (xfer.id, xfer.from_account_id): Decimal("777.77"),
-                (xfer.id, xfer.to_account_id): Decimal("777.77"),
-            }
-
-    def test_statuses_always_match_after_update(self, app, db, transfer_data):
-        """Invariant 4: the transfer's status is the one status, and its sides follow.
-
-        A shadow's status is kept and read by nothing since plan step
-        ``balance:X-bi-6-4d-2``: the transfer says Paid and each side's
-        payment record is dated, where each shadow said Paid until then
-        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-
-            done = db.session.query(Status).filter_by(name="Paid").one()
-            transfer_service.update_transfer(
-                xfer.id, td["user"].id, status_id=done.id
-            )
-
-            assert xfer.status_id == done.id
-            for account_id in (xfer.from_account_id, xfer.to_account_id):
-                assert transfer_side_settle_day(
-                    db.session, xfer.id, account_id,
-                ) is not None
-
-    def test_periods_always_match_after_update(self, app, transfer_data):
-        """Invariant 5: both legs sit in the transfer's period after an edit.
-
-        It read the two shadow rows' periods until plan step
-        ``balance:X-bi-6-4d-3``, and from that step's create door on the loop
-        over them ran over none (a vacuous read, measured at its checkpoint
-        2e-2a-1).  Each leg's period is read now: a PROJECTION read,
-        separated from the transfer's own period only by a defect in the
-        leg's projection of it.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            new_period = td["periods"][3]
-
-            transfer_service.update_transfer(
-                xfer.id, td["user"].id, pay_period_id=new_period.id
-            )
-
-            assert xfer.pay_period_id == new_period.id
-            for is_income in (False, True):
-                assert transfer_side_leg(
-                    xfer, is_income=is_income,
-                ).pay_period_id == new_period.id
-
-    def test_multiple_updates_maintain_invariants(self, app, db, transfer_data):
-        """Multiple sequential updates do not break any invariant.
-
-        The status half is the transfer's and its sides' payment records'
-        since plan step ``balance:X-bi-6-4d-2``: the transfer says Paid and
-        each side's record is dated, where each shadow said Paid until then
-        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  The amount
-        and period halves read both legs since plan step
-        ``balance:X-bi-6-4d-3``, where they read the two shadow rows the
-        create door no longer writes (ruling R-BAL167 class 1); each leg read
-        is a PROJECTION read, as in the two cases above.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-
-            done = db.session.query(Status).filter_by(name="Paid").one()
-            transfer_service.update_transfer(
-                xfer.id, td["user"].id,
-                amount_ownership=AmountOwnership.own(Decimal("999.99")),
-                status_id=done.id,
-                pay_period_id=td["periods"][4].id,
-            )
-
-            assert _leg_amounts(xfer) == {
-                (xfer.id, xfer.from_account_id): Decimal("999.99"),
-                (xfer.id, xfer.to_account_id): Decimal("999.99"),
-            }
-            for is_income in (False, True):
-                assert transfer_side_leg(
-                    xfer, is_income=is_income,
-                ).pay_period_id == td["periods"][4].id
-            assert xfer.status_id == done.id
-            for account_id in (xfer.from_account_id, xfer.to_account_id):
-                assert transfer_side_settle_day(
-                    db.session, xfer.id, account_id,
-                ) is not None
 
 
 # ── Soft-Delete Handling Tests (M2) ──────────────────────────────
