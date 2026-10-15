@@ -18,6 +18,7 @@ from app.models.investment_params import InvestmentParams
 from app.models.paycheck_line import PaycheckLine
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
+from app.models.transfer import Transfer
 from app.services import (
     account_service,
     balance_at,
@@ -1697,10 +1698,20 @@ class TestContributionPrompt:
     def test_create_transfer_generates_shadows(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """After creation: shadow transactions exist on the investment account."""
-        from app.enums import TxnTypeEnum as TTE
-        from app.models.transaction import Transaction as Txn
+        """After creation: live transfers INTO the investment account exist.
 
+        The route fans its new definition out across the owner's pay periods
+        (``generate_transfers_for_all_periods``), so the money it plans
+        arrives on the investment account as transfers whose to-side it is.
+
+        **Re-expressed onto the TRANSFER at plan step balance:X-bi-6-4d-3**
+        (ruling **R-BAL167** class 1).  It counted the live income SHADOW
+        rows on the investment account -- a ``budget.transactions`` row of
+        income type carrying a ``transfer_id`` -- and a transfer is one row
+        since that step (ruling **R-BAL258**), so none can be stored: the
+        income side is the transfer's to-side, read off ``budget.transfers``.
+        The name is the twin era's, kept so the node id is the baseline's.
+        """
         acct = _create_investment_account(
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
@@ -1719,18 +1730,15 @@ class TestContributionPrompt:
             },
         )
 
-        income_type_id = ref_cache.txn_type_id(TTE.INCOME)
-        shadows = (
-            db.session.query(Txn)
+        transfers = (
+            db.session.query(Transfer)
             .filter(
-                Txn.account_id == acct.id,
-                Txn.transfer_id.isnot(None),
-                Txn.transaction_type_id == income_type_id,
-                Txn.is_deleted.is_(False),
+                Transfer.to_account_id == acct.id,
+                Transfer.is_deleted.is_(False),
             )
             .all()
         )
-        assert len(shadows) > 0
+        assert len(transfers) > 0
 
     def test_create_transfer_redirect_hides_prompt(
         self, auth_client, seed_user, db, seed_periods_today,
