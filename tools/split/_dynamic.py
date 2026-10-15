@@ -192,17 +192,27 @@ def new_kinds(before: list[dict], after: list[dict]) -> dict[str, list[str]]:
 
 @dataclass(frozen=True)
 class Hit:
-    """One line naming the old path, and whether its document is a record."""
+    """One line naming the old path; whether its document is a record; and whether the tool
+    composed the line itself (a provenance docstring of the new package)."""
 
     path: str
     line: int
     text: str
     archived: bool
+    composed: bool = False
 
 
-def classify(root: Path, raw: list[str]) -> list[Hit]:
+def classify(root: Path, raw: list[str], origins: dict[str, list[Origin | None]]
+             ) -> list[Hit]:
     """``git grep -n`` lines as hits; a document is ARCHIVED when it sits under an
-    ``archive/`` or ``historical/`` directory or says ``ARCHIVED`` on its first line."""
+    ``archive/`` or ``historical/`` directory or says ``ARCHIVED`` on its first line.
+
+    A hit is COMPOSED when ``origins`` (each written file's verified line origins) says the
+    writer composed its line: the package's own "Split from ..." provenance, which names the
+    old path by design and is not a pointer to edit.  Judged by ORIGIN, never by path (the
+    coordinator's ruling, 2026-10-15): a line inside the package that the source held, or
+    that was written by hand, still counts, and a file whose origins did not verify has none
+    to drop."""
     hits = []
     first_lines: dict[str, str] = {}
     for entry in raw:
@@ -212,5 +222,8 @@ def classify(root: Path, raw: list[str]) -> list[Hit]:
                 first_lines[path] = handle.readline()
         archived = bool({"archive", "historical"} & set(Path(path).parts)) or (
             "ARCHIVED" in first_lines[path])
-        hits.append(Hit(path=path, line=int(line), text=text.strip(), archived=archived))
+        lines = origins.get(path, [])
+        composed = 0 < int(line) <= len(lines) and lines[int(line) - 1] is None
+        hits.append(Hit(path=path, line=int(line), text=text.strip(), archived=archived,
+                        composed=composed))
     return hits

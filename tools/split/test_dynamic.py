@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -16,10 +17,11 @@ from tools.ci.arcs import REPO
 from tools.split import _dynamic as dynamic
 from tools.split._model import parse_plan
 from tools.split._observe import OBSERVE_ENV, verdict
+from tools.split._prove import line_origins
 from tools.split._render import Origin
 from tools.split._run import census_pattern
 from tools.split._source import Refusal
-from tools.split.conftest import SOURCE, layout_of, plan_dict
+from tools.split.conftest import SAMPLE, SOURCE, build, layout_of, plan_dict
 from tools.split.test_apply import applied
 
 PACKAGE = "tests/test_area/test_sample"
@@ -302,8 +304,37 @@ class TestTheCensus:
             (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
             (tmp_path / path).write_text(first + "\n", encoding="utf-8")
         hits = dynamic.classify(tmp_path, ["docs/archive/a.md:3:x", "docs/plans/historical/b.md:"
-                                           "4:x", "docs/c.md:5:x", "docs/d.md:6:x"])
+                                           "4:x", "docs/c.md:5:x", "docs/d.md:6:x"], {})
         assert [h.archived for h in hits] == [True, True, True, False]
+
+    @staticmethod
+    def package_hits(tmp_path: Path) -> list[dynamic.Hit]:
+        """The sample, one of whose tests cites the old path in its docstring, split; every
+        line of the package the census pattern finds, classified with the verified origins
+        (``git grep`` is the census's own reader; the sample is not a repository)."""
+        repo = build(tmp_path, SAMPLE.replace(
+            '"""One."""', '"""One; its twin lives in tests/test_area/test_sample.py."""'))
+        layout = applied(repo)
+        origins, failures = line_origins(layout, repo)
+        assert not failures
+        pattern = re.compile(census_pattern(layout.plan))
+        raw = [f"{path}:{number}:{line}" for path in sorted(origins)
+               for number, line in enumerate((repo / path).read_text(
+                   encoding="utf-8").splitlines(), start=1) if pattern.search(line)]
+        return dynamic.classify(repo, raw, origins)
+
+    def test_the_tools_own_provenance_is_not_counted(self, tmp_path):
+        """conftest.py's and _helpers.py's docstrings name the source by design: composed."""
+        composed = [h for h in self.package_hits(tmp_path) if h.composed]
+        assert sorted(Path(h.path).name for h in composed) == ["_helpers.py", "conftest.py"]
+        assert all("test_sample.py" in h.text for h in composed)
+
+    def test_a_stale_pointer_inside_the_package_is_counted(self, tmp_path):
+        """The moved docstring citing the old path is the source's line, not the tool's: it
+        stays live although it sits inside the new package."""
+        live = [h for h in self.package_hits(tmp_path) if not h.composed and not h.archived]
+        assert [(Path(h.path).name, h.text) for h in live] == [
+            ("test_first.py", '"""One; its twin lives in tests/test_area/test_sample.py."""')]
 
 
 class TestTheObserver:
