@@ -518,9 +518,9 @@ class TestTheFixtureSetups:
 
     @pytest.mark.parametrize("scope", ["module", "class", "package"])
     def test_a_scoped_fixture_defined_outside_the_source_is_refused(self, scope):
-        """Its one instance per module, class or package would be cut into one per part."""
+        """Its one instance per module, class or package may be cut into one per part."""
         failures = self.judge(self.setup("area", scope, "tests", "/repo/tests/conftest.py"))
-        assert len(failures) == 1 and "would be cut into one per part" in failures[0]
+        assert len(failures) == 1 and "may be cut into one per part" in failures[0]
 
     def test_a_scoped_fixture_of_the_source_itself_passes(self):
         """A class-scoped fixture a whole class defines moves with that class."""
@@ -531,7 +531,8 @@ class TestTheFixtureSetups:
     def test_an_imported_fixture_is_refused(self, baseid):
         """Registered on the source by an import, it would reach one part only."""
         failures = self.judge(self.setup("shared", baseid=baseid, file="/repo/tests/fx.py"))
-        assert len(failures) == 1 and "imported into the source" in failures[0]
+        assert len(failures) == 1 and "registered on the source but defined in another file" in (
+            failures[0])
 
     def test_a_scoped_fixture_whose_file_cannot_be_read_is_refused(self):
         """No code object to read: treated as defined elsewhere."""

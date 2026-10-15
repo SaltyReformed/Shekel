@@ -37,7 +37,14 @@ from tools.split._prove import (
     line_origins,
     prove_static,
 )
-from tools.split._render import importer_rewrites, line_limit, render_all, write
+from tools.split._render import (
+    Rewrite,
+    fingerprint,
+    importer_rewrites,
+    line_limit,
+    render_all,
+    write,
+)
 from tools.split._source import CollectRules, Refusal, collect_rules, read_module
 
 #: The record directory's files.
@@ -84,16 +91,46 @@ def _head(root: Path) -> str:
     return git(root, "rev-parse", "HEAD").strip()
 
 
+def _importer_record(rewrites: list[Rewrite], root: Path) -> dict[str, dict]:
+    """Each importer the split re-points, by repository-relative path: its fingerprint and
+    its rewrites, ``[line, last, old, new]``.  ``record`` keeps it, and ``apply`` refuses
+    unless the tree still gives the same, so no importer is re-pointed that ``record`` did not
+    fingerprint and lint (the branch's neutral review of this leaf, M1)."""
+    importers: dict[str, dict] = {}
+    for rewrite in rewrites:
+        entry = importers.setdefault(str(rewrite.path.relative_to(root)), {
+            "sha256": fingerprint(rewrite.path.read_text(encoding="utf-8")), "rewrites": []})
+        entry["rewrites"].append([rewrite.line, rewrite.last, rewrite.old, rewrite.new])
+    return importers
+
+
+def _record_verdict(ctx: Context) -> tuple[list[str], int]:
+    """The record's arms, judged from the record's own files: its failures, and how many
+    fixtures the source's tests set up.
+
+    One home for the verdict (the branch's neutral review of this leaf, H1: the fixture arm
+    refused at ``record`` and nothing downstream knew).  ``record`` reports it, ``apply``
+    refuses a record that failed it, and ``prove`` judges it again as an arm of the proof."""
+    collected, ran = ctx.read(_BEFORE_COLLECT), ctx.read(_BEFORE_RUN)
+    setups, setups_ran = run.merged_setups(ctx.into / _BEFORE_RUN)
+    failures = []
+    if collected["deselected"]:
+        failures.append(f"the source run deselects {len(collected['deselected'])} tests; "
+                        "the proof covers only what runs")
+    if set(collected["collected"]) != set(ran["outcomes"]):
+        failures.append("the source's collection and its run disagree on which tests exist")
+    failures += dynamic.fixture_failures(
+        {"outcomes": ran["outcomes"], "setups": setups, "setups_ran": setups_ran},
+        str(ctx.plan.source), str((ctx.root / ctx.plan.source).resolve()))
+    return failures, len(setups)
+
+
 def record(ctx: Context) -> list[str]:
     """Refuse the plan or measure the source before anything moves."""
     source = ctx.root / ctx.plan.source
     layout = ctx.layout(source)
     render_all(layout, line_limit(ctx.root))
-    importers: dict[str, dict] = {}
-    for rewrite in importer_rewrites(layout, ctx.root):
-        entry = importers.setdefault(str(rewrite.path.relative_to(ctx.root)), {
-            "sha256": _sha256(rewrite.path), "rewrites": []})
-        entry["rewrites"].append([rewrite.line, rewrite.last, rewrite.old, rewrite.new])
+    importers = _importer_record(importer_rewrites(layout, ctx.root), ctx.root)
     ctx.into.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, ctx.into / _SOURCE)
     ctx.save(_META, {"source": str(ctx.plan.source), "sha256": _sha256(source),
@@ -101,30 +138,30 @@ def record(ctx: Context) -> list[str]:
     ctx.save(_BEFORE_PYLINT, run.pylint_messages(ctx.root, [str(ctx.plan.source)]))
     ctx.save(_BEFORE_IMPORTERS,
              run.pylint_messages(ctx.root, sorted(importers)) if importers else [])
-    collected = run.observe(ctx.root, [str(ctx.plan.source)], ctx.into / _BEFORE_COLLECT,
-                            collect_only=True)
-    ran = run.observe(ctx.root, [str(ctx.plan.source)], ctx.into / _BEFORE_RUN,
-                      collect_only=False)
-    failures = []
-    if collected["deselected"]:
-        failures.append(f"the source run deselects {len(collected['deselected'])} tests; "
-                        "the proof covers only what runs")
-    if set(collected["collected"]) != set(ran["outcomes"]):
-        failures.append("the source's collection and its run disagree on which tests exist")
-    failures += dynamic.fixture_failures(ran, str(ctx.plan.source), str(source.resolve()))
-    return failures
+    run.observe(ctx.root, [str(ctx.plan.source)], ctx.into / _BEFORE_COLLECT,
+                collect_only=True)
+    run.observe(ctx.root, [str(ctx.plan.source)], ctx.into / _BEFORE_RUN, collect_only=False)
+    return _record_verdict(ctx)[0]
 
 
 def apply(ctx: Context, idmap: Path) -> list[str]:
     """Write the package, delete the source, re-point importers, write the id map, and run
-    the static proof."""
+    the static proof; refused, with nothing written, unless the record passed and the source
+    and every importer are as it found them."""
     meta = ctx.read(_META)
     source = ctx.root / ctx.plan.source
     if _sha256(source) != meta["sha256"]:
         raise Refusal(f"{source} changed since it was recorded; record again")
+    refused, _ = _record_verdict(ctx)
+    if refused:
+        raise Refusal(f"the record did not pass ({len(refused)} failure(s), first: "
+                      f"{refused[0]}); nothing is applied")
     layout = ctx.layout(source)
     texts = render_all(layout, line_limit(ctx.root))
     rewrites = importer_rewrites(layout, ctx.root)
+    if _importer_record(rewrites, ctx.root) != meta["importers"]:
+        raise Refusal("the modules importing the source, or their text, changed since the "
+                      "record; record again")
     mapping = dynamic.id_map(layout, ctx.read(_BEFORE_COLLECT)["collected"])
     write(layout, ctx.root, texts, rewrites)
     payload = json.dumps(mapping, indent=1, sort_keys=True) + "\n"
@@ -166,20 +203,19 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     passed.  The block's fixed sentences claim that each arm held, so printed beside a
     failure they would state what the run refuted (the branch's neutral review, F7)."""
     layout = ctx.layout(ctx.into / _SOURCE)
+    recorded = _record_verdict(ctx)
     failures, origins = _static_arms(ctx, layout)
+    failures = [f"record: {f}" for f in recorded[0]] + failures
     mapping = json.loads(idmap.read_text(encoding="utf-8"))
     if mapping != dynamic.id_map(layout, ctx.read(_BEFORE_COLLECT)["collected"]):
         failures.append(f"{idmap} is not the map this plan produces")
-    arm_failures, seen = _run_arms(ctx, layout, mapping)
-    failures += arm_failures
-    files = sorted(str(p.relative_to(ctx.root)) for p in (ctx.root / layout.plan.package).glob(
-        "*.py"))
-    after_pylint = run.pylint_messages(ctx.root, files)
-    failures += [f"pylint: {f}" for f in dynamic.compare_pylint(
-        ctx.read(_BEFORE_PYLINT), after_pylint, origins, import_block(layout))]
-    failures += _duplicate_arm(ctx, layout, idmap, after_pylint, seen)
-    importer_failures, named = _importer_arm(ctx)
-    failures += importer_failures
+    arms, seen = _run_arms(ctx, layout, mapping)
+    failures += arms
+    seen["fixtures"] = recorded[1]
+    arms, after_pylint = _pylint_arms(ctx, layout, idmap, origins, seen)
+    failures += arms
+    arms, named = _importer_arm(ctx)
+    failures += arms
     gate, gate_line = run.plan_gate(ctx.root)
     if gate:
         failures.append(f"plan gate: {gate_line}")
@@ -190,6 +226,18 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
                         + _report_duplicates(seen)
                         + _report_pointers(gate_line, hits)))
     return failures
+
+
+def _pylint_arms(ctx: Context, layout: Layout, idmap: Path, origins: dict, seen: dict
+                 ) -> tuple[list[str], list[dict]]:
+    """Lint the parts in one run: the origin arm's and the duplicate-code arm's failures, and
+    the parts' messages."""
+    files = sorted(str(p.relative_to(ctx.root)) for p in (ctx.root / layout.plan.package).glob(
+        "*.py"))
+    after_pylint = run.pylint_messages(ctx.root, files)
+    failures = [f"pylint: {f}" for f in dynamic.compare_pylint(
+        ctx.read(_BEFORE_PYLINT), after_pylint, origins, import_block(layout))]
+    return failures + _duplicate_arm(ctx, layout, idmap, after_pylint, seen), after_pylint
 
 
 def _importer_arm(ctx: Context) -> tuple[list[str], list[str]]:
@@ -234,6 +282,9 @@ def _report_moves(ctx: Context, layout: Layout, idmap: Path, seen: dict) -> list
         f"- identity: {counts['whole_nodes']} whole nodes and {counts['split_members']} "
         "split-class members, each verbatim line for line (leading comments included) "
         "and ast.dump-identical; each held exactly once, in source order",
+        f"- fixtures: {seen['fixtures']} set up by the source's tests; none scoped to a "
+        "module, class or package and defined outside the source, none defined in another "
+        "file and registered on it",
         f"- collection: {seen['collected']} ids after = the source's under the map "
         f"(total, one-to-one); map sha256 {_sha256(idmap)}",
         f"- outcomes: identical for every id under the map, "
@@ -290,11 +341,12 @@ def main(argv: list[str] | None = None, root: Path = REPO) -> int:
     args = parser().parse_args(argv)
     if args.command != "record" and args.idmap is None:
         parser().error("apply and prove need --idmap")
-    inside = [str(path) for path in (args.into, args.idmap)
+    inside = [str(path) for path in (args.plan, args.into, args.idmap)
               if path is not None and path.resolve().is_relative_to(root.resolve())]
     if inside:
         parser().error(f"{inside} must lie outside the repository: the census reads every "
-                       "file git does not ignore, and a record names the old module throughout")
+                       "file git does not ignore, and a plan or a record names the old module "
+                       "throughout")
     try:
         ctx = Context(plan=load_plan(args.plan), root=root, into=args.into)
         if args.command == "record":

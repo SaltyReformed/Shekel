@@ -196,7 +196,7 @@ class TestTheLayoutRefuses:
         """inspect reads the file a node now sits in."""
         source = sample_with("import re\n", "import inspect\nimport re\n") + EXTRA_TOP.format(
             body='def test_src():\n    """S."""\n    assert inspect.getsource(_make)')
-        assert "inspect reads a moved node" in refusal(
+        assert "inspect reads a frame, or an object the code being moved" in refusal(
             tmp_path, source, with_test_first("test_src"))
 
     def test_a_part_over_the_line_budget(self, tmp_path):
@@ -225,7 +225,7 @@ class TestARunTimeReadOfTheModuleIsRefused:
     def test_a_module_read_off_the_running_test(self, tmp_path, read):
         """The running test's module is the part it now sits in (the review's F9)."""
         source = sample_with('"""One."""\n', f'"""One."""\n        assert {read}\n')
-        assert "__module__ names the module it runs in" in refusal(tmp_path, source)
+        assert "__module__ may name the module or file it runs in" in refusal(tmp_path, source)
 
     def test_a_module_read_off_the_request(self, tmp_path):
         """``request.function.__module__`` names the part a test now sits in."""
@@ -233,7 +233,8 @@ class TestARunTimeReadOfTheModuleIsRefused:
                              'monkeypatch.setenv("SAMPLE", request.function.__module__)'
                              ).replace("def _frozen(monkeypatch):",
                                        "def _frozen(monkeypatch, request):")
-        assert "request...__module__ names the module it runs in" in refusal(tmp_path, source)
+        assert "request...__module__ may name the module or file it runs in" in refusal(
+            tmp_path, source)
 
     def test_a_class_docstring_read_through_the_request_when_a_class_is_split(self, tmp_path):
         """``request.cls.__doc__`` reads a slice's one-line docstring once TestBig is split."""
@@ -242,6 +243,29 @@ class TestARunTimeReadOfTheModuleIsRefused:
                              ).replace("def _frozen(monkeypatch):",
                                        "def _frozen(monkeypatch, request):")
         assert "which a split class states once per slice" in refusal(tmp_path, source)
+
+    @pytest.mark.parametrize("body, why", [
+        ("s = self\n        assert s.__module__", "__module__ may name"),
+        ("assert inspect.getfile(type(self))", "inspect reads a frame"),
+        ("assert inspect.stack()[0].filename", "inspect reads a frame"),
+        ('assert sys._getframe().f_globals["__name__"]', "_getframe reads the frame"),
+        ("assert _make.__code__.co_filename", "co_filename may name"),
+        ('assert _make.__globals__["__name__"]', "__globals__ may name"),
+        ("assert self.test_one.__code__", "__code__ may name"),
+        ("import tests.test_area.test_sample as me\n        assert me.__file__",
+         "__file__ may name"),
+        ("from tests.test_area import test_sample\n        assert test_sample.__file__",
+         "__file__ may name"),
+    ], ids=["an-alias-of-self", "inspect-on-type-self", "inspect-stack", "getframe",
+            "a-moved-nodes-code", "a-moved-nodes-globals", "a-methods-code",
+            "the-source-imported-by-path", "the-source-imported-by-name"])
+    def test_an_identity_read_off_anything_but_a_foreign_import(self, tmp_path, body, why):
+        """Refused WHATEVER it is read off, unless the chain is rooted at a name an import
+        binds to something other than the source or its package (fork M2, ruled B): a list of
+        the names running code reaches itself through was a list of spellings."""
+        source = sample_with("import re\n", "import inspect\nimport re\nimport sys\n")
+        source = source.replace('"""One."""\n', f'"""One."""\n        {body}\n', 1)
+        assert why in refusal(tmp_path, source)
 
     def test_getfixturevalue(self, tmp_path):
         """A fixture set up by name at run time may sit on a branch no run took."""
@@ -253,14 +277,21 @@ class TestARunTimeReadOfTheModuleIsRefused:
 
 @pytest.mark.parametrize("source", [
     sample_with('"""One."""\n', '"""One."""\n        assert date.__module__ == "datetime"\n'),
+    sample_with('"""One."""\n', '"""One."""\n        assert re.__file__\n'),
+    sample_with('"""One."""\n', '"""One."""\n        import json\n        assert json.__file__\n'),
+    sample_with("import re\n", "import inspect\nimport re\n").replace(
+        '"""One."""\n', '"""One."""\n        assert inspect.getsource(re)\n', 1),
     sample_with('"""One."""\n', '"""One."""\n        assert self.__doc__ == "First tests."\n'),
-], ids=["an-imported-objects-module", "a-whole-class-docstring"])
+], ids=["an-imported-objects-module", "an-imported-modules-file",
+         "a-locally-imported-file", "inspect-on-an-imported-module",
+         "a-whole-class-docstring"])
 def test_a_read_the_split_cannot_change_is_accepted(tmp_path, source):
-    """An imported object's module and the docstring of a class moved WHOLE each read the
-    same after the split, so neither is refused.  (Any docstring read through ``request``
-    is refused while a class is split, ``request.function.__doc__`` included: no test reads
-    one, measured 2026-10-15, so the rule is not narrowed to the chains that reach a
-    class.)"""
+    """An imported object's module, an imported module's file (imported at module level or
+    inside the test), inspect on an imported module, and the docstring of a class moved
+    WHOLE each read the same after the split, so none is refused.  (Any docstring read
+    through ``request`` is refused while a class is split, ``request.function.__doc__``
+    included: no test reads one, measured 2026-10-15, so the rule is not narrowed to the
+    chains that reach a class.)"""
     root = build(tmp_path, source)
     assert render_all(layout_of(root), line_limit(root))
 

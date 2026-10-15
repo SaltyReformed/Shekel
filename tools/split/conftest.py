@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tools.ci import scratch
 from tools.split._layout import Layout, resolve
 from tools.split._model import parse_plan
 from tools.split._source import collect_rules, read_module
@@ -155,7 +156,11 @@ def plan_dict() -> dict:
 
 
 def build(root: Path, source: str = SAMPLE) -> Path:
-    """Lay the sample repository out under ``root`` with ``source`` as the module."""
+    """Lay the sample repository out under ``root`` with ``source`` as the module, ``root`` a
+    git repository (made one through :mod:`tools.ci.scratch` when it is not already), because
+    the tool finds a module's importers among the files git does not ignore."""
+    if not (root / ".git").exists():
+        scratch.run(root, "init", "--quiet", "--initial-branch=dev")
     for path, text in {
         "pytest.ini": PYTEST_INI,
         ".pylintrc": PYLINTRC,

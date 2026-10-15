@@ -38,6 +38,12 @@ def setups_path(target: Path, process: str) -> Path:
     return target.with_name(f"{target.name}.setups-{process}.json")
 
 
+def setup_key(setup: dict) -> tuple:
+    """What makes two recorded setups one fixture: its name, its scope, the node it is
+    registered on and the file its function is defined in."""
+    return setup["argname"], setup["scope"], setup["baseid"], setup["file"]
+
+
 def defined_in(function: object) -> str | None:
     """The resolved file a fixture's function is defined in, read from its code object; None
     when it has none to read."""
@@ -122,7 +128,7 @@ class SetupObserver:
         registered on and the file its function is defined in, once each."""
         setup = {"argname": fixturedef.argname, "scope": fixturedef.scope,
                  "baseid": fixturedef.baseid, "file": defined_in(fixturedef.func)}
-        self.setups.setdefault(tuple(setup.values()), {**setup, "by": request.node.nodeid})
+        self.setups.setdefault(setup_key(setup), {**setup, "by": request.node.nodeid})
 
     @pytest.hookimpl(tryfirst=True)
     def pytest_runtest_protocol(self, item: pytest.Item) -> None:

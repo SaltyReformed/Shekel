@@ -24,7 +24,6 @@ the source went through, then holds each block against the source's:
 from __future__ import annotations
 
 import ast
-import hashlib
 from collections import Counter
 from pathlib import Path
 
@@ -32,15 +31,16 @@ from tools.split._classes import ClassShape, mixin_name
 from tools.split._layout import BUILTINS, Layout, Output
 from tools.split._model import CONFTEST, HELPERS, INIT
 from tools.split._render import (
-    IMPORTER_ROOTS,
     LINE_BUDGET,
     Mark,
     Origin,
+    fingerprint,
     importer_rewrites,
     line_limit,
     rendered,
     text_of,
 )
+from tools.split._run import python_files
 from tools.split._source import (
     Block,
     CollectRules,
@@ -302,12 +302,11 @@ def _check_importers(tally: _Tally, layout: Layout, root: Path) -> None:
     for rewrite in left:
         tally.fail(f"{rewrite.path}:{rewrite.line}: still imports the source module")
     target = f"{layout.plan.dotted}.{HELPERS}"
-    for top in IMPORTER_ROOTS:
-        for path in sorted((root / top).rglob("*.py")):
-            for line, name in _imports_of(path, target):
-                if layout.home.get(name) != HELPERS:
-                    tally.fail(f"{path}:{line}: imports {name} from _helpers, which does "
-                               "not hold it")
+    for path in python_files(root):
+        for line, name in _imports_of(path, target):
+            if layout.home.get(name) != HELPERS:
+                tally.fail(f"{path}:{line}: imports {name} from _helpers, which does not "
+                           "hold it")
 
 
 def prove_static(layout: Layout, root: Path, rules: CollectRules) -> list[str]:
@@ -395,8 +394,7 @@ def importer_lines(root: Path, recorded: dict[str, dict]
                 continue
             lines[line - 1] = old
             spans |= set(range(line, last + 1))
-        before = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
-        if before != entry["sha256"]:
+        if fingerprint("\n".join(lines)) != entry["sha256"]:
             failures.append(f"{path} changed beyond its re-pointed imports since it was "
                             "recorded")
         repointed[path] = spans

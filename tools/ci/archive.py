@@ -1,11 +1,12 @@
 """What makes a document a HISTORICAL RECORD that governs nothing: ONE home for the rule.
 
-A document is archived when it sits under an ``archive/`` or ``historical/`` directory, and
-an archived document says so on its first line, with :data:`ARCHIVE_BANNER`.  Two tools read
-the rule.  The plan gate grades it (conventions.md rule 15:
-``tools/plan_gate/_archive.py``), and the split tool's census
-(:func:`tools.split._dynamic.classify`) treats a line in such a document as a record, which a
-split never edits.  Both now read it here.
+A document is a historical record when it sits under an ``archive/`` or ``historical/``
+directory, or when it opens with :data:`ARCHIVE_BANNER`, as the 22 documents of
+``docs/audits/financial_calculations/`` do (measured 2026-10-15).  Two tools read the rule.
+The plan gate grades its directory half: every document under such a directory must open
+with the banner (conventions.md rule 15: ``tools/plan_gate/_archive.py``).  The split tool's
+census (:func:`tools.split._dynamic.classify`) treats a line in a record of either kind as a
+record, which a split never edits.  Both read the readings here.
 
 The rule lived in the plan gate's private ``_archive.py`` until the split tool needed it
 (the coordinator's ruling on the split branch's neutral review, F3, 2026-10-15).  The split

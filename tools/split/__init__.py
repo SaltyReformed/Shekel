@@ -11,14 +11,16 @@ the tool cannot prove is REFUSED; it never guesses.
 
 **The proof a split commit quotes** (``split.py prove``, printed only when every arm passed):
 every moved node verbatim and ``ast.dump``-identical and held exactly once, in source order
-(:mod:`._prove`); no fixture the source's tests set up whose reach the split would change, a
-parent conftest's or plugin's scoped beyond one test or one imported into the source (read
-at ``record`` through pytest's own hook, :mod:`._observe`); the same tests collected under a
-total, one-to-one old -> new node-id map; every test ending the same way, skip / xfail /
-xpass included, with all parts run together AND each part run alone; every pylint message in
-the parts answered by the source line it came from (an import-sequence message by the
-source's import block); every re-pointed importer changed on its re-pointed imports alone,
-with no new message on any other line and each new one on those imports named; every
+(:mod:`._prove`); no fixture the source's tests set up whose reach the split may change, a
+parent conftest's or plugin's scoped to a module, class or package, or one registered on the
+source but defined in another file, as an imported one is (observed at ``record`` through
+pytest's own hook, :mod:`._observe`, and judged again by ``prove``); the same tests collected
+under a total, one-to-one old -> new node-id map; every test ending the same way, skip /
+xfail / xpass included, with all parts run together AND each part run alone; every pylint
+message in the parts answered by the source line it came from (an import-sequence message by
+the source's import block); every importer ``record`` found, and no other, re-pointed and
+changed on its re-pointed imports alone, with no new message on any other line and each new
+one on those imports named; every
 duplicate-code pair between parts one the split revealed, never one it could have created;
 the plan gate green; and every line of the working tree, tracked or not, still naming the old
 module, listed (:mod:`._dynamic`).

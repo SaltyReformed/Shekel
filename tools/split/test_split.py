@@ -13,6 +13,7 @@ import pytest
 from tools.ci import scratch
 from tools.split import _run as run
 from tools.split import _dynamic as dynamic
+from tools.split._observe import LONE, setups_path
 from tools.split.conftest import SOURCE, build, layout_of, plan_dict
 from tools.split.split import main
 from tools.split.test_dynamic import BEFORE_IDS, PACKAGE
@@ -49,9 +50,10 @@ class Stubs:
         observed = {"collected": sorted(outcomes) if collect_only else [], "deselected": [],
                     "outcomes": {} if collect_only else outcomes, "exitstatus": 0}
         out.write_text(json.dumps(observed), encoding="utf-8")
-        return {**observed, "returncode": 0, "summary": "ok",
-                "setups": self.setups if target == SOURCE else [],
-                "setups_ran": sorted(outcomes)}
+        setups_path(out, LONE).write_text(json.dumps({
+            "setups": self.setups if target == SOURCE else [],
+            "ran": [] if collect_only else sorted(outcomes)}), encoding="utf-8")
+        return {**observed, "returncode": 0, "summary": "ok"}
 
     def pylint(self, _root: Path, paths: list[str]) -> list[dict]:
         """No message anywhere, but the importer's after the split."""

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import configparser
+import hashlib
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,14 +30,12 @@ from typing import NamedTuple
 from tools.split._classes import mixin_name
 from tools.split._layout import Layout, Output, Piece
 from tools.split._model import HELPERS, INIT
+from tools.split._run import python_files
 from tools.split._source import ImportStmt, Refusal, bound_name
 
 #: R-BAL301 (Josh, 2026-10-15): "every Python file under 1,000 lines".  A part may hold at
 #: most ``LINE_BUDGET - 1`` lines.
 LINE_BUDGET = 1000
-
-#: Where a module that imports the split source may live.
-IMPORTER_ROOTS = ("tests", "tools", "scripts", "app")
 
 
 class Origin(NamedTuple):
@@ -236,6 +235,13 @@ def render_all(layout: Layout, limit: int) -> dict[str, str]:
     return texts
 
 
+def fingerprint(text: str) -> str:
+    """The sha256 an importer's text is recorded and checked by: ``record`` takes it, ``apply``
+    refuses a changed one, and ``prove`` re-derives it from the re-pointed file
+    (:func:`tools.split._prove.importer_lines`).  One producer, over the decoded text."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class Rewrite:
     """One importer's import line, before and after it is pointed at ``_helpers.py``:
@@ -281,21 +287,24 @@ def _importer_rewrite(layout: Layout, path: Path, node: ast.AST, lines: list[str
 
 
 def importer_rewrites(layout: Layout, root: Path) -> list[Rewrite]:
-    """Every import of the source in another module, rewritten to ``_helpers.py``."""
+    """Every import of the source in another module of the working tree
+    (:func:`tools.split._run.python_files`), rewritten to ``_helpers.py``."""
     source = (root / layout.plan.source).resolve()
     found = []
-    for top in IMPORTER_ROOTS:
-        for path in sorted((root / top).rglob("*.py")):
-            if "__pycache__" in path.parts or path.resolve() == source:
-                continue
-            text = path.read_text(encoding="utf-8")
-            if layout.plan.stem not in text:
-                continue
-            lines = text.splitlines()
-            for node in ast.walk(ast.parse(text, filename=str(path))):
-                rewrite = _importer_rewrite(layout, path, node, lines)
-                if rewrite:
-                    found.append(rewrite)
+    for path in python_files(root):
+        if path.resolve() == source:
+            continue
+        text = path.read_bytes().decode("utf-8")
+        if layout.plan.stem not in text:
+            continue
+        lines = text.splitlines()
+        here = [rewrite for rewrite in (_importer_rewrite(layout, path, node, lines)
+                                        for node in ast.walk(ast.parse(text, str(path))))
+                if rewrite]
+        if here and "\r" in text:
+            raise Refusal(f"{path}: a carriage return in its line endings, which the writer, "
+                          "reading and writing text, would not keep")
+        found += here
     return found
 
 

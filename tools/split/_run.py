@@ -13,7 +13,7 @@ from pathlib import Path
 
 from tools.ci import gitcmd
 from tools.split._model import RESERVED, Plan
-from tools.split._observe import OBSERVE_ENV, setups_path
+from tools.split._observe import OBSERVE_ENV, setup_key, setups_path
 
 #: pylint's exit-status bits for a fatal message and a usage error: either means it did
 #: not lint, so its message list is not an observation.
@@ -59,8 +59,7 @@ def merged_setups(out: Path) -> tuple[list[dict], list[str]]:
     for path in _setups_files(out):
         held = json.loads(path.read_text(encoding="utf-8"))
         for setup in held["setups"]:
-            setups.setdefault((setup["argname"], setup["scope"], setup["baseid"],
-                               setup["file"]), setup)
+            setups.setdefault(setup_key(setup), setup)
         ran.update(held["ran"])
     return list(setups.values()), sorted(ran)
 
@@ -89,6 +88,23 @@ def plan_gate(root: Path) -> tuple[int, str]:
     return proc.returncode, (proc.stdout.strip().splitlines() or [""])[-1]
 
 
+def python_files(root: Path) -> list[Path]:
+    """Every ``.py`` file of the working tree that git does not ignore, tracked or not, and
+    present on disk: where a module importing the split source may live.
+
+    The scope is the whole tree, as the census's is (the coordinator's ruling on the
+    follow-up leaf's review fork L7, 2026-10-15): four top-level directories were the
+    census's directory-list error again, and the prover reused the writer's walk, so it could
+    not see what the writer missed.  It starts git through :func:`tools.ci.gitcmd.run`, so
+    ``root`` alone is the repository read."""
+    proc = gitcmd.run(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                      "--", "*.py")
+    if proc.returncode:
+        raise RunError(f"git ls-files failed: {proc.stderr.strip()}")
+    return sorted({root / path for path in proc.stdout.split("\0")
+                   if path and (root / path).is_file()})
+
+
 def mentions(plan: Plan) -> re.Pattern[str]:
     """A mention of the source module's NAME, in any spelling, that does not continue INTO
     the new package.
@@ -109,25 +125,33 @@ def census(root: Path, plan: Plan) -> list[tuple[str, int, str]]:
     """Every line naming the old module (:func:`mentions`), as ``(path, line, text)``, in
     every file of the working tree that git does not ignore, tracked or not.
 
-    The scope is the property, a line anywhere a reader could follow (the coordinator's
-    ruling on the branch's neutral review, F1 and F2, 2026-10-15).  ``prove`` runs before the
-    new package is tracked, so a census of tracked files never read the package's own lines;
-    and one held to six top-level directories missed ``README.md`` and a migration's
-    docstring.  ``--untracked`` reads untracked files too and honours ``.gitignore``; ``-I``
-    skips binary files, which hold no line to edit.  ``-z`` separates each path and line
-    number with a NUL, so a path is never quoted and a colon in it is never read as a
-    separator; records are split on newlines only, the one character git ends a line at.
+    The scope is every line of this working tree (the coordinator's ruling on the branch's
+    neutral review, F1 and F2, 2026-10-15).  ``prove`` runs before the new package is
+    tracked, so a census of tracked files never read the package's own lines; and one held
+    to six top-level directories missed ``README.md`` and a migration's docstring.
+    ``--untracked`` reads untracked files too and honours ``.gitignore``; ``-I`` skips binary
+    files, which hold no line to edit.  ``-z`` separates each path and line number with a
+    NUL, so a path is never quoted and a colon in it is never read as a separator, and
+    ``--no-column`` keeps a user's ``grep.column`` out of the record.  git's output is read
+    as text, so a carriage return in a matched line, or a file not in UTF-8, stops the
+    census with an error rather than a misread line (no tracked file holds either, measured
+    2026-10-15).
 
     git finds every line holding the name as a FIXED string, so the one judge of what a
     mention is stays :func:`mentions`.  It starts through :func:`tools.ci.gitcmd.run`, so
     ``root`` alone is the repository read, whatever a hook has bound this process to."""
-    proc = gitcmd.run(root, "grep", "-n", "-z", "-I", "-F", "--untracked", plan.stem)
+    proc = gitcmd.run(root, "grep", "-n", "--no-column", "-z", "-I", "-F", "--untracked",
+                      plan.stem)
     if proc.returncode not in (0, 1):
         raise RunError(f"git grep failed: {proc.stderr.strip()}")
     mention = mentions(plan)
     found = []
     for record in proc.stdout.split("\n")[:-1]:
-        path, line, text = record.split("\0", 2)
+        try:
+            path, line, text = record.split("\0", 2)
+        except ValueError as exc:
+            raise RunError(f"git grep's record {record[:80]!r} is not path, line and text: "
+                           "a carriage return in a matched line ends a record early") from exc
         if mention.search(text):
             found.append((path, int(line), text))
     return found

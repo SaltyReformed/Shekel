@@ -83,9 +83,12 @@ def fixture_failures(observed: dict, source: str, source_file: str) -> list[str]
 
     Refused: a fixture scoped to a module, class or package and defined outside the source
     file (``source_file``, resolved): a parent conftest's or a plugin's, whose one instance
-    the split would cut into several.  And a fixture registered on the source module or a
-    class in it (its ``baseid``) whose function is defined in another file: imported into
-    the source by name, it would reach only the part its import lands in.  A fixture never
+    the split may cut into several (a class moved whole keeps its own, so this refuses more
+    than it must, on the safe side).  And a fixture registered on the source module or a
+    class in it (its ``baseid``) whose function is defined in another file, as one imported
+    into the source by name is: it would reach only the part its import lands in (a fixture
+    pytest generates for an xunit ``setup_method`` has this shape too and is refused with it;
+    no test defines one, measured 2026-10-15).  A fixture never
     set up cannot change what a test does, so set-up observation is the property itself.  A
     test the run reported that no process's record ran is refused too: a worker whose file
     is missing would otherwise leave its fixtures unseen."""
@@ -99,11 +102,12 @@ def fixture_failures(observed: dict, source: str, source_file: str) -> list[str]
         where = (f"fixture {setup['argname']} (scope {setup['scope']}, defined in "
                  f"{setup['file']}, set up for {setup['by']})")
         if setup["scope"] in _CUT_SCOPES and foreign:
-            failures.append(f"{where}: its one instance per {setup['scope']} would be cut "
+            failures.append(f"{where}: its one instance per {setup['scope']} may be cut "
                             "into one per part")
         if foreign and (setup["baseid"] == source or setup["baseid"].startswith(source + "::")):
-            failures.append(f"{where}: imported into the source, it would reach only the part "
-                            "its import lands in")
+            failures.append(f"{where}: registered on the source but defined in another file, "
+                            "as an imported fixture is, it would reach only the part its import "
+                            "lands in")
     return failures
 
 
@@ -268,8 +272,9 @@ def classify(root: Path, raw: list[tuple[str, int, str]],
     """The census's ``(path, line, text)`` lines as hits.
 
     A document is ARCHIVED when it sits under an archived directory or opens with the
-    archive banner: the plan gate's rule, read from its one home (:mod:`tools.ci.archive`;
-    the coordinator's ruling on the branch's neutral review, F3, 2026-10-15).  ``ARCHIVED``
+    archive banner, each read from its one home, the module the plan gate grades by
+    (:mod:`tools.ci.archive`; the coordinator's ruling on the branch's neutral review, F3,
+    2026-10-15).  ``ARCHIVED``
     anywhere on line 1, the rule this replaced, would have hidden a live module whose first
     line merely names an archived thing.
 
