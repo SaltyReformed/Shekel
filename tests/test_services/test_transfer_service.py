@@ -9,13 +9,22 @@ A transfer is one stored row since plan step ``balance:X-bi-6-4d-3``, and its
 two sides are read off it every time, so a door's test checks what the door
 WROTE, re-read from the database, and the side's own payment record, the one
 thing still stored per side (ruling R-BAL290 part 1, the developer,
-2026-10-14).  What each side shows of the row is ``test_transfer_legs.py``'s
-``TestBothSidesShowTheTransfer``; one leg per side, each on its own endpoint,
-is that file's ``TestTransferLegs::test_each_account_gets_its_own_side``; and
-the database's refusal of a second side row is
-``test_a_transfer_is_one_row.py``'s ``test_the_database_refuses_a_twin``.
-The ``TestInvariants`` class that checked them here was dissolved into those
-tests and this file's edit group at that step's checkpoint 2e-2b-1b-1.
+2026-10-14).  The edit group, :class:`TestUpdateTransfer`, reads so since
+that step's checkpoint 2e-2b-1b-1; the create, figure, move and restore
+groups move onto the same reads at its later checkpoints.  What each side
+shows of a Projected or Cancelled row is ``test_transfer_legs.py``'s
+``TestBothSidesShowTheTransfer``, and a settled row's price that file's
+``TestTheLegMapProducers::test_a_settled_leg_records_its_movements_figure``
+and ``TestTheLegContributionTwins::test_a_settled_leg_is_worth_its_record_and_not_its_plan``.
+One leg per side is that file's
+``TestTransferLegs::test_each_account_gets_its_own_side``, and which endpoint
+each side is on its ``TestLegOf`` and the projection table.  The database
+refuses a second side row: the expense side's in
+``test_a_transfer_is_one_row.py``'s ``test_the_database_refuses_a_twin``,
+both sides' in ``test_a_transfer_shadow_is_derived.py``'s
+``test_the_transfer_owns_its_figure_and_neither_twin_can_be_stored``.  The
+``TestInvariants`` class that checked them here was dissolved into those
+tests and this file's edit group at checkpoint 2e-2b-1b-1.
 """
 
 from datetime import date, timedelta
@@ -1029,18 +1038,25 @@ class TestUpdateTransfer:
     ):
         """An amount, Paid and a period in ONE edit land on the row; both records hold the amount.
 
-        The settle runs after the amount is written (``_update`` applies the
-        caller's stated facts first, so the settle reads the post-edit state),
-        so each side records the $999.99 the same edit wrote, dated, where
-        the $250.00 the transfer was created at would be a settle that ran
-        first.  The row is re-read from the database and each side's record
-        read by its own SQL (:func:`tests._test_helpers.transfer_side_record`).
-        Moved here from the invariant group as
-        ``test_multiple_updates_maintain_invariants`` at plan step
-        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-1 (ruling R-BAL290
-        part 1), where it read both legs' prices and periods, which
-        ``test_transfer_legs.py``'s ``TestBothSidesShowTheTransfer`` grades,
-        and not the records' amounts.
+        The settle runs after the amount is written (``_update`` applies a
+        stated amount before its settle dispatch; the period this edit also
+        moves is written after the settle), so each side records the $999.99
+        the same edit wrote, dated, where the $250.00 the transfer was
+        created at would be a settle that ran first.  The row is re-read from
+        the database and each side's record read by its own SQL
+        (:func:`tests._test_helpers.transfer_side_record`).  Moved here from
+        the invariant group as ``test_multiple_updates_maintain_invariants``
+        at plan step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-1 (ruling
+        R-BAL290 part 1), where it read both legs' periods and, after the
+        settle, their prices, and not the records' amounts.  A side's period
+        is ``test_transfer_legs.py``'s ``TestBothSidesShowTheTransfer``; a
+        SETTLED side's price is not, since that table holds no settled row,
+        but that file's
+        ``TestTheLegMapProducers::test_a_settled_leg_records_its_movements_figure``
+        and ``TestTheLegContributionTwins``'
+        ``test_a_settled_leg_is_worth_its_record_and_not_its_plan``
+        (the review of that checkpoint measured both failing under a mutant
+        pricing a settled side at $0).
         """
         with app.app_context():
             td = transfer_data
