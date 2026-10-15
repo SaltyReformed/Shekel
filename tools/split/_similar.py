@@ -4,14 +4,22 @@ correction to Fork 5 item 4, ruled 2026-10-15).
 **The source's count of zero was structurally empty**: pylint's similarity checker compares
 different files and never a file with itself, so a split reveals duplication its source
 always held.  What the arm must refuse is duplication the split CREATED.  A pair between two
-parts is accepted only when BOTH of its ranges lie wholly inside one verbatim moved block
-each (a whole node's block, or a split class's test member; never an import, a docstring,
-a slice's ``class`` line or a mixin), map back to two DISTINCT source ranges, and pylint's
-own :class:`~pylint.checkers.symilar.Symilar`, run at the checker's own defaults (the
-repository's ``.pylintrc`` sets no ``[SIMILARITIES]``), reports those two source ranges as
-a pair when fed them.  Each side is fed as the source module with every line outside its
-range blanked, so line numbers stay those of the module's own syntax tree (which the checker
-uses to find imports and signatures) and its normalization stays its own.
+parts is accepted only when BOTH of its ranges are each ONE VERBATIM SOURCE RUN, map back to
+two DISTINCT source ranges, and pylint's own :class:`~pylint.checkers.symilar.Symilar`, run
+at the checker's own defaults (the repository's ``.pylintrc`` sets no ``[SIMILARITIES]``),
+reports those two source ranges as a pair when fed them.  Each side is fed as the source
+module with every line outside its range blanked, so line numbers stay those of the
+module's own syntax tree (which the checker uses to find imports and signatures) and its
+normalization stays its own.
+
+**The unit is a verbatim source run, never one moved block** (the coordinator's ruling on
+the split session's fork over test_salary, 2026-10-15): a run may cross from one moved block
+into the next where the two were adjacent in the source, as two tests of a split class are.
+A range is one when (1) every non-blank line in it is a moved line (a whole node's block or
+a split class's test member; never an import, a docstring, a slice's ``class`` line or a
+mixin), (2) all of those lines sit at ONE distance from their source lines, so blocks that
+were not adjacent in the source, or whose gap the renderer changed, cannot pass, and (3) its
+text is line for line the source's at that distance, blank lines included.
 """
 from __future__ import annotations
 
@@ -103,26 +111,27 @@ def _moved_blocks(layout: Layout, root: Path, rules: CollectRules,
     return found
 
 
-def _to_source(side: Side, moved: dict[str, _Moved]) -> tuple[int, int] | None:
-    """The 0-based, end-exclusive source range a side is a verbatim copy of, or None.
-
-    Every non-blank line in the side must be a verbatim moved line, so a range touching a
-    generated line (an import, a docstring, a slice's class line, a mixin) is refused; and
-    every line pylint's normalization keeps in it must sit in ONE moved block, which is the
-    block its source range is read from.
-    """
+def _to_source(side: Side, moved: dict[str, _Moved],
+               source: tuple[str, ...]) -> tuple[int, int] | str:
+    """The 0-based, end-exclusive source range a side is a verbatim copy of (the span of the
+    lines pylint's normalization keeps in it), or why it is not one verbatim source run."""
     here = moved.get(side.path)
     if here is None:
-        return None
+        return "a range lies in no output file"
     body = [i for i in range(side.start, side.end) if here.lines[i].strip()]
-    if not body or any(here.block_of(i + 1) is None for i in body):
-        return None
+    holders = [here.block_of(i + 1) for i in body]
+    if not body or None in holders:
+        return "a range touches a generated line"
+    offsets = {original.first - out.first for out, original in holders}
+    if len(offsets) != 1:
+        return ("a range spans moved blocks that are not one source run (not adjacent in "
+                "the source, or a gap the renderer changed)")
+    offset = offsets.pop()
+    if here.lines[side.start:side.end] != source[side.start + offset:side.end + offset]:
+        return "a range's text differs from the source's at its distance"
     kept = [i for i in range(side.start, side.end) if i in here.kept]
-    holders = {id(here.block_of(i + 1)) for i in kept}
-    if not kept or len(holders) != 1:
-        return None
-    out, original = here.block_of(kept[0] + 1)
-    offset = original.first - out.first
+    if not kept:
+        return "a range holds no line pylint's normalization keeps"
     return kept[0] + offset, kept[-1] + 1 + offset
 
 
@@ -187,10 +196,11 @@ def sort_pairs(layout: Layout, root: Path, rules: CollectRules, messages: list[d
     moved = _moved_blocks(layout, root, rules, flags)
     revealed, created = [], []
     for first, second in pairs(messages):
-        mapped = (_to_source(first, moved), _to_source(second, moved))
-        if None in mapped:
-            created.append((first, second, "a range touches a generated line, or its code "
-                            "spans more than one moved block"))
+        mapped = (_to_source(first, moved, layout.source.lines),
+                  _to_source(second, moved, layout.source.lines))
+        refused = [why for why in mapped if isinstance(why, str)]
+        if refused:
+            created.append((first, second, refused[0]))
         elif not (mapped[0][1] <= mapped[1][0] or mapped[1][1] <= mapped[0][0]):
             created.append((first, second, "the two ranges map to one source range"))
         elif not _reported(source_text, mapped[0], mapped[1], options):
