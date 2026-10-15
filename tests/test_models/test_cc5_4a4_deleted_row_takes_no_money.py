@@ -350,11 +350,11 @@ class TestARowCannotBeHiddenHoldingMoney:
 
     # ``test_stripping_a_hidden_leg_of_its_transfer_is_refused`` stood here
     # until plan step balance:X-bi-6-4d-3 (ruling **R-BAL300**, developer
-    # 2026-10-15: "Delete all 27").  It re-parented a paid transfer's side
-    # record under its expense TWIN, hid the twin, and asserted the row arm's
-    # refusal at commit: the arm excepts no twin since plan step
-    # balance:X-bi-6-4d-2 (design D7).  No twin can exist now (the database
-    # refuses one, ``ck_transactions_names_no_transfer``, ruling R-BAL258,
+    # 2026-10-15: "Delete all 27").  It re-parented both of a paid transfer's
+    # side records, each under its own side's TWIN, hid the expense twin, and
+    # asserted the row arm's refusal at commit: the arm excepts no twin since
+    # plan step balance:X-bi-6-4d-2 (design D7).  No twin can exist now (the
+    # database refuses one, ``ck_transactions_names_no_transfer``, ruling R-BAL258,
     # pinned once by
     # ``TestTheUpgrade::test_the_database_refuses_a_twin`` in
     # ``tests/test_models/test_a_transfer_is_one_row.py``,

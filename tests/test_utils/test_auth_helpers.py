@@ -26,6 +26,7 @@ from app.models.transaction import Transaction
 from app.utils.auth_helpers import (
     fresh_login_required,
     get_accessible_transaction,
+    get_accessible_transaction_or_deleted,
     get_or_404,
     get_owned_via_parent,
     require_owner,
@@ -39,6 +40,7 @@ from app.utils.log_events import (
 from app.utils.session_helpers import FRESH_LOGIN_AT_KEY
 from tests._test_helpers import rhythm_of, one_off_row_of
 from tests._test_helpers import record_paydays_across_a_hole
+from tests._test_helpers import a_deleted_occurrence
 
 
 class TestGetOr404:
@@ -869,12 +871,88 @@ class TestAccessDeniedLogging:
 # ``TestTheUpgrade::test_the_database_refuses_a_twin`` in
 # ``tests/test_models/test_a_transfer_is_one_row.py``,
 # and no app code builds one), so the fence is reachable by no row and goes
-# with the column at plan step X-bi-6-5.  The predicate it shares with the
-# deleted-row arm (``is_not_found_to_transaction_doors``) still sits after the
-# access branches, and moving it ahead of them fails
-# ``TestNothingLeaksThroughTheName::test_another_users_deleted_row_is_not_named``
-# in ``tests/test_routes/test_cc5_4a4_hidden_row_doors.py``
-# (a stranger is told the row's name; measured at that step).
+# with the column at plan step X-bi-6-5.  The order its stranger's case graded
+# is graded below, on the row the shared predicate can still refuse: a DELETED
+# one, probed by a stranger and by a companion.
+
+
+class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
+    """Another owner's DELETED row, probed by a stranger or a companion: a denial, not "not found".
+
+    ``get_accessible_transaction_or_deleted`` asks the not-found predicate
+    (``is_not_found_to_transaction_doors``) AFTER both access branches, and its
+    comment says why: either probe is an access denial first (``access_denied_cross_user``
+    at WARNING, the F-144 contract) and "not found" second, so the predicate never runs
+    and logs nothing.  Measured at plan step ``balance:X-bi-6-4d-3`` (ruling **R-BAL300**):
+    evaluating the predicate ahead of the access branches, every return unchanged, logged
+    the row as ``resource_not_found`` before the denial and failed no test that captures a
+    log, for either requester (for the companion, at the deletion's parent too).  These two
+    cases are that grade.  Moving the whole block ahead also hands the requester the row's
+    NAME: both cases fail on that too, and ``TestNothingLeaksThroughTheName``
+    (``tests/test_routes/test_cc5_4a4_hidden_row_doors.py``) grades the name at every
+    surface.
+    """
+
+    @staticmethod
+    def _probe(requester, row):
+        """*requester* asks the door for *row*: ``(its answer, the auth_helpers records)``."""
+        login_user(requester)
+        with _AuthHelpersLogCapture() as cap:
+            answer = get_accessible_transaction_or_deleted(row.id)
+        return answer, cap
+
+    @staticmethod
+    def _is_the_denial_alone(answer, cap):
+        """Assert the door answered None, logged ONE WARNING denial and no "not found"."""
+        seen = [(r.levelname, getattr(r, "event", None)) for r in cap.records]
+        assert answer is None, (
+            f"The requester was answered {answer!r}, not None; records: {seen}"
+        )
+        denials = [
+            r for r in cap.records
+            if getattr(r, "event", None) == EVT_ACCESS_DENIED_CROSS_USER
+        ]
+        assert [r.levelno for r in denials] == [logging.WARNING], (
+            f"Expected exactly one WARNING access denial; records: {seen}"
+        )
+        assert cap.find(EVT_RESOURCE_NOT_FOUND) is None, (
+            f"The requester's probe logged the row as not found; records: {seen}"
+        )
+
+    def test_a_strangers_probe(self, app, seed_user, seed_second_user):
+        """seed_user names another user's deleted $45.00 Pool: one WARNING, no "not found"."""
+        with app.test_request_context("/some/path"):
+            theirs = a_deleted_occurrence(
+                db.session, seed_second_user, seed_second_user["bootstrap_period"],
+                amount="45.00", name="Pool",
+            )
+            # Precondition, read back after the builder's commit: a DELETED
+            # row of another user's, so the probe below is a stranger's.
+            assert theirs.is_deleted is True
+            assert theirs.user_id == seed_second_user["user"].id
+            assert theirs.user_id != seed_user["user"].id
+            answer, cap = self._probe(seed_user["user"], theirs)
+
+        self._is_the_denial_alone(answer, cap)
+
+    def test_a_companions_probe(self, app, seed_user, seed_companion):
+        """The owner's deleted $70.00 Massage, never shown to the companion: the same denial."""
+        with app.test_request_context("/some/path"):
+            row = a_deleted_occurrence(
+                db.session, seed_user, seed_user["bootstrap_period"],
+                amount="70.00", name="Massage", companion_visible=False,
+            )
+            companion = seed_companion["user"]
+            # Precondition, read back after the builder's commit: the requester
+            # is the owner's COMPANION (not the owner, yet acting on the owner's
+            # data, ``User.data_owner_id``), and the row is hidden from it and DELETED.
+            assert companion.id != row.user_id
+            assert companion.data_owner_id == row.user_id == seed_user["user"].id
+            assert row.visible_to_companion is False
+            assert row.is_deleted is True
+            answer, cap = self._probe(companion, row)
+
+        self._is_the_denial_alone(answer, cap)
 
 
 class TestRequireOwnerFailsClosed:

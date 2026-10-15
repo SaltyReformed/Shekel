@@ -70,7 +70,7 @@ Rulings **R-CC107** ("Say archived") and **R-CC108** (the desktop cell's word
 "Archived") are :class:`TestAnArchivedItemsRowSaysArchived`.  L2's case, the
 deleted leg in :class:`TestNothingLeaksThroughTheName`, was deleted at plan
 step ``balance:X-bi-6-4d-3`` (ruling **R-BAL300**), where no shadow can be
-stored; the note where it stood says what grades its order now.
+stored; the note where it stood says why nothing grades its order now.
 
 Review 7 found the archive's read flushing a caller's staged state from the
 settle verbs' first refusal (M1, :class:`TestTheHiddenRowsWordsFlushNothing`)
@@ -116,6 +116,7 @@ from app.utils.dates import display_today
 from app.utils.error_fragments import ROW_NO_LONGER_EXISTS_MSG
 from app.utils.hidden_row import HiddenRow
 from tests._test_helpers import (
+    a_deleted_occurrence,
     amount_basis_for,
     derived_span,
     generate_row_of,
@@ -945,16 +946,10 @@ class TestNothingLeaksThroughTheName:
     ):
         """Another user's made-up $81.00 Gym, deleted by them: its name never reaches you."""
         with app.app_context():
-            template = make_expense_template(
-                db.session, seed_second_user, amount="81.00", name="Gym",
-                category_key="Groceries",
+            theirs = a_deleted_occurrence(
+                db.session, seed_second_user, seed_second_user["bootstrap_period"],
+                amount="81.00", name="Gym", category_key="Groceries",
             )
-            theirs = generate_row_of(template, seed_second_user["bootstrap_period"])
-            db.session.commit()
-            transaction_service.delete_transaction(
-                theirs, seed_second_user["user"].id,
-            )
-            db.session.commit()
             theirs_id = theirs.id
             assert db.session.get(Transaction, theirs_id).is_deleted is True
 
@@ -972,14 +967,11 @@ class TestNothingLeaksThroughTheName:
         posts; the desktop cell and the Save are the owner's alone.
         """
         with app.app_context():
-            template = make_expense_template(
-                db.session, seed_user, amount="60.00", name="Spa",
-                category_key="Groceries", companion_visible=False,
+            row = a_deleted_occurrence(
+                db.session, seed_user, seed_periods_today[3],
+                amount="60.00", name="Spa", category_key="Groceries",
+                companion_visible=False,
             )
-            row = generate_row_of(template, seed_periods_today[3])
-            db.session.commit()
-            transaction_service.delete_transaction(row, seed_user["user"].id)
-            db.session.commit()
             row_id = row.id
 
             response = _press(companion_client, surface, row_id)
