@@ -293,9 +293,9 @@ class TestTheRulingsWorkedExample:
             )
             assert before.day_count == 32
             assert before.imported == 32
-            # Jan 1's line has no row, yet the app's records begin on Feb 1
-            # (the origination assertion), so the day is counted as imported
-            # and never compared -- and never as a disagreement.
+            # Jan 1's line has no row, yet it falls before the books open, so
+            # the day is counted as imported and never compared -- and never
+            # as a disagreement.
             assert before.disagreeing == 0
             assert listing.after_books is None
 
@@ -322,14 +322,18 @@ class TestDaysNoStatementCovers:
 
         One import's lines run Mar 1-2 and the next's Mar 5-6, each with a
         matching row, so Mar 3-4 lie in no window.  **The app records
-        ``7.00`` on Mar 3, inside the gap** -- the comparison draws that day
-        and its residue is not zero, yet the STRETCH is of the kind no
-        statement yet: there is no bank record for the row to disagree with,
-        and importing one is the act it calls for.  The day itself is still
-        named with its row, because the grade counts it as disagreeing and a
-        list naming fewer days than its counts would hide one.  Mar 7-8 come
-        after every window: the shape of a balance declared after the last
-        import.
+        ``7.00`` on Mar 3, inside the gap** -- the comparison draws that day,
+        but only one record covers it: the bank's movement there is UNKNOWN,
+        so the day is not compared and counts neither way (finding
+        **BAL-650**, ruling **R-BAL291**).  The STRETCH is of the kind no
+        statement yet -- importing one is the act it calls for -- and it names
+        no day, because a disagreement needs two movements to differ; the
+        ``7.00`` stays on the day-by-day comparison page.  Mar 7-8 come after
+        every window: the shape of a balance declared after the last import.
+        *Until plan step balance:X-f3c-2b-2c the gap's two days were compared
+        against a bank movement of ``0.00`` nobody imported: the gap read 2
+        compared / 1 disagreeing and named Mar 3's row, and the books span 6
+        compared / 1 disagreeing.*
         """
         with app.app_context():
             account = _opened_on(seed_user, date(2026, 2, 28))
@@ -369,38 +373,48 @@ class TestDaysNoStatementCovers:
             ]
             gap = listing.stretches[1]
             assert gap.verdict.imported == 0
-            assert gap.verdict.compared == 2
-            assert gap.verdict.disagreeing == 1
-            assert [day.comparison.day for day in gap.days] == [
-                date(2026, 3, 3),
-            ]
-            assert not gap.days[0].detail.lines
-            assert _amounts(gap.days[0].detail.rows) == [Decimal("-7.00")]
+            assert gap.verdict.compared == 0
+            assert gap.verdict.disagreeing == 0
+            assert gap.days == ()
             tail = listing.stretches[3]
             assert tail.verdict.imported == 0
             assert tail.verdict.compared == 0
+            # 8 days; the 4 inside a window are the 4 compared, and all agree.
             assert listing.books.day_count == 8
             assert listing.books.imported == 4
-            assert listing.books.compared == 6
-            assert listing.books.disagreeing == 1
+            assert listing.books.compared == 4
+            assert listing.books.disagreeing == 0
             assert listing.before_books is None
             assert listing.after_books is None
             _assert_partition(listing)
 
 
-class TestDaysTheComparisonCannotTake:
-    """Imported days that were never compared, and why each was not."""
+class TestEveryImportedDayTheBooksCoverIsCompared:
+    """Finding **BAL-616**, plan step balance:X-f3c-2b-2c, ruling **R-BAL285**.
 
-    def test_days_before_the_app_s_records_begin_are_NOT_COMPARED(
+    The comparison takes every drawn day after the books open that an import
+    covers (ruling **R-BAL291**), so the books span holds no day it skips for
+    being "before the records" -- which is what lets a span reconcile where the
+    books open before the first entry and nothing moved in between.  It
+    started at the account's first cash fact until this step, and the first
+    case below is the fixture that used to read as 76 days not compared.
+    """
+
+    def test_a_books_day_before_the_first_entry_DISAGREES_rather_than_going_unread(
         self, app, seed_user, seed_periods, db,
     ):
-        """Finding N-314's shape: imported, drawn, and before any record.
+        """Books open 2026-01-01; nothing is recorded until Mar 19.
 
-        ``create_account_of_type`` opens the books on 2026-01-01 while the
-        origination assertion -- the account's first record -- sits on
-        2026-03-19.  An import covers Jan 2 - Mar 19, so 76 days are imported
-        and drawn but the app holds nothing that far back, and the one day it
-        does hold agrees.
+        ``create_account_of_type`` restates the books back to 2026-01-01
+        while its origination assertion -- the first entry -- sits on
+        2026-03-19.  An import covers Jan 2 - Mar 19 with a ``-40.00`` line on
+        Jan 2 and a ``-15.00`` line on Mar 19, and the app records only the
+        ``15.00`` on Mar 19.  The books claim Jan 2, so the ``-40.00`` nobody
+        recorded is a real disagreement: residue ``0.00 - (-40.00) = +40.00``.
+        Every other day agrees -- quiet on both sides, or Mar 19's matching
+        pair -- so 77 days are compared and one disagrees.  *Before this step
+        the same fixture read Jan 2 - Mar 18 as 76 days not compared and Mar
+        19 as agreeing, with the ``$40.00`` named on no day of the list.*
         """
         with app.app_context():
             late = create_account_of_type(
@@ -422,14 +436,128 @@ class TestDaysTheComparisonCannotTake:
             listing = _listed(seed_user, late)
 
             assert _shape(listing) == [
-                (_NOT_COMPARED, date(2026, 1, 2), date(2026, 3, 18)),
-                (_AGREES, date(2026, 3, 19), date(2026, 3, 19)),
+                (_DISAGREES, date(2026, 1, 2), date(2026, 1, 2)),
+                (_AGREES, date(2026, 1, 3), date(2026, 3, 19)),
             ]
-            assert listing.stretches[0].verdict.day_count == 76
-            assert listing.stretches[0].verdict.imported == 76
-            assert listing.stretches[0].verdict.compared == 0
+            (jan_2,) = listing.stretches[0].days
+            assert jan_2.comparison.residue == Decimal("40.00")
+            assert _amounts(jan_2.detail.lines) == [Decimal("-40.00")]
+            assert not jan_2.detail.rows
+            # 30 days of January from the 2nd, 28 of February, 19 of March.
+            assert listing.books.day_count == 77
+            assert listing.books.compared == 77
+            assert listing.books.unchecked == 0
+            assert listing.books.disagreeing == 1
+            assert listing.books.reconciles is False
             assert listing.before_books is None
             _assert_partition(listing)
+
+    def test_QUIET_books_days_before_the_first_entry_let_the_span_RECONCILE(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A statement starting BEFORE the books, and nothing moving Jan 2-9.
+
+        The developer's own shape -- his statement reaches back before his
+        books open.  Books open 2026-01-01; the statement's lines run Dec 31
+        (``-10.00``, inside the opening) to Mar 19, so its window covers the
+        whole span; the app's first entry is the ``40.00`` row matching Jan
+        10's line, and Mar 19's ``-15.00`` has its row too.  Jan 2-9 are quiet
+        on BOTH sides, so there is nothing a reconcile could record on them.
+        Under the old boundary they lay before the first cash fact and were
+        not compared, so this span could not reconcile until something -- a
+        row or a back-dated balance -- was recorded on or before Jan 2;
+        compared, they agree, and it does -- the completion test plan step
+        X-bk-2 is held to, reachable.
+        """
+        with app.app_context():
+            late = create_account_of_type(
+                seed_user, db.session, "Checking", "Late Checking",
+                anchor_balance=Decimal("500.00"),
+            )
+            _seed_import(
+                db, late,
+                lines=[(date(2025, 12, 31), "-10.00"),
+                       (date(2026, 1, 10), "-40.00"),
+                       (date(2026, 3, 19), "-15.00")],
+            )
+            _settle(
+                seed_user, db, seed_periods[0], "40.00", date(2026, 1, 10),
+                account=late,
+            )
+            _settle(
+                seed_user, db, seed_periods[5], "15.00", date(2026, 3, 19),
+                account=late,
+            )
+            db.session.commit()
+
+            listing = _listed(seed_user, late)
+
+            assert _shape(listing) == [
+                (_AGREES, date(2026, 1, 2), date(2026, 3, 19)),
+            ]
+            assert listing.books.day_count == 77
+            assert listing.books.imported == 77
+            assert listing.books.compared == 77
+            assert listing.books.reconciles is True
+            # Dec 31 and Jan 1 are on or before the opening: set apart, the
+            # line imported and never compared.
+            before = listing.before_books
+            assert (before.first_day, before.last_day) == (
+                date(2025, 12, 31), date(2026, 1, 1),
+            )
+            assert before.compared == 0
+            assert before.disagreeing == 0
+            _assert_partition(listing)
+
+    def test_a_line_ON_the_opening_day_is_set_apart_and_never_disagrees(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Books open 2026-02-02 and the bank posts ``-25.00`` that day.
+
+        An account created in one step: the opening and the origination
+        assertion share Feb 2, which the old boundary took as the first cash
+        fact, so this line was counted among the set-apart days as
+        DISAGREEING although the ``$500.00`` opening already holds it.  It is
+        imported and never compared now.  Feb 4's ``-40.00`` has its row, and
+        the balance declared on Feb 5 is what the books then produce.
+        """
+        with app.app_context():
+            account = _opened_on(seed_user, date(2026, 2, 2))
+            _seed_import(
+                db, account,
+                lines=[(date(2026, 2, 2), "-25.00"),
+                       (date(2026, 2, 4), "-40.00")],
+            )
+            _settle(
+                seed_user, db, seed_periods[2], "40.00", date(2026, 2, 4),
+                account=account,
+            )
+            _assert_balance(
+                seed_user, db, "460.00", date(2026, 2, 5), account=account,
+            )
+            db.session.commit()
+
+            listing = _listed(seed_user, account)
+
+            before = listing.before_books
+            assert (before.first_day, before.last_day) == (
+                date(2026, 2, 2), date(2026, 2, 2),
+            )
+            assert before.imported == 1
+            assert before.compared == 0
+            assert before.disagreeing == 0
+            # Feb 3 - Feb 5: Feb 4's pair agrees and the other two are quiet,
+            # but Feb 5 lies past the statement's last line, so it was never
+            # imported.
+            assert _shape(listing) == [
+                (_AGREES, date(2026, 2, 3), date(2026, 2, 4)),
+                (_NO_STATEMENT, date(2026, 2, 5), date(2026, 2, 5)),
+            ]
+            _assert_partition(listing)
+
+
+class TestDaysTheComparisonCannotTake:
+    """Imported days that were never compared, and why each was not."""
 
     @pytest.mark.usefixtures("seed_periods")
     def test_days_past_the_TWO_YEAR_drawing_bound_are_cut_at_a_window(self, app, seed_user, db):

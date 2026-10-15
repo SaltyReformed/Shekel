@@ -25,7 +25,8 @@ from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
-from app.services import account_service
+from app.services import account_service, outstanding_difference
+from app.services.balance_at import BalanceContext
 from app.enums import StatementBalanceEvidenceEnum
 from tests._test_helpers import (
     append_balance_assertion,
@@ -354,6 +355,127 @@ class TestTheFooterSaysWhatHasCheckedTheDays:
 
             assert "do not come to the same" in body
             assert "that were compared" in body
+
+    def test_a_GAP_between_two_imports_is_said_ONCE(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """The two uncompared counts share no day, so the card says each once.
+
+        Books open 2026-02-28.  One statement's lines run Mar 1 - Mar 2 and
+        the next's Mar 5 - Mar 6, every line with its row, and $395.00 is
+        declared for Mar 6.  Of the span's 6 days, Mar 3 and Mar 4 lie inside
+        no statement, so they are the 2 unimported days -- and every imported
+        day is compared, so no day is left for the sentence about imported
+        days the comparison did not draw.  Saying "2 of them fall inside an
+        imported statement" too would count the same two days twice.
+        """
+        with app.app_context():
+            account = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=seed_user["account"].account_type_id,
+                    name="Gap Checking",
+                    anchor_balance=Decimal("500.00"),
+                    observed_on=date(2026, 2, 28),
+                ),
+            )
+            _seed_import(
+                db, account, stated="1000.00", effective_on=date(2026, 3, 2),
+                evidence=StatementBalanceEvidenceEnum.FILE_CHAIN,
+                lines=[(date(2026, 3, 1), "-50.00"),
+                       (date(2026, 3, 2), "-20.00")],
+                file_name="first.csv",
+            )
+            _seed_import(
+                db, account,
+                lines=[(date(2026, 3, 5), "-25.00"),
+                       (date(2026, 3, 6), "-10.00")],
+                file_name="second.csv",
+            )
+            for day, amount in (
+                (date(2026, 3, 1), "50.00"), (date(2026, 3, 2), "20.00"),
+                (date(2026, 3, 5), "25.00"), (date(2026, 3, 6), "10.00"),
+            ):
+                create_settled_cash_transaction(
+                    seed_user, db.session, seed_periods[4], Decimal(amount),
+                    settled_on=day, name=f"row {day}", account=account,
+                )
+            append_balance_assertion(
+                db.session, account,
+                Decimal("395.00"), settle_instant_on(date(2026, 3, 6)),
+            )
+            db.session.commit()
+
+            said = " ".join(auth_client.get(
+                f"/accounts/{account.id}/outstanding-difference",
+            ).get_data(as_text=True).split())
+
+            assert "These 6 days run from Mar 1, 2026 to Mar 6, 2026." in said
+            assert (
+                "2 of them fall outside the lines of every statement you"
+                " have imported" in said
+            )
+            assert "fall inside an imported statement" not in said
+
+    def test_BOTH_uncompared_counts_are_said_and_ADD_UP(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """Days no statement covers, AND imported days the comparison never drew.
+
+        The seeded account's books open 2024-01-04 and $925.00 is declared
+        for 2026-03-03, so the span is 2024-01-05..2026-03-03: ``362 + 365 +
+        62 = 789`` days.  One statement's lines run 2024-01-05..2024-01-10,
+        six days wholly before 2024-03-03, where the comparison's two-year
+        draw begins; the other's are 2026-03-02 and 2026-03-03, each with its
+        row.  So 2 days are compared, ``789 - 2 = 787`` are not, and those
+        787 are ``789 - 8 = 781`` days no statement covers plus the ``6``
+        imported days never drawn -- each said once, by value.
+        """
+        with app.app_context():
+            append_balance_assertion(
+                db.session, seed_user["account"],
+                Decimal("925.00"), settle_instant_on(date(2026, 3, 3)),
+            )
+            _seed_import(
+                db, seed_user["account"],
+                lines=[(date(2024, 1, 5), "-5.00"),
+                       (date(2024, 1, 10), "-5.00")],
+                file_name="old.csv",
+            )
+            _seed_import(
+                db, seed_user["account"],
+                lines=[(date(2026, 3, 2), "-50.00"),
+                       (date(2026, 3, 3), "-25.00")],
+                file_name="new.csv",
+            )
+            for day, amount in ((date(2026, 3, 2), "50.00"),
+                                (date(2026, 3, 3), "25.00")):
+                create_settled_cash_transaction(
+                    seed_user, db.session, seed_periods[4], Decimal(amount),
+                    settled_on=day, name=f"row {day}",
+                )
+            db.session.commit()
+
+            said = " ".join(auth_client.get(
+                f"/accounts/{seed_user['account'].id}/outstanding-difference",
+            ).get_data(as_text=True).split())
+            over = outstanding_difference.outstanding_difference(
+                seed_user["account"],
+                BalanceContext.build(seed_user["user"].id),
+            ).reconciliation
+
+            assert "These 789 days run from Jan 5, 2024 to Mar 3, 2026." in said
+            assert (
+                "781 of them fall outside the lines of every statement you"
+                " have imported" in said
+            )
+            assert (
+                "6 of them fall inside an imported statement but could not be"
+                " compared" in said
+            )
+            # The two sentences are the two parts of the uncompared days.
+            assert (over.compared, over.unchecked) == (2, 787)
+            assert 781 + 6 == over.unchecked
 
     def test_an_EMPTY_span_says_the_books_open_after_the_declaration(
         self, app, auth_client, seed_user, seed_periods, db,

@@ -568,8 +568,9 @@ route bundles the only unpressed money door in the app; the release moves money 
 ### 5.2 What the release is still the gate for
 
 Production has no `budget.account_openings` table at all, so
-**the opening cannot be restated there** and `X-f3c-2b-2c` stays blocked. That is unchanged and it
-is the real reason to release.
+**the opening cannot be restated there** and `X-f3c-2b-2c` stays blocked (true when written; the
+door has since deployed, and `X-f3c-2b-2c` was performed through it 2026-10-12 and shipped at
+`2bcf2da5`). That was unchanged and it was the real reason to release.
 
 **Testing against dev data cannot answer what a release does to production.** Every rehearsal here
 ran against a restore of production instead, and that should be the standing procedure.
