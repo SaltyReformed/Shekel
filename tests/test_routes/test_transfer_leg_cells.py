@@ -89,7 +89,7 @@ def _cell(html, cell_id):
 
 
 class TestTheGridDrawsALegOffItsParent:
-    """The window holds the leg and not the shadow row, and the leg is the parent's."""
+    """The window holds the leg, and the leg is the parent's."""
 
     def test_the_cell_is_the_leg(
         self, app, auth_client, seed_user, seed_periods_today,

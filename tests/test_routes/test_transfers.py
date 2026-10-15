@@ -133,7 +133,7 @@ def _create_transfer(
     seed_user, seed_periods_today, savings_acct,
     template=None, amount=Decimal("200.00"), name="Monthly Savings",
 ):
-    """Helper: create a transfer with shadow transactions, in the first paycheck.
+    """Helper: create a transfer in the first paycheck.
 
     Two arms (plan step balance:X-ch).  With a *template* the transfer is the
     ENGINE's transfer of that definition (:func:`generate_transfer_of`):
@@ -1442,7 +1442,7 @@ class TestTransferInstance:
         behavior change): the edit form pre-fills due_date with the
         stored value, so an empty submit is the user's deliberate clear
         -- TransferUpdateSchema now loads it as an explicit None and the
-        service nulls the parent and both shadows.  The old "blank does
+        service nulls the transfer's due date.  The old "blank does
         not clobber" shield this test pinned also blocked legitimate
         clears; the stale-form clobber it guarded against (a form
         rendered before the date was set) is the C-18 ``version_id``
@@ -2799,7 +2799,11 @@ class TestTransferSettleDayEditDoor:
         money really moved.  Keying the condition on the day instead would
         hide the boxes from precisely that row, and a neutral review found
         nothing grading the difference: ``{% if xfer.settled_on %}`` passed
-        the whole suite.
+        the whole suite.  ``Transfer`` has no ``settled_on`` since plan step
+        ``balance:X-bi-6-4c-3``, so that spelling now hides the boxes on EVERY
+        settled transfer and ``test_full_edit_offers_the_correction_only_on_a_settled_transfer``
+        fails on it too; what only this case grades is a guard keyed on a
+        side's record or day, which a ``$0.00`` close lacks.
 
         **Its plant moved at plan step ``balance:X-bi-6-4d-3``** (ruling
         R-BAL167 class 1, onto ruling **R-BAL141**'s shape; the coordinator's
@@ -3866,8 +3870,8 @@ class TestOneTimeTransfer:
     R2e-3 retired the ``Once`` PATTERN that was the second spelling.  It is
     also the create form's DEFAULT selection, so this is the ordinary path,
     not an edge.  Unlike a rule-less TRANSACTION template, which generates
-    nothing, this materialises exactly one Transfer with its two shadow
-    transactions in the chosen pay period.
+    nothing, this materialises exactly one Transfer in the chosen pay
+    period.
 
     **Every case here 500'd before R2e-3** (defect **D13**): the route
     dereferenced ``rule.id`` with no null branch, on a comment claiming the
@@ -4181,7 +4185,7 @@ class TestOneTimeTransfer:
     def test_changing_accounts_on_a_non_repeating_transfer_moves_the_pair(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """An account change reaches the Transfer and BOTH of its shadows.
+        """An account change reaches the Transfer's two endpoints.
 
         **RE-RULED at plan step R10-b** (developer decision, 2026-08-20).  This
         case asserted a REFUSAL -- "cannot be moved between accounts" -- and
