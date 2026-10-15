@@ -25,4 +25,11 @@ would name a path that did not exist then.  Nothing under ``archive/`` or ``hist
 and nothing that declares itself ``ARCHIVED`` on its first line, is ever edited.  The
 census (:func:`._run.census`) lists every remaining line; the commit body names each one
 not edited, with its reason (dated record, log, or stale plan), so a reader finds it in git.
+
+**When a split class's slices OPEN alike, move the slice boundary.**  Every slice of a split
+class begins with the same generated line, ``class <Name>(_<Name>Members):``.  When the
+tests that open two slices begin with the same code, pylint's duplicate-code run extends up
+onto that line in both parts, and the duplicate-code arm (:mod:`._similar`) refuses the pair as
+CREATED, because it touches a generated line.  That refusal is correct and fails closed; the
+remedy is a plan whose slices start at tests that differ, never a loosened arm.
 """
