@@ -9,7 +9,7 @@ kernel's public contract independently of its consumers.
 The asset-plus / liability-minus net-worth reduction is NOT covered here.
 It lives with its consumer in ``savings_dashboard_service._net_worth``
 (``_sum_composition_at_period`` / ``compute_net_worth_today``) and is
-covered on the live path by ``test_savings_dashboard_service.py``:
+covered on the live path by ``test_savings_dashboard_service/test_net_worth.py``:
 ``test_assets_minus_liabilities`` and
 ``test_total_liabilities_is_positive_magnitude`` for the reduction, plus one
 control per site that crosses a negatively-held liability to what it owes

@@ -254,7 +254,7 @@ class TestSavingsDashboardProjection:
 # not have caught a netting regression.  Both were deleted.
 #
 # The live netting is covered on the real path in
-# ``test_savings_dashboard_service.py``, by tests that build real accounts and
+# ``test_savings_dashboard_service/test_net_worth.py``, by tests that build real accounts and
 # read the cockpit producer: ``test_assets_minus_liabilities`` (a real
 # mortgage against real assets).  The crossing of a negatively-held liability
 # to what it owes (``liability_sign.owed``; ``abs`` until plan step

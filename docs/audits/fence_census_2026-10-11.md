@@ -112,7 +112,7 @@ for a fence, the kind is this record's reading.
 |---|---|---|---|
 | T-82 | `tests/test_routes/test_grid.py:10148` | a hardcoded six-month span returning to the grid template | the spelling stays writable and has no defect class |
 | T-84 | `tests/test_routes/test_grid.py:7747`, `:7776` | the reverted panel-swap feature returning | a dead-code lock, not a defect class |
-| T-89 | `tests/test_services/test_savings_dashboard_service.py:2704` (its second guard) | a bare 26-over-12 pay-count literal returning | a removed constant stays writable; the first guard is obsolete and goes at `X-dq` |
+| T-89 | `tests/test_services/test_savings_dashboard_service/test_dti.py:400` (its second guard) | a bare 26-over-12 pay-count literal returning | a removed constant stays writable; the first guard is obsolete and goes at `X-dq` |
 
 ### External inputs (4)
 
