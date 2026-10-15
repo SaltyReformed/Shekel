@@ -281,6 +281,12 @@ jobs:
       # steps.md as each commit holds it until the cutover, so, like quill's,
       # its tests run in every scope rather than being skipped by a
       # registry-only change set.
+      #
+      # ``tools/split`` (the proved test-file split; step balance:X-er, ruling
+      # R-BAL301) reads no registry.  It is graded here beside the other tools
+      # packages, at the same floor, so every tools package holds one floor in
+      # one step; a change to it is still ``full`` (it is no registry-only
+      # prefix), which ``tools/ci/test_ci_scope.py`` holds.
       - name: Plan gate (every scope)
         run: |
           pylint tools/plan_gate/ --fail-under=10 --fail-on=E,F --output-format=colorized
@@ -291,6 +297,8 @@ jobs:
           pytest tools/ci -c /dev/null -q
           pylint tools/release/ --fail-under=10 --fail-on=E,F --output-format=colorized
           pytest tools/release -c /dev/null -q
+          pylint tools/split/ --fail-under=10 --fail-on=E,F --output-format=colorized
+          pytest tools/split -c /dev/null -q
 
   tax-law:
     runs-on: ubuntu-24.04

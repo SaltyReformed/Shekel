@@ -15,8 +15,10 @@ own rows and no shadow, since leaf ``balance:X-bi-6-1b`` the only row clause
 ``test_transfer_legs.py``; the far-leg query the balance seam reads is graded
 beside it here), and the orthogonal ``revolving`` filter the set is built on.
 The seam's composed subtotal and its "On other accounts" term are graded in
-``test_balance_at.py``, beside the identity oracle they extend; the grid's
-render in ``test_routes/test_grid.py``.
+``test_balance_at/test_cash_flow.py`` (``TestTheSubtotalsAreThePaychecksAcrossTheSet``),
+and the identity oracle they extend in ``test_balance_at/test_grid.py``
+(``TestTheRemainderOracleSeesEveryTerm``); the grid's render in
+``test_routes/test_grid.py``.
 """
 
 from decimal import Decimal
