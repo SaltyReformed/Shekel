@@ -268,12 +268,22 @@ class TestGetPaymentHistory:
     def test_excludes_deleted_transactions(
         self, app, db, seed_user, seed_periods, status_enum,
     ):
-        """A soft-deleted payment is excluded, whichever relation it comes from.
+        """A soft-deleted payment is excluded, whether it was planned or paid.
 
-        The feed is two relations since plan step balance:X-bi-6a -- a
-        PROJECTED payment is a leg of its parent in ``budget.transfers``, a
-        SETTLED one is its shadow row in ``budget.transactions`` -- and each
-        carries its own ``is_deleted`` filter, so the case runs once per half.
+        The feed's two halves read the one relation ``budget.transfers``,
+        each through its own ``Transfer.is_deleted`` filter, and **both cases
+        reach the PLAN half's** (``transfer_legs/_records.py``).  The door's
+        soft delete takes a Paid payment's records off and returns it as a
+        plan (ruling **R-BAL246**), so the paid case is a deleted plan when
+        the feed reads it: one filter, graded on two paths into it.
+        Measured 2026-10-15: with the plan half's filter dropped both cases
+        fail at the last assertion, and with the settled half's dropped
+        (``loan_loaders/_shadows.py``) both pass.  The one payment the
+        delete leaves settled is a ``$0.00`` close, which held nothing, and
+        the settled half's filter is graded on it by
+        ``test_loan_settled_legs.py``'s
+        ``TestTheSettledHalfComplementsThePlanHalf`` case
+        ``test_a_soft_deleted_zero_dollar_close_is_in_neither_half``.
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
@@ -288,12 +298,13 @@ class TestGetPaymentHistory:
                 loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )) == 1, "the payment must be in the feed for its deletion to grade"
 
-            # Soft-delete the payment THROUGH THE DOOR, which deletes the
-            # parent and both shadows together.  *It set ``is_deleted`` on the
-            # income shadow alone until plan step balance:X-bi-6a*, a write past
-            # Transfer Invariant 4 that left the parent live; a projected
-            # payment is read off its PARENT now (ruling R-BAL13), so only a
-            # deletion the parent carries removes it from the feed.
+            # Soft-delete the payment THROUGH THE DOOR, which takes a Paid
+            # payment's records off, hides the transfer and returns it as a
+            # plan (ruling R-BAL246).  *It set ``is_deleted`` on the income
+            # shadow alone until plan step balance:X-bi-6a*, a write past
+            # Transfer Invariant 4 that left the parent live; the feed reads
+            # the TRANSFER, so only a deletion the transfer carries removes a
+            # payment from it.
             delete_transfer(transfer.id, seed_user["user"].id, soft=True)
             db.session.commit()
 

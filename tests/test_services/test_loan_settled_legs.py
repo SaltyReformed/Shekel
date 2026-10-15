@@ -660,7 +660,11 @@ class TestTheSettledHalfComplementsThePlanHalf:
         guards: before the delete the close holds no side record (why the
         door keeps it Paid); after it, it is hidden and still settled.  A
         side record is not read AFTER the delete, because that read could not
-        fail: the database refuses to hide a transfer still holding one
+        fail: the door takes every side record off before it hides the
+        transfer (``movement_removal.remove_movements``, then ``is_deleted``,
+        in ``transfer_service._delete``), so no transfer it deletes holds
+        one, and the database makes that unbreakable -- it refuses to hide a
+        transfer still holding one
         (``budget.refuse_hiding_a_transfer_holding_money`` in
         ``app/deleted_row_infrastructure.py``, ruling **R-CC92**).  Measured
         2026-10-15 on this case with the close settled at its plan and a
@@ -668,9 +672,21 @@ class TestTheSettledHalfComplementsThePlanHalf:
         was deleted while it still holds a recorded payment: take it off the
         books first".
 
-        Added at plan step ``balance:X-bi-6-4d-3``: the settled half's filter
-        had no test (measured 2026-10-15: with it dropped, the full suite's
-        failing set was unchanged).
+        **The plan-half read is DOMINATED** (``after.projected == []``).  The
+        deleted close is hidden AND Paid, so either of the plan half's two
+        clauses drops it alone: it survived each dropped by itself, and
+        failed first with both dropped at once (measured 2026-10-15).  Each
+        clause is graded where it fails first -- ``Transfer.is_deleted`` by
+        ``test_loan_payment_service.py``'s ``test_excludes_deleted_transactions``,
+        the Projected test by
+        :meth:`test_every_transfer_state_lands_in_exactly_one_half` -- and the
+        status guard here holds the Paid that keeps the second true.  It
+        stays as the claim's other half.
+
+        Added at plan step ``balance:X-bi-6-4d-3``, because no PASSING test
+        failed with the settled half's filter dropped (measured 2026-10-15:
+        the full suite's failing set was unchanged, and a test already
+        failing could reveal nothing).
         """
         with app.app_context():
             loan = _loan(seed_user)
