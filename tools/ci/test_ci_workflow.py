@@ -154,6 +154,13 @@ class TestTheWorkflowIsWiredToTheAnswer:
         assert "pylint tools/release/ --fail-under=10 --fail-on=E,F" in run
         assert "pytest tools/release -c /dev/null -q" in run
 
+    def test_the_split_tool_is_linted_and_tested_in_both_scopes(self):
+        """``tools/split`` (step balance:X-er) holds the tools packages' one floor in their
+        one step: its pylint 10.00 and its tests run beside quill, ci and release."""
+        run = _steps("plan-gate")["Plan gate (every scope)"]["run"]
+        assert "pylint tools/split/ --fail-under=10 --fail-on=E,F" in run
+        assert "pytest tools/split -c /dev/null -q" in run
+
     def test_no_code_running_job_escapes_the_guard(self):
         """A job that runs pytest, pylint, a script or ``test.sh`` is guarded or named here."""
         for name, job in _jobs().items():
