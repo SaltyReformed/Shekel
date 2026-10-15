@@ -26,9 +26,9 @@ class RunError(RuntimeError):
 
 def observe(root: Path, targets: list[str], out: Path, collect_only: bool) -> dict:
     """Run ``targets`` through the suite wrapper with the observer loaded and return its
-    observation (collect-only runs single-process, so the collection is the run's own),
-    with every process's fixture setups merged in: ``setups``, each fixture once, and
-    ``setups_ran``, every test some process recorded running."""
+    observation (collect-only runs single-process, so the collection is the run's own).
+    The fixture setups every process wrote beside it are left for the one reader that
+    judges them (:func:`merged_setups`, called by ``split._record_verdict``)."""
     discard(out)
     env = dict(os.environ)
     env[OBSERVE_ENV] = str(out)
@@ -45,7 +45,6 @@ def observe(root: Path, targets: list[str], out: Path, collect_only: bool) -> di
     observed = json.loads(out.read_text(encoding="utf-8"))
     observed["returncode"] = proc.returncode
     observed["summary"] = (proc.stdout.strip().splitlines() or [""])[-1]
-    observed["setups"], observed["setups_ran"] = merged_setups(out)
     return observed
 
 
@@ -94,21 +93,38 @@ def plan_gate(root: Path) -> tuple[int, str]:
     return proc.returncode, (proc.stdout.strip().splitlines() or [""])[-1]
 
 
-def python_files(root: Path) -> list[Path]:
-    """Every ``.py`` file of the working tree that git does not ignore, tracked or not, and
-    present on disk: where a module importing the split source may live.
+def tree_files(root: Path, *pathspecs: str) -> list[Path]:
+    """Every file of the working tree that git does not ignore, tracked or not, and present
+    on disk, matching ``pathspecs`` (every such file when none is given): the ONE walk that
+    both the importer walk (:func:`python_files`) and the census (:func:`census`) read.
 
-    The scope is the whole tree, as the census's is (the coordinator's ruling on the
-    follow-up leaf's review fork L7, 2026-10-15): four top-level directories were the
-    census's directory-list error again, and the prover reused the writer's walk, so it could
-    not see what the writer missed.  It starts git through :func:`tools.ci.gitcmd.run`, so
-    ``root`` alone is the repository read."""
+    Exactly ``git ls-files --cached --others --exclude-standard``: every file the index
+    tracks, whether an ignore rule covers it or not, and every untracked file no ignore rule
+    (``.gitignore``, ``.git/info/exclude``, ``core.excludesFile``) covers; then only those
+    present on disk as files.  git ignores only what it does not track, so a file tracked
+    under a directory that ``.gitignore`` names is listed.  The census once read the tree
+    through ``git grep --untracked``, a second spelling of this set, and that spelling skips
+    such a file (measured on git 2.56, 2026-10-15, in a repository bound to nothing; no
+    file of this repository was tracked under an ignored path that day), so the two walks
+    disagreed.  It starts git through :func:`tools.ci.gitcmd.run`, so ``root`` alone is the
+    repository read."""
     proc = gitcmd.run(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard",
-                      "--", "*.py")
+                      "--", *pathspecs)
     if proc.returncode:
         raise RunError(f"git ls-files failed: {proc.stderr.strip()}")
     return sorted({root / path for path in proc.stdout.split("\0")
                    if path and (root / path).is_file()})
+
+
+def python_files(root: Path) -> list[Path]:
+    """Every ``.py`` file of :func:`tree_files`: where a module importing the split source may
+    live.
+
+    The scope is the whole tree, as the census's is (the coordinator's ruling on the
+    follow-up leaf's review fork L7, 2026-10-15): four top-level directories were the
+    census's directory-list error again, and the prover reused the writer's walk, so it could
+    not see what the writer missed."""
+    return tree_files(root, "*.py")
 
 
 def mentions(plan: Plan) -> re.Pattern[str]:
@@ -128,27 +144,39 @@ def mentions(plan: Plan) -> re.Pattern[str]:
 
 
 def census(root: Path, plan: Plan) -> list[tuple[str, int, str]]:
-    """Every line naming the old module (:func:`mentions`), as ``(path, line, text)``, in
-    every file of the working tree that git does not ignore, tracked or not.
+    """Every line naming the old module (:func:`mentions`), as ``(path, line, text)`` in
+    path and line order, in every file :func:`tree_files` lists.
 
     The scope is every line of this working tree (the coordinator's ruling on the branch's
     neutral review, F1 and F2, 2026-10-15).  ``prove`` runs before the new package is
     tracked, so a census of tracked files never read the package's own lines; and one held
-    to six top-level directories missed ``README.md`` and a migration's docstring.
-    ``--untracked`` reads untracked files too and honours ``.gitignore``; ``-I`` skips binary
-    files, which hold no line to edit.  ``-z`` separates each path and line number with a
-    NUL, so a path is never quoted and a colon in it is never read as a separator, and
-    ``--no-column`` keeps a user's ``grep.column`` out of the record.  git's output is read
-    as text, decoded strictly, so a carriage return inside a matched line, or a matched line
-    not in UTF-8, stops the census with an error rather than a misread line; a carriage
-    return that ends a line (CRLF) is read as its end (no tracked file holds a carriage
-    return or text not in UTF-8, measured 2026-10-15).
+    to six top-level directories missed ``README.md`` and a migration's docstring.  The files
+    are the importer walk's, so the two cannot disagree about what the tree holds; ``git grep
+    --no-index`` reads exactly the files named (``--literal-pathspecs``: a ``[`` or ``*`` in
+    a path is that character), and none when none is named, because with no path it would
+    read every file under ``root``, ignored ones too.  ``-I`` skips binary files, which hold
+    no line to edit.  ``-z`` separates each path and line number with a NUL, so a path is
+    never quoted and a colon in it is never read as a separator, and ``--no-column`` keeps a
+    ``grep.column`` setting, which ``--no-index`` still reads, out of the record.  git's
+    output is read as text, decoded strictly, so a carriage return inside a matched line, or
+    a matched line not in UTF-8, stops the census with an error rather than a misread line;
+    a carriage return that ends a line (CRLF) is read as its end (no tracked file holds a
+    carriage return or text not in UTF-8, measured 2026-10-15).
 
     git finds every line holding the name as a FIXED string, so the one judge of what a
-    mention is stays :func:`mentions`.  It starts through :func:`tools.ci.gitcmd.run`, so
-    ``root`` alone is the repository read, whatever a hook has bound this process to."""
-    proc = gitcmd.run(root, "grep", "-n", "--no-column", "-z", "-I", "-F", "--untracked",
-                      plan.stem)
+    mention is stays :func:`mentions`.  The walk is the one call that reads a repository,
+    and it starts through :func:`tools.ci.gitcmd.run`, so ``root`` alone is the repository
+    read, whatever a hook has bound this process to; ``--no-index`` reads none, and starts
+    there too."""
+    files = [str(path.relative_to(root)) for path in tree_files(root)]
+    if not files:
+        return []
+    try:
+        proc = gitcmd.run(root, "--literal-pathspecs", "grep", "--no-index", "-n",
+                          "--no-column", "-z", "-I", "-F", plan.stem, "--", *files)
+    except OSError as exc:
+        raise RunError(f"git grep could not start over the tree's {len(files)} files "
+                       f"({exc}); the census read nothing") from exc
     if proc.returncode not in (0, 1):
         raise RunError(f"git grep failed: {proc.stderr.strip()}")
     mention = mentions(plan)
@@ -161,4 +189,4 @@ def census(root: Path, plan: Plan) -> list[tuple[str, int, str]]:
                            "a carriage return in a matched line ends a record early") from exc
         if mention.search(text):
             found.append((path, int(line), text))
-    return found
+    return sorted(found)

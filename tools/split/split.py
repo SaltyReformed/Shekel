@@ -12,7 +12,9 @@ marks the record complete, and ``apply`` and ``prove`` refuse without one.  ``ap
 the package, deletes the source, re-points the importers, writes the node-id map and runs
 the static proof.  ``prove`` runs the static proof again and every run arm, and prints the
 block a commit body quotes when every arm passed.
-Exit status 0 means proved; 1 means refused or failed, with every reason printed.
+Exit status 0 means proved; 1 means refused or failed, with every reason printed; 2 means
+the command line was refused before anything ran (``apply`` or ``prove`` without
+``--idmap``, or a plan, record or map inside the repository).
 """
 from __future__ import annotations
 
@@ -377,7 +379,8 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None, root: Path = REPO) -> int:
-    """Run one command; 0 when it proved, 1 when it refused or a proof arm failed."""
+    """Run one command; 0 when it proved, 1 when it refused or a proof arm failed (the
+    command line's own refusals exit 2, through :meth:`argparse.ArgumentParser.error`)."""
     args = parser().parse_args(argv)
     if args.command != "record" and args.idmap is None:
         parser().error("apply and prove need --idmap")

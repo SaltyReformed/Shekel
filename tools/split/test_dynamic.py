@@ -4,6 +4,7 @@ hand-built observation; the observer is run under a real pytest on the sample, b
 after the tool splits it."""
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -13,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.ci import scratch
+from tools.ci import gitcmd, scratch
 from tools.ci.arcs import REPO
 from tools.split import _dynamic as dynamic
 from tools.split._model import parse_plan
@@ -352,25 +353,34 @@ class TestTheCensus:
         both is listed."""
         assert bool(mentions(parse_plan(plan_dict())).search(line)) is listed
 
-    #: The one line of :meth:`tracked_notes` the census lists.
-    NOTES_HIT = [("docs/notes.md", 1, "see ``test_sample.TestBig``")]
+    #: The lines of :meth:`tracked_notes` the census lists.
+    NOTES_HIT = [("docs/notes.md", 1, "see ``test_sample.TestBig``"),
+                 ("vendor/notes.md", 1, "see ``test_sample.TestFirst``")]
 
     @staticmethod
     def tracked_notes(parent: Path) -> Path:
         """A throwaway repository, built by :mod:`tools.ci.scratch` (which starts git in it and
-        in no other), tracking one document: a mention of the sample's module beside a line
-        holding the name as a mere substring and a path into the package; its root."""
+        in no other), tracking a document that holds a mention of the sample's module beside a
+        line holding the name as a mere substring and a path into the package, and a second
+        mention force-tracked under a directory ``.gitignore`` names, which only this
+        repository's own index lists (the coordinator's ruling on the delta review's M-B: an
+        answer no call bound to another repository can produce); its root."""
         root = scratch.repository(parent)
-        notes = root / "docs" / "notes.md"
-        notes.parent.mkdir()
-        notes.write_text("see ``test_sample.TestBig``\ntest_sample_other.py\n"
-                         "tests/test_area/test_sample/test_first.py\n", encoding="utf-8")
+        (root / ".gitignore").write_text("vendor/\n", encoding="utf-8")
+        for path, text in {"docs/notes.md": "see ``test_sample.TestBig``\ntest_sample_other.py\n"
+                                            "tests/test_area/test_sample/test_first.py\n",
+                           "vendor/notes.md": "see ``test_sample.TestFirst``\n"}.items():
+            (root / path).parent.mkdir()
+            (root / path).write_text(text, encoding="utf-8")
         scratch.run(root, "add", "-A")
+        scratch.run(root, "add", "-f", "vendor/notes.md")
         return root
 
     def test_the_census_reads_the_tracked_tree(self, tmp_path):
         """The real reader, ``git grep``, on a repository: the one mention among lines that
-        only hold the name as a substring or continue into the package."""
+        only hold the name as a substring or continue into the package, and the mention
+        tracked under an ignored directory, which git does not ignore because it tracks it
+        (``git grep --untracked``, the census's reader until this was measured, skipped it)."""
         assert census(self.tracked_notes(tmp_path), parse_plan(plan_dict())) == self.NOTES_HIT
 
     def test_the_census_reads_the_whole_tree(self, tmp_path):
@@ -385,19 +395,63 @@ class TestTheCensus:
         scratch.run(root, "add", "-A")
         found = census(root, parse_plan(plan_dict()))
         assert [(path, line) for path, line, _ in found] == [
-            ("README.md", 2), ("docs/notes.md", 1), ("migrations/versions/a1_rename.py", 2)]
+            ("README.md", 2), ("docs/notes.md", 1), ("migrations/versions/a1_rename.py", 2),
+            ("vendor/notes.md", 1)]
 
     def test_the_census_reads_untracked_files_and_honours_gitignore(self, tmp_path):
         """``prove`` runs before the new package is tracked, so the census reads untracked
         files (the branch's neutral review, F1); an ignored file is no reader's line."""
         root = self.tracked_notes(tmp_path)
-        (root / ".gitignore").write_text("build/\n", encoding="utf-8")
+        (root / ".gitignore").write_text("vendor/\nbuild/\n", encoding="utf-8")
         for path in ("docs/draft.md", "build/out.md"):
             (root / path).parent.mkdir(parents=True, exist_ok=True)
             (root / path).write_text("``test_sample.TestBig``\n", encoding="utf-8")
         found = census(root, parse_plan(plan_dict()))
         assert [(path, line) for path, line, _ in found] == [
-            ("docs/draft.md", 1), ("docs/notes.md", 1)]
+            ("docs/draft.md", 1), ("docs/notes.md", 1), ("vendor/notes.md", 1)]
+
+    def test_a_tree_git_ignores_whole_is_no_census(self, tmp_path):
+        """With no file to name, the census reads none: ``git grep --no-index`` given no path
+        would read every file under the root, the ignored ones too."""
+        root = scratch.repository(tmp_path)
+        (root / ".git" / "info" / "exclude").write_text("*\n", encoding="utf-8")
+        (root / "build").mkdir()
+        (root / "build" / "out.md").write_text("``test_sample.TestBig``\n", encoding="utf-8")
+        assert census(root, parse_plan(plan_dict())) == []
+
+    def test_a_path_is_read_as_the_characters_it_holds(self, tmp_path):
+        """A ``*`` in a listed path is that character, never a pattern that reaches a file
+        git ignores beside it."""
+        root = self.tracked_notes(tmp_path)
+        (root / ".gitignore").write_text("vendor/\ndocs/ab.md\n", encoding="utf-8")
+        for name in ("a*.md", "ab.md"):
+            (root / "docs" / name).write_text("``test_sample.TestBig``\n", encoding="utf-8")
+        found = census(root, parse_plan(plan_dict()))
+        assert [path for path, _, _ in found] == ["docs/a*.md", "docs/notes.md",
+                                                  "vendor/notes.md"]
+
+    def test_a_grep_that_cannot_start_is_a_run_error(self, tmp_path, monkeypatch):
+        """The tree's files are git's arguments, so a tree too large for the system's argument
+        list fails to start git (E2BIG): an error naming how many files, never a traceback
+        (the coordinator's condition on the one-walk census, 2026-10-15)."""
+        root = self.tracked_notes(tmp_path)
+        real = gitcmd.run
+
+        def no_grep(where: Path, *args: str):
+            if "grep" in args:
+                raise OSError(errno.E2BIG, "Argument list too long", "git")
+            return real(where, *args)
+        monkeypatch.setattr(gitcmd, "run", no_grep)
+        with pytest.raises(RunError, match="could not start over the tree's 3 files"):
+            census(root, parse_plan(plan_dict()))
+
+    def test_a_grep_column_setting_is_kept_out_of_the_record(self, tmp_path):
+        """``grep.column`` set in the repository's config (or a user's) would put a column
+        number between the line number and the text; ``--no-column`` keeps each record path,
+        line and text (the delta review's M-C, census L2)."""
+        root = self.tracked_notes(tmp_path)
+        scratch.run(root, "config", "grep.column", "true")
+        assert census(root, parse_plan(plan_dict())) == self.NOTES_HIT
 
     def test_each_record_is_read_whole(self, tmp_path):
         """A path git would quote (a non-ASCII name) or that holds a colon, and a line holding
@@ -446,7 +500,11 @@ class TestTheCensus:
         repository's config.  With this process bound to a sentinel (proven bound, its
         indexes not empty: ``scratch._prove_bound``), the census answers the directory named
         and the sentinel -- its refs, config, HEADs and indexes -- is byte-identical
-        afterwards.  The trailer rules and the tracker tool are held the same way
+        afterwards.  The mention tracked under an ignored directory is what tells the two
+        apart: a walk bound to the sentinel lists the named directory's other files as files
+        the sentinel does not track, and only the named repository's own index lists that one
+        (the delta review's M-B: a plain call once gave the bound and the named repository
+        the same answer here).  The trailer rules and the tracker tool are held the same way
         (``tools/ci/test_trailers.py``, ``tools/quill/test__git.py``)."""
         sentinel, before = scratch.bound_sentinel(tmp_path, binding, monkeypatch.setenv)
         assert census(self.tracked_notes(tmp_path), parse_plan(plan_dict())) == self.NOTES_HIT

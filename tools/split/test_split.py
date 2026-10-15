@@ -235,6 +235,18 @@ def test_a_plan_inside_the_repository_is_refused(split, capsys):
     assert not split.into.exists()
 
 
+@pytest.mark.parametrize("command", ["apply", "prove"])
+def test_apply_and_prove_without_a_map_exit_two(split, capsys, command):
+    """The command line's own refusal, before anything runs, exits 2 as the module says (the
+    delta review's L-A item 6: it said 1)."""
+    plan = split.root.parent / "test_sample.plan.json"
+    with pytest.raises(SystemExit) as caught:
+        main([command, str(plan), "--into", str(split.into)], root=split.root)
+    assert caught.value.code == 2
+    assert "apply and prove need --idmap" in capsys.readouterr().err
+    assert not split.into.exists()
+
+
 def test_apply_refuses_a_record_that_failed(split, capsys):
     """The record's verdict gates apply (the review's H1: record refused a fixture, and apply
     exited 0 and wrote the split anyway); nothing is written."""
