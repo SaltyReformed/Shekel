@@ -30,7 +30,15 @@ from pathlib import Path
 from tools.split._classes import ClassShape, mixin_name
 from tools.split._layout import BUILTINS, Layout, Output
 from tools.split._model import CONFTEST, HELPERS, INIT
-from tools.split._render import IMPORTER_ROOTS, LINE_BUDGET, importer_rewrites
+from tools.split._render import (
+    IMPORTER_ROOTS,
+    LINE_BUDGET,
+    Origin,
+    importer_rewrites,
+    line_limit,
+    rendered,
+    text_of,
+)
 from tools.split._source import (
     Block,
     CollectRules,
@@ -319,6 +327,55 @@ def prove_static(layout: Layout, root: Path, rules: CollectRules) -> list[str]:
     _check_conservation(tally, layout)
     _check_importers(tally, layout, root)
     return tally.failures
+
+
+def line_origins(layout: Layout, root: Path
+                 ) -> tuple[dict[str, list[Origin | None]], list[str]]:
+    """Each written file's line origins, by repository-relative path, for judging pylint's
+    messages by origin; and a failure for every claim the files do not bear out.
+
+    The prover takes no origin on the writer's word: a file on disk must be exactly what the
+    writer renders from the recorded source, each line it calls copied must be its source
+    line verbatim, and each line it calls an import must lie on a source import statement's
+    own lines.  And no import the writer composed (the ``_helpers`` import) may sit before a
+    source-derived one, read off the file's own syntax tree: the pylint arm's reading of an
+    import-sequence message (:func:`tools.split._dynamic.compare_pylint`) holds only for a
+    part whose source-derived imports run unbroken (the coordinator's ruling, 2026-10-15)."""
+    package = root / layout.plan.package
+    spans = {(s.node.lineno, s.node.end_lineno) for s in layout.source.imports}
+    origins: dict[str, list[Origin | None]] = {}
+    failures = []
+    for name, lines in rendered(layout, line_limit(root)).items():
+        path = package / name
+        where = str(path.relative_to(root))
+        if not path.is_file() or path.read_text(encoding="utf-8") != text_of(lines):
+            failures.append(f"{where} is not what the plan renders from the recorded source")
+            continue
+        for number, (text, origin) in enumerate(lines, start=1):
+            if origin is None:
+                continue
+            if origin.copied and text != layout.source.lines[origin.first - 1]:
+                failures.append(f"{where}:{number} is called a copy of source line "
+                                f"{origin.first} and is not")
+            if not origin.copied and (origin.first, origin.last) not in spans:
+                failures.append(f"{where}:{number} is called an import from source lines "
+                                f"{origin.first}-{origin.last}, which hold no import")
+        composed = [lines[node.lineno - 1][1] is None for node in ast.parse(
+            text_of(lines)).body if isinstance(node, (ast.Import, ast.ImportFrom))]
+        if True in composed and False in composed[composed.index(True):]:
+            failures.append(f"{where}: an import the writer composed sits before a "
+                            "source-derived one")
+        origins[where] = [origin for _, origin in lines]
+    return origins, failures
+
+
+def import_block(layout: Layout) -> tuple[int, int]:
+    """The source's import block, from its first top-level import's line to its last's end
+    (an empty span when it has none)."""
+    imports = layout.source.imports
+    if not imports:
+        return 1, 0
+    return imports[0].node.lineno, imports[-1].node.end_lineno
 
 
 def describe(layout: Layout) -> dict[str, int]:

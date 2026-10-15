@@ -8,11 +8,21 @@ from pathlib import Path
 
 import pytest
 
+from tools.split import _prove
+from tools.split._dynamic import compare_pylint
 from tools.split._layout import Layout
-from tools.split._prove import prove_static
-from tools.split._render import importer_rewrites, line_limit, render_all, write
+from tools.split._prove import import_block, line_origins, prove_static
+from tools.split._render import (
+    Origin,
+    importer_rewrites,
+    line_limit,
+    render_all,
+    text_of,
+    write,
+)
+from tools.split._run import pylint_messages
 from tools.split._source import collect_rules, read_module
-from tools.split.conftest import SAMPLE, layout_of
+from tools.split.conftest import SAMPLE, SOURCE, layout_of
 
 PACKAGE = "tests/test_area/test_sample"
 
@@ -228,3 +238,107 @@ def test_every_output_reads_back_through_the_strict_reader(repo, module):
     applied(repo)
     assert read_module(repo / PACKAGE / f"{module}.py", collect_rules(repo),
                        relative="_helpers").units
+
+
+class TestTheLineOrigins:
+    """Each written line's origin, which the pylint arm judges every message by: green on the
+    tool's own output, RED on a file or an origin claim the tree does not bear out."""
+
+    def test_every_written_line_has_its_origin(self, repo):
+        """No failure on the tool's own split; a copied line is its source line, a filtered
+        import points at its source statement, and a composed line has no origin."""
+        layout = applied(repo)
+        origins, failures = line_origins(layout, repo)
+        assert not failures
+        assert sorted(origins) == sorted(str(p.relative_to(repo))
+                                         for p in (repo / PACKAGE).glob("*.py"))
+        init = origins[f"{PACKAGE}/__init__.py"]
+        assert init == [Origin(n, n, copied=True) for n in range(1, len(init) + 1)]
+        early = text(repo, "test_big_early").splitlines()
+        lines = origins[f"{PACKAGE}/test_big_early.py"]
+        assert lines[early.index("class TestBig(_TestBigMembers):")] is None
+        member = lines[early.index("    def test_a(self):")]
+        assert member.copied and layout.source.lines[member.first - 1] == "    def test_a(self):"
+        shared = origins[f"{PACKAGE}/_helpers.py"][
+            text(repo, "_helpers").splitlines().index("    def _shared(self):")]
+        assert shared.copied and layout.source.lines[shared.first - 1] == "    def _shared(self):"
+        statement = layout.source.lines.index("import re") + 1
+        assert origins[f"{PACKAGE}/test_first.py"][
+            text(repo, "test_first").splitlines().index("import re")] == Origin(
+                statement, statement, copied=False)
+
+    def test_a_file_edited_after_the_split(self, repo):
+        """A part that is not what the plan renders has no origins to judge by."""
+        layout = applied(repo)
+        rewrite(repo, "test_first", '"""One."""', '"""One, edited."""')
+        _, failures = line_origins(layout, repo)
+        assert failures == [f"{PACKAGE}/test_first.py is not what the plan renders from the "
+                            "recorded source"]
+
+    @staticmethod
+    def forged(monkeypatch, swap) -> None:
+        """Make the writer's rendering claim a different origin for one line of test_first,
+        its text unchanged, through ``swap(origin) -> origin | None`` (None: not this one)."""
+        real = _prove.rendered
+
+        def lying(layout, limit):
+            files = real(layout, limit)
+            lines = files["test_first.py"]
+            index = next(i for i, (_, origin) in enumerate(lines)
+                         if origin and swap(origin) is not None)
+            lines[index] = (lines[index][0], swap(lines[index][1]))
+            return files
+        monkeypatch.setattr(_prove, "rendered", lying)
+
+    def test_a_copy_claim_the_source_does_not_bear(self, repo, monkeypatch):
+        """A line called a copy of a source line it is not is refused, not trusted."""
+        layout = applied(repo)
+        source = layout.source.lines
+        self.forged(monkeypatch, lambda o: Origin(o.first + 1, o.first + 1, copied=True)
+                    if o.copied and source[o.first - 1] != source[o.first] else None)
+        _, failures = line_origins(layout, repo)
+        assert len(failures) == 1 and "is called a copy of source line" in failures[0]
+
+    def test_an_import_claim_on_lines_that_hold_no_import(self, repo, monkeypatch):
+        """A line called part of an import from source lines that hold none is refused."""
+        layout = applied(repo)
+        self.forged(monkeypatch, lambda o: Origin(1, 1, copied=False) if not o.copied else None)
+        _, failures = line_origins(layout, repo)
+        assert len(failures) == 1 and "which hold no import" in failures[0]
+
+    def test_a_composed_import_before_a_source_import(self, repo, monkeypatch):
+        """test_first's ``_helpers`` import moved above its ``import pytest``, in the file
+        and in the rendering alike: every origin claim holds, but a composed import now
+        breaks the run of source imports the import-sequence reading rests on."""
+        layout = applied(repo)
+        real = _prove.rendered(layout, line_limit(repo))["test_first.py"]
+        helpers = next(i for i, (line, _) in enumerate(real) if line.startswith("from ._"))
+        source = next(i for i, (line, _) in enumerate(real) if line == "import pytest")
+        moved = real[:source] + [real[helpers], real[source]] + [
+            entry for i, entry in enumerate(real) if i > source and i != helpers]
+        (repo / PACKAGE / "test_first.py").write_text(text_of(moved), encoding="utf-8")
+        real_rendered = _prove.rendered
+        monkeypatch.setattr(_prove, "rendered", lambda layout, limit: {
+            **real_rendered(layout, limit), "test_first.py": moved})
+        _, failures = line_origins(layout, repo)
+        assert failures == [f"{PACKAGE}/test_first.py: an import the writer composed sits "
+                            "before a source-derived one"]
+
+    def test_the_samples_real_pylint_messages_are_judged_by_origin(self, repo):
+        """pylint itself over the sample before and after: the placed unused import is
+        matched to its source statement, and the mixin's composed ``class`` line, which the
+        sample's minimal .pylintrc lets too-few-public-methods reach (the repository's
+        disables it), is refused as new."""
+        before = pylint_messages(repo, [SOURCE])
+        layout = applied(repo)
+        after = pylint_messages(repo, sorted(str(p.relative_to(repo))
+                                             for p in (repo / PACKAGE).glob("*.py")))
+        origins, failures = line_origins(layout, repo)
+        assert not failures
+        assert {(m["symbol"], m["path"]) for m in after} == {
+            ("unused-import", f"{PACKAGE}/_helpers.py"),
+            ("too-few-public-methods", f"{PACKAGE}/_helpers.py")}
+        mixin = text(repo, "_helpers").splitlines().index("class _TestBigMembers:") + 1
+        assert compare_pylint(before, after, origins, import_block(layout)) == [
+            f"{PACKAGE}/_helpers.py:{mixin}: too-few-public-methods on a line the writer "
+            "composed"]

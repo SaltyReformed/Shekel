@@ -16,6 +16,7 @@ from tools.ci.arcs import REPO
 from tools.split import _dynamic as dynamic
 from tools.split._model import parse_plan
 from tools.split._observe import OBSERVE_ENV, verdict
+from tools.split._render import Origin
 from tools.split._run import census_pattern
 from tools.split._source import Refusal
 from tools.split.conftest import SOURCE, layout_of, plan_dict
@@ -135,37 +136,145 @@ class TestTheOutcomeComparison:
 
 
 class TestThePylintComparison:
-    """No new kind, no kind up, no duplicate-code between parts."""
+    """Each message in the parts judged by its origin: no message the source did not hold at
+    the line (or the import statement) it came from, and none on a line the writer composed;
+    duplicate-code is left to the pair-by-pair arm."""
+
+    #: test_salary's measured message: ``import pytest`` (source :38) splits its app imports.
+    APP = "Imports from package app are not grouped"
 
     @staticmethod
-    def messages(*symbols: str, path: str = "a.py") -> list[dict]:
-        """pylint JSON messages carrying ``symbols``."""
-        return [{"symbol": s, "path": path} for s in symbols]
+    def message(symbol: str, line: int, path: str = "a.py", text: str = "") -> dict:
+        """One pylint JSON message."""
+        return {"symbol": symbol, "line": line, "path": path, "message": text}
+
+    @staticmethod
+    def judge(before: list[dict], after: list[dict], origins: dict,
+              block: tuple[int, int] = (1, 0)) -> list[str]:
+        """The arm's failures; the source's import block is empty unless a case gives one."""
+        return dynamic.compare_pylint(before, after, origins, block)
+
+    @staticmethod
+    def copied(*source_lines: int) -> list[Origin | None]:
+        """A written file whose line N is a verbatim copy of ``source_lines[N - 1]``, or a
+        line the writer composed where that entry is 0."""
+        return [Origin(n, n, copied=True) if n else None for n in source_lines]
 
     def test_fewer_or_equal_passes(self):
-        """The parts may hold fewer messages, never more."""
-        before = self.messages("unused-import", "too-many-lines", "unused-argument")
-        assert not dynamic.compare_pylint(before, self.messages("unused-import"))
+        """The parts may hold fewer messages, never one the source did not."""
+        before = [self.message("unused-import", 3), self.message("too-many-lines", 1),
+                  self.message("unused-argument", 10)]
+        after = [self.message("unused-import", 2)]
+        assert not self.judge(before, after, {"a.py": self.copied(0, 3)})
 
-    @pytest.mark.parametrize("after, why", [
-        (("unused-import", "unused-import"), "unused-import: 2 after, 1 before"),
-        (("unused-import", "line-too-long"), "line-too-long: 1 after, 0 before"),
-    ])
-    def test_each_increase_fails(self, after, why):
-        """A kind up, and a new kind."""
-        failures = dynamic.compare_pylint(self.messages("unused-import"), self.messages(*after))
-        assert any(why in f for f in failures)
+    def test_a_kind_the_source_did_not_hold_there_fails(self):
+        """A message whose symbol its source line never carried is new."""
+        failures = self.judge([self.message("unused-import", 3)],
+                                          [self.message("line-too-long", 1)],
+                                          {"a.py": self.copied(3)})
+        assert failures == ["a.py:1: line-too-long, which source line(s) 3-3 do not hold"]
+
+    def test_a_source_message_answers_once_per_file(self):
+        """Two messages of one symbol in one file, against the one the source held: the
+        second is new."""
+        failures = self.judge(
+            [self.message("unused-argument", 7)],
+            [self.message("unused-argument", 1), self.message("unused-argument", 1)],
+            {"a.py": self.copied(7)})
+        assert failures == ["a.py:1: unused-argument, which source line(s) 7-7 do not hold"]
+
+    def test_a_message_on_a_composed_line_fails(self):
+        """A docstring, a ``class`` line, a mixin's line, a blank or the ``_helpers`` import
+        has no origin, whatever the source held."""
+        failures = self.judge([self.message("too-few-public-methods", 9)],
+                                          [self.message("too-few-public-methods", 2)],
+                                          {"a.py": self.copied(1, 0)})
+        assert failures == ["a.py:2: too-few-public-methods on a line the writer composed"]
+
+    def test_an_import_two_parts_read_carries_its_message_into_both(self):
+        """The shape test_savings_dashboard_service measured: one source statement (line 41)
+        filtered into two parts, its one W9910 now on each."""
+        statement = [None, Origin(41, 41, copied=False)]
+        before = [self.message("shekel-private-module-import", 41)]
+        after = [self.message("shekel-private-module-import", 2, path)
+                 for path in ("p.py", "q.py")]
+        assert not self.judge(before, after, {"p.py": statement, "q.py": statement})
+
+    def test_an_import_matches_anywhere_on_its_source_statement(self):
+        """A statement written over lines 40-44 in the source and on one line in a part, its
+        source message on a later line of the statement: the origin is the statement, not
+        its first line.  (Synthetic: every import message in the three files split so far
+        sits on its statement's first line; an alias carries a line of its own.)"""
+        before = [self.message("shekel-private-module-import", 42)]
+        assert not self.judge(
+            before, [self.message("shekel-private-module-import", 1)],
+            {"a.py": [Origin(40, 44, copied=False)]})
+
+    def test_a_new_message_hidden_by_a_vanished_one_fails(self):
+        """The count per kind's hole: the source held two redefined-outer-name, the parts
+        hold one, on a moved line whose source line held none.  A count reads 1 <= 2."""
+        before = [self.message("redefined-outer-name", 10),
+                  self.message("redefined-outer-name", 20)]
+        after = [self.message("redefined-outer-name", 2)]
+        failures = self.judge(before, after, {"a.py": self.copied(29, 30)})
+        assert failures == ["a.py:2: redefined-outer-name, which source line(s) 30-30 do not "
+                            "hold"]
+
+    def test_an_import_sequence_flag_filtering_moved_is_the_sources_defect(self):
+        """test_salary's shape: the source flags :39 (``from app.services import
+        account_service``); a part that does not read it holds :40 next after ``import
+        pytest``, and pylint flags :40 for the same package.  Answered from the import block."""
+        before = [self.message("ungrouped-imports", 39, text=self.APP)]
+        after = [self.message("ungrouped-imports", 19, text=self.APP)]
+        origins = {"a.py": [None] * 18 + [Origin(40, 40, copied=False)]}
+        assert not self.judge(before, after, origins, block=(6, 47))
+        assert self.judge(before, after, origins), "the statement alone does not answer it"
+
+    def test_an_import_sequence_flag_the_source_block_never_held_fails(self):
+        """The source's import block is clean of the check: the part's flag is new."""
+        failures = self.judge([self.message("wrong-import-order", 38, text='third party '
+                                            'import "pytest" should be placed before x')],
+                              [self.message("ungrouped-imports", 1, text=self.APP)],
+                              {"a.py": [Origin(40, 40, copied=False)]}, block=(6, 47))
+        assert failures == ["a.py:1: ungrouped-imports naming 'app', which neither source "
+                            "line(s) 40-40 nor the source's import block (6-47) holds"]
+
+    def test_an_import_sequence_flag_naming_another_package_fails(self):
+        """The source block flags package app; a flag for package tests is another defect."""
+        failures = self.judge([self.message("ungrouped-imports", 39, text=self.APP)],
+                              [self.message("ungrouped-imports", 1, text="Imports from "
+                                            "package tests are not grouped")],
+                              {"a.py": [Origin(40, 40, copied=False)]}, block=(6, 47))
+        assert failures == ["a.py:1: ungrouped-imports naming 'tests', which neither source "
+                            "line(s) 40-40 nor the source's import block (6-47) holds"]
+
+    def test_an_import_sequence_flag_on_a_composed_import_fails(self):
+        """Only a source-derived statement may be answered from the block: the ``_helpers``
+        import is the writer's own."""
+        failures = self.judge([self.message("ungrouped-imports", 39, text=self.APP)],
+                              [self.message("ungrouped-imports", 1, text=self.APP)],
+                              {"a.py": [None]}, block=(6, 47))
+        assert failures == ["a.py:1: ungrouped-imports on a line the writer composed"]
+
+    def test_a_message_pylints_own_template_does_not_read_is_refused(self):
+        """The defect is read back through pylint's template; a text it does not fit stops
+        the arm rather than being matched on its symbol alone."""
+        with pytest.raises(Refusal, match="does not read through its own template"):
+            self.judge([], [self.message("ungrouped-imports", 1, text="something else")],
+                       {"a.py": [Origin(40, 40, copied=False)]}, block=(6, 47))
 
     def test_duplicate_code_is_left_to_the_pair_by_pair_arm(self):
-        """The source's duplicate-code count is structurally zero, so it is not counted here;
+        """The source's duplicate-code count is structurally zero, so it is not judged here;
         :mod:`tools.split._similar` judges each pair (test_similar.py shows it refusing)."""
-        assert not dynamic.compare_pylint(self.messages("unused-import"),
-                                          self.messages("unused-import", "duplicate-code"))
+        assert not self.judge([self.message("unused-import", 3)],
+                                          [self.message("unused-import", 1),
+                                           self.message("duplicate-code", 1)],
+                                          {"a.py": self.copied(3)})
 
     def test_new_kinds_are_named_per_importer(self):
         """An edited importer's new kind is reported against its own file."""
-        before = self.messages("unused-argument", path="t.py")
-        after = before + self.messages("shekel-private-module-import", path="t.py")
+        before = [self.message("unused-argument", 4, path="t.py")]
+        after = before + [self.message("shekel-private-module-import", 2, path="t.py")]
         assert dynamic.new_kinds(before, after) == {"t.py": ["shekel-private-module-import"]}
 
 

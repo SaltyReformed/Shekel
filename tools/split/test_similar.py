@@ -267,6 +267,62 @@ def test_a_run_across_a_gap_the_renderer_changed_is_created(tmp_path):
     assert "not one source run" in verdict.created[0][2]
 
 
+# test_k's body repeats as test_k2's.  In the part, test_k is followed by test_z, whose
+# leading banner comment test_mid2 kept apart from it in the source: the shape test_loan's
+# re-proof measured (its "# -- Nav-Pills Consistency Tests --" banner).
+TRAILING = '''
+
+def test_k():
+    """K."""
+    left = [1, 2]
+    right = [3, 4]
+    assert left + right == [1, 2, 3, 4]
+    assert len(left) == 2
+    assert len(right) == 2
+
+
+def test_mid2():
+    """Mid."""
+    assert "m" * 2 == "mm"
+
+
+# -- A banner ----------------------------------------------------------
+def test_z():
+    """Z."""
+    assert "z".upper() == "Z"
+
+
+def test_k2():
+    """K2."""
+    left = [1, 2]
+    right = [3, 4]
+    assert left + right == [1, 2, 3, 4]
+    assert len(left) == 2
+    assert len(right) == 2
+
+
+def test_w():
+    """W."""
+    assert "w".upper() == "W"
+'''
+
+
+def test_a_trailing_comment_of_a_block_apart_in_the_source_is_revealed(tmp_path):
+    """pylint's reported range runs past the last line it compares, onto test_z's banner,
+    which leads a block test_k was not adjacent to in the source.  The compared lines are one
+    verbatim source run, so the pair is revealed; the banner is a moved line, so (1) holds."""
+    root, layout = _with(tmp_path, TRAILING, {0: ["test_k", "test_z"], 1: ["test_mid2"],
+                                              2: ["test_k2", "test_w"]})
+    messages = _reported(root)
+    first = (root / PACKAGE / "test_first.py").read_text(encoding="utf-8").splitlines()
+    banner = next(i for i, line in enumerate(first) if line.startswith("# -- A banner"))
+    side = next(s for pair in pairs(messages) for s in pair if s.path.endswith("test_first.py"))
+    assert len(pairs(messages)) == 1 and side.start < banner < side.end
+    verdict = _sorted(root, layout, messages)
+    assert not verdict.created
+    assert len(verdict.revealed) == 1
+
+
 def test_a_duplicate_in_generated_lines_is_created(tmp_path):
     """A pair over two parts' docstrings and imports touches lines the tool generated."""
     root, layout = _split(tmp_path, second_floor=9)

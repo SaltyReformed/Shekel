@@ -28,7 +28,7 @@ from tools.split import _run as run
 from tools.split import _similar as similar
 from tools.split._layout import Layout, resolve
 from tools.split._model import Plan, PlanError, load_plan
-from tools.split._prove import describe, prove_static
+from tools.split._prove import describe, import_block, line_origins, prove_static
 from tools.split._render import importer_rewrites, line_limit, render_all, write
 from tools.split._source import CollectRules, Refusal, collect_rules, read_module
 
@@ -140,10 +140,18 @@ def _run_arms(ctx: Context, layout: Layout, mapping: dict[str, str]) -> tuple[li
                       "summary": ran["summary"]}
 
 
+def _static_arms(ctx: Context, layout: Layout) -> tuple[list[str], dict]:
+    """The static proof's failures, and each written line's origin (with a failure for any
+    origin the files do not bear out), which the pylint arm judges every message by."""
+    origins, unborne = line_origins(layout, ctx.root)
+    return ([f"static: {f}" for f in prove_static(layout, ctx.root, ctx.rules()) + unborne],
+            origins)
+
+
 def prove(ctx: Context, idmap: Path) -> list[str]:
     """Every arm of the proof; print the block a commit body quotes."""
     layout = ctx.layout(ctx.into / _SOURCE)
-    failures = [f"static: {f}" for f in prove_static(layout, ctx.root, ctx.rules())]
+    failures, origins = _static_arms(ctx, layout)
     mapping = json.loads(idmap.read_text(encoding="utf-8"))
     if mapping != dynamic.id_map(layout, ctx.read(_BEFORE_COLLECT)["collected"]):
         failures.append(f"{idmap} is not the map this plan produces")
@@ -152,8 +160,8 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     files = sorted(str(p.relative_to(ctx.root)) for p in (ctx.root / layout.plan.package).glob(
         "*.py"))
     after_pylint = run.pylint_messages(ctx.root, files)
-    failures += [f"pylint: {f}" for f in dynamic.compare_pylint(ctx.read(_BEFORE_PYLINT),
-                                                               after_pylint)]
+    failures += [f"pylint: {f}" for f in dynamic.compare_pylint(
+        ctx.read(_BEFORE_PYLINT), after_pylint, origins, import_block(layout))]
     failures += _duplicate_arm(ctx, layout, idmap, after_pylint, seen)
     importers = ctx.read(_META)["importers"]
     importer_kinds = dynamic.new_kinds(ctx.read(_BEFORE_IMPORTERS), run.pylint_messages(

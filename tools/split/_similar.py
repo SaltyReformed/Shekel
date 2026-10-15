@@ -17,9 +17,18 @@ the split session's fork over test_salary, 2026-10-15): a run may cross from one
 into the next where the two were adjacent in the source, as two tests of a split class are.
 A range is one when (1) every non-blank line in it is a moved line (a whole node's block or
 a split class's test member; never an import, a docstring, a slice's ``class`` line or a
-mixin), (2) all of those lines sit at ONE distance from their source lines, so blocks that
-were not adjacent in the source, or whose gap the renderer changed, cannot pass, and (3) its
-text is line for line the source's at that distance, blank lines included.
+mixin), and, over its KEPT SPAN, (2) every non-blank line sits at ONE distance from its
+source line, so blocks that were not adjacent in the source, or whose gap the renderer
+changed, cannot pass, and (3) the text is line for line the source's at that distance,
+blank lines included.
+
+**The kept span, not pylint's reported range** (the coordinator's ruling on the split
+session's fork over test_loan's re-proof, 2026-10-15): pylint reports a range that runs
+past the last line its similarity checker compares, through blanks, comments, signatures and
+docstrings up to the next line it compares, so it can take in the leading comment of a block
+that was not adjacent in the source.  (2) and (3) hold from the first to the last line the
+checker's own normalization (:func:`~pylint.checkers.symilar.stripped_lines`) keeps: the
+lines it compares.  (1) still covers the whole reported range.
 """
 from __future__ import annotations
 
@@ -119,20 +128,21 @@ def _to_source(side: Side, moved: dict[str, _Moved],
     if here is None:
         return "a range lies in no output file"
     body = [i for i in range(side.start, side.end) if here.lines[i].strip()]
-    holders = [here.block_of(i + 1) for i in body]
-    if not body or None in holders:
+    if not body or any(here.block_of(i + 1) is None for i in body):
         return "a range touches a generated line"
-    offsets = {original.first - out.first for out, original in holders}
+    kept = [i for i in range(side.start, side.end) if i in here.kept]
+    if not kept:
+        return "a range holds no line pylint's normalization keeps"
+    first, end = kept[0], kept[-1] + 1
+    offsets = {original.first - out.first for out, original in (
+        here.block_of(i + 1) for i in range(first, end) if here.lines[i].strip())}
     if len(offsets) != 1:
         return ("a range spans moved blocks that are not one source run (not adjacent in "
                 "the source, or a gap the renderer changed)")
     offset = offsets.pop()
-    if here.lines[side.start:side.end] != source[side.start + offset:side.end + offset]:
+    if here.lines[first:end] != source[first + offset:end + offset]:
         return "a range's text differs from the source's at its distance"
-    kept = [i for i in range(side.start, side.end) if i in here.kept]
-    if not kept:
-        return "a range holds no line pylint's normalization keeps"
-    return kept[0] + offset, kept[-1] + 1 + offset
+    return first + offset, end + offset
 
 
 def checker_defaults(root: Path) -> dict[str, object]:

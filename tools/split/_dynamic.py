@@ -5,11 +5,15 @@ so every arm can be shown failing on a hand-built observation.
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from pylint.checkers.imports import MSGS as IMPORT_MESSAGES
+
 from tools.split._layout import Layout
+from tools.split._render import Origin
 from tools.split._source import Refusal
 
 #: pylint's symbol for the cross-file duplicate check, judged pair by pair in
@@ -76,14 +80,101 @@ def pylint_counts(messages: list[dict]) -> Counter[str]:
     return Counter(m["symbol"] for m in messages)
 
 
-def compare_pylint(before: list[dict], after: list[dict]) -> list[str]:
-    """Failures where the parts hold a pylint message kind the source did not, or more of
-    one kind than it did.  duplicate-code is not counted here: the source's count of it is
-    structurally zero (pylint never compares a file with itself), so each pair between parts
-    is judged revealed or created by :mod:`tools.split._similar` instead."""
-    was, now = pylint_counts(before), pylint_counts(after)
-    return [f"{symbol}: {now[symbol]} after, {was[symbol]} before"
-            for symbol in sorted(now) if symbol != DUPLICATE_CODE and now[symbol] > was[symbol]]
+#: pylint's import-SEQUENCE checks, each with its own message template: whether a statement
+#: is flagged depends on which other statements the module holds, so filtering a source's
+#: imports can move the flag onto another statement of the same defect.
+_SEQUENCE = {symbol: template for template, symbol, *_ in IMPORT_MESSAGES.values()
+             if symbol in ("wrong-import-order", "ungrouped-imports")}
+
+
+def defect(message: dict) -> str | None:
+    """For an import-sequence message, the defect it names: its FIRST argument (the import
+    placed out of order, or the package not grouped), read back through pylint's own message
+    template; None for any other message."""
+    template = _SEQUENCE.get(message["symbol"])
+    if template is None:
+        return None
+    pattern = "(.*?)".join(re.escape(part) for part in template.split("%s"))
+    found = re.fullmatch(pattern, message["message"], flags=re.S)
+    if found is None:
+        raise Refusal(f"pylint's {message['symbol']} message {message['message']!r} does not "
+                      f"read through its own template {template!r}")
+    return found.group(1)
+
+
+def _answer(left: Counter, message: dict, origin: Origin, block: tuple[int, int]
+            ) -> tuple[str, int, str | None] | None:
+    """The source message left to answer ``message``: one of its symbol (and, for an
+    import-sequence check, naming the same defect) on its origin's lines; failing that, for
+    an import-sequence check, one anywhere in the source's import ``block``.  (pylint runs
+    those checks over module-level imports only, so their origin is always an import.)"""
+    symbol, named = message["symbol"], defect(message)
+    spans = [(origin.first, origin.last)]
+    if named is not None:
+        spans.append(block)
+    for first, last in spans:
+        for line in range(first, last + 1):
+            if left[(symbol, line, named)] > 0:
+                return symbol, line, named
+    return None
+
+
+def compare_pylint(before: list[dict], after: list[dict],
+                   origins: dict[str, list[Origin | None]], block: tuple[int, int]
+                   ) -> list[str]:
+    """Failures where the parts hold a pylint message the source did not, each message judged
+    by its ORIGIN (``origins``: each written file's line origins, by the path pylint names).
+
+    A message on a line moved verbatim is matched to a message of the same symbol on the
+    source line it came from; one on an import line, to a message of the same symbol on the
+    source statement that import was filtered from, so a statement two parts both read
+    carries its message into both.  Within one file each source message answers at most one.
+    A message on a line the writer composed (a docstring, a ``class`` line, a blank, the
+    ``_helpers`` import) has no origin and is new.  Messages may disappear.  duplicate-code
+    is not judged here: the source's count of it is structurally zero (pylint never compares
+    a file with itself), so each pair between parts is judged revealed or created by
+    :mod:`tools.split._similar` instead.  (The coordinator's ruling on the split session's
+    fork over test_savings_dashboard_service, 2026-10-15: a count per kind was blind to a new
+    message hidden by a vanished one, and refused an import two parts both read.)
+
+    **An import-sequence check on a source-derived import** (wrong-import-order,
+    ungrouped-imports) may also be answered anywhere in the source's import ``block``, by a
+    message naming the SAME defect (the coordinator's ruling on the fork over test_salary's
+    re-proof, 2026-10-15).  The static proof holds each part's source-derived imports to a
+    subsequence of the source's, in source order, and :func:`tools.split._prove.line_origins`
+    holds every composed import after them; deleting statements never makes an order or a
+    grouping defect the whole sequence lacked, so such a message restates a source defect
+    whose flag filtering moved, as when test_salary's ``import pytest`` split its app imports
+    and the statement pylint flagged was filtered out of a part."""
+    held = Counter((m["symbol"], m["line"], defect(m)) for m in before)
+    failures = []
+    for path in sorted({m["path"] for m in after}):
+        left = Counter(held)
+        lines = origins.get(path, [])
+        for message in sorted((m for m in after if m["path"] == path
+                               and m["symbol"] != DUPLICATE_CODE),
+                              key=lambda m: (m["line"], m["symbol"])):
+            symbol, line = message["symbol"], message["line"]
+            origin = lines[line - 1] if 0 < line <= len(lines) else None
+            if origin is None:
+                failures.append(f"{path}:{line}: {symbol} on a line the writer composed")
+                continue
+            match = _answer(left, message, origin, block)
+            if match is None:
+                failures.append(f"{path}:{line}: {_unheld(message, origin, block)}")
+            else:
+                left[match] -= 1
+    return failures
+
+
+def _unheld(message: dict, origin: Origin, block: tuple[int, int]) -> str:
+    """Why no source message answers ``message``: what it names, and where was looked."""
+    named = defect(message)
+    lines = f"source line(s) {origin.first}-{origin.last}"
+    if named is None:
+        return f"{message['symbol']}, which {lines} do not hold"
+    return (f"{message['symbol']} naming {named!r}, which neither {lines} nor the source's "
+            f"import block ({block[0]}-{block[1]}) holds")
 
 
 def new_kinds(before: list[dict], after: list[dict]) -> dict[str, list[str]]:

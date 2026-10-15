@@ -7,6 +7,11 @@ by shape: module docstrings, import statements filtered from the source's own (i
 source's order and blank-line groups), a split class's ``class`` line and one-line
 docstring, and its mixin's ``class`` line.  Nothing is written until every output has
 rendered under the line budget, so a refusal leaves the tree as it was.
+
+Every line it renders carries its :class:`Origin`: the source line it copies, the source
+statement an import was filtered from, or nothing for a line it composed.  The prover judges
+each pylint message by that origin (:func:`tools.split._dynamic.compare_pylint`), after
+checking every claim against the files on disk and the source (:func:`._prove.line_origins`).
 """
 from __future__ import annotations
 
@@ -15,11 +20,12 @@ import configparser
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 from tools.split._classes import mixin_name
 from tools.split._layout import Layout, Output, Piece
 from tools.split._model import HELPERS, INIT
-from tools.split._source import Refusal, bound_name
+from tools.split._source import ImportStmt, Refusal, bound_name
 
 #: R-BAL301 (Josh, 2026-10-15): "every Python file under 1,000 lines".  A part may hold at
 #: most ``LINE_BUDGET - 1`` lines.
@@ -27,6 +33,21 @@ LINE_BUDGET = 1000
 
 #: Where a module that imports the split source may live.
 IMPORTER_ROOTS = ("tests", "tools", "scripts", "app")
+
+
+class Origin(NamedTuple):
+    """Where one written line came from: the 1-based source lines a pylint message on it is
+    matched against.  ``copied``: the line is a verbatim copy of source line ``first`` (and
+    ``last`` is ``first``); otherwise it is part of an import filtered from the source
+    statement on lines ``first`` to ``last``."""
+
+    first: int
+    last: int
+    copied: bool
+
+
+#: One written line and its origin; None for a line the writer composed.
+Line = tuple[str, Origin | None]
 
 
 def line_limit(root: Path) -> int:
@@ -70,11 +91,13 @@ def _from_lines(module: str, names: list[str], limit: int) -> list[str]:
     return [head + "(", *(f"    {name}," for name in names), ")"]
 
 
-def import_lines(layout: Layout, output: Output, limit: int) -> list[str]:
-    """The output's imports: each source statement filtered to the aliases it reads (a
-    ``from __future__`` import always), in source order and blank-line groups, then the
-    names it reads from ``_helpers.py``."""
-    lines: list[str] = []
+def import_lines(layout: Layout, output: Output, limit: int
+                 ) -> list[tuple[ImportStmt | None, list[str]]]:
+    """The output's imports, each with the source statement it was filtered to the aliases it
+    reads from (a ``from __future__`` import always), in source order and blank-line groups,
+    then the names it reads from ``_helpers.py``.  A blank separator and the ``_helpers``
+    import are the writer's own, so they carry no statement."""
+    found: list[tuple[ImportStmt | None, list[str]]] = []
     group = None
     for stmt in layout.source.imports:
         kept = [a for a in stmt.node.names
@@ -82,63 +105,92 @@ def import_lines(layout: Layout, output: Output, limit: int) -> list[str]:
         if not kept:
             continue
         if group is not None and stmt.group != group:
-            lines.append("")
+            found.append((None, [""]))
         group = stmt.group
         if isinstance(stmt.node, ast.Import):
-            lines.append(ast.unparse(ast.Import(names=kept)))
+            lines = [ast.unparse(ast.Import(names=kept))]
         else:
-            lines.extend(_from_lines(stmt.node.module, [ast.unparse(a) for a in kept], limit))
+            lines = _from_lines(stmt.node.module, [ast.unparse(a) for a in kept], limit)
+        found.append((stmt, _checked(lines, limit, output.module)))
     if output.helpers:
-        lines.extend(([""] if lines else []) + _from_lines(f".{HELPERS}", output.helpers, limit))
-    return _checked(lines, limit, output.module)
+        found.extend(([(None, [""])] if found else []) + [(None, _checked(
+            _from_lines(f".{HELPERS}", output.helpers, limit), limit, output.module))])
+    return found
 
 
-def piece_lines(layout: Layout, piece: Piece) -> list[str]:
+def _generated(lines: list[str]) -> list[Line]:
+    """Lines the writer composed, which no message may be matched to."""
+    return [(line, None) for line in lines]
+
+
+def _copied(lines: tuple[str, ...], first: int, last: int) -> list[Line]:
+    """Source lines ``first`` to ``last`` (1-based, inclusive), each from itself."""
+    return [(lines[n - 1], Origin(n, n, copied=True)) for n in range(first, last + 1)]
+
+
+def _piece_lines(layout: Layout, piece: Piece) -> list[Line]:
     """One piece's lines: a whole unit's block verbatim, or a slice / mixin built from its
     class's member blocks verbatim."""
     lines = layout.source.lines
     shape = piece.shape
     if shape is None:
-        return list(layout.source.unit(piece.binds).block.text(lines))
+        block = layout.source.unit(piece.binds).block
+        return _copied(lines, block.first, block.end)
     by_name = {m.name: m for m in shape.members}
     if piece.slice is None:
         start, end = shape.docstring
-        out = [f"class {piece.binds}:", *lines[start - 1:end]]
+        out = [(f"class {piece.binds}:", None), *_copied(lines, start, end)]
         for member in shape.non_tests():
-            out += ["", *member.text(lines)]
+            out += [("", None), *_copied(lines, member.first, member.end)]
         return out
     block = shape.unit.block
-    out = list(lines[block.first - 1:block.start - 1]) if piece.first_slice else []
-    out += [f"class {shape.name}({mixin_name(shape.name)}):", f'    """{piece.slice.docstring}"""']
+    out = _copied(lines, block.first, block.start - 1) if piece.first_slice else []
+    out += _generated([f"class {shape.name}({mixin_name(shape.name)}):",
+                       f'    """{piece.slice.docstring}"""'])
     for name in piece.slice.tests:
-        out += ["", *by_name[name].text(lines)]
+        out += [("", None), *_copied(lines, by_name[name].first, by_name[name].end)]
     return out
 
 
-def render_output(layout: Layout, output: Output, limit: int) -> str:
-    """The full text of one output module."""
-    lines = docstring_lines(output.docstring, limit, output.module)
-    imports = import_lines(layout, output, limit)
+def output_lines(layout: Layout, output: Output, limit: int) -> list[Line]:
+    """One output module's lines, each with its origin."""
+    found = _generated(docstring_lines(output.docstring, limit, output.module))
+    imports: list[Line] = []
+    for stmt, lines in import_lines(layout, output, limit):
+        origin = None if stmt is None else Origin(stmt.node.lineno, stmt.node.end_lineno,
+                                                  copied=False)
+        imports += [(line, origin) for line in lines]
     if imports:
-        lines += ["", *imports]
+        found += [("", None), *imports]
     for piece in output.pieces:
-        lines += ["", "", *piece_lines(layout, piece)]
-    return "\n".join(lines) + "\n"
+        found += [("", None), ("", None), *_piece_lines(layout, piece)]
+    return found
 
 
-def render_init(layout: Layout) -> str:
+def init_lines(layout: Layout) -> list[Line]:
     """The package's ``__init__.py``: the source's module docstring, verbatim."""
     end = layout.source.docstring_end
     if not end:
         raise Refusal(f"{layout.plan.source} has no module docstring for its package")
-    return "\n".join(layout.source.lines[:end]) + "\n"
+    return _copied(layout.source.lines, 1, end)
+
+
+def rendered(layout: Layout, limit: int) -> dict[str, list[Line]]:
+    """Every file the package holds, by file name, as its lines and their origins."""
+    found = {f"{INIT}.py": init_lines(layout)}
+    for output in layout.outputs.values():
+        found[f"{output.module}.py"] = output_lines(layout, output, limit)
+    return found
+
+
+def text_of(lines: list[Line]) -> str:
+    """A rendered file's text."""
+    return "\n".join(line for line, _ in lines) + "\n"
 
 
 def render_all(layout: Layout, limit: int) -> dict[str, str]:
     """Every file the package holds, by file name, refused if any is over the budget."""
-    texts = {f"{INIT}.py": render_init(layout)}
-    for output in layout.outputs.values():
-        texts[f"{output.module}.py"] = render_output(layout, output, limit)
+    texts = {name: text_of(lines) for name, lines in rendered(layout, limit).items()}
     over = {name: text.count("\n") for name, text in texts.items()
             if text.count("\n") >= LINE_BUDGET}
     if over:
