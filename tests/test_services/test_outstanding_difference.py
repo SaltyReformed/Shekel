@@ -45,6 +45,7 @@ from app.models.account import Account
 from app.services import (
     account_service,
     balance_at,
+    bank_agreement,
     outstanding_difference as service,
 )
 from app.services.balance_at import BalanceContext
@@ -468,9 +469,15 @@ class TestWhetherAStatementReconcilesTheSPAN:
     because the other cannot see its case.
     ``test_a_GAP_between_two_imports_is_not_reconciliation`` builds a span
     compared in full, agreeing on every day, whose middle two days no import
-    covers.  ``test_days_before_the_app_s_own_records_are_not_reconciliation``
-    builds the mirror -- every day imported, all but one before the account's
-    records begin, which is finding **N-314**'s shape.
+    covers.  ``test_imported_days_past_the_TWO_YEAR_drawing_bound_are_not_reconciliation``
+    builds the mirror -- every day imported and every drawn day agreeing,
+    while the comparison draws only the last two years.  *The mirror was built
+    on days before the account's first cash fact until plan step
+    balance:X-f3c-2b-2c (finding **BAL-616**, rulings **R-BAL285** and
+    **R-BAL291**), which made every drawn day after the books open that an
+    import covers a compared one: that fixture's days are all imported and
+    drawn, so they are compared now, and its own case below says what it reads
+    instead.*
     """
 
     def test_every_day_imported_compared_and_agreeing_RECONCILES(
@@ -565,17 +572,21 @@ class TestWhetherAStatementReconcilesTheSPAN:
     def test_a_GAP_between_two_imports_is_not_reconciliation(
         self, app, seed_user, seed_periods, db,
     ):
-        """A FIRING control over the ``unimported`` term.
+        """A day between two imports is NOT COMPARED, and ``unimported`` says why.
 
         Books open 2026-02-28.  One import's lines run 2026-03-01..2026-03-02
         and the next's 2026-03-05..2026-03-06, so 2026-03-03 and 2026-03-04 sit
-        inside neither run.  Every line has a matching row, and both records
-        are quiet on those two days -- so every day of the six-day span is
-        COMPARED and none of them disagrees.  The bank may have posted lines
-        nobody has imported in that gap and no count over the report's own days
-        could tell, because a quiet day inside a run and a quiet day outside
-        one look identical.  Drop the ``unimported`` term and this reads as
-        reconciled.
+        inside neither run.  Every line has a matching row, and the books are
+        quiet on those two days.  The bank may have posted lines nobody has
+        imported in that gap, so its movement there is UNKNOWN, and a day only
+        one record covers is never compared (finding **BAL-650**, ruling
+        **R-BAL291**): 4 of the 6 days are compared and 2 are unchecked, and
+        the 2 are exactly the ``unimported`` ones, which names the REASON.
+        ``unchecked`` refuses the span too, so dropping either term leaves it
+        unreconciled.  *Until plan step balance:X-f3c-2b-2c the gap days were
+        compared against a bank movement of ``0.00`` nobody imported -- 6
+        compared, 0 unchecked -- and the ``unimported`` term was the only thing
+        between this span and "reconciled".*
 
         **Each import's stored period is its own LINE EXTREMES**, which is what
         ``statement_import._record`` writes; an adversarial review caught a
@@ -614,37 +625,38 @@ class TestWhetherAStatementReconcilesTheSPAN:
 
             over = _resolved(seed_user, account).reconciliation
 
-            # Everything the day-by-day comparison can see is clean...
+            # Every day both records cover is clean...
             assert (over.first_day, over.last_day) == (
                 date(2026, 3, 1), date(2026, 3, 6),
             )
             assert over.day_count == 6
-            assert over.compared == 6
-            assert over.unchecked == 0
+            assert over.compared == 4
             assert over.disagreeing == 0
-            # ...and two of those days lie inside no statement's lines.
+            # ...and the two days inside no statement's lines are the two
+            # nothing compared: 6 - 4 = 2 unchecked, all of them unimported,
+            # so none is an imported day left undrawn.
             assert over.imported == 4
             assert over.unimported == 2
+            assert over.unchecked == 2
+            assert over.imported_unchecked == 0
             assert over.reconciles is False
 
-    def test_days_before_the_app_s_own_records_are_not_reconciliation(
+    def test_a_books_day_before_the_first_entry_is_COMPARED_not_unchecked(
         self, app, seed_user, seed_periods, db,
     ):
-        """A FIRING control over the ``unchecked`` term -- finding N-314.
+        """The fixture the mirror control used to stand on, and its answer now.
 
         ``create_account_of_type`` opens an account's books before every day a
         fixture could date -- 2026-01-01 here, the day before the owner's
         earliest pay period -- while its origination assertion sits on
-        2026-03-19.  So the span runs 2026-01-02..2026-03-19, an import covers
-        every day of it, and 76 of the 77 fall before the account's records
-        begin, where a zero ``recorded`` means *nothing recorded* rather than
-        *nothing happened*.
-
-        **The ONE compared day has to AGREE, and a first version of this case
-        forgot that**: its 2026-03-19 line had no row against it, so
-        ``disagreeing`` was ``1`` and the mutation deleting ``unchecked``
-        SURVIVED -- the case passed on the wrong term.  The ``$15.00`` row is
-        what leaves ``unchecked`` the only reason this span does not reconcile.
+        2026-03-19.  So the span runs 2026-01-02..2026-03-19 and an import
+        covers every day of it.  Every one of the 77 is a day the books claim,
+        so every one is compared (finding **BAL-616**, ruling **R-BAL285**):
+        Jan 2's ``-40.00`` line has no row and DISAGREES, and the ``15.00``
+        row matches Mar 19's line.  It still does not reconcile, now for the
+        money the bank moved and the books never recorded.  *Before plan step
+        balance:X-f3c-2b-2c it read 1 compared, 76 unchecked, 0 disagreeing:
+        76 days fell before the first cash fact and were never compared.*
         """
         with app.app_context():
             late = create_account_of_type(
@@ -672,11 +684,75 @@ class TestWhetherAStatementReconcilesTheSPAN:
             # 30 days of January from the 2nd, 28 of February, 19 of March.
             assert over.day_count == 77
             assert over.unimported == 0
-            assert over.compared == 1
-            # The ONE compared day agrees, so nothing but ``unchecked`` is
-            # left to refuse this span.
+            assert over.compared == 77
+            assert over.unchecked == 0
+            assert over.disagreeing == 1
+            assert over.reconciles is False
+
+    def test_imported_days_past_the_TWO_YEAR_drawing_bound_are_not_reconciliation(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A FIRING control over the ``unchecked`` term.
+
+        The seeded account's books open 2024-01-04 and a balance is declared
+        for 2026-03-03, so the span is 2024-01-05..2026-03-03, 789 days.  One
+        statement's lines run 2024-01-05..2026-03-03, so EVERY day of the span
+        is imported (``unimported`` is zero).  The comparison draws at most
+        the last 731 days (``bank_agreement._MAX_COMPARED_DAYS``), from
+        2024-03-03, so 2024-01-05..2024-03-02 -- 27 + 29 + 2 = 58 days -- are
+        imported and never compared.  Every drawn day agrees: the two 2026
+        lines have their rows and the rest are quiet on both sides, while the
+        2024 line sits among the undrawn days.  So ``unchecked`` is the ONLY
+        reason this span does not reconcile; drop the term and it reads as
+        reconciled.
+
+        **Built on the drawing bound, not on a window wider than its lines.**
+        Since plan step balance:X-f3c-2b-2c every drawn day after the books
+        open that an import covers is compared (rulings **R-BAL285**,
+        **R-BAL291**), so a books day goes imported and uncompared only where
+        the comparison does not DRAW it; and the one
+        registered adapter (``statement_import._secu_csv``) declares each
+        window as its own first and last line days, so a window reaching past
+        its lines is not a state the import door writes -- the GAP case above
+        records a review rejecting exactly that fixture.  One mis-dated line
+        is enough to stretch a statement past the bound, which is why the
+        page draws one.
+        """
+        with app.app_context():
+            _assert_balance(seed_user, db, "925.00", date(2026, 3, 3))
+            _seed_import(
+                db, seed_user["account"],
+                lines=[(date(2024, 1, 5), "-5.00"),
+                       (date(2026, 3, 2), "-50.00"),
+                       (date(2026, 3, 3), "-25.00")],
+            )
+            _settle(seed_user, db, seed_periods[4], "50.00", date(2026, 3, 2))
+            _settle(seed_user, db, seed_periods[4], "25.00", date(2026, 3, 3))
+            db.session.commit()
+
+            over = _resolved(seed_user).reconciliation
+            agreement = bank_agreement.bank_agreement(
+                seed_user["account"], BalanceContext.build(seed_user["user"].id),
+            )
+
+            # WHY the 58 are unchecked, read off the comparison itself: it
+            # drew from 2024-03-03, so those days are not among its days at
+            # all -- and every day it did draw is one both records cover.
+            assert agreement.span.first_day == date(2024, 3, 3)
+            assert all(day.compared for day in agreement.days)
+            assert (over.first_day, over.last_day) == (
+                date(2024, 1, 5), date(2026, 3, 3),
+            )
+            # 2024-01-05 through 2026-03-03 inclusive: 362 + 365 + 62.
+            assert over.day_count == 789
+            assert over.unimported == 0
+            assert over.compared == 731
+            assert over.unchecked == 58
+            # All 58 are imported: 789 imported - 731 compared.
+            assert over.imported_unchecked == 58
+            # Every drawn day agrees, so nothing but ``unchecked`` is left to
+            # refuse this span.
             assert over.disagreeing == 0
-            assert over.unchecked == 76
             assert over.reconciles is False
 
     def test_an_EMPTY_span_reconciles_NOTHING(

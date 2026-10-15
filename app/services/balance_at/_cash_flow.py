@@ -321,8 +321,8 @@ def cash_daily_facts_series(
         an ``OrderedDict`` mapping each calendar ``date`` in the inclusive
         range (ascending) to its
         :class:`~app.services.balance_at.CashDayFacts`, and whose
-        ``first_event_on`` is the day this account's records begin.  An
-        inverted range yields an empty map and that same day.
+        ``opened_on`` is the day this account's books opened.  An inverted
+        range yields an empty map and that same day.
 
     Raises:
         BaselineMissingError: When ``ctx`` carries no scenario.
@@ -338,11 +338,11 @@ def cash_daily_facts_series(
     series = _cash_fold.day_facts(_cash_fold.assembled_fold(account, ctx), days)
     # Re-keyed into range order, which a dict comprehension over an unordered
     # sample list does not promise.  An inverted range yields no days and still
-    # reports where the records begin -- the account HAS a first event whether
-    # or not the caller asked about a day it falls in.
+    # reports the day the books opened -- the account HAS an opening whether or
+    # not the caller asked about a day it falls in.
     return _cash_fold.CashDaySeries(
         facts=OrderedDict((day, series.facts[day]) for day in days),
-        first_event_on=series.first_event_on,
+        opened_on=series.opened_on,
     )
 
 

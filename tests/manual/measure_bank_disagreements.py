@@ -97,37 +97,28 @@ def _span(verdict: SpanAgreement) -> str:
     return f"{verdict.first_day}..{verdict.last_day}"
 
 
-def _write_day(
-    lines: "list[str]", day: DisagreeingDay, kind: StretchKind,
-) -> None:
+def _write_day(lines: "list[str]", day: DisagreeingDay) -> None:
     """Append one disagreeing day: its movements, then every line and row.
 
-    **A day no statement covers is not given a bank side.**  The comparison
-    reads its bank movement as ``0.00`` because nothing was imported there,
-    which is an absence and not evidence, and "bank lines moved 0.00" beside
-    an UNMATCHED row reads as the bank saying the money never moved -- an
-    invitation to delete a real expense where the act the day calls for is
-    importing the statement.  Found by adversarial review.
+    **Every disagreeing day is one BOTH records cover** (plan step
+    balance:X-f3c-2b-2c, finding BAL-650), so both movements are always
+    printed.  *Until that step a day no statement covers could be listed
+    here, and an arm withheld its bank side, because the comparison read it
+    as 0.00 and "bank lines moved 0.00" beside an UNMATCHED row read as the
+    bank saying the money never moved.  Such a day is never compared now,
+    so that arm had no input left and went.*
 
     Args:
         lines: The output being built.
         day: A :class:`~app.services.outstanding_difference.DisagreeingDay`.
-        kind: The kind of the stretch the day is in.
     """
     comparison = day.comparison
-    if kind is StretchKind.NO_STATEMENT:
-        lines.append(
-            f"      {comparison.day}  app rows moved {comparison.recorded}; "
-            "no statement covers this day, so the bank's side is UNKNOWN "
-            "(import one before acting on it)"
-        )
-    else:
-        lines.append(
-            f"      {comparison.day}  app rows moved {comparison.recorded}, "
-            f"bank lines moved {comparison.bank_lines}: the app is "
-            f"{comparison.residue} apart (positive = the app has more money "
-            "in)"
-        )
+    lines.append(
+        f"      {comparison.day}  app rows moved {comparison.recorded}, "
+        f"bank lines moved {comparison.bank_lines}: the app is "
+        f"{comparison.residue} apart (positive = the app has more money "
+        "in)"
+    )
     for line in day.detail.lines:
         claimed = "matched  " if line.matched else "UNMATCHED"
         lines.append(
@@ -189,7 +180,7 @@ def _write_account(
             f"({_grade(stretch.verdict)})"
         )
         for day in stretch.days:
-            _write_day(lines, day, stretch.kind)
+            _write_day(lines, day)
     lines.append("")
     by_kind = {
         kind: sum(1 for s in listing.stretches if s.kind is kind)

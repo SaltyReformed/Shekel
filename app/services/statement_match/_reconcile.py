@@ -191,11 +191,12 @@ class Hero:
     exactly that under them.
 
     Attributes:
-        day: The day all three figures are about -- the latest COMPARED day
-            the bank's own record can price
-            (:attr:`~app.services.bank_agreement.BankAgreement.headline`) -- or
-            ``None`` when no day is priceable, which is an account with no
-            anchored import.
+        day: The day all three figures are about -- the latest day BOTH
+            records state a balance for, the books' opening day included
+            (:attr:`~app.services.bank_agreement.BankAgreement.headline`,
+            ruling **R-BAL286**) -- or ``None`` exactly when no drawn day
+            carries both, e.g. no anchored import, or a bank balance placed
+            only before the books open, after NOW or past the two-year draw.
         bank: What the bank's own record says the account held that day, or
             ``None`` with *day*.
         books: What the app's records say it held that day, or ``None`` with
@@ -205,14 +206,15 @@ class Hero:
             :attr:`~app.services.bank_agreement.AgreementDay.gap`'s own
             convention: positive means the books stand higher.
         to_explain: How many lines the inbox holds.
-        unpriced_after: How many COMPARED days fall after :attr:`day` that the
-            bank's own record cannot price.  **Zero is what makes the hero
-            current**, and it is not implied by the other four: :attr:`day`
-            walks BACK to the last day both records speak for, so an account
-            whose statements stop three weeks before its records do reports a
-            perfectly balanced comparison three weeks old.  The page states it
-            (*priced through <day>*) and :attr:`ReconcilePage.is_done` refuses
-            to claim done over it.  Named by adversarial review 2026-08-29.
+        unpriced_after: How many drawn days after :attr:`day` the books state
+            a balance for and the bank's own record cannot price -- a later
+            import placing no balance, or the gap before one.  **Zero is what
+            makes the hero current**, and the other four do not imply it, so
+            :attr:`ReconcilePage.is_done` refuses done over it and the page
+            says *priced through <day>*.  Drawn days end at the last statement
+            line, so a record AFTER every statement is not counted: statements
+            stopping three weeks before the records read zero and can be done
+            (finding **BAL-651**).  Named by adversarial review 2026-08-29.
 
     **The three money figures are all-or-nothing**, and that is the point of
     carrying the day beside them: a hero that printed two of three would be
@@ -412,8 +414,8 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
             day is the last one both records reach, and no line is waiting to
             be explained.  **All three, and a page with no priceable day is
             never done**: an account whose bank balance nothing places has not
-            been shown to agree, and one whose comparison stops weeks short
-            has been shown to agree about a week that is not this one.
+            been shown to agree, and one whose priced days stop short of its
+            drawn ones has agreed about a week that is not this one.
             Reporting either unknown as agreement is the failure this whole
             arc exists to stop.
         """
@@ -478,9 +480,9 @@ def _hero(agreement: "BankAgreement | None", to_explain: int) -> Hero:
         books=day.app_balance,
         off_by=day.gap,
         to_explain=to_explain,
-        unpriced_after=sum(
-            1 for other in agreement.compared if other.day > day.day
-        ),
+        # Each later day has a books balance (the hero's is on or after the
+        # opening) and no bank one (the hero is the LATEST carrying both).
+        unpriced_after=sum(1 for other in agreement.days if other.day > day.day),
     )
 
 
