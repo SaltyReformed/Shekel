@@ -49,11 +49,12 @@ class Step:
     """One piece of work a release carries: its key, the commits in the range that name it
     (newest first), whether it moves money (None when no version holds it open and it is
     not declared), the deploy-together groups it is a leaf of (after the cutover, each it
-    is under, nearest first: a card re-planned since its trailer landed, or a finding, is
-    under a group without being a leaf of it), the source of its
-    declaration when its flag was declared (None when it was read), and whether the
-    release takes it out of production: held there at the base and not at the cut (a
-    ``Reopens:`` undid it, ruling ``balance:R-BAL288``)."""
+    touches, nearest first: each it is under, its own card's group included, unless it
+    will never ship and production holds it on neither side; a card re-planned since its
+    trailer landed, or a finding, is under a group without being a leaf of it), the
+    source of its declaration when its flag was declared (None when it was read), and
+    whether the release takes it out of production: held there at the base and not at
+    the cut (a ``Reopens:`` undid it, ruling ``balance:R-BAL288``)."""
 
     key: str
     claims: tuple[str, ...]
@@ -66,11 +67,12 @@ class Step:
 @dataclass(frozen=True)
 class Group:
     """A deploy-together container a release touches, and each of its members (its leaves;
-    after the cutover, also each step under it that will never ship while production
-    holds it): carried into production by this release, released before it, held by
-    production on neither side (missing), or taken out of production by it (undone); and,
-    after the cutover, each card the release names under it that is no member of it, with
-    the steps between (``through``), and each member that will never ship (``dead``)."""
+    after the cutover, its leaves that can still ship, each step below it production holds
+    at the cut, and each step below it that will never ship production holds at the base):
+    carried into production by this release, released before it, held by production on
+    neither side (missing), or taken out of production by it (undone); and, after the
+    cutover, each card the release names under it that is no member of it, with the steps
+    between (``through``), and each member that will never ship (``dead``)."""
 
     key: str
     carried: tuple[str, ...]

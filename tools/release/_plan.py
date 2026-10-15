@@ -6,7 +6,7 @@ The rules are card ``plan#9``'s and the developer's (rulings ``balance:R-BAL279`
 
 - **Refused** (exit 1): two steps that move money, an undone one counting as one
   (R-BAL288); a deploy-together group the release leaves production holding in part
-  (each leaf it lacks named; R-BAL288: wholly in production or wholly out); a carried
+  (each member it lacks named; R-BAL288: wholly in production or wholly out); a carried
   step whose money flag cannot be read and is not declared (declared only before the
   cutover, R-BAL287); a claim the cut's reader cannot read; and each money mover
   (declared ones too) or added migration the skill names UNREHEARSED, because it found
@@ -126,9 +126,10 @@ class Inputs:
 
 def _split(group: Group) -> str | None:
     """Why a cut leaves production holding part of ``group``; None when, released, it
-    leaves production holding every member or none (R-BAL288).  A member that will never
-    ship is named with the one way it leaves the group: a release taking the whole group
-    out."""
+    leaves production holding every member or none (R-BAL288).  A member the plan will
+    never ship is named with the way out no plan can block: a ``Reopens:`` for each member
+    the cut keeps, which leaves production holding none of the group (after the cutover,
+    every step below a group that production holds at a cut is a member of it)."""
     held = group.carried + group.released
     if not held or not group.undone + group.missing:
         return None
@@ -145,9 +146,10 @@ def _split(group: Group) -> str | None:
                f"out of production (a Reopens: names it) and keeps {', '.join(held)}"
                + (f", without {', '.join(group.missing)}" if group.missing else ""))
     if group.dead:
-        why += (f"; a step that will never ship again ({', '.join(group.dead)}) stays a "
-                "member of the group until a release takes the whole group out (a Reopens: "
-                f"naming each of {', '.join(held)})")
+        why += (f"; a step the plan will never ship ({', '.join(group.dead)}) is a member "
+                "while production holds it, at the base or the cut: a release that leaves "
+                "production holding none of the group is whole (a Reopens: naming each of "
+                f"{', '.join(held)})")
     return why + "; the group ships whole"
 
 

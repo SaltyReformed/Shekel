@@ -133,6 +133,8 @@ def _verdict_lines(verdict: Verdict) -> list[str]:
                      f"{', '.join(group.missing) or 'none'}"
                      + (f"; undone {', '.join(group.undone)}" if group.undone else "")
                      + (f"; named under it {', '.join(group.through)}" if group.through
+                        else "")
+                     + (f"; the plan will never ship {', '.join(group.dead)}" if group.dead
                         else ""))
     lines.append(f"migrations ({len(verdict.migrations)}):")
     lines += [f"  {m.change:<7} {m.revision or '(no revision id)'}  {m.path}"
