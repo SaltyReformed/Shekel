@@ -133,9 +133,10 @@ def census(root: Path, plan: Plan) -> list[tuple[str, int, str]]:
     files, which hold no line to edit.  ``-z`` separates each path and line number with a
     NUL, so a path is never quoted and a colon in it is never read as a separator, and
     ``--no-column`` keeps a user's ``grep.column`` out of the record.  git's output is read
-    as text, so a carriage return in a matched line, or a file not in UTF-8, stops the
-    census with an error rather than a misread line (no tracked file holds either, measured
-    2026-10-15).
+    as text, decoded strictly, so a carriage return inside a matched line, or a matched line
+    not in UTF-8, stops the census with an error rather than a misread line; a carriage
+    return that ends a line (CRLF) is read as its end (no tracked file holds a carriage
+    return or text not in UTF-8, measured 2026-10-15).
 
     git finds every line holding the name as a FIXED string, so the one judge of what a
     mention is stays :func:`mentions`.  It starts through :func:`tools.ci.gitcmd.run`, so

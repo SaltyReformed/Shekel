@@ -20,7 +20,7 @@ from tools.split._model import parse_plan
 from tools.split._observe import OBSERVE_ENV, verdict
 from tools.split._prove import line_origins
 from tools.split._render import Origin
-from tools.split._run import census, mentions, merged_setups
+from tools.split._run import RunError, census, mentions, merged_setups, python_files
 from tools.split._source import Refusal
 from tools.split.conftest import SAMPLE, SOURCE, build, layout_of, plan_dict
 from tools.split.test_apply import applied
@@ -412,6 +412,31 @@ class TestTheCensus:
         assert found == [("docs/café:notes.md", 1, "x\fsee ``test_sample.TestBig``"),
                          *self.NOTES_HIT]
 
+    def test_a_carriage_return_inside_a_matched_line_is_an_error(self, tmp_path):
+        """git's output is read as text, which ends a line at a lone carriage return too, so
+        the rest of the line comes back as a record with no path: an error naming why, never
+        the line cut short and listed (the review's L1)."""
+        root = self.tracked_notes(tmp_path)
+        (root / "docs" / "cr.md").write_bytes(b"see ``test_sample.TestBig``\rand more\n")
+        with pytest.raises(RunError, match="a carriage return in a matched line ends a record"):
+            census(root, parse_plan(plan_dict()))
+
+    def test_a_crlf_line_end_is_read_as_the_lines_end(self, tmp_path):
+        """A carriage return that ends a line is read as its end: the line comes back whole,
+        without it, and nothing stops."""
+        root = self.tracked_notes(tmp_path)
+        (root / "docs" / "crlf.md").write_bytes(b"see ``test_sample.TestBig``\r\n")
+        assert census(root, parse_plan(plan_dict())) == [
+            ("docs/crlf.md", 1, "see ``test_sample.TestBig``"), *self.NOTES_HIT]
+
+    def test_a_matched_line_not_in_utf8_is_an_error(self, tmp_path):
+        """git's output is decoded strictly, so a matched line it cannot decode stops the
+        census rather than coming back misread."""
+        root = self.tracked_notes(tmp_path)
+        (root / "docs" / "latin.md").write_bytes(b"see ``test_sample.TestBig`` \xe9\n")
+        with pytest.raises(UnicodeDecodeError):
+            census(root, parse_plan(plan_dict()))
+
     @pytest.mark.parametrize("binding", scratch.BINDINGS)
     def test_a_bound_environment_reaches_no_repository_but_the_one_named(
             self, binding, tmp_path, monkeypatch):
@@ -488,6 +513,51 @@ class TestTheCensus:
             ("test_big_early.py", f'"""{self.SLICE_TEXT}"""'),
             ("test_first.py", f'"""{self.PART_TEXT}'),
             ("test_first.py", '"""One; its twin lives in tests/test_area/test_sample.py."""')]
+
+
+class TestTheImporterWalk:
+    """Where a module importing the source may live: every ``.py`` file of the working tree
+    git does not ignore, tracked or not, and present on disk (the coordinator's ruling on
+    review fork L7).  Which files that reaches is graded end to end
+    (``test_split.test_importers_are_found_wherever_git_does_not_ignore_them``)."""
+
+    @staticmethod
+    def walked(parent: Path) -> tuple[Path, list[Path]]:
+        """A throwaway repository holding a tracked module, a tracked document, a tracked
+        module deleted from disk, and a module tracked under a directory ``.gitignore``
+        ignores (which only this repository's own index lists); its root, and the modules
+        the walk lists."""
+        root = scratch.repository(parent)
+        (root / ".gitignore").write_text("vendor/\n", encoding="utf-8")
+        for path in ("migrations/kept.py", "README.md", "gone.py", "vendor/kept.py"):
+            (root / path).parent.mkdir(exist_ok=True)
+            (root / path).write_text('"""x"""\n', encoding="utf-8")
+        scratch.run(root, "add", "-A")
+        scratch.run(root, "add", "-f", "vendor/kept.py")
+        (root / "gone.py").unlink()
+        return root, [root / "migrations/kept.py", root / "vendor/kept.py"]
+
+    def test_only_python_files_on_disk_that_git_does_not_ignore(self, tmp_path):
+        """A tracked module deleted from disk has no text to re-point, and a document is no
+        module; a tracked module is listed though ``.gitignore`` names its directory, because
+        git ignores only what it does not track."""
+        root, listed = self.walked(tmp_path)
+        assert python_files(root) == listed
+
+    @pytest.mark.parametrize("binding", scratch.BINDINGS)
+    def test_a_bound_environment_reaches_no_repository_but_the_one_named(
+            self, binding, tmp_path, monkeypatch):
+        """The walk is a git call, started through :mod:`tools.ci.gitcmd` like the census's
+        (:meth:`TestTheCensus.test_a_bound_environment_reaches_no_repository_but_the_one_named`):
+        bound to a sentinel, it lists the directory named, and the sentinel is
+        byte-identical afterwards.  The module tracked under an ignored directory is what
+        tells the two apart: a plain call bound to the sentinel's linked worktree still lists
+        the directory's other modules, as files that worktree does not track, and only this
+        repository's own index lists that one (measured on a plain-call mutant, 2026-10-15)."""
+        sentinel, before = scratch.bound_sentinel(tmp_path, binding, monkeypatch.setenv)
+        root, listed = self.walked(tmp_path)
+        assert python_files(root) == listed
+        assert scratch.sentinel_state(sentinel) == before
 
 
 class TestTheFixtureSetups:

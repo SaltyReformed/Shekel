@@ -215,13 +215,14 @@ repos:
         args: [tools/release, -c, /dev/null, -q]
       # tools/split: the proved test-file split (step balance:X-er, ruling
       # R-BAL301).  The same 10.00/10 floor and the same tests ci.yml step 4b
-      # runs; it reads tools/ci's repository root, so an edit there runs it too.
+      # runs.  It imports tools/ci, and pylint reads what each import binds, so
+      # an edit there runs both hooks (tools/split/test_hooks.py holds it).
       - id: pylint-split
         name: pylint tools/split (10.00/10 floor)
         entry: pylint
         language: system
         types: [python]
-        files: ^tools/split/.*\.py$
+        files: ^tools/(split|ci)/.*\.py$
         pass_filenames: false
         args:
           - tools/split/

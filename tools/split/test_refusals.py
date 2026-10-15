@@ -35,6 +35,14 @@ def appended(body: str) -> str:
     return SAMPLE + EXTRA_TOP.format(body=body)
 
 
+def request_reads_a_class_docstring() -> str:
+    """The sample with its autouse fixture reading the requesting test's class docstring
+    through ``request``."""
+    return sample_with('monkeypatch.setenv("SAMPLE", "1")',
+                       'monkeypatch.setenv("SAMPLE", str(request.cls.__doc__))').replace(
+        "def _frozen(monkeypatch):", "def _frozen(monkeypatch, request):")
+
+
 def with_test_first(*names: str) -> dict:
     """The sample plan with ``names`` also placed in test_first."""
     plan = plan_dict()
@@ -238,11 +246,8 @@ class TestARunTimeReadOfTheModuleIsRefused:
 
     def test_a_class_docstring_read_through_the_request_when_a_class_is_split(self, tmp_path):
         """``request.cls.__doc__`` reads a slice's one-line docstring once TestBig is split."""
-        source = sample_with('monkeypatch.setenv("SAMPLE", "1")',
-                             'monkeypatch.setenv("SAMPLE", str(request.cls.__doc__))'
-                             ).replace("def _frozen(monkeypatch):",
-                                       "def _frozen(monkeypatch, request):")
-        assert "which a split class states once per slice" in refusal(tmp_path, source)
+        assert "which a split class states once per slice" in refusal(
+            tmp_path, request_reads_a_class_docstring())
 
     @pytest.mark.parametrize("body, why", [
         ("s = self\n        assert s.__module__", "__module__ may name"),
@@ -294,6 +299,17 @@ def test_a_read_the_split_cannot_change_is_accepted(tmp_path, source):
     chains that reach a class.)"""
     root = build(tmp_path, source)
     assert render_all(layout_of(root), line_limit(root))
+
+
+def test_a_class_docstring_read_through_the_request_is_accepted_when_no_class_is_split(
+        tmp_path):
+    """With every class moved whole, a class's docstring reads the same after the split, so
+    the read refused while TestBig is split is accepted (the review's L4)."""
+    plan = plan_dict()
+    plan["parts"][1]["nodes"] = ["TestBig"]
+    del plan["parts"][2]
+    root = build(tmp_path, request_reads_a_class_docstring())
+    assert render_all(layout_of(root, plan), line_limit(root))
 
 
 def test_a_patch_whose_readers_are_out_of_reach_is_accepted(tmp_path):
