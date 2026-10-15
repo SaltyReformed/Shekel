@@ -126,24 +126,29 @@ class Inputs:
 
 def _split(group: Group) -> str | None:
     """Why a cut leaves production holding part of ``group``; None when, released, it
-    leaves production holding every leaf or none (R-BAL288)."""
+    leaves production holding every member or none (R-BAL288).  A member that will never
+    ship is named with the one way it leaves the group: a release taking the whole group
+    out."""
     held = group.carried + group.released
     if not held or not group.undone + group.missing:
         return None
     if not group.undone and not group.carried:
-        return (f"it leaves production holding {', '.join(held)} of the deploy-together group "
-                f"{group.key} without {', '.join(group.missing)}"
-                + (f" (it names {', '.join(group.through)}, under the group but no leaf of it)"
-                   if group.through else "")
-                + "; the group ships whole")
-    if not group.undone:
-        return (f"it carries part of the deploy-together group {group.key} "
-                f"({', '.join(group.carried)}) without {', '.join(group.missing)}; the "
-                "group ships whole")
-    return (f"it leaves {', '.join(group.undone)} of the deploy-together group {group.key} "
-            f"out of production (a Reopens: names it) and keeps {', '.join(held)}"
-            + (f", without {', '.join(group.missing)}" if group.missing else "")
-            + "; the group ships whole")
+        why = (f"it leaves production holding {', '.join(held)} of the deploy-together group "
+               f"{group.key} without {', '.join(group.missing)}"
+               + (f" (it names {', '.join(group.through)}, under the group but no leaf of it)"
+                  if group.through else ""))
+    elif not group.undone:
+        why = (f"it carries part of the deploy-together group {group.key} "
+               f"({', '.join(group.carried)}) without {', '.join(group.missing)}")
+    else:
+        why = (f"it leaves {', '.join(group.undone)} of the deploy-together group {group.key} "
+               f"out of production (a Reopens: names it) and keeps {', '.join(held)}"
+               + (f", without {', '.join(group.missing)}" if group.missing else ""))
+    if group.dead:
+        why += (f"; a step that will never ship again ({', '.join(group.dead)}) stays a "
+                "member of the group until a release takes the whole group out (a Reopens: "
+                f"naming each of {', '.join(held)})")
+    return why + "; the group ships whole"
 
 
 def _refusals(found: Carried, changed: tuple[Migration, ...], unrehearsed: Collection[str],

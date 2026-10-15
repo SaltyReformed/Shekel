@@ -65,11 +65,12 @@ class Step:
 
 @dataclass(frozen=True)
 class Group:
-    """A deploy-together container a release touches, and each of its leaves: carried into
-    production by this release, released before it, held by production on neither side
-    (missing), or taken out of production by it (undone); and, after the cutover, each
-    card the release names under it that is no leaf of it, with the steps between
-    (``through``)."""
+    """A deploy-together container a release touches, and each of its members (its leaves;
+    after the cutover, also each step under it that will never ship while production
+    holds it): carried into production by this release, released before it, held by
+    production on neither side (missing), or taken out of production by it (undone); and,
+    after the cutover, each card the release names under it that is no member of it, with
+    the steps between (``through``), and each member that will never ship (``dead``)."""
 
     key: str
     carried: tuple[str, ...]
@@ -77,6 +78,7 @@ class Group:
     missing: tuple[str, ...]
     undone: tuple[str, ...] = ()
     through: tuple[str, ...] = ()
+    dead: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -627,21 +627,163 @@ def test_a_finding_shipped_into_a_group_production_holds_none_of_is_clean(repo):
         (), ("plan#51", "plan#52"), ("plan#55 under plan#51",))
 
 
-def test_a_split_card_whose_leaf_carries_the_money_label_moves_money(repo):
-    """A person moved #60's money label onto its new leaf #61: the undo of #60 still
-    counts as a money change (fails closed), so with #41 the release carries two."""
+# -- a step that will never ship, while production holds it ----------------------------------
+
+def _released_group(repo, leaves=(51, 52)):
+    """Group #50 released whole at a base after the cutover: ``(tracker, base)``."""
     _, cutover = _after_cutover(repo)
-    base = _merge(repo, cutover, "Ships: plan#60")
-    cut = _merge(repo, base, "Reopens: plan#60", "Ships: plan#41")
+    base = _merge(repo, cutover, *(f"Ships: plan#{leaf}" for leaf in leaves))
     tracker = FakeTracker()
-    tracker.add(60)
-    tracker.add(61, labels=MONEY)
-    tracker.add(62)
-    for leaf in (61, 62):
-        tracker.add_child(60, tracker.cards_by_number[leaf])
-    tracker.add(41, labels=MONEY)
+    _group(tracker, leaves=leaves)
+    return tracker, base
+
+
+def _replanned_and_dropped(tracker):
+    """#51 re-planned as #511 and #512, then dropped as ``quill drop 51`` drops a split
+    step: its drop written on each leaf still work, #51 left open (R-BAL190), so #51 is
+    dropped because every leaf was (R-BAL187)."""
+    _replan(tracker, 51, (511, 512))
+    for leaf in (511, 512):
+        tracker.close(leaf, "not_planned")
+
+
+def test_a_group_leaf_undone_replanned_and_dropped_is_still_a_member(repo):
+    """The full-leaf review's E1q: #51 undone, re-planned, then dropped by quill.  #51 is
+    no leaf now, but production held it at the base, so it is a member: the release
+    keeping #52 without it is refused, naming the way out."""
+    tracker, base = _released_group(repo)
+    cut = _merge(repo, base, "Reopens: plan#51")
+    _replanned_and_dropped(tracker)
+    verdict = _judge(repo, base, cut, tracker).verdict
+    (group,) = verdict.carried.groups
+    assert (group.released, group.undone, group.missing, group.through, group.dead) == (
+        ("plan#52",), ("plan#51",), (), (), ("plan#51",))
+    assert verdict.refusals == (
+        "it leaves plan#51 of the deploy-together group plan#50 out of production (a "
+        "Reopens: names it) and keeps plan#52; a step that will never ship again (plan#51) "
+        "stays a member of the group until a release takes the whole group out (a Reopens: "
+        "naming each of plan#52); the group ships whole",)
+
+
+def test_a_group_with_a_step_that_will_never_ship_is_whole_once_taken_out(repo):
+    """E1q's way out: the same release takes #52 out too, and is whole.  After it,
+    production holds #51 on neither side, so it is no member of a later release: #52
+    ships back alone, clean."""
+    tracker, base = _released_group(repo)
+    out = _merge(repo, base, "Reopens: plan#51", "Reopens: plan#52")
+    _replanned_and_dropped(tracker)
+    assert _judge(repo, base, out, tracker).verdict.status == CLEAN
+    back = _merge(repo, out, "Ships: plan#52")
+    verdict = _judge(repo, out, back, tracker).verdict
+    assert verdict.status == CLEAN
+    (group,) = verdict.carried.groups
+    assert (group.carried, group.dead) == (("plan#52",), ())
+
+
+def test_a_still_marked_leaf_shipped_and_undone_is_still_a_member(repo):
+    """The full-leaf review's E3: #53, closed by a person while its filing mark stayed,
+    shipped with #51 and is reverted.  Undone, quill leaves it out of the group's leaves
+    (closed while still being filed), but production held it: keeping #51 without it is
+    refused, and taking #51 out in the same release is whole."""
+    tracker, base = _released_group(repo, leaves=(51, 53))
+    tracker.cards_by_number[53] = replace(tracker.cards_by_number[53],
+                                          labels=("balance", FILING), is_open=False,
+                                          state_reason="COMPLETED", touched_by_hand=True)
+    cut = _merge(repo, base, "Reopens: plan#53")
     assert _judge(repo, base, cut, tracker).verdict.refusals == (
-        "it carries 2 steps that move money (plan#41, plan#60); a release carries one at most",)
+        "it leaves plan#53 of the deploy-together group plan#50 out of production (a "
+        "Reopens: names it) and keeps plan#51; a step that will never ship again (plan#53) "
+        "stays a member of the group until a release takes the whole group out (a Reopens: "
+        "naming each of plan#51); the group ships whole",)
+    out = _merge(repo, base, "Reopens: plan#53", "Reopens: plan#51")
+    assert _judge(repo, base, out, tracker).verdict.status == CLEAN
+
+
+@pytest.mark.parametrize("abandon", ["its leaf dropped", "the split step closed"])
+def test_a_shipped_step_split_on_the_web_and_abandoned_stays_a_member(repo, abandon):
+    """The full-leaf review's W: a person splits SHIPPED #51 on the web (quill refuses to)
+    into #511 and abandons the re-plan, by dropping #511 or by closing #51.  #51 will
+    never ship again and its code stays in production, so a release taking #52 out alone
+    is refused; taking #51 out as well is whole."""
+    tracker, base = _released_group(repo)
+    _replan(tracker, 51, (511,))
+    closed = 511 if abandon == "its leaf dropped" else 51
+    tracker.cards_by_number[closed] = replace(tracker.cards_by_number[closed], is_open=False,
+                                              state_reason="NOT_PLANNED",
+                                              touched_by_hand=True)
+    cut = _merge(repo, base, "Reopens: plan#52")
+    assert _judge(repo, base, cut, tracker).verdict.refusals == (
+        "it leaves plan#52 of the deploy-together group plan#50 out of production (a "
+        "Reopens: names it) and keeps plan#51; a step that will never ship again (plan#51) "
+        "stays a member of the group until a release takes the whole group out (a Reopens: "
+        "naming each of plan#51); the group ships whole",)
+    out = _merge(repo, base, "Reopens: plan#52", "Reopens: plan#51")
+    assert _judge(repo, base, out, tracker).verdict.status == CLEAN
+
+
+def test_a_step_that_will_never_ship_outside_a_group_is_no_member_of_it(repo):
+    """#60, outside group #50, was released and is undone and dropped beside a follow-up
+    fix to #51: it is under no group, so it is a member of none, and the group is whole."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#51", "Ships: plan#52", "Ships: plan#60")
+    cut = _merge(repo, base, "Ships: plan#51", "Reopens: plan#60")
+    tracker = FakeTracker()
+    _group(tracker)
+    tracker.add(60)
+    tracker.close(60, "not_planned")
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert verdict.status == CLEAN
+    assert verdict.carried.groups[0].dead == ()
+
+
+def test_a_finding_under_a_group_undone_and_dropped_is_no_member(repo):
+    """#55, a finding under #51, shipped with the group and is reverted and dropped: it
+    touches the group and is never a member (a fix the group cannot ship without is a
+    leaf), so production keeping #51 and #52 is whole."""
+    _, cutover = _after_cutover(repo)
+    base = _merge(repo, cutover, "Ships: plan#51", "Ships: plan#52", "Ships: plan#55")
+    cut = _merge(repo, base, "Reopens: plan#55")
+    tracker = FakeTracker()
+    _group(tracker)
+    tracker.add(55, kind="finding")
+    tracker.add_child(51, tracker.cards_by_number[55])
+    tracker.close(55, "not_planned")
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert verdict.status == CLEAN
+    assert verdict.carried.steps[0].groups == ("plan#50",)
+    assert verdict.carried.groups[0].through == ("plan#55 under plan#51",)
+
+
+# -- a card's own money label (the coordinator, under R-BAL207, 2026-10-14) ------------------
+
+def test_a_step_undone_and_replanned_into_a_money_leaf_is_one_money_change(repo):
+    """The full-leaf review's E2: #51 (no money label) undone, then re-planned as #511
+    (moves money) and #512, both shipped.  #51 is judged by its own label, so the release
+    carries one money change, #511's; reading #511's label onto #51 too counted two and
+    refused every release from then on."""
+    tracker, base = _released_group(repo)
+    undo = _merge(repo, base, "Reopens: plan#51")
+    cut = _merge(repo, undo, "Ships: plan#511", "Ships: plan#512")
+    _replan(tracker, 51, (511, 512))
+    tracker.cards_by_number[511] = replace(tracker.cards_by_number[511], labels=MONEY)
+    verdict = _judge(repo, base, cut, tracker).verdict
+    assert [(s.key, s.money, s.undone) for s in verdict.carried.steps] == [
+        ("plan#51", False, True), ("plan#511", True, False), ("plan#512", False, False)]
+    assert verdict.status == CLEAN
+
+
+def test_a_container_of_no_type_is_refused(repo):
+    """A step split into leaves whose type a person cleared: its kind unread, it is
+    refused like any card of no type, never read as moving no money."""
+    base, cutover = _after_cutover(repo)
+    cut = repo.commit("work", {"app.py": "1"}, trailers=("Ships: plan#12",),
+                      parents=(cutover,))
+    tracker = FakeTracker()
+    tracker.add(12, kind=None)
+    _replan(tracker, 12, (121, 122))
+    assert _judge(repo, base, cut, tracker).verdict.refusals == (
+        f"plan#12 (named at {cut[:12]}) is a card of no type, which no commit ships, so it "
+        "names no work whose flag can be read",)
 
 
 def test_a_card_of_no_type_is_refused(repo):
