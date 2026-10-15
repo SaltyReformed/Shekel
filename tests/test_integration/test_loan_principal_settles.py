@@ -64,10 +64,8 @@ from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
     StatusEnum,
-    TxnTypeEnum,
 )
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import balance_at, transfer_service
 from app.utils.dates import add_months, display_today
@@ -219,11 +217,12 @@ def _create_piti_transfer(  # pylint: disable=too-many-arguments,too-many-positi
 ):
     """Create a PITI transfer in Projected status via the transfer service.
 
-    Routed through :func:`transfer_service.create_transfer` so the
-    two-shadow invariant (Transfer Invariant 1) is established the
-    same way the production transfer route would.  Status is
-    Projected; the caller settles via the live ``mark_done`` route
-    when it wants the resolver to count the payment as confirmed.
+    Routed through :func:`transfer_service.create_transfer` so the transfer
+    is written the same way the production transfer route writes it: one
+    row since plan step ``balance:X-bi-6-4d-3`` (ruling **R-BAL258**), where
+    the door also wrote the two shadows Transfer Invariant 1 named.  Status
+    is Projected; the caller settles via the live ``mark_done`` route when
+    it wants the resolver to count the payment as confirmed.
     """
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     xfer = transfer_service.create_transfer(
@@ -254,26 +253,6 @@ def _mark_done_from_the_loan_leg(auth_client, transfer_id: int, loan_account_id:
     return auth_client.post(
         f"/transfers/instance/{transfer_id}/mark-done",
         data={"leg_account_id": str(loan_account_id)},
-    )
-
-
-def _income_shadow(transfer_id: int, loan_account_id: int) -> Transaction:
-    """Return the income shadow on the loan account for a given transfer.
-
-    The income shadow is the one whose ``account_id`` matches the
-    transfer's destination (the loan); its settle drives the
-    :func:`loan_payment_service.get_payment_history` feed.
-    """
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    return (
-        db.session.query(Transaction)
-        .filter(
-            Transaction.transfer_id == transfer_id,
-            Transaction.account_id == loan_account_id,
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.is_deleted.is_(False),
-        )
-        .one()
     )
 
 
@@ -477,8 +456,6 @@ class TestLoanPrincipalSettles:
             )
             db.session.commit()
 
-            shadow_id = _income_shadow(xfer.id, ctx["mortgage_id"]).id
-
             resp = _mark_done_from_the_loan_leg(
                 auth_client, xfer.id, ctx["mortgage_id"],
             )
@@ -537,6 +514,11 @@ class TestLoanPrincipalSettles:
         symmetric with the settle-driven cases (and to confirm the
         Flask test context is live), but no HTTP POST is issued --
         the transfer remains Projected.
+
+        The pre-condition reads the transfer and its loan side's record,
+        where it read the loan-side income shadow's status until plan step
+        ``balance:X-bi-6-4d-3`` made a transfer one row (ruling **R-BAL167**
+        class 1): Projected, and no payment recorded on the loan.
         """
         _ = auth_client  # Fixture kept for context-setup symmetry.
         with app.app_context():
@@ -553,11 +535,13 @@ class TestLoanPrincipalSettles:
             )
             db.session.commit()
 
-            shadow = _income_shadow(xfer.id, ctx["mortgage_id"])
-            assert shadow.status.is_settled is False, (
-                f"Pre-condition: shadow must start unsettled; "
-                f"status={shadow.status.name!r}"
+            assert xfer.status.is_settled is False, (
+                f"Pre-condition: the transfer must start unsettled; "
+                f"status={xfer.status.name!r}"
             )
+            assert transfer_side_record(
+                db.session, xfer.id, ctx["mortgage_id"],
+            ) is None, "Pre-condition: the loan side must hold no payment record"
 
             balance = _resolve_balance(
                 ctx["mortgage_id"], ctx["loan_params"],
@@ -616,9 +600,6 @@ class TestLoanPrincipalSettles:
                 )
                 db.session.commit()
 
-                shadow_id = _income_shadow(
-                    xfer.id, ctx["mortgage_id"],
-                ).id
                 resp = _mark_done_from_the_loan_leg(
                     auth_client, xfer.id, ctx["mortgage_id"],
                 )
@@ -686,7 +667,6 @@ def test_resolved_balance_stable_across_future_as_of(  # noqa: D401
         )
         db.session.commit()
 
-        shadow_id = _income_shadow(xfer.id, mortgage.id).id
         resp = _mark_done_from_the_loan_leg(auth_client, xfer.id, mortgage.id)
         assert resp.status_code == 200
 

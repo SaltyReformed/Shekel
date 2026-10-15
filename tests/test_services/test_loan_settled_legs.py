@@ -23,10 +23,13 @@ none of them:
   ``balance:X-bi-6-4d-2`` a side's money is its record on the TRANSFER and no
   reader reads a twin, and the drift whose money moved -- a DATED side record
   under a Projected transfer -- is refused by the database (ruling
-  **R-BAL167** class 2).
+  **R-BAL167** class 2).  Since plan step ``balance:X-bi-6-4d-3`` the twin row
+  itself is refused at the write (ruling **R-BAL258**), so the drift whose
+  money did NOT move has no row to be written on.
 * The posting sync's lineage probe named the transfer of a movement that hung
-  off a DEAD shadow, so that movement's postings reversed; since that step no
-  movement can be stored under a hidden twin, which the case asserts.
+  off a DEAD shadow, so that movement's postings reversed; since plan step
+  ``balance:X-bi-6-4d-3`` no twin can be stored to hang one off, which the
+  case asserts.
 
 Every figure is made up (ruling R-BAL132).  The loan is ``$100,000.00`` at 6%
 from 2026-02-01, due on the 1st: one month's charge is
@@ -44,11 +47,10 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import LedgerAccountKindEnum, StatusEnum, TxnTypeEnum
+from app.enums import LedgerAccountKindEnum, StatusEnum
 from app.exceptions import UndatedSettleError
 from app.extensions import db
 from app.models.journal_entry import Posting
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import loan_loaders, transfer_service
@@ -71,8 +73,8 @@ from app.services.recorded_contributions import (
 from app.services.transfer_legs import transfer_side_leg
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    assert_a_twin_is_refused,
     basis_for,
-    cover_bare_settled_row,
     create_loan_account,
     create_savings_account,
     create_settled_transfer,
@@ -106,49 +108,6 @@ def _loan(seed_user):
     )
     db.session.commit()
     return loan
-
-
-def _income_shadow(transfer, account):
-    """Return *transfer*'s live income shadow on *account*."""
-    return (
-        db.session.query(Transaction)
-        .filter(
-            Transaction.transfer_id == transfer.id,
-            Transaction.account_id == account.id,
-            Transaction.transaction_type_id
-            == ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-            Transaction.is_deleted.is_(False),
-        )
-        .one()
-    )
-
-
-def _drift_the_income_shadow(transfer, account, day, moved=None):
-    """Settle ONE shadow around the service, its parent left Projected.
-
-    A STATUS DRIFT: Transfer Invariants 3 and 4 forbid it and no door writes
-    it (every status change goes through the status seam), and it is written
-    here directly because the class has occurred (``transfer_service._restore``
-    carries a corrector for it).  With *moved* the shadow also gets a DATED
-    covering movement of that figure under it, through the one writer a
-    bare-built settled row's record goes through.
-
-    **Since plan step ``balance:X-bi-6-4d-2`` neither is the side's money**:
-    a side's record hangs off the TRANSFER (ruling **R-BAL88**), no reader
-    reads a twin's status, day or entries, and a movement under a twin is no
-    side's record (ruling **R-BAL167** class 3).  "Its money moved" under a
-    Projected parent is the side's own DATED record, which the status-band
-    rule refuses at commit: :func:`_stage_a_dated_side_record`.
-    """
-    shadow = _income_shadow(transfer, account)
-    for column, value in settle_day_columns(day).items():
-        setattr(shadow, column, value)
-    shadow.status_id = ref_cache.status_id(StatusEnum.DONE)
-    db.session.flush()
-    if moved is not None:
-        cover_bare_settled_row(db.session, shadow, moved)
-    db.session.commit()
-    db.session.expire_all()
 
 
 #: The status-band rule's two refusals (``app/side_band_infrastructure``), as
@@ -196,11 +155,12 @@ def _stage_an_undated_loan_side(transfer, account):
     writes it, and since that step the status-band rule refuses it at
     COMMIT, so it exists only inside this save (ruling **R-BAL167** class
     2): the caller asks its readers there, then commits and expects the
-    refusal.  The twin needs no revert: no reader reads its status, and it
-    keeps the Projected one it was created with.
+    refusal.
 
     Returns:
-        ``(income twin, the loan side's record)``.
+        The loan side's record.  It returned the income twin beside it until
+        plan step ``balance:X-bi-6-4d-3`` made a transfer one row (ruling
+        **R-BAL258**; the helper rewritten under ruling **R-BAL167** class 4).
     """
     record = transfer_side_record(db.session, transfer.id, account.id)
     db.session.query(TransactionEntry).filter(
@@ -211,7 +171,7 @@ def _stage_an_undated_loan_side(transfer, account):
     )
     db.session.flush()
     db.session.expire_all()
-    return _income_shadow(transfer, account), record
+    return record
 
 
 class TestAZeroDollarCloseIsDatedByTheInstallmentItSkips:
@@ -508,43 +468,66 @@ class TestTheSettledHalfComplementsThePlanHalf:
     def test_every_transfer_state_lands_in_exactly_one_half(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Ten states, each placed by the transfer's status and its money.
+        """Every storable state of a payment, each placed by the transfer's status and its money.
 
-        * Projected, nothing moved                -> planned;
-        * Paid with its movement                  -> settled;
-        * a $0.00 close (Paid, no movement)       -> settled;
-        * twin Paid, no movement, parent Projected -> planned (the parent
-          decides and no money moved);
-        * twin Paid WITH a dated movement under it, parent Projected ->
-          planned: a movement under a twin is no side's record (below);
-        * parent Paid, twin still Projected       -> settled, a $0.00 close
-          (the parent decides);
-        * Cancelled                               -> neither;
-        * Projected, its only dated movement under a DEAD twin -> planned;
-        * Cancelled over its kept movements         -> neither (excluded);
-        * Paid, its loan side's record UN-dated    -> settled.
+        * Projected, nothing moved                    -> planned;
+        * Paid with its movements                     -> settled;
+        * a $0.00 close (Paid, no movement)           -> settled;
+        * Paid, then reverted to Projected through the
+          door, its records kept un-dated             -> planned;
+        * Cancelled                                   -> neither;
+        * Cancelled over its kept un-dated records    -> neither (excluded);
+        * Paid, its loan side's record staged
+          un-dated                                    -> refused at commit
+          (rolled back: Paid and dated, settled).
 
-        The old partition keyed the settled half on the TWIN's status, so the
-        fourth state was in BOTH halves and the sixth in neither.  Each
-        transfer carries its own figure because ``uq_transfers_adhoc_dedupe``
-        refuses two identical ad-hoc transfers in one period.
+        The old partition keyed the settled half on the TWIN's status, so a
+        twin Paid under a Projected parent was in BOTH halves and a parent
+        Paid over a still-Projected twin in neither.  Each transfer carries
+        its own figure because ``uq_transfers_adhoc_dedupe`` refuses two
+        identical ad-hoc transfers in one period.
+
+        **The reverted member is the boundary of "its money moved"** (ruling
+        **R-BAL140**): the revert KEEPS its records and releases their days
+        (ruling **R-BAL61**), so records EXIST and none is DATED; the plan
+        emits a leg for a side with no dated movement (ruling **R-BAL79**),
+        and the settled half, the plan half's complement, does not hold it.
+        It is a NEW member at plan step ``balance:X-bi-6-4d-3``: no member
+        stood in that state before.
 
         **Since plan step ``balance:X-bi-6-4d-2``** each side's record hangs
         off the transfer (ruling **R-BAL88**) and no reader reads a twin
-        (ruling **R-BAL167**).  The fifth state's movement is planted under
-        the twin as before and read by no half, so the parent and the
-        missing side record place it in the plan (class 3; it was settled,
-        by its money, R-BAL140).  Three plants are REFUSED at commit (class
-        2) and asserted so: hiding the eighth's twin over its movement (the
-        deleted-row rule's row arm; rolled back, it is the fifth state's
-        shape and planned, as it was); Cancelling the ninth over its two
-        DATED records (the status-band rule; it was "Cancelled over a dated
-        movement", and its storable neighbour -- Paid, reverted and
+        (ruling **R-BAL167**).  Two plants are REFUSED at commit (class 2)
+        and asserted so: Cancelling the Cancelled-over-records member over
+        its two DATED records (the status-band rule; it was "Cancelled over a
+        dated movement", and its storable neighbour -- Paid, reverted and
         Cancelled through the door, its records kept un-dated -- is what
-        stands, excluded as before); and un-dating the tenth's loan side
-        under its Paid parent (the band again; rolled back, Paid and dated,
-        settled as it was -- its walk's refusal is
+        stands, excluded as before); and un-dating the last member's loan
+        side under its Paid parent (the band again; rolled back, Paid and
+        dated, settled as it was -- its walk's refusal is
         :class:`TestASettledPaymentWithAnUndatedRecordFailsLoud`'s).
+
+        **Four members left at plan step ``balance:X-bi-6-4d-3``**, where a
+        transfer became one row (ruling **R-BAL258**).  Three planted the
+        loan-side twin first: Paid with nothing moved, Paid with a dated
+        movement under it, and that one with its twin hidden.  The twin is
+        refused at the write by ``ck_transactions_names_no_transfer``
+        whatever it carries -- measured bare, dated, Paid and dated, and Paid,
+        dated and hidden -- so the movement and the hide planted after it can
+        never be written: ONE refused shape, pinned on the income side by
+        ``test_a_transfer_shadow_is_derived.py``'s ``TestAShadowIsBornDerived``
+        case ``test_the_transfer_owns_its_figure_and_neither_twin_can_be_stored``
+        and, for a loan payment, by ``test_loan_plan_assembly.py``'s
+        ``test_a_projected_loan_payment_is_priced_and_its_derived_twin_refused``.
+        The fourth, "parent Paid, twin still Projected" (its status written
+        past the seam), is without its twin the SAME stored state as the
+        ``$0.00`` close: measured, every ``budget.transfers`` column is equal
+        bar the literal figure and name (the close stores its PLAN figure:
+        ``$0.00`` is the absence of a record, ruling **R-BAL141**), both are
+        Paid over no side record, and this partition reads nothing else --
+        the posting ledger included.  R-BAL140's "settled parent with no
+        movement" drift is therefore no longer a state distinct from the
+        close, which holds it.
         """
         with app.app_context():
             loan = _loan(seed_user)
@@ -569,32 +552,27 @@ class TestTheSettledHalfComplementsThePlanHalf:
                 amount=Decimal("1002.00"), settled_amount=Decimal("0.00"),
                 settled_on=_CLOSED_ON, due_date=_DUE,
             )
+            reverted = create_settled_transfer(
+                seed_user, db.session, checking, loan, period,
+                amount=Decimal("1010.00"), settled_on=_CLOSED_ON, due_date=_DUE,
+            )
             db.session.commit()
-            twin_paid_nothing_moved = projected("1003.00")
-            _drift_the_income_shadow(twin_paid_nothing_moved, loan, _CLOSED_ON)
-            twin_paid_money_moved = projected("1004.00")
-            _drift_the_income_shadow(
-                twin_paid_money_moved, loan, _CLOSED_ON, Decimal("1004.00"),
+            transfer_service.update_transfer(
+                reverted.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             )
-            parent_paid_alone = projected("1005.00")
-            db.session.get(Transfer, parent_paid_alone.id).status_id = (
-                ref_cache.status_id(StatusEnum.DONE)
-            )
+            db.session.commit()
+            assert [
+                transfer_side_record(
+                    db.session, reverted.id, account.id,
+                ).settled_on
+                for account in (checking, loan)
+            ] == [None, None], "the member: Projected over its two kept records"
             cancelled = projected("1006.00")
             db.session.get(Transfer, cancelled.id).status_id = (
                 ref_cache.status_id(StatusEnum.CANCELLED)
             )
             db.session.commit()
-            dead_twin_moved = projected("1007.00")
-            _drift_the_income_shadow(
-                dead_twin_moved, loan, _CLOSED_ON, Decimal("1007.00"),
-            )
-            _income_shadow(dead_twin_moved, loan).is_deleted = True
-            with refused_by_database_rule(
-                "was deleted while it still holds a recorded payment or purchase",
-            ):
-                db.session.commit()
-            db.session.rollback()
             cancelled_moved = create_settled_transfer(
                 seed_user, db.session, checking, loan, period,
                 amount=Decimal("1008.00"), settled_on=_CLOSED_ON, due_date=_DUE,
@@ -620,12 +598,12 @@ class TestTheSettledHalfComplementsThePlanHalf:
                 ).settled_on
                 for account in (checking, loan)
             ] == [None, None], "the plant: Cancelled over its two kept records"
-            paid_twin_reverted = create_settled_transfer(
+            paid_loan_side_undated = create_settled_transfer(
                 seed_user, db.session, checking, loan, period,
                 amount=Decimal("1009.00"), settled_on=_CLOSED_ON, due_date=_DUE,
             )
             db.session.commit()
-            _stage_an_undated_loan_side(paid_twin_reverted, loan)
+            _stage_an_undated_loan_side(paid_loan_side_undated, loan)
             with refused_by_database_rule(_SETTLED_UNDATED):
                 db.session.commit()
             db.session.rollback()
@@ -637,12 +615,9 @@ class TestTheSettledHalfComplementsThePlanHalf:
             planned = sorted(leg.transfer.id for leg in halves.projected)
 
             assert settled == sorted([
-                paid.id, zero.id, parent_paid_alone.id, paid_twin_reverted.id,
+                paid.id, zero.id, paid_loan_side_undated.id,
             ])
-            assert planned == sorted([
-                plain.id, twin_paid_nothing_moved.id, twin_paid_money_moved.id,
-                dead_twin_moved.id,
-            ])
+            assert planned == sorted([plain.id, reverted.id])
             assert cancelled.id not in settled + planned
             assert cancelled_moved.id not in settled + planned
 
@@ -713,10 +688,13 @@ class TestASettledPaymentWithAnUndatedRecordFailsLoud:
         R-BAL167 class 1).  Until plan step balance:X-bi-6-4b the twin's
         status kept this payment out of the loan entirely.
 
-        Two unrelated transfers are built FIRST so the transfer's, the twin's
-        and the movement's ids all differ: in a fresh database each counts
-        from 1, and a message naming the twin's id where the movement's
-        belongs passed the leaf's first version of this case.
+        Two unrelated transfers are built FIRST so the transfer's and the
+        movement's ids differ: in a fresh database each counts from 1, and a
+        message naming the twin's id where the movement's belongs passed the
+        leaf's first version of this case.  The twin's id joined the check
+        until plan step ``balance:X-bi-6-4d-3`` made a transfer one row
+        (ruling **R-BAL258**; ruling **R-BAL167** class 4, through the
+        helper :func:`_stage_an_undated_loan_side`).
 
         **Staged inside the save since plan step ``balance:X-bi-6-4d-2``**
         (ruling **R-BAL167** class 2): the movement is the loan side's record
@@ -743,11 +721,10 @@ class TestASettledPaymentWithAnUndatedRecordFailsLoud:
                 settled_on=_CLOSED_ON, due_date=_DUE,
             )
             db.session.commit()
-            shadow, movement = _stage_an_undated_loan_side(transfer, loan)
-            assert len({transfer.id, shadow.id, movement.id}) == 3, (
-                "the three ids must differ for the message to grade which one "
-                f"it names: transfer {transfer.id}, twin {shadow.id}, "
-                f"movement {movement.id}"
+            movement = _stage_an_undated_loan_side(transfer, loan)
+            assert transfer.id != movement.id, (
+                "the two ids must differ for the message to grade which one "
+                f"it names: transfer {transfer.id}, movement {movement.id}"
             )
 
             with pytest.raises(UndatedSettleError) as refused:
@@ -937,7 +914,19 @@ class TestTheContributionFeedCountsADriftOnce:
     def test_a_twin_settled_with_nothing_moved_is_one_planned_contribution(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """$250.00 planned, twin Paid, nothing moved: ONE planned $250.00."""
+        """$250.00 planned, twin Paid, nothing moved: the twin is refused, ONE planned $250.00.
+
+        The feed read it as ONE planned $250.00: the parent decides, and no
+        money moved.  **The twin is REFUSED at the write since plan step
+        ``balance:X-bi-6-4d-3``** (ruling **R-BAL167** class 2, ruling
+        **R-BAL258**): ``ck_transactions_names_no_transfer`` refuses the
+        income twin with or without the Paid status and the 03-05 day the
+        drift wrote onto it (measured both ways), so it is staged as
+        :func:`~tests._test_helpers.assert_a_twin_is_refused` builds it and
+        that refusal asserted.  The feed's answer on the transfer that
+        stands is asserted as before, one planned $250.00, so the refused
+        plant leaves nothing a reader could count twice.
+        """
         with app.app_context():
             savings = create_savings_account(
                 seed_user, db.session, "Drift Savings", Decimal("0.00"),
@@ -947,7 +936,9 @@ class TestTheContributionFeedCountsADriftOnce:
                 seed_periods[_PERIOD], amount=Decimal("250.00"),
             )
             db.session.commit()
-            _drift_the_income_shadow(transfer, savings, _CLOSED_ON)
+            assert_a_twin_is_refused(
+                db.session, db.session.get(Transfer, transfer.id), is_income=True,
+            )
 
             feed = load_shadow_income_contributions_for_account(
                 basis_for(savings, seed_user["scenario"]), savings.id,
@@ -1007,17 +998,23 @@ class TestTheLineageProbeNamesADeadShadowsMovement:
         probe had to still name its transfer so the transfer's pair door
         reversed it.
 
-        **The state is REFUSED at commit since plan step
-        ``balance:X-bi-6-4d-2``** (ruling **R-BAL167** class 2): the loan
-        side's payment is its record on the TRANSFER (ruling **R-BAL88**),
-        read here off the side link (class 1), and a movement sits under a
-        twin only where it is planted -- both records re-parented under their
-        twins in one statement, the shape a ``$0.00`` close's band allows --
-        and a twin hidden holding one is refused by the deleted-row rule's
-        row arm (its twin exception is retired).  So no stale movement under
-        a dead shadow can be stored, and the sync's answer on one -- the
-        posted cash leg reversed, ``_movement_nets_by_date`` reading ``{}``
-        -- is not asserted.
+        **The state is REFUSED since plan step ``balance:X-bi-6-4d-2``**
+        (ruling **R-BAL167** class 2): the loan side's payment is its record
+        on the TRANSFER (ruling **R-BAL88**), read here off the side link
+        (class 1).  Until plan step ``balance:X-bi-6-4d-3`` a movement sat
+        under a twin only where it was planted -- both records re-parented
+        under their twins in one statement -- and a twin hidden holding one
+        was refused by the deleted-row rule's row arm.  **Since that step the
+        twin itself cannot be stored** (ruling **R-BAL258**): the loan-side
+        twin the plant re-parented the movement under is refused at the write
+        by ``ck_transactions_names_no_transfer``, so neither the re-parenting
+        nor the hide has a row to act on, and the sync's answer on a stale
+        movement under a dead shadow -- the posted cash leg reversed,
+        ``_movement_nets_by_date`` reading ``{}`` -- is not asserted.  What
+        stands is the movement as the side's record, posted on 03-05, read
+        BEFORE the plant; the read after it graded that the refused hide's
+        rollback restored the re-parented record, and went with the
+        re-parenting.
         """
         with app.app_context():
             loan = _loan(seed_user)
@@ -1027,35 +1024,16 @@ class TestTheLineageProbeNamesADeadShadowsMovement:
                 settled_on=_CLOSED_ON, due_date=_DUE,
             )
             db.session.commit()
+            transfer_id = transfer.id
             scenario_id = seed_user["scenario"].id
             linked_id = _ledger_account_for(loan.id).id
-            shadow = _income_shadow(transfer, loan)
-            shadow_id = shadow.id
-            movement = transfer_side_record(db.session, transfer.id, loan.id)
+            movement_id = transfer_side_record(
+                db.session, transfer_id, loan.id,
+            ).id
             assert _movement_nets_by_date(linked_id, scenario_id) == {
-                movement.id: {_CLOSED_ON: Decimal("1000.00")},
+                movement_id: {_CLOSED_ON: Decimal("1000.00")},
             }
 
-            db.session.execute(
-                db.text(
-                    "UPDATE budget.transaction_entries e "
-                    "SET transaction_id = t.id, expense_transfer_id = NULL, "
-                    "income_transfer_id = NULL "
-                    "FROM budget.transactions t "
-                    "WHERE t.transfer_id = :t AND t.account_id = e.account_id "
-                    "AND (e.expense_transfer_id = :t "
-                    "OR e.income_transfer_id = :t)"
-                ),
-                {"t": transfer.id},
+            assert_a_twin_is_refused(
+                db.session, db.session.get(Transfer, transfer_id), is_income=True,
             )
-            shadow.is_deleted = True
-            with refused_by_database_rule(
-                "was deleted while it still holds a recorded payment or purchase",
-            ) as caught:
-                db.session.commit()
-            db.session.rollback()
-
-            assert f"transaction {shadow_id} " in str(caught.value)
-            assert transfer_side_record(
-                db.session, transfer.id, loan.id,
-            ).id == movement.id
