@@ -927,7 +927,7 @@ def build_schedule_context(history_rows, installments, escrow_lines, params):
     governing period's (:attr:`~app.services.loan_ledger.PaymentOutcome.period`
     -- the standing charge's, or the calendar's for a payment no charge
     stands over), which the plan cannot leave empty.  A control asserts it:
-    ``test_loan.TestScheduleRowsResolveTheirOwnTerms``'s
+    ``test_loan.test_schedule_terms.TestScheduleRowsResolveTheirOwnTerms``'s
     ``test_every_rendered_row_carries_its_own_rate``.
 
     Args:

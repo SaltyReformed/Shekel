@@ -13,7 +13,7 @@ imports only what it reads.  A plan the tool cannot prove is REFUSED; it never g
 tests collected under a total, one-to-one old -> new node-id map; every test ending the
 same way, skip / xfail / xpass included, with all parts run together AND each part run
 alone; no pylint message kind new to the parts and no duplicate-code between them; the plan
-gate green; and every line still naming the old path, listed (:mod:`._dynamic`).
+gate green; and every line still naming the old module, listed (:mod:`._dynamic`).
 
 **Which pointers to the old path a split commit edits** (the coordinator's ruling on the
 split session's forks, 2026-10-15).  The same commit that moves a file edits every LIVE

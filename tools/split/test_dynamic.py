@@ -6,20 +6,20 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from tools.ci import scratch
 from tools.ci.arcs import REPO
 from tools.split import _dynamic as dynamic
 from tools.split._model import parse_plan
 from tools.split._observe import OBSERVE_ENV, verdict
 from tools.split._prove import line_origins
 from tools.split._render import Origin
-from tools.split._run import census_pattern
+from tools.split._run import census, mentions
 from tools.split._source import Refusal
 from tools.split.conftest import SAMPLE, SOURCE, build, layout_of, plan_dict
 from tools.split.test_apply import applied
@@ -281,12 +281,13 @@ class TestThePylintComparison:
 
 
 class TestTheCensus:
-    """The old path is found in prose and imports, and a path into the package is not."""
+    """The old module's name is found in every spelling, and a path into the package is
+    not."""
 
     def test_the_pattern(self):
         """The file name, its directories, its dotted path; not a sibling or the package."""
-        pattern = census_pattern(parse_plan(plan_dict()))
-        egrep = subprocess.run(["grep", "-E", "-c", pattern], input="\n".join([
+        mention = mentions(parse_plan(plan_dict()))
+        assert sum(bool(mention.search(line)) for line in [
             "see tests/test_area/test_sample.py::TestBig",
             "``test_sample.py``",
             "from tests.test_area.test_sample import x",
@@ -294,8 +295,63 @@ class TestTheCensus:
             "tests/test_area/test_sample/test_first.py",
             "test_sample_other.py",
             "my_test_sample.py",
-        ]) + "\n", capture_output=True, text=True, check=False)
-        assert egrep.stdout.strip() == "3"
+        ]) == 3
+
+    @pytest.mark.parametrize("line, listed", [
+        ("``test_sample.TestBig``'s ``test_a``", True),
+        ("the far-leg cases in `test_sample`", True),
+        ("``test_sample.test_top_level``", True),
+        ("``test_sample.test_first_thing``", True),
+        ("graded in test_sample.", True),
+        ("moved from test_sample.py to test_sample/test_first.py", True),
+        ("tests/test_area/test_sample/test_first.py", False),
+        ("the test_sample/ package", False),
+        ("from tests.test_area.test_sample.test_first import x", False),
+        ("from tests.test_area.test_sample.conftest import x", False),
+    ])
+    def test_every_spelling_of_the_name(self, line, listed):
+        """The unit is the module's NAME (the coordinator's ruling, 2026-10-15): a member
+        (``m.Member``), a bare ``m``, a module-level test spelled in lowercase, a part's name
+        as a mere PREFIX and a sentence's full stop are all mentions; only a continuation
+        into the package (``m/``, ``m.<part>``, ``m.conftest``) is not, and a line holding
+        both is listed."""
+        assert bool(mentions(parse_plan(plan_dict())).search(line)) is listed
+
+    #: The one line of :meth:`tracked_notes` the census lists.
+    NOTES_HIT = ["docs/notes.md:1:see ``test_sample.TestBig``"]
+
+    @staticmethod
+    def tracked_notes(parent: Path) -> Path:
+        """A throwaway repository, built by :mod:`tools.ci.scratch` (which starts git in it and
+        in no other), tracking one document: a mention of the sample's module beside a line
+        holding the name as a mere substring and a path into the package; its root."""
+        root = scratch.repository(parent)
+        notes = root / "docs" / "notes.md"
+        notes.parent.mkdir()
+        notes.write_text("see ``test_sample.TestBig``\ntest_sample_other.py\n"
+                         "tests/test_area/test_sample/test_first.py\n", encoding="utf-8")
+        scratch.run(root, "add", "-A")
+        return root
+
+    def test_the_census_reads_the_tracked_tree(self, tmp_path):
+        """The real reader, ``git grep``, on a repository: the one mention among lines that
+        only hold the name as a substring or continue into the package."""
+        assert census(self.tracked_notes(tmp_path), parse_plan(plan_dict())) == self.NOTES_HIT
+
+    @pytest.mark.parametrize("binding", scratch.BINDINGS)
+    def test_a_bound_environment_reaches_no_repository_but_the_one_named(
+            self, binding, tmp_path, monkeypatch):
+        """The 2026-10-04 incident's mechanism, which this class's first census test repeated
+        on 2026-10-15: it started git as a plain subprocess, and under the pre-commit hook of
+        a linked worktree its ``git init`` wrote ``core.bare=true`` into the shared
+        repository's config.  With this process bound to a sentinel (proven bound, its
+        indexes not empty: ``scratch._prove_bound``), the census answers the directory named
+        and the sentinel -- its refs, config, HEADs and indexes -- is byte-identical
+        afterwards.  The trailer rules and the tracker tool are held the same way
+        (``tools/ci/test_trailers.py``, ``tools/quill/test__git.py``)."""
+        sentinel, before = scratch.bound_sentinel(tmp_path, binding, monkeypatch.setenv)
+        assert census(self.tracked_notes(tmp_path), parse_plan(plan_dict())) == self.NOTES_HIT
+        assert scratch.sentinel_state(sentinel) == before
 
     def test_archived_documents_are_classified(self, tmp_path):
         """archive/, historical/ and an ARCHIVED first line are records; the rest is live."""
@@ -310,14 +366,14 @@ class TestTheCensus:
     @staticmethod
     def package_hits(tmp_path: Path) -> list[dynamic.Hit]:
         """The sample, one of whose tests cites the old path in its docstring, split; every
-        line of the package the census pattern finds, classified with the verified origins
+        line of the package the census judge finds, classified with the verified origins
         (``git grep`` is the census's own reader; the sample is not a repository)."""
         repo = build(tmp_path, SAMPLE.replace(
             '"""One."""', '"""One; its twin lives in tests/test_area/test_sample.py."""'))
         layout = applied(repo)
         origins, failures = line_origins(layout, repo)
         assert not failures
-        pattern = re.compile(census_pattern(layout.plan))
+        pattern = mentions(layout.plan)
         raw = [f"{path}:{number}:{line}" for path in sorted(origins)
                for number, line in enumerate((repo / path).read_text(
                    encoding="utf-8").splitlines(), start=1) if pattern.search(line)]

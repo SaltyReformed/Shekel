@@ -1,7 +1,7 @@
 """The RUN half of the proof, as pure comparisons of what the runs observed: the old -> new
 node-id map, the collection, every test's outcome, pylint's messages and the census of the
-old path.  The runs themselves are :mod:`tools.split._run`'s; nothing here starts a process,
-so every arm can be shown failing on a hand-built observation.
+old module's name.  The runs themselves are :mod:`tools.split._run`'s; nothing here starts a
+process, so every arm can be shown failing on a hand-built observation.
 """
 from __future__ import annotations
 
@@ -192,7 +192,7 @@ def new_kinds(before: list[dict], after: list[dict]) -> dict[str, list[str]]:
 
 @dataclass(frozen=True)
 class Hit:
-    """One line naming the old path; whether its document is a record; and whether the tool
+    """One line naming the old module; whether its document is a record; and whether the tool
     composed the line itself (a provenance docstring of the new package)."""
 
     path: str

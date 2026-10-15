@@ -1,6 +1,6 @@
 """The processes the proof runs: the suite through ``./scripts/test.sh`` (never bare
 pytest: the wrapper gives each run a database cluster of its own), pylint, the plan gate,
-and ``git grep`` for the old path.  Each returns what it observed; judging it is
+and ``git grep`` for the old module's name.  Each returns what it observed; judging it is
 :mod:`tools.split._dynamic`'s.
 """
 from __future__ import annotations
@@ -11,14 +11,15 @@ import re
 import subprocess
 from pathlib import Path
 
-from tools.split._model import Plan
+from tools.ci import gitcmd
+from tools.split._model import RESERVED, Plan
 from tools.split._observe import OBSERVE_ENV
 
 #: pylint's exit-status bits for a fatal message and a usage error: either means it did
 #: not lint, so its message list is not an observation.
 _PYLINT_BROKEN = 1 | 32
 
-#: Where the census looks for the old path.
+#: Where the census looks for the old module's name.
 CENSUS_PATHSPECS = ("tests", "tools", "scripts", "docs", ".claude", "app")
 
 
@@ -66,19 +67,31 @@ def plan_gate(root: Path) -> tuple[int, str]:
     return proc.returncode, (proc.stdout.strip().splitlines() or [""])[-1]
 
 
-def census_pattern(plan: Plan) -> str:
-    """The extended regex the census greps: the source's file name (with or without its
-    directories) and its dotted module path, but not a path INTO the new package."""
-    file_name = re.escape(plan.source.name)
-    dotted = re.escape(plan.dotted)
-    return rf"(^|[^A-Za-z0-9_]){file_name}|{dotted}($|[^A-Za-z0-9_.])"
+def mentions(plan: Plan) -> re.Pattern[str]:
+    """A mention of the source module's NAME, in any spelling, that does not continue INTO
+    the new package.
+
+    The unit is the name, never a list of spellings (the coordinator's ruling on the split
+    session's fork over the fourth split, 2026-10-15): ``m.py``, ``tests.x.m``, ``m.Member``,
+    a module-level ``m.test_fn`` and a bare ``m`` all name the old module, and a census that
+    matched only the first two missed a live ``m.Member`` pointer.  A mention is dropped only
+    where it continues into the package: followed by ``/`` (its directory) or by ``.`` and
+    one of the package's own module names, read from the plan.  Whatever this over-lists is
+    the safe side, because each line is classified by the pointer rule."""
+    own = "|".join(sorted(RESERVED | {part.module for part in plan.parts}))
+    return re.compile(rf"(?<![A-Za-z0-9_]){re.escape(plan.stem)}(?![A-Za-z0-9_])"
+                      rf"(?!/|\.(?:{own})(?![A-Za-z0-9_]))")
 
 
 def census(root: Path, plan: Plan) -> list[str]:
-    """``git grep -n`` lines naming the old path, in tracked files under the census roots."""
-    proc = subprocess.run(["git", "grep", "-n", "-E", census_pattern(plan), "--",
-                           *CENSUS_PATHSPECS], cwd=root, capture_output=True, text=True,
-                          check=False)
+    """``git grep -n`` lines naming the old module (:func:`mentions`), in tracked files under
+    the census roots.  git finds every line holding the name as a FIXED string, so the one
+    judge of what a mention is stays :func:`mentions`.  It starts through
+    :func:`tools.ci.gitcmd.run`, so ``root`` alone is the repository read, whatever a hook
+    has bound this process to."""
+    proc = gitcmd.run(root, "grep", "-n", "-F", plan.stem, "--", *CENSUS_PATHSPECS)
     if proc.returncode not in (0, 1):
         raise RunError(f"git grep failed: {proc.stderr.strip()}")
-    return proc.stdout.splitlines()
+    mention = mentions(plan)
+    return [entry for entry in proc.stdout.splitlines()
+            if mention.search(entry.split(":", 2)[2])]

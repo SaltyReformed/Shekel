@@ -17,12 +17,12 @@ import argparse
 import hashlib
 import json
 import shutil
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from tools.ci.arcs import REPO
+from tools.ci.gitcmd import git
 from tools.split import _dynamic as dynamic
 from tools.split import _run as run
 from tools.split import _similar as similar
@@ -71,9 +71,9 @@ def _sha256(path: Path) -> str:
 
 
 def _head(root: Path) -> str:
-    """The commit the record was taken at."""
-    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True,
-                          text=True, check=True).stdout.strip()
+    """The commit the record was taken at, read through :func:`tools.ci.gitcmd.git` so
+    ``root`` alone is the repository read."""
+    return git(root, "rev-parse", "HEAD").strip()
 
 
 def record(ctx: Context) -> list[str]:
@@ -233,13 +233,13 @@ def _report_duplicates(seen: dict) -> list[str]:
 
 
 def _report_pointers(gate_line: str, hits: list[dynamic.Hit]) -> list[str]:
-    """The proof block's tail: the plan gate and every line still naming the old path, the
+    """The proof block's tail: the plan gate and every line still naming the old module, the
     package's own composed provenance counted apart."""
     live = [h for h in hits if not h.archived and not h.composed]
     archived = sum(1 for h in hits if h.archived)
     return [
         f"- plan gate: {gate_line}",
-        f"- census of the old path: {len(live)} live, {archived} archived, "
+        f"- census of the old module's name: {len(live)} live, {archived} archived, "
         f"{len(hits) - len(live) - archived} the package's own provenance (not counted)",
         *(f"    live {h.path}:{h.line}: {h.text[:120]}" for h in live),
     ]
