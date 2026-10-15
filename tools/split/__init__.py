@@ -12,8 +12,10 @@ imports only what it reads.  A plan the tool cannot prove is REFUSED; it never g
 ``ast.dump``-identical and held exactly once, in source order (:mod:`._prove`); the same
 tests collected under a total, one-to-one old -> new node-id map; every test ending the
 same way, skip / xfail / xpass included, with all parts run together AND each part run
-alone; no pylint message kind new to the parts and no duplicate-code between them; the plan
-gate green; and every line still naming the old module, listed (:mod:`._dynamic`).
+alone; every pylint message in the parts answered by the source line it came from (an
+import-sequence message by the source's import block), and every duplicate-code pair between
+parts one the split revealed, never one it could have created; the plan gate green; and
+every line still naming the old module, listed (:mod:`._dynamic`).
 
 **Which pointers to the old path a split commit edits** (the coordinator's ruling on the
 split session's forks, 2026-10-15).  The same commit that moves a file edits every LIVE

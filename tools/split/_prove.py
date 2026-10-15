@@ -131,8 +131,9 @@ def _check_slice(tally: _Tally, layout: Layout, module: str, unit: Unit,
     shape = layout.split[unit.name]
     src_lines = layout.source.lines
     node = unit.block.node
-    run = next((p.slice for p in layout.outputs[module].pieces
-                if p.slice and p.slice.class_name == unit.name), None)
+    piece = next((p for p in layout.outputs[module].pieces
+                  if p.slice and p.slice.class_name == unit.name), None)
+    run = piece.slice if piece else None
     base = mixin_name(unit.name)
     header_ok = (isinstance(node, ast.ClassDef) and not node.decorator_list
                  and not node.keywords and len(node.bases) == 1
@@ -145,9 +146,8 @@ def _check_slice(tally: _Tally, layout: Layout, module: str, unit: Unit,
         tally.fail(f"{module}: {unit.name} is not the slice shape the plan prescribes")
         return set()
     lead = out_lines[unit.block.first - 1:unit.block.start - 1]
-    first = run.tests[0] == shape.test_order()[0]
     orig = shape.unit.block
-    if lead != (src_lines[orig.first - 1:orig.start - 1] if first else ()):
+    if lead != (src_lines[orig.first - 1:orig.start - 1] if piece.first_slice else ()):
         tally.fail(f"{module}: {unit.name}'s leading lines are not the source class's")
     members = blocks(node.body[1:], node.body[0].end_lineno, out_lines, module)
     if [m.name for m in members] != list(run.tests):

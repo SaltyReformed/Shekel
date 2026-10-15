@@ -142,10 +142,18 @@ def compare_pylint(before: list[dict], after: list[dict],
     message naming the SAME defect (the coordinator's ruling on the fork over test_salary's
     re-proof, 2026-10-15).  The static proof holds each part's source-derived imports to a
     subsequence of the source's, in source order, and :func:`tools.split._prove.line_origins`
-    holds every composed import after them; deleting statements never makes an order or a
-    grouping defect the whole sequence lacked, so such a message restates a source defect
-    whose flag filtering moved, as when test_salary's ``import pytest`` split its app imports
-    and the statement pylint flagged was filtered out of a part."""
+    holds every composed import after them.  The DEFECT is monotone under deletion: a
+    package's imports contiguous in the whole sequence are contiguous in any subsequence, and
+    so is every category order, so a defect in a part was a defect of the source whose flag
+    filtering moved, as when test_salary's ``import pytest`` split its app imports and the
+    statement pylint flagged was filtered out of a part.  Pylint's FLAG is not monotone: it
+    tracks a package's ``import x`` and ``from x import y`` apart, so ``from os import path``
+    / ``from json import dumps`` / ``import os`` / ``from os import sep`` carries no
+    ungrouped-imports while the same block without ``import os`` does (measured on pylint
+    4.1.2 by the branch's neutral review, 2026-10-15).  What refuses that case is the second
+    condition, not the deletion: the source's block must hold a message of the same symbol
+    naming the same package or module, so a defect pylint never flagged in the source is
+    never answered from it."""
     held = Counter((m["symbol"], m["line"], defect(m)) for m in before)
     failures = []
     for path in sorted({m["path"] for m in after}):

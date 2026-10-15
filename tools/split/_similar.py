@@ -155,6 +155,13 @@ def checker_defaults(root: Path) -> dict[str, object]:
     return {name: spec["default"] for name, spec in SimilaritiesChecker.options}
 
 
+def _normalization(options: dict[str, object]) -> tuple[bool, ...]:
+    """The four switches Symilar and ``stripped_lines`` normalize by, in their parameter
+    order, read from the checker's options."""
+    return (options["ignore-comments"], options["ignore-docstrings"],
+            options["ignore-imports"], options["ignore-signatures"])
+
+
 def _couples(report: str) -> list[dict[str, tuple[int, int]]]:
     """Each couple a Symilar report lists, as its sides' spans by stream name."""
     found = []
@@ -170,8 +177,7 @@ def _reported(source_text: str, first: tuple[int, int], second: tuple[int, int],
     that spans every line its own normalization keeps from each range."""
     lines = source_text.splitlines(keepends=True)
     tree = astroid.parse(source_text)
-    flags = (options["ignore-comments"], options["ignore-docstrings"],
-             options["ignore-imports"], options["ignore-signatures"])
+    flags = _normalization(options)
     symilar = Symilar(options["min-similarity-lines"], *flags)
     kept_lines: dict[str, list[int]] = {}
     for name, (start, end) in (("first", first), ("second", second)):
@@ -201,9 +207,7 @@ def sort_pairs(layout: Layout, root: Path, rules: CollectRules, messages: list[d
                source_text: str) -> Sorted:
     """Sort every duplicate-code pair between the parts into revealed and created."""
     options = checker_defaults(root)
-    flags = (options["ignore-comments"], options["ignore-docstrings"],
-             options["ignore-imports"], options["ignore-signatures"])
-    moved = _moved_blocks(layout, root, rules, flags)
+    moved = _moved_blocks(layout, root, rules, _normalization(options))
     revealed, created = [], []
     for first, second in pairs(messages):
         mapped = (_to_source(first, moved, layout.source.lines),

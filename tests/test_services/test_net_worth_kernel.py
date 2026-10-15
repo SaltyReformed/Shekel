@@ -77,11 +77,15 @@ class TestInterestByPeriodForAccount:
     """Tests for ``interest_by_period_for_account`` (interest-earned accessor).
 
     The interest VALUE behavior (an account's per-period accrual matching
-    the calculator) is locked end-to-end by the HYSA interest tests in
-    ``test_balance_at/test_balance_maps.py`` and the account-detail route tests in
-    ``test_accounts.py`` -- the accessor's only consumer is that page's
-    "Interest, next 12 mo" chip.  (It was the year-end savings-progress
-    section until plan step F2 deleted that package.)
+    the calculator) is locked end-to-end by the HYSA interest tests in the
+    ``test_balance_at`` package (``test_cash_flow.py``'s
+    ``TestTheInterestChipAndTheBalanceAreOneWalk``, ``test_loan_map.py``'s
+    ``test_the_interest_chip_reads_the_same_window`` and ``test_grid.py``'s
+    ``test_interest_balances_kind_correct_and_reconcile``) and the
+    account-detail route tests in ``test_accounts.py`` -- the accessor's only
+    consumer is that page's "Interest, next 12 mo" chip.  (It was the
+    year-end savings-progress section until plan step F2 deleted that
+    package.)
 
     **Its two no-anchor short-circuit tests were DELETED at plan step
     X-f1c3a, not re-pointed.**  Both handed in a ``SimpleNamespace`` stand-in
