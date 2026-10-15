@@ -1,5 +1,7 @@
 """The fixture the release tool's tests share: a throwaway repository whose commits carry
-files (``steps.md``, migrations), built with :mod:`tools.ci.scratch`'s isolated git."""
+files (``steps.md``, migrations), built with :mod:`tools.ci.scratch`'s isolated git; and
+the histories the card reader's tests build on it (a cut after the cutover, a pull
+request merged as ``dev`` takes one, a deploy-together group in quill's own fake)."""
 from __future__ import annotations
 
 import shutil
@@ -9,7 +11,10 @@ import pytest
 
 from tools.ci import scratch
 from tools.ci.scratch import run
+from tools.quill.door import FakeTracker
+from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, MOVES_MONEY_LABEL
 from tools.release._carried import STEPS_PATH
+from tools.release._plan import Inputs, plan
 
 _HEADER = ("| arc | id | also | what this step does | order | commit | starts |\n"
            "| --- | --- | --- | --- | --- | --- | --- |\n")
@@ -88,3 +93,60 @@ class Repo:
 def _repo(tmp_path):
     """A :class:`Repo` under tmp_path (never a real checkout)."""
     return Repo(scratch.repository(tmp_path))
+
+
+# -- the card reader's histories -----------------------------------------------------------
+
+MONEY = ("balance", MOVES_MONEY_LABEL)
+
+
+def after_cutover(repo):
+    """A base holding steps.md, then the cutover's commit deleting it: ``(base, cutover)``."""
+    base = repo.plan((), parents=())
+    return base, repo.commit("cutover", {STEPS_PATH: None}, parents=(base,))
+
+
+def pull_request(repo, onto, *lines, files=None):
+    """A pull request built on ``onto`` carrying the trailer ``lines``, merged into it as
+    ``dev`` takes one: the merge."""
+    work = repo.commit(f"work {' '.join(lines)}", files or {"app.py": " ".join(lines)},
+                       trailers=lines, parents=(onto,))
+    return repo.merge(onto, work, f"Merge pull request ({' '.join(lines)})")
+
+
+def judge(repo, base, cut, tracker, unrehearsed=()):
+    """``plan`` over ``<base>..<cut>``, reaching ``tracker``."""
+    return plan(repo.root, base, cut, Inputs(unrehearsed, (), lambda: tracker))
+
+
+def deploy_group(tracker, container=50, leaves=(51, 52)):
+    """A container labelled deploy-together and its leaves, linked under it."""
+    tracker.add(container, labels=("balance", DEPLOY_TOGETHER_LABEL))
+    for leaf in leaves:
+        tracker.add(leaf)
+        tracker.add_child(container, tracker.cards_by_number[leaf])
+
+
+def replan(tracker, step, leaves):
+    """``step`` split into ``leaves``, each a new step linked under it."""
+    for leaf in leaves:
+        tracker.add(leaf)
+        tracker.add_child(step, tracker.cards_by_number[leaf])
+
+
+def released_group(repo, leaves=(51, 52)):
+    """Group #50 released whole at a base after the cutover: ``(tracker, base)``."""
+    _, cutover = after_cutover(repo)
+    base = pull_request(repo, cutover, *(f"Ships: plan#{leaf}" for leaf in leaves))
+    tracker = FakeTracker()
+    deploy_group(tracker, leaves=leaves)
+    return tracker, base
+
+
+def replanned_and_dropped(tracker):
+    """#51 re-planned as #511 and #512, then dropped as ``quill drop 51`` drops a split
+    step: its drop written on each leaf still work, #51 left open (R-BAL190), so #51 is
+    dropped because every leaf was (R-BAL187)."""
+    replan(tracker, 51, (511, 512))
+    for leaf in (511, 512):
+        tracker.close(leaf, "not_planned")

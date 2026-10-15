@@ -8,7 +8,7 @@ trailer on a commit in ``<base>..<cut>``, read by the one trailer walk
 **A step moves money when ANY version of ``steps.md`` that holds its row OPEN says so**:
 every version in ``<base>..<cut>`` (every commit that changes the file, on every line of
 history) and ``base`` itself, each row read through the one producer the migration
-writes a step card's labels with (:func:`tools.quill.plan_labels.step_labels`).  Not the
+writes a step card's labels with (:func:`tools.quill.door.step_labels`).  Not the
 cut's row: every carried step is ticked by the cut (the plan gate's unticked-leaf arm
 makes the tick ride in the same push), and a tick rewrites the sentence in the past
 tense, which has dropped the ``MOVES MONEY`` marker (``recurrence:R20`` carried it at
@@ -37,8 +37,8 @@ the cut (a container renamed or removed) refuses the release: its group cannot b
 
 **Before the cutover only.**  The registries are read through the plan gate's door
 (:mod:`tools.plan_gate.registries`); a cut whose tree holds no ``steps.md`` is after the
-cutover, whose reader (the cards, through quill) is X-cx's piece L9a-1b.  The cutover
-deletes this module with the registries.
+cutover, and its reader is :mod:`tools.release._cards` (the release's cut chooses, in
+:class:`tools.release._plan.Judge`).  The cutover deletes this module with the registries.
 """
 from __future__ import annotations
 
@@ -47,24 +47,23 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tools.ci import trailers
-from tools.ci.arcs import REPO
-from tools.ci.gitcmd import git, run
+from tools.ci.gitcmd import git
 from tools.plan_gate.registries import (
-    STEPS,
     StepRow,
     decomposition_leaf_keys,
     identity_class,
     step_rows,
 )
-from tools.quill.plan_labels import step_labels
+from tools.quill.door import step_labels
 from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, MOVES_MONEY_LABEL
-
-#: ``steps.md``'s path inside a commit's tree.
-STEPS_PATH = STEPS.relative_to(REPO).as_posix()
-
-
-class ReleaseError(RuntimeError):
-    """What a release carries cannot be read, so nothing about it is judged."""
+from tools.release._model import (
+    STEPS_PATH,
+    Carried,
+    Group,
+    ReleaseError,
+    Step,
+    steps_blob,
+)
 
 
 @dataclass(frozen=True)
@@ -75,41 +74,6 @@ class Declaration:
     key: str
     money: bool
     source: str
-
-
-@dataclass(frozen=True)
-class Step:
-    """One step a release carries: its key, the commits in the range that claim it
-    (newest first), whether it moves money (None when no version holds it open and it is
-    not declared), the deploy-together groups it is a leaf of, and the source of its
-    declaration when its flag was declared (None when it was read)."""
-
-    key: str
-    claims: tuple[str, ...]
-    money: bool | None
-    groups: tuple[str, ...]
-    declared: str | None = None
-
-
-@dataclass(frozen=True)
-class Group:
-    """A deploy-together container one of whose leaves a release carries, and each of
-    its leaves: carried by this release, released before it, or missing from both."""
-
-    key: str
-    carried: tuple[str, ...]
-    released: tuple[str, ...]
-    missing: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class Carried:
-    """What ``<base>..<cut>`` carries: its steps, the groups they touch, and each thing
-    this arm cannot read (a card trailer, a value naming nothing, a group's lost key)."""
-
-    steps: tuple[Step, ...]
-    groups: tuple[Group, ...]
-    unreadable: tuple[str, ...]
 
 
 class Registry:
@@ -127,10 +91,9 @@ class Registry:
         Raises:
             ReleaseError: when that version does not parse.
         """
-        found = run(self.root, "rev-parse", "--verify", "--quiet", f"{commit}:{STEPS_PATH}")
-        if found.returncode:
+        blob = steps_blob(self.root, commit)
+        if blob is None:
             return None
-        blob = found.stdout.strip()
         if blob not in self._parsed:
             text = git(self.root, "cat-file", "blob", blob)
             try:
@@ -247,7 +210,7 @@ def knowledge(registry: Registry, base: str, cut: str,
     if at_cut is None:
         raise ReleaseError(
             f"{cut[:12]} holds no {STEPS_PATH}, so it is after the cutover, whose reader "
-            "(the cards, through quill) is X-cx's piece L9a-1b and is not built")
+            "is the cards' (tools.release._cards), never this one")
     versions = registry.versions(base, cut)
     flags: dict[str, tuple[bool | None, str | None]] = {}
     for claim in trailers.history(registry.root, f"{base}..{cut}").old_form:

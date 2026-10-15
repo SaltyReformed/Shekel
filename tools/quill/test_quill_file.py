@@ -8,10 +8,10 @@ from __future__ import annotations
 import pytest
 import requests
 
-from tools.quill._fake import FailOnce, FakeTracker, run, ship
+from tools.quill._fake import FailOnce, FakeTracker, leaf_filing, run, ship
 from tools.quill._tracker import Child, Claim, Edit, OutsideLink
 from tools.quill.check import ruling_body
-from tools.quill.setup_tracker import FILING
+from tools.quill.setup_tracker import FILING, MOVES_MONEY_LABEL
 
 
 # -- file ----------------------------------------------------------------------------------
@@ -40,6 +40,20 @@ def test_a_finding_is_filed_under_its_owner_and_kept_off_the_board(code):
     assert tracker.cards_by_number[2].labels == ("balance",)
     assert tracker.board.items == [1]
 
+
+
+def test_a_split_leaves_the_split_steps_labels_as_they_were(code, tmp_path):
+    """The release tool judges a trailer naming a step split since by that step's OWN
+    moves-money label (``tools/release/_cards.py``; the coordinator, R-BAL207, 2026-10-14),
+    so a split must keep it: the one write it sends the split step is the sub-issue link,
+    and the leaf takes labels of its own, never the split step's.  The fake applies every
+    label write the tool sends, so a strip or a move would show here."""
+    tracker = FakeTracker()
+    tracker.add(1, labels=("balance", MOVES_MONEY_LABEL))
+    assert run(tracker, code, *leaf_filing(tmp_path, "half")) == 0
+    assert tracker.cards_by_number[1].step_children == (2,)
+    assert tracker.cards_by_number[1].labels == ("balance", MOVES_MONEY_LABEL)
+    assert tracker.cards_by_number[2].labels == ("balance",)
 
 
 def test_a_leaf_takes_the_split_steps_place_and_the_next_leaf_follows_it(code, tmp_path):

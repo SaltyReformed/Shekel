@@ -6,8 +6,9 @@ from __future__ import annotations
 import pytest
 
 from tools.ci.scratch import run
+from tools.release import release
 from tools.release._carried import STEPS_PATH, Declaration, ReleaseError
-from tools.release._plan import CLEAN, NEEDS_APPROVAL, REFUSED, Judge, plan
+from tools.release._plan import CLEAN, NEEDS_APPROVAL, REFUSED, Inputs, Judge, plan
 from tools.release.conftest import migration, steps
 
 MONEY = "Move the money. **MOVES MONEY**."
@@ -119,9 +120,9 @@ def test_a_declared_flag_fills_an_unreadable_step_and_the_approval_names_it(repo
     """R-BAL207's f3: the skill declares each born-ticked step's flag with its source; the
     release is judged on them and the approval question must name each one."""
     base, cut = _born_ticked(repo)
-    judged = plan(repo.root, base, cut, declared=[
+    judged = plan(repo.root, base, cut, Inputs(declared=[
         Declaration("balance:B-1", False, "a924135ed"),
-        Declaration("balance:B-2", False, "HANDOFF-salary-S11.md")])
+        Declaration("balance:B-2", False, "HANDOFF-salary-S11.md")]))
     assert [(s.key, s.money, s.declared) for s in judged.verdict.carried.steps] == [
         ("balance:B-1", False, "a924135ed"), ("balance:B-2", False, "HANDOFF-salary-S11.md")]
     assert judged.verdict.status == NEEDS_APPROVAL
@@ -135,14 +136,15 @@ def test_a_declared_flag_fills_an_unreadable_step_and_the_approval_names_it(repo
 def test_a_step_declared_money_counts_as_a_mover_and_needs_its_kit(repo):
     """A declared mover beside a read one is two movers; alone, unrehearsed, it refuses."""
     base, cut = _born_ticked(repo, "balance:A-1")
-    two = plan(repo.root, base, cut, declared=[Declaration("balance:B-1", True, "x"),
-                                               Declaration("balance:B-2", False, "x")])
+    two = plan(repo.root, base, cut, Inputs(declared=[Declaration("balance:B-1", True, "x"),
+                                                      Declaration("balance:B-2", False, "x")]))
     assert two.verdict.refusals == (
         "it carries 2 steps that move money (balance:A-1, balance:B-1); a release carries "
         "one at most",)
     base, cut = _born_ticked(repo)
-    kitless = plan(repo.root, base, cut, ["balance:B-1"],
-                   [Declaration("balance:B-1", True, "x"), Declaration("balance:B-2", False, "x")])
+    kitless = plan(repo.root, base, cut, Inputs(
+        ["balance:B-1"],
+        [Declaration("balance:B-1", True, "x"), Declaration("balance:B-2", False, "x")]))
     assert kitless.verdict.refusals == ("balance:B-1 moves money and has no rehearsal kit",)
 
 
@@ -152,7 +154,7 @@ def test_a_declaration_for_a_readable_or_uncarried_step_judges_nothing(repo, key
     open at the base) and a typo (Z-9) never passes for one."""
     base, cut = _born_ticked(repo, "balance:A-1")
     with pytest.raises(ReleaseError, match=f"declare {key}: names no step"):
-        plan(repo.root, base, cut, declared=[Declaration(key, False, "x")])
+        plan(repo.root, base, cut, Inputs(declared=[Declaration(key, False, "x")]))
 
 
 def test_a_step_claimed_twice_is_one_step_with_both_claims(repo):
@@ -244,6 +246,17 @@ def test_a_group_carried_in_part_is_refused_naming_the_missing_leaf(repo):
         f"{GROUP}-3; the group ships whole",)
     assert {s.key: s.groups for s in verdict.carried.steps} == {
         f"{GROUP}-2": (GROUP,), "balance:X-zz-1": ()}
+
+
+def test_the_report_prints_a_group_before_the_cutover_as_it_did(repo, capsys):
+    """The cards named under a group that are no leaf of it are the card reader's alone:
+    before the cutover a group's line is what it was."""
+    base, rows = _group_base(repo)
+    cut = _ship(repo, base, _tick(rows, f"{GROUP}-2", "balance:X-zz-1"),
+                f"{GROUP}-2", "balance:X-zz-1")
+    assert release.main(["plan", "--base", base, "--cut", cut], root=repo.root) == REFUSED
+    assert (f"group {GROUP}: carried {GROUP}-2; released {GROUP}-1; missing {GROUP}-3"
+            in capsys.readouterr().out.splitlines())
 
 
 def test_a_group_carried_whole_with_its_released_leaf_is_clean(repo):
@@ -339,7 +352,7 @@ def test_an_unrehearsed_money_mover_is_refused_and_the_cut_before_it_offered(rep
                   "balance:B-1")
     second = _ship(repo, first, [_ticked("balance:A-1"), _ticked("balance:B-1")],
                    "balance:A-1")
-    judged = plan(repo.root, base, second, ["balance:A-1"])
+    judged = plan(repo.root, base, second, Inputs(["balance:A-1"]))
     assert judged.verdict.refusals == ("balance:A-1 moves money and has no rehearsal kit",)
     assert judged.passing is not None and judged.passing.cut == first
 
@@ -347,7 +360,7 @@ def test_an_unrehearsed_money_mover_is_refused_and_the_cut_before_it_offered(rep
 def test_an_unrehearsed_added_migration_is_refused(repo):
     """An added migration with no kit refuses the release too; no earlier cut exists."""
     base, first, _ = _migration_history(repo)
-    judged = plan(repo.root, base, first, ["b2"])
+    judged = plan(repo.root, base, first, Inputs(["b2"]))
     assert judged.verdict.refusals == (
         f"migration b2 ({VERSIONS}/b2_second.py) has no rehearsal kit",)
     assert judged.passing is None
@@ -363,7 +376,7 @@ def test_an_unrehearsed_name_naming_no_mover_and_no_added_migration_judges_nothi
                                    f"{VERSIONS}/a1_first.py": migration("a1", None) + "#\n"},
                       ships=("balance:B-1",), parents=(base,))
     with pytest.raises(ReleaseError, match=f"unrehearsed {name}"):
-        plan(repo.root, base, cut, [name])
+        plan(repo.root, base, cut, Inputs([name]))
 
 
 # -- what the pre-cutover reader cannot read ------------------------------------------------
@@ -381,14 +394,6 @@ def test_a_card_trailer_and_a_malformed_value_are_refused(repo):
         "tracker's, which this reader does not read",
         f"{cut[:12]} Ships: 'banking:X-1' is not plan#<number> (nor the old <arc>:<id> form)",
     )
-
-
-def test_a_cut_holding_no_steps_md_is_after_the_cutover_and_judges_nothing(repo):
-    """The post-cutover reader is piece L9a-1b; until it exists such a cut is not judged."""
-    base = repo.plan((), parents=())
-    cut = repo.commit("cutover", {STEPS_PATH: None}, parents=(base,))
-    with pytest.raises(ReleaseError, match="after the cutover"):
-        plan(repo.root, base, cut)
 
 
 def test_an_empty_range_judges_nothing(repo):
@@ -485,7 +490,7 @@ def test_an_unrehearsed_mover_refuses_every_earlier_cut_carrying_it(repo):
     """The skill found no kit for S-1 at the cut; the earlier cut carries S-1, where its
     own window reads no marker.  It is refused all the same: no kit was ever judged."""
     base, _, cut = _marked_on_a_lane(repo)
-    judged = plan(repo.root, base, cut, ["balance:S-1"])
+    judged = plan(repo.root, base, cut, Inputs(["balance:S-1"]))
     assert judged.verdict.refusals == ("balance:S-1 moves money and has no rehearsal kit",)
     assert judged.passing is None
 
@@ -500,11 +505,11 @@ def test_an_earlier_cut_adding_a_migration_the_cut_does_not_is_refused(repo):
                                                        f"{VERSIONS}/bb_first.py":
                                                        migration("bb", None)},
                                         parents=(first,)))
-    judged = plan(repo.root, base, cut, ["bb"])
+    judged = plan(repo.root, base, cut, Inputs(["bb"]))
     assert judged.verdict.refusals == (f"migration bb ({VERSIONS}/bb_first.py) has no "
                                        "rehearsal kit",)
     assert judged.passing is None
-    candidate = Judge(repo.root, base, cut, ((), ())).verdict(first, "add aa")
+    candidate = Judge(repo.root, base, cut, Inputs()).verdict(first, "add aa")
     assert candidate.refusals == (
         f"it adds migration aa ({VERSIONS}/aa_first.py), which the release's cut does not "
         "add, so no rehearsal of it was judged",)
@@ -541,5 +546,5 @@ def test_a_step_declared_twice_judges_nothing(repo):
     """Two declarations of one step would drop one value unseen."""
     base, cut = _born_ticked(repo)
     with pytest.raises(ReleaseError, match="declared twice"):
-        plan(repo.root, base, cut, declared=[Declaration("balance:B-1", True, "x"),
-                                             Declaration("balance:B-1", False, "y")])
+        plan(repo.root, base, cut, Inputs(declared=[Declaration("balance:B-1", True, "x"),
+                                                    Declaration("balance:B-1", False, "y")]))

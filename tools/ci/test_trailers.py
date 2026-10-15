@@ -58,8 +58,9 @@ def test_the_old_form_is_left_to_the_plan_gate_and_anything_else_is_reported(rep
 def test_an_old_form_ships_is_returned_as_its_own_record_over_the_range_named(repo):
     """The release tool asks which steps ``base..cut`` carries in the old form: each
     ``Ships: <arc>:<id>`` is one record, with its commit, arc and id; an old-form
-    ``Reopens:`` is accepted and returned nowhere; a card trailer and a malformed value
-    stay where they were; and a claim on ``base`` is outside the range."""
+    ``Reopens:`` is one record of its own, never a claim (its card reader refuses it after
+    the cutover, R-BAL287); a card trailer and a malformed value stay where they were; and
+    a claim on ``base`` is outside the range."""
     base = _commit(repo, "base", "Ships: balance:X-bi-6-4d-1")
     leaf = _commit(repo, "leaf", "Ships: balance:X-bi-6-4d-2\nShips: pay_calendar:C21\n"
                                  "Ships: plan#4\nShips: banking:X-1\n"
@@ -69,6 +70,8 @@ def test_an_old_form_ships_is_returned_as_its_own_record_over_the_range_named(re
         (leaf, "balance", "X-bi-6-4d-2", "balance:X-bi-6-4d-2"),
         (leaf, "pay_calendar", "C21", "pay_calendar:C21"),
     ]
+    assert [(c.sha, c.key, c.trailer) for c in found.old_form_reopens] == [
+        (leaf, "recurrence:R20", "Reopens")]
     assert [(t.key, t.card) for t in found.trailers] == [("Ships", 4)]
     assert [line.split(" ", 1)[1] for line in found.malformed] == [
         "Ships: 'banking:X-1' is not plan#<number>"]
@@ -78,8 +81,10 @@ def test_an_old_form_ships_is_returned_as_its_own_record_over_the_range_named(re
 
 def test_a_history_built_from_its_two_card_fields_holds_no_old_form_claim():
     """``commit_trailers`` builds a History from trailers and malformed lines alone
-    (``owed_at_landing``); the third field defaults to empty, so that call is unchanged."""
+    (``owed_at_landing``); the old-form fields default to empty, so that call is
+    unchanged."""
     assert not History((), ()).old_form
+    assert not History((), ()).old_form_reopens
 
 
 def test_a_reopen_cancels_the_ships_it_was_built_on_and_a_reship_stands(repo):
