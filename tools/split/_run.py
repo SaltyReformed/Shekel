@@ -13,14 +13,11 @@ from pathlib import Path
 
 from tools.ci import gitcmd
 from tools.split._model import RESERVED, Plan
-from tools.split._observe import OBSERVE_ENV
+from tools.split._observe import OBSERVE_ENV, setups_path
 
 #: pylint's exit-status bits for a fatal message and a usage error: either means it did
 #: not lint, so its message list is not an observation.
 _PYLINT_BROKEN = 1 | 32
-
-#: Where the census looks for the old module's name.
-CENSUS_PATHSPECS = ("tests", "tools", "scripts", "docs", ".claude", "app")
 
 
 class RunError(RuntimeError):
@@ -29,8 +26,12 @@ class RunError(RuntimeError):
 
 def observe(root: Path, targets: list[str], out: Path, collect_only: bool) -> dict:
     """Run ``targets`` through the suite wrapper with the observer loaded and return its
-    observation (collect-only runs single-process, so the collection is the run's own)."""
+    observation (collect-only runs single-process, so the collection is the run's own),
+    with every process's fixture setups merged in: ``setups``, each fixture once, and
+    ``setups_ran``, every test some process recorded running."""
     out.unlink(missing_ok=True)
+    for stale in _setups_files(out):
+        stale.unlink()
     env = dict(os.environ)
     env[OBSERVE_ENV] = str(out)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (str(root), env.get("PYTHONPATH")) if p)
@@ -46,7 +47,28 @@ def observe(root: Path, targets: list[str], out: Path, collect_only: bool) -> di
     observed = json.loads(out.read_text(encoding="utf-8"))
     observed["returncode"] = proc.returncode
     observed["summary"] = (proc.stdout.strip().splitlines() or [""])[-1]
+    observed["setups"], observed["setups_ran"] = merged_setups(out)
     return observed
+
+
+def merged_setups(out: Path) -> tuple[list[dict], list[str]]:
+    """Every process's fixture-setup file beside the observation ``out``, merged: each
+    fixture set up, once, and every test some process recorded running."""
+    setups: dict[tuple, dict] = {}
+    ran: set[str] = set()
+    for path in _setups_files(out):
+        held = json.loads(path.read_text(encoding="utf-8"))
+        for setup in held["setups"]:
+            setups.setdefault((setup["argname"], setup["scope"], setup["baseid"],
+                               setup["file"]), setup)
+        ran.update(held["ran"])
+    return list(setups.values()), sorted(ran)
+
+
+def _setups_files(out: Path) -> list[Path]:
+    """Every process's fixture-setup file beside the observation ``out``
+    (:func:`tools.split._observe.setups_path`)."""
+    return sorted(out.parent.glob(setups_path(out, "*").name))
 
 
 def pylint_messages(root: Path, paths: list[str]) -> list[dict]:
@@ -83,15 +105,29 @@ def mentions(plan: Plan) -> re.Pattern[str]:
                       rf"(?!/|\.(?:{own})(?![A-Za-z0-9_]))")
 
 
-def census(root: Path, plan: Plan) -> list[str]:
-    """``git grep -n`` lines naming the old module (:func:`mentions`), in tracked files under
-    the census roots.  git finds every line holding the name as a FIXED string, so the one
-    judge of what a mention is stays :func:`mentions`.  It starts through
-    :func:`tools.ci.gitcmd.run`, so ``root`` alone is the repository read, whatever a hook
-    has bound this process to."""
-    proc = gitcmd.run(root, "grep", "-n", "-F", plan.stem, "--", *CENSUS_PATHSPECS)
+def census(root: Path, plan: Plan) -> list[tuple[str, int, str]]:
+    """Every line naming the old module (:func:`mentions`), as ``(path, line, text)``, in
+    every file of the working tree that git does not ignore, tracked or not.
+
+    The scope is the property, a line anywhere a reader could follow (the coordinator's
+    ruling on the branch's neutral review, F1 and F2, 2026-10-15).  ``prove`` runs before the
+    new package is tracked, so a census of tracked files never read the package's own lines;
+    and one held to six top-level directories missed ``README.md`` and a migration's
+    docstring.  ``--untracked`` reads untracked files too and honours ``.gitignore``; ``-I``
+    skips binary files, which hold no line to edit.  ``-z`` separates each path and line
+    number with a NUL, so a path is never quoted and a colon in it is never read as a
+    separator; records are split on newlines only, the one character git ends a line at.
+
+    git finds every line holding the name as a FIXED string, so the one judge of what a
+    mention is stays :func:`mentions`.  It starts through :func:`tools.ci.gitcmd.run`, so
+    ``root`` alone is the repository read, whatever a hook has bound this process to."""
+    proc = gitcmd.run(root, "grep", "-n", "-z", "-I", "-F", "--untracked", plan.stem)
     if proc.returncode not in (0, 1):
         raise RunError(f"git grep failed: {proc.stderr.strip()}")
     mention = mentions(plan)
-    return [entry for entry in proc.stdout.splitlines()
-            if mention.search(entry.split(":", 2)[2])]
+    found = []
+    for record in proc.stdout.split("\n")[:-1]:
+        path, line, text = record.split("\0", 2)
+        if mention.search(text):
+            found.append((path, int(line), text))
+    return found

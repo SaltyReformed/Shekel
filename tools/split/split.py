@@ -5,10 +5,12 @@
     python -m tools.split.split prove  <plan.json> --into <dir> --idmap <map.json>
 
 ``record`` refuses the plan or measures the source BEFORE anything moves: a copy of it, its
-collection and every test's outcome through ``./scripts/test.sh``, and pylint's messages for
-it and for each module that imports it.  ``apply`` writes the package, deletes the source,
-re-points the importers, writes the node-id map and runs the static proof.  ``prove`` runs
-the static proof again and every run arm, and prints the block a commit body quotes.
+collection and every test's outcome through ``./scripts/test.sh``, every fixture its tests set
+up (refusing one whose reach the split would change), and pylint's messages for it and for
+each module that imports it, whose text it fingerprints.  ``apply`` writes the package,
+deletes the source, re-points the importers, writes the node-id map and runs the static
+proof.  ``prove`` runs the static proof again and every run arm, and prints the block a
+commit body quotes when every arm passed.
 Exit status 0 means proved; 1 means refused or failed, with every reason printed.
 """
 from __future__ import annotations
@@ -28,7 +30,13 @@ from tools.split import _run as run
 from tools.split import _similar as similar
 from tools.split._layout import Layout, resolve
 from tools.split._model import Plan, PlanError, load_plan
-from tools.split._prove import describe, import_block, line_origins, prove_static
+from tools.split._prove import (
+    describe,
+    import_block,
+    importer_lines,
+    line_origins,
+    prove_static,
+)
 from tools.split._render import importer_rewrites, line_limit, render_all, write
 from tools.split._source import CollectRules, Refusal, collect_rules, read_module
 
@@ -81,14 +89,18 @@ def record(ctx: Context) -> list[str]:
     source = ctx.root / ctx.plan.source
     layout = ctx.layout(source)
     render_all(layout, line_limit(ctx.root))
-    importers = sorted({str(r.path.relative_to(ctx.root))
-                        for r in importer_rewrites(layout, ctx.root)})
+    importers: dict[str, dict] = {}
+    for rewrite in importer_rewrites(layout, ctx.root):
+        entry = importers.setdefault(str(rewrite.path.relative_to(ctx.root)), {
+            "sha256": _sha256(rewrite.path), "rewrites": []})
+        entry["rewrites"].append([rewrite.line, rewrite.last, rewrite.old, rewrite.new])
     ctx.into.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, ctx.into / _SOURCE)
     ctx.save(_META, {"source": str(ctx.plan.source), "sha256": _sha256(source),
                      "head": _head(ctx.root), "importers": importers})
     ctx.save(_BEFORE_PYLINT, run.pylint_messages(ctx.root, [str(ctx.plan.source)]))
-    ctx.save(_BEFORE_IMPORTERS, run.pylint_messages(ctx.root, importers) if importers else [])
+    ctx.save(_BEFORE_IMPORTERS,
+             run.pylint_messages(ctx.root, sorted(importers)) if importers else [])
     collected = run.observe(ctx.root, [str(ctx.plan.source)], ctx.into / _BEFORE_COLLECT,
                             collect_only=True)
     ran = run.observe(ctx.root, [str(ctx.plan.source)], ctx.into / _BEFORE_RUN,
@@ -99,6 +111,7 @@ def record(ctx: Context) -> list[str]:
                         "the proof covers only what runs")
     if set(collected["collected"]) != set(ran["outcomes"]):
         failures.append("the source's collection and its run disagree on which tests exist")
+    failures += dynamic.fixture_failures(ran, str(ctx.plan.source), str(source.resolve()))
     return failures
 
 
@@ -149,7 +162,9 @@ def _static_arms(ctx: Context, layout: Layout) -> tuple[list[str], dict]:
 
 
 def prove(ctx: Context, idmap: Path) -> list[str]:
-    """Every arm of the proof; print the block a commit body quotes."""
+    """Every arm of the proof; print the block a commit body quotes only when every arm
+    passed.  The block's fixed sentences claim that each arm held, so printed beside a
+    failure they would state what the run refuted (the branch's neutral review, F7)."""
     layout = ctx.layout(ctx.into / _SOURCE)
     failures, origins = _static_arms(ctx, layout)
     mapping = json.loads(idmap.read_text(encoding="utf-8"))
@@ -163,18 +178,31 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     failures += [f"pylint: {f}" for f in dynamic.compare_pylint(
         ctx.read(_BEFORE_PYLINT), after_pylint, origins, import_block(layout))]
     failures += _duplicate_arm(ctx, layout, idmap, after_pylint, seen)
-    importers = ctx.read(_META)["importers"]
-    importer_kinds = dynamic.new_kinds(ctx.read(_BEFORE_IMPORTERS), run.pylint_messages(
-        ctx.root, importers)) if importers else {}
+    importer_failures, named = _importer_arm(ctx)
+    failures += importer_failures
     gate, gate_line = run.plan_gate(ctx.root)
     if gate:
         failures.append(f"plan gate: {gate_line}")
     hits = dynamic.classify(ctx.root, run.census(ctx.root, layout.plan), origins)
-    print("\n".join(_report_moves(ctx, layout, idmap, seen)
-                    + _report_lint(ctx, after_pylint, importer_kinds)
-                    + _report_duplicates(seen)
-                    + _report_pointers(gate_line, hits)))
+    if not failures:
+        print("\n".join(_report_moves(ctx, layout, idmap, seen)
+                        + _report_lint(ctx, after_pylint, named)
+                        + _report_duplicates(seen)
+                        + _report_pointers(gate_line, hits)))
     return failures
+
+
+def _importer_arm(ctx: Context) -> tuple[list[str], list[str]]:
+    """Judge the re-pointed importers' pylint messages by origin: the failures, and the
+    messages on their re-pointed imports, named for the proof block."""
+    recorded = ctx.read(_META)["importers"]
+    if not recorded:
+        return [], []
+    repointed, unborne = importer_lines(ctx.root, recorded)
+    failures, named = dynamic.compare_importers(
+        ctx.read(_BEFORE_IMPORTERS), run.pylint_messages(ctx.root, sorted(recorded)),
+        repointed)
+    return [f"importers: {f}" for f in unborne + failures], named
 
 
 def _duplicate_arm(ctx: Context, layout: Layout, idmap: Path, after_pylint: list[dict],
@@ -213,14 +241,16 @@ def _report_moves(ctx: Context, layout: Layout, idmap: Path, seen: dict) -> list
     ]
 
 
-def _report_lint(ctx: Context, after_pylint: list[dict], importer_kinds: dict) -> list[str]:
-    """The proof block's pylint lines: the source's counts, the parts', the importers'."""
+def _report_lint(ctx: Context, after_pylint: list[dict], named: list[str]) -> list[str]:
+    """The proof block's pylint lines: the source's counts, the parts', and each message on
+    an importer's re-pointed import that the line did not hold before."""
     before = ctx.read(_BEFORE_PYLINT)
     return [
         f"- pylint: source {dict(sorted(dynamic.pylint_counts(before).items()))}; parts "
-        f"{dict(sorted(dynamic.pylint_counts(after_pylint).items()))}",
-        f"- importers re-pointed: {ctx.read(_META)['importers']}; kinds new to them: "
-        f"{importer_kinds}",
+        f"{dict(sorted(dynamic.pylint_counts(after_pylint).items()))}; every part message "
+        "answered by its origin",
+        f"- importers re-pointed: {sorted(ctx.read(_META)['importers'])}; every other line "
+        f"unchanged and holding no new message; on the re-pointed imports: {named}",
     ]
 
 
@@ -234,8 +264,8 @@ def _report_duplicates(seen: dict) -> list[str]:
 
 def _report_pointers(gate_line: str, hits: list[dynamic.Hit]) -> list[str]:
     """The proof block's tail: the plan gate and every line still naming the old module, the
-    package's own composed provenance counted apart."""
-    live = [h for h in hits if not h.archived and not h.composed]
+    package's own provenance counted apart."""
+    live = [h for h in hits if not h.archived and not h.provenance]
     archived = sum(1 for h in hits if h.archived)
     return [
         f"- plan gate: {gate_line}",
@@ -260,6 +290,11 @@ def main(argv: list[str] | None = None, root: Path = REPO) -> int:
     args = parser().parse_args(argv)
     if args.command != "record" and args.idmap is None:
         parser().error("apply and prove need --idmap")
+    inside = [str(path) for path in (args.into, args.idmap)
+              if path is not None and path.resolve().is_relative_to(root.resolve())]
+    if inside:
+        parser().error(f"{inside} must lie outside the repository: the census reads every "
+                       "file git does not ignore, and a record names the old module throughout")
     try:
         ctx = Context(plan=load_plan(args.plan), root=root, into=args.into)
         if args.command == "record":

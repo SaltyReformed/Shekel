@@ -199,6 +199,18 @@ class TestTheLayoutRefuses:
         assert "inspect reads a moved node" in refusal(
             tmp_path, source, with_test_first("test_src"))
 
+    def test_a_part_over_the_line_budget(self, tmp_path):
+        """No part may reach 1,000 lines."""
+        padding = "\n".join(f"    assert {i} == {i}" for i in range(1000))
+        source = appended(f'def test_long():\n    """Long."""\n{padding}')
+        assert "over the 1000-line budget" in refusal(
+            tmp_path, source, with_test_first("test_long"))
+
+
+class TestARunTimeReadOfTheModuleIsRefused:
+    """What running code reads of the module it runs in, or of a split class's docstring:
+    each names the part a test now sits in, or a slice (the review's F9)."""
+
     def test_a_request_module_read(self, tmp_path):
         """A fixture reading request.module reads a part, not the source."""
         source = sample_with('monkeypatch.setenv("SAMPLE", "1")',
@@ -206,12 +218,51 @@ class TestTheLayoutRefuses:
             "def _frozen(monkeypatch):", "def _frozen(monkeypatch, request):")
         assert "names the requesting module or file" in refusal(tmp_path, source)
 
-    def test_a_part_over_the_line_budget(self, tmp_path):
-        """No part may reach 1,000 lines."""
-        padding = "\n".join(f"    assert {i} == {i}" for i in range(1000))
-        source = appended(f'def test_long():\n    """Long."""\n{padding}')
-        assert "over the 1000-line budget" in refusal(
-            tmp_path, source, with_test_first("test_long"))
+    @pytest.mark.parametrize("read", [
+        "self.__module__", "type(self).__module__", 'getattr(self, "__module__")',
+        "super().__module__",
+    ])
+    def test_a_module_read_off_the_running_test(self, tmp_path, read):
+        """The running test's module is the part it now sits in (the review's F9)."""
+        source = sample_with('"""One."""\n', f'"""One."""\n        assert {read}\n')
+        assert "__module__ names the module it runs in" in refusal(tmp_path, source)
+
+    def test_a_module_read_off_the_request(self, tmp_path):
+        """``request.function.__module__`` names the part a test now sits in."""
+        source = sample_with('monkeypatch.setenv("SAMPLE", "1")',
+                             'monkeypatch.setenv("SAMPLE", request.function.__module__)'
+                             ).replace("def _frozen(monkeypatch):",
+                                       "def _frozen(monkeypatch, request):")
+        assert "request...__module__ names the module it runs in" in refusal(tmp_path, source)
+
+    def test_a_class_docstring_read_through_the_request_when_a_class_is_split(self, tmp_path):
+        """``request.cls.__doc__`` reads a slice's one-line docstring once TestBig is split."""
+        source = sample_with('monkeypatch.setenv("SAMPLE", "1")',
+                             'monkeypatch.setenv("SAMPLE", str(request.cls.__doc__))'
+                             ).replace("def _frozen(monkeypatch):",
+                                       "def _frozen(monkeypatch, request):")
+        assert "which a split class states once per slice" in refusal(tmp_path, source)
+
+    def test_getfixturevalue(self, tmp_path):
+        """A fixture set up by name at run time may sit on a branch no run took."""
+        source = appended('def test_dyn(request):\n    """D."""\n'
+                          '    assert request.getfixturevalue("_frozen") is None')
+        assert "getfixturevalue sets up a fixture by name" in refusal(
+            tmp_path, source, with_test_first("test_dyn"))
+
+
+@pytest.mark.parametrize("source", [
+    sample_with('"""One."""\n', '"""One."""\n        assert date.__module__ == "datetime"\n'),
+    sample_with('"""One."""\n', '"""One."""\n        assert self.__doc__ == "First tests."\n'),
+], ids=["an-imported-objects-module", "a-whole-class-docstring"])
+def test_a_read_the_split_cannot_change_is_accepted(tmp_path, source):
+    """An imported object's module and the docstring of a class moved WHOLE each read the
+    same after the split, so neither is refused.  (Any docstring read through ``request``
+    is refused while a class is split, ``request.function.__doc__`` included: no test reads
+    one, measured 2026-10-15, so the rule is not narrowed to the chains that reach a
+    class.)"""
+    root = build(tmp_path, source)
+    assert render_all(layout_of(root), line_limit(root))
 
 
 def test_a_patch_whose_readers_are_out_of_reach_is_accepted(tmp_path):
@@ -253,6 +304,10 @@ class TestASplitClassIsRefused:
          "assigns self.limit"),
         ('    @classmethod\n    def _set(cls):\n        """S."""\n        cls.flag = True',
          "assigns cls.flag"),
+        ('    def _about(self):\n        """A."""\n        return self.__doc__',
+         "reads its class's docstring"),
+        ('    @classmethod\n    def _about(cls):\n        """A."""\n'
+         '        return getattr(cls, "__doc__")', "reads its class's docstring"),
     ])
     def test_a_member_that_changes_meaning(self, tmp_path, member, why):
         """Each would mean something different on a mixin or a per-part class."""

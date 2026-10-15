@@ -17,7 +17,9 @@ cannot get around it.
 
 Separate from ``_registry.py`` because it grades neither registry: its subject
 is every markdown file under an archived directory, and its only shared input is
-the repository root (:data:`tools.ci.arcs.REPO`).
+the repository root (:data:`tools.ci.arcs.REPO`).  What makes a document
+archived, the directory names and the banner, is :mod:`tools.ci.archive`'s, the
+one home the split tool's census reads it from too.
 """
 from __future__ import annotations
 
@@ -25,23 +27,14 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from tools.ci import arcs
-
-#: Directory names whose contents are a historical record and govern nothing.
-#: Three separate trees hold them -- ``docs/audits/**/archive``,
-#: ``docs/historical`` and ``docs/plans/historical`` -- so the walk is rooted at
-#: ``docs`` and keys on the directory NAME.  A walk rooted at any one arc's
-#: archive would miss the other two, and the document that caused this rule was
-#: reachable from none of them.
-ARCHIVED_DIRS = frozenset({"archive", "historical"})
-
-#: What every archived document must open with.
-ARCHIVE_BANNER = "> **ARCHIVED."
+from tools.ci.archive import ARCHIVE_BANNER, declares_archived, in_archived_dir
 
 
 def archived_docs() -> Iterator[Path]:
-    """Every markdown file under an ``archive/`` or ``historical/`` directory."""
+    """Every markdown file under an ``archive/`` or ``historical/`` directory, walked from
+    ``docs`` (:func:`tools.ci.archive.in_archived_dir` keys on the directory name)."""
     for path in sorted((arcs.REPO / "docs").rglob("*.md")):
-        if ARCHIVED_DIRS & set(path.relative_to(arcs.REPO).parts):
+        if in_archived_dir(path.relative_to(arcs.REPO)):
             yield path
 
 
@@ -53,8 +46,7 @@ def archive_banner_violations() -> list[str]:
     """
     problems = []
     for path in archived_docs():
-        first = path.read_text().lstrip().splitlines()[:1]
-        if not first or not first[0].startswith(ARCHIVE_BANNER):
+        if not declares_archived(path.read_text()):
             problems.append(
                 f"{path.relative_to(arcs.REPO)} is archived and its first "
                 f"line does not say so.  It must open with {ARCHIVE_BANNER!r} "

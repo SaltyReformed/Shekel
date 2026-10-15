@@ -13,8 +13,11 @@ plan does not place, a fixture a part names, a name placed twice; a module-level
 any scope but ``function`` (a package ``conftest.py`` would run it once per part); a
 module-level ``pytest_*`` hook, ``pytestmark``, ``pytest_plugins`` or dunder (a conftest
 widens a hook's reach, and a part would not carry the others); ``global``; a no-argument
-``vars()``; ``inspect`` called on a moved node, or a moved node's ``__module__``; a
-``request`` attribute naming the requesting module or file; a free name naming the module
+``vars()``; ``request.getfixturevalue`` (its fixture's reach is unobserved on a branch the
+record run did not take); ``inspect`` called on a moved node; a ``__module__`` read off a
+moved node or off the running test (``self``, ``cls``, ``request``, ``type(...)``,
+``super()``); a ``request`` attribute naming the requesting module or file, or a docstring
+read through ``request`` when a class is split; a free name naming the module
 itself (``__file__``, ``__name__``, ...: a part sits one directory deeper); a node in one
 part reading a node placed in another; ``globals()`` unless every node reading each key it
 writes lands in the same output; and an import alias nothing reads that the plan does not
@@ -33,6 +36,7 @@ from tools.split._source import (
     Kind,
     Refusal,
     SourceModule,
+    attribute_read,
     fixture_decorator,
     fixture_scope,
     free_names,
@@ -53,6 +57,11 @@ _PYTEST_MODULE_NAMES = frozenset({"pytestmark", "pytest_plugins"})
 
 #: Attributes of a fixture's ``request`` that name the requesting module or its file.
 _REQUEST_LOCATION = frozenset({"module", "fspath", "path", "nodeid"})
+
+#: The names through which running code reaches the test that runs it (its instance, its
+#: class, its ``request``, or ``type(...)`` / ``super()`` of one), whose module is the part
+#: the test now sits in.
+_RUNNING = frozenset({"self", "cls", "request", "type", "super"})
 
 #: The marker a split class's name is homed at: it is bound in several parts, so no other
 #: output may reach it by name.
@@ -82,10 +91,13 @@ class Piece:
 
 @dataclass
 class Output:
-    """One module the source becomes: its pieces in source order and what it imports."""
+    """One module the source becomes: its docstring, its pieces in source order and what it
+    imports.  The docstring is the plan's text (none for ``conftest.py`` and ``_helpers.py``)
+    followed by the tool's ``provenance``, the paragraph naming the source it came from."""
 
     module: str
     docstring: str
+    provenance: str
     pieces: list[Piece]
     names: set[str] = field(default_factory=set)
     helpers: list[str] = field(default_factory=list)
@@ -275,33 +287,51 @@ def _inspect_names(source: SourceModule) -> set[str]:
     return found
 
 
-def _check_node(sub: ast.AST, source_names: set[str], inspect_names: set[str]) -> str | None:
-    """Why one AST node could change meaning once moved, or None."""
-    if isinstance(sub, ast.Global):
-        return f"global {', '.join(sub.names)}"
-    if isinstance(sub, ast.Call):
-        func = sub.func
-        if isinstance(func, ast.Name) and func.id == "vars" and not sub.args:
-            return "vars() reads the module it runs in"
-        callee = func.value if isinstance(func, ast.Attribute) else func
-        if isinstance(callee, ast.Name) and callee.id in inspect_names and any(
-                _root_name(a) in source_names for a in sub.args):
-            return "inspect reads a moved node's module or file"
-    if isinstance(sub, ast.Attribute):
-        if sub.attr == "__module__" and _root_name(sub.value) in source_names:
-            return f"{_root_name(sub.value)}.__module__ names its module"
-        if sub.attr in _REQUEST_LOCATION and _root_name(sub.value) == "request":
-            return f"request...{sub.attr} names the requesting module or file"
+def _check_call(sub: ast.Call, source_names: set[str], inspect_names: set[str]) -> str | None:
+    """Why one call could change meaning once moved, or None."""
+    func = sub.func
+    if isinstance(func, ast.Name) and func.id == "vars" and not sub.args:
+        return "vars() reads the module it runs in"
+    if isinstance(func, ast.Attribute) and func.attr == "getfixturevalue":
+        return ("getfixturevalue sets up a fixture by name at run time, on a branch the "
+                "record run may not have taken, so its reach is unobserved")
+    callee = func.value if isinstance(func, ast.Attribute) else func
+    if isinstance(callee, ast.Name) and callee.id in inspect_names and any(
+            _root_name(a) in source_names for a in sub.args):
+        return "inspect reads a moved node's module or file"
     return None
 
 
-def _check_nodes(output: Output, source: SourceModule) -> None:
+def _check_node(sub: ast.AST, source_names: set[str], inspect_names: set[str],
+                split: bool) -> str | None:
+    """Why one AST node could change meaning once moved, or None.  ``split``: the plan splits
+    a class, so a class's docstring read through ``request`` may be a slice's."""
+    if isinstance(sub, ast.Global):
+        return f"global {', '.join(sub.names)}"
+    if isinstance(sub, ast.Call):
+        why = _check_call(sub, source_names, inspect_names)
+        if why:
+            return why
+    read = attribute_read(sub)
+    if read is not None:
+        root, attribute = _root_name(read[0]), read[1]
+        if attribute == "__module__" and (root in source_names or root in _RUNNING):
+            return f"{root}...__module__ names the module it runs in"
+        if attribute in _REQUEST_LOCATION and root == "request":
+            return f"request...{attribute} names the requesting module or file"
+        if attribute == "__doc__" and root == "request" and split:
+            return ("request...__doc__ may read a test's class docstring, which a split class "
+                    "states once per slice")
+    return None
+
+
+def _check_nodes(output: Output, source: SourceModule, split: bool) -> None:
     """Refuse a construct in ``output`` whose meaning depends on the module it runs in."""
     source_names = {u.name for u in source.units}
     inspect_names = _inspect_names(source)
     for piece in output.pieces:
         for sub in (s for top in piece.nodes for s in ast.walk(top)):
-            why = _check_node(sub, source_names, inspect_names)
+            why = _check_node(sub, source_names, inspect_names, split)
             if why:
                 raise Refusal(f"{piece.binds} (to {output.module}): {why}")
 
@@ -433,30 +463,40 @@ def resolve(source: SourceModule, plan: Plan, rules: CollectRules) -> Layout:
     pieces, home, shapes = _pieces(source, plan, rules)
     outputs: dict[str, Output] = {}
     for part in plan.parts:
-        outputs[part.module] = Output(part.module, part.docstring, pieces.get(part.module, []))
-    for module, docstring in ((CONFTEST, conftest_docstring(plan)),
-                              (HELPERS, helpers_docstring(plan))):
+        outputs[part.module] = Output(part.module, part.docstring, split_from(plan),
+                                      pieces.get(part.module, []))
+    for module, provenance in ((CONFTEST, conftest_docstring(plan)),
+                               (HELPERS, helpers_docstring(plan))):
         if pieces.get(module):
-            outputs[module] = Output(module, docstring, pieces[module])
+            outputs[module] = Output(module, "", provenance, pieces[module])
     for output in outputs.values():
         output.pieces.sort(key=lambda p: p.position)
-        _check_nodes(output, source)
+        _check_nodes(output, source, bool(shapes))
     _check_globals(outputs, source, rules)
     _resolve(outputs, source, home)
     _place_unused(outputs, source, plan)
     return Layout(source=source, plan=plan, outputs=outputs, home=home, split=shapes)
 
 
+def split_from(plan: Plan) -> str:
+    """The paragraph the tool closes every part's docstring with, naming the source the part
+    came from: the package's own provenance, which the census drops by its origin (the
+    coordinator's ruling on the follow-up leaf's fork D, 2026-10-15).  Plans wrote it by hand
+    until then, so it had a spelling per plan, and the census could not tell it from a plan's
+    own text naming the old module."""
+    return f"Split from ``{plan.source}`` by ``tools/split`` (ruling R-BAL301)."
+
+
 def conftest_docstring(plan: Plan) -> str:
-    """The docstring the tool writes on a split package's ``conftest.py``: one paragraph,
-    wrapped to the line limit when it is rendered."""
+    """The docstring the tool writes on a split package's ``conftest.py``, all of it
+    provenance: one paragraph, wrapped to the line limit when it is rendered."""
     return (f"The fixtures every part of this package shares: the module-level fixtures of "
             f"``{plan.source}``, moved verbatim by ``tools/split``.  A fixture here reaches "
             "exactly the tests that module held, at the scope it declared.")
 
 
 def helpers_docstring(plan: Plan) -> str:
-    """The docstring the tool writes on a split package's ``_helpers.py``: one paragraph,
-    wrapped to the line limit when it is rendered."""
+    """The docstring the tool writes on a split package's ``_helpers.py``, all of it
+    provenance: one paragraph, wrapped to the line limit when it is rendered."""
     return (f"The helpers and constants every part of this package shares: the module-level "
             f"helpers of ``{plan.source}``, moved verbatim by ``tools/split``.")

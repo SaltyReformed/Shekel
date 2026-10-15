@@ -159,6 +159,20 @@ def is_docstring(node: ast.stmt) -> bool:
             and isinstance(node.value.value, str))
 
 
+def attribute_read(node: ast.AST) -> tuple[ast.expr, str] | None:
+    """``(object, attribute)`` when ``node`` reaches a named attribute: ``obj.attr``, or
+    ``getattr(obj, "attr")`` with a literal name; else None."""
+    if isinstance(node, ast.Attribute):
+        return node.value, node.attr
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr" and len(node.args) >= 2):
+        return None
+    name = node.args[1]
+    if isinstance(name, ast.Constant) and isinstance(name.value, str):
+        return node.args[0], name.value
+    return None
+
+
 def fixture_decorator(node: ast.stmt) -> ast.expr | None:
     """The ``@pytest.fixture`` / ``@fixture`` decorator on a function, or None."""
     if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

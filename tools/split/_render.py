@@ -6,12 +6,16 @@ line number; the only text it generates is what the layout requires and the prov
 by shape: module docstrings, import statements filtered from the source's own (in the
 source's order and blank-line groups), a split class's ``class`` line and one-line
 docstring, and its mixin's ``class`` line.  Nothing is written until every output has
-rendered under the line budget, so a refusal leaves the tree as it was.
+rendered under the line budget and every importer's line has been re-read (:func:`write`),
+so a refusal leaves the tree as it was.
 
-Every line it renders carries its :class:`Origin`: the source line it copies, the source
-statement an import was filtered from, or nothing for a line it composed.  The prover judges
-each pylint message by that origin (:func:`tools.split._dynamic.compare_pylint`), after
-checking every claim against the files on disk and the source (:func:`._prove.line_origins`).
+Every line it renders carries its mark: an :class:`Origin` (the source line it copies, or
+the source statement an import was filtered from), :data:`PROVENANCE` for a composed line
+naming the source the package came from, or nothing for any other line it composed.  The
+prover judges each pylint message by that origin (:func:`tools.split._dynamic.compare_pylint`),
+after checking every claim against the files on disk and the source
+(:func:`._prove.line_origins`); the census drops exactly the provenance lines
+(:func:`tools.split._dynamic.classify`).
 """
 from __future__ import annotations
 
@@ -46,8 +50,25 @@ class Origin(NamedTuple):
     copied: bool
 
 
-#: One written line and its origin; None for a line the writer composed.
-Line = tuple[str, Origin | None]
+@dataclass(frozen=True)
+class Provenance:
+    """The mark on a line the writer composed to say where the package came from: a part's
+    closing "Split from" paragraph, and every line of ``conftest.py``'s and ``_helpers.py``'s
+    docstrings (the coordinator's ruling on the follow-up leaf's fork D, 2026-10-15).  Like
+    any composed line it has no source line, so no pylint message may be matched to it;
+    unlike one, the census drops it, because it names the old module by design.  The plan's
+    own text is never marked, so a line of it naming the old module is listed."""
+
+
+#: The one :class:`Provenance` mark.
+PROVENANCE = Provenance()
+
+#: What a written line came from: the source (an :class:`Origin`), the package's provenance
+#: (:data:`PROVENANCE`), or nothing, for any other line the writer composed.
+Mark = Origin | Provenance | None
+
+#: One written line and its mark.
+Line = tuple[str, Mark]
 
 
 def line_limit(root: Path) -> int:
@@ -69,17 +90,34 @@ def _checked(lines: list[str], limit: int, what: str) -> list[str]:
     return lines
 
 
-def docstring_lines(text: str, limit: int, what: str) -> list[str]:
-    """A module docstring as written: one line when it fits on one, a one-paragraph text
-    that does not fit wrapped to the limit, and a text with its own line breaks kept as the
-    plan wrote it (refused if any of its lines is too wide)."""
-    body = text.strip("\n").split("\n")
-    if len(body) == 1 and len(f'"""{body[0]}"""') > limit:
-        body = textwrap.wrap(body[0], width=limit - len('"""'), break_long_words=False,
-                             break_on_hyphens=False)
+def _wrapped(paragraph: str, width: int) -> list[str]:
+    """One paragraph wrapped to ``width``, never breaking a word or at a hyphen."""
+    return textwrap.wrap(paragraph, width=width, break_long_words=False, break_on_hyphens=False)
+
+
+def docstring_lines(output: Output, limit: int) -> list[Line]:
+    """An output's module docstring as written, each line with its mark.
+
+    A part's is the plan's text, kept as the plan wrote it, then a blank line and the tool's
+    provenance (:func:`tools.split._layout.split_from`) wrapped to the limit.
+    ``conftest.py``'s and ``_helpers.py``'s is the provenance alone: one line when it fits on
+    one, else wrapped to the limit with the opening quotes counted.  Each provenance line is
+    marked :data:`PROVENANCE`, every other line nothing.  Refused if any line is too wide."""
+    if output.docstring:
+        body: list[Line] = [(line, None) for line in output.docstring.strip("\n").split("\n")]
+        body += [("", None), *((line, PROVENANCE) for line in _wrapped(output.provenance, limit))]
+    elif len(f'"""{output.provenance}"""') <= limit:
+        body = [(output.provenance, PROVENANCE)]
+    else:
+        body = [(line, PROVENANCE)
+                for line in _wrapped(output.provenance, limit - len('"""'))]
+    first, mark = body[0]
     if len(body) == 1:
-        return _checked([f'"""{body[0]}"""'], limit, what)
-    return _checked([f'"""{body[0]}', *body[1:], '"""'], limit, what)
+        lines = [(f'"""{first}"""', mark)]
+    else:
+        lines = [(f'"""{first}', mark), *body[1:], ('"""', None)]
+    _checked([text for text, _ in lines], limit, output.module)
+    return lines
 
 
 def _from_lines(module: str, names: list[str], limit: int) -> list[str]:
@@ -154,7 +192,7 @@ def _piece_lines(layout: Layout, piece: Piece) -> list[Line]:
 
 def output_lines(layout: Layout, output: Output, limit: int) -> list[Line]:
     """One output module's lines, each with its origin."""
-    found = _generated(docstring_lines(output.docstring, limit, output.module))
+    found = docstring_lines(output, limit)
     imports: list[Line] = []
     for stmt, lines in import_lines(layout, output, limit):
         origin = None if stmt is None else Origin(stmt.node.lineno, stmt.node.end_lineno,
@@ -200,10 +238,13 @@ def render_all(layout: Layout, limit: int) -> dict[str, str]:
 
 @dataclass(frozen=True)
 class Rewrite:
-    """One importer's import line, before and after it is pointed at ``_helpers.py``."""
+    """One importer's import line, before and after it is pointed at ``_helpers.py``:
+    ``line`` is the line rewritten, the statement's first, and ``last`` the statement's last,
+    so ``line`` to ``last`` is the statement whose meaning the re-point changed."""
 
     path: Path
     line: int
+    last: int
     old: str
     new: str
 
@@ -235,7 +276,8 @@ def _importer_rewrite(layout: Layout, path: Path, node: ast.AST, lines: list[str
     needle = f"from {dotted} import"
     if old.count(needle) != 1:
         raise Refusal(f"{where}: the import does not read {needle!r} on its first line")
-    return Rewrite(path, node.lineno, old, old.replace(needle, f"from {dotted}.{HELPERS} import"))
+    return Rewrite(path, node.lineno, node.end_lineno, old,
+                   old.replace(needle, f"from {dotted}.{HELPERS} import"))
 
 
 def importer_rewrites(layout: Layout, root: Path) -> list[Rewrite]:
@@ -258,17 +300,26 @@ def importer_rewrites(layout: Layout, root: Path) -> list[Rewrite]:
 
 
 def write(layout: Layout, root: Path, texts: dict[str, str], rewrites: list[Rewrite]) -> None:
-    """Create the package, delete the source, and apply the importers' rewrites."""
+    """Create the package, delete the source, and apply the importers' rewrites.
+
+    Every check runs before the first write, so a refusal leaves the tree as it was (the
+    branch's neutral review, F8a: the importers' re-check ran after the package was written
+    and the source deleted).  Each importer is read once and rewritten whole, so two
+    rewrites in one file are applied together."""
     package = root / layout.plan.package
     if package.exists():
         raise Refusal(f"{package} already exists")
+    edited: dict[Path, list[str]] = {}
+    for rewrite in rewrites:
+        if rewrite.path not in edited:
+            edited[rewrite.path] = rewrite.path.read_text(encoding="utf-8").split("\n")
+        lines = edited[rewrite.path]
+        if lines[rewrite.line - 1] != rewrite.old:
+            raise Refusal(f"{rewrite.path}:{rewrite.line} changed since it was read")
+        lines[rewrite.line - 1] = rewrite.new
     package.mkdir()
     for name, text in texts.items():
         (package / name).write_text(text, encoding="utf-8")
     (root / layout.plan.source).unlink()
-    for rewrite in rewrites:
-        lines = rewrite.path.read_text(encoding="utf-8").split("\n")
-        if lines[rewrite.line - 1] != rewrite.old:
-            raise Refusal(f"{rewrite.path}:{rewrite.line} changed since it was read")
-        lines[rewrite.line - 1] = rewrite.new
-        rewrite.path.write_text("\n".join(lines), encoding="utf-8")
+    for path, lines in edited.items():
+        path.write_text("\n".join(lines), encoding="utf-8")

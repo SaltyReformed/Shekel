@@ -8,12 +8,13 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from pylint.checkers.imports import MSGS as IMPORT_MESSAGES
 
+from tools.ci.archive import declares_archived, in_archived_dir
 from tools.split._layout import Layout
-from tools.split._render import Origin
+from tools.split._render import Mark, Origin, Provenance
 from tools.split._source import Refusal
 
 #: pylint's symbol for the cross-file duplicate check, judged pair by pair in
@@ -70,6 +71,42 @@ def compare_outcomes(mapping: dict[str, str], before: dict[str, str], after: dic
     return failures
 
 
+#: The fixture scopes a package cuts: one instance per module, class or package becomes one
+#: per part, per slice or per new package.
+_CUT_SCOPES = frozenset({"module", "class", "package"})
+
+
+def fixture_failures(observed: dict, source: str, source_file: str) -> list[str]:
+    """Why the source's tests reach a fixture whose reach the split would change, read from
+    every fixture its record run SET UP (``observed``'s merged ``setups``; the coordinator's
+    ruling on the follow-up leaf's fork F, 2026-10-15).
+
+    Refused: a fixture scoped to a module, class or package and defined outside the source
+    file (``source_file``, resolved): a parent conftest's or a plugin's, whose one instance
+    the split would cut into several.  And a fixture registered on the source module or a
+    class in it (its ``baseid``) whose function is defined in another file: imported into
+    the source by name, it would reach only the part its import lands in.  A fixture never
+    set up cannot change what a test does, so set-up observation is the property itself.  A
+    test the run reported that no process's record ran is refused too: a worker whose file
+    is missing would otherwise leave its fixtures unseen."""
+    failures = []
+    unseen = sorted(set(observed["outcomes"]) - set(observed["setups_ran"]))
+    if unseen:
+        failures.append(f"no process recorded the fixtures of {len(unseen)} test(s) the run "
+                        f"reported, e.g. {unseen[:3]}")
+    for setup in observed["setups"]:
+        foreign = setup["file"] != source_file
+        where = (f"fixture {setup['argname']} (scope {setup['scope']}, defined in "
+                 f"{setup['file']}, set up for {setup['by']})")
+        if setup["scope"] in _CUT_SCOPES and foreign:
+            failures.append(f"{where}: its one instance per {setup['scope']} would be cut "
+                            "into one per part")
+        if foreign and (setup["baseid"] == source or setup["baseid"].startswith(source + "::")):
+            failures.append(f"{where}: imported into the source, it would reach only the part "
+                            "its import lands in")
+    return failures
+
+
 def outcome_counts(outcomes: dict[str, str]) -> dict[str, int]:
     """How many tests ended each way."""
     return dict(sorted(Counter(outcomes.values()).items()))
@@ -120,7 +157,7 @@ def _answer(left: Counter, message: dict, origin: Origin, block: tuple[int, int]
 
 
 def compare_pylint(before: list[dict], after: list[dict],
-                   origins: dict[str, list[Origin | None]], block: tuple[int, int]
+                   origins: dict[str, list[Mark]], block: tuple[int, int]
                    ) -> list[str]:
     """Failures where the parts hold a pylint message the source did not, each message judged
     by its ORIGIN (``origins``: each written file's line origins, by the path pylint names).
@@ -164,7 +201,7 @@ def compare_pylint(before: list[dict], after: list[dict],
                               key=lambda m: (m["line"], m["symbol"])):
             symbol, line = message["symbol"], message["line"]
             origin = lines[line - 1] if 0 < line <= len(lines) else None
-            if origin is None:
+            if not isinstance(origin, Origin):
                 failures.append(f"{path}:{line}: {symbol} on a line the writer composed")
                 continue
             match = _answer(left, message, origin, block)
@@ -185,53 +222,73 @@ def _unheld(message: dict, origin: Origin, block: tuple[int, int]) -> str:
             f"import block ({block[0]}-{block[1]}) holds")
 
 
-def new_kinds(before: list[dict], after: list[dict]) -> dict[str, list[str]]:
-    """For each file, the pylint symbols it holds after and did not before (the importers'
-    report: a kind new to an edited importer is named, not refused)."""
-    def by_file(messages: list[dict]) -> dict[str, set[str]]:
-        files: dict[str, set[str]] = {}
-        for message in messages:
-            files.setdefault(message["path"], set()).add(message["symbol"])
-        return files
-    was, now = by_file(before), by_file(after)
-    return {path: sorted(symbols - was.get(path, set()))
-            for path, symbols in sorted(now.items()) if symbols - was.get(path, set())}
+def compare_importers(before: list[dict], after: list[dict], repointed: dict[str, set[int]]
+                      ) -> tuple[list[str], list[str]]:
+    """The re-pointed importers' pylint messages judged by ORIGIN: the failures, and the
+    messages named (the coordinator's ruling on the follow-up leaf's fork B, 2026-10-15).
+
+    An importer's only changed lines are its re-pointed import statements, ``repointed``
+    (:func:`tools.split._prove.importer_lines` checks it against the record), so every other
+    line is its own origin.  A message there is answered only by one of the same symbol on
+    the same line before, each answering at most one; anything else is REFUSED, a change
+    the split made to a module it did not move.  A message on a re-pointed statement that
+    the line did not hold before is the re-point's own, the commit's deliberate edit, so it
+    is NAMED in the proof block and not refused (test_salary's shekel-private-module-import on
+    test_c46_except_narrowing.py:48 is the class the coordinator ruled at 11:08 and BAL-658
+    settles).  The count per kind this replaces let a new message hide behind a vanished
+    one of its kind."""
+    held = Counter((m["path"], m["symbol"], m["line"]) for m in before)
+    failures, named = [], []
+    for message in sorted(after, key=lambda m: (m["path"], m["line"], m["symbol"])):
+        path, line, symbol = message["path"], message["line"], message["symbol"]
+        if held[(path, symbol, line)] > 0:
+            held[(path, symbol, line)] -= 1
+        elif line in repointed.get(path, set()):
+            named.append(f"{path}:{line}: {symbol}")
+        else:
+            failures.append(f"{path}:{line}: {symbol}, which the importer's line {line} did "
+                            "not hold before the split")
+    return failures, named
 
 
 @dataclass(frozen=True)
 class Hit:
-    """One line naming the old module; whether its document is a record; and whether the tool
-    composed the line itself (a provenance docstring of the new package)."""
+    """One line naming the old module; whether its document is a record; and whether it is
+    the package's own provenance, a line the tool composed to name the source."""
 
     path: str
     line: int
     text: str
     archived: bool
-    composed: bool = False
+    provenance: bool = False
 
 
-def classify(root: Path, raw: list[str], origins: dict[str, list[Origin | None]]
-             ) -> list[Hit]:
-    """``git grep -n`` lines as hits; a document is ARCHIVED when it sits under an
-    ``archive/`` or ``historical/`` directory or says ``ARCHIVED`` on its first line.
+def classify(root: Path, raw: list[tuple[str, int, str]],
+             origins: dict[str, list[Mark]]) -> list[Hit]:
+    """The census's ``(path, line, text)`` lines as hits.
 
-    A hit is COMPOSED when ``origins`` (each written file's verified line origins) says the
-    writer composed its line: the package's own "Split from ..." provenance, which names the
-    old path by design and is not a pointer to edit.  Judged by ORIGIN, never by path (the
-    coordinator's ruling, 2026-10-15): a line inside the package that the source held, or
-    that was written by hand, still counts, and a file whose origins did not verify has none
-    to drop."""
+    A document is ARCHIVED when it sits under an archived directory or opens with the
+    archive banner: the plan gate's rule, read from its one home (:mod:`tools.ci.archive`;
+    the coordinator's ruling on the branch's neutral review, F3, 2026-10-15).  ``ARCHIVED``
+    anywhere on line 1, the rule this replaced, would have hidden a live module whose first
+    line merely names an archived thing.
+
+    A hit is PROVENANCE when ``origins`` (each written file's verified line marks) says the
+    tool composed its line to name the source the package came from
+    (:data:`tools.split._render.PROVENANCE`), which names the old path by design and is not
+    a pointer to edit.  Judged by that mark alone (the coordinator's rulings, 2026-10-15: by
+    origin, never by path; F8d and fork D, only the tool's provenance): a line of the
+    package the source held, a plan's own docstring text, a slice's docstring, or a line
+    written by hand still counts, and a file whose origins did not verify has none to
+    drop."""
     hits = []
-    first_lines: dict[str, str] = {}
-    for entry in raw:
-        path, line, text = entry.split(":", 2)
-        if path not in first_lines:
-            with (root / path).open(encoding="utf-8") as handle:
-                first_lines[path] = handle.readline()
-        archived = bool({"archive", "historical"} & set(Path(path).parts)) or (
-            "ARCHIVED" in first_lines[path])
+    records: dict[str, bool] = {}
+    for path, line, text in raw:
+        if path not in records:
+            records[path] = in_archived_dir(PurePosixPath(path)) or declares_archived(
+                (root / path).read_text(encoding="utf-8"))
         lines = origins.get(path, [])
-        composed = 0 < int(line) <= len(lines) and lines[int(line) - 1] is None
-        hits.append(Hit(path=path, line=int(line), text=text.strip(), archived=archived,
-                        composed=composed))
+        provenance = 0 < line <= len(lines) and isinstance(lines[line - 1], Provenance)
+        hits.append(Hit(path=path, line=line, text=text.strip(), archived=records[path],
+                        provenance=provenance))
     return hits

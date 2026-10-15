@@ -24,6 +24,7 @@ the source went through, then holds each block against the source's:
 from __future__ import annotations
 
 import ast
+import hashlib
 from collections import Counter
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from tools.split._model import CONFTEST, HELPERS, INIT
 from tools.split._render import (
     IMPORTER_ROOTS,
     LINE_BUDGET,
+    Mark,
     Origin,
     importer_rewrites,
     line_limit,
@@ -255,8 +257,8 @@ def _check_output(tally: _Tally, layout: Layout, output: Output, path: Path,
     if len(mod.lines) >= LINE_BUDGET:
         tally.fail(f"{module}: {len(mod.lines)} lines, over the {LINE_BUDGET}-line budget")
     docstring = ast.get_docstring(ast.parse("\n".join(mod.lines)), clean=False) or ""
-    if docstring.split() != output.docstring.split():
-        tally.fail(f"{module}: its docstring is not the one the plan gives it")
+    if docstring.split() != [*output.docstring.split(), *output.provenance.split()]:
+        tally.fail(f"{module}: its docstring is not the plan's text and the tool's provenance")
     imported = _check_imports(tally, layout, module, mod.imports, rules)
     needs = _check_units(tally, layout, module, mod)
     placed = {a for a, m in layout.plan.unused_imports.items() if m == module}
@@ -330,7 +332,7 @@ def prove_static(layout: Layout, root: Path, rules: CollectRules) -> list[str]:
 
 
 def line_origins(layout: Layout, root: Path
-                 ) -> tuple[dict[str, list[Origin | None]], list[str]]:
+                 ) -> tuple[dict[str, list[Mark]], list[str]]:
     """Each written file's line origins, by repository-relative path, for judging pylint's
     messages by origin; and a failure for every claim the files do not bear out.
 
@@ -343,7 +345,7 @@ def line_origins(layout: Layout, root: Path
     part whose source-derived imports run unbroken (the coordinator's ruling, 2026-10-15)."""
     package = root / layout.plan.package
     spans = {(s.node.lineno, s.node.end_lineno) for s in layout.source.imports}
-    origins: dict[str, list[Origin | None]] = {}
+    origins: dict[str, list[Mark]] = {}
     failures = []
     for name, lines in rendered(layout, line_limit(root)).items():
         path = package / name
@@ -352,7 +354,7 @@ def line_origins(layout: Layout, root: Path
             failures.append(f"{where} is not what the plan renders from the recorded source")
             continue
         for number, (text, origin) in enumerate(lines, start=1):
-            if origin is None:
+            if not isinstance(origin, Origin):
                 continue
             if origin.copied and text != layout.source.lines[origin.first - 1]:
                 failures.append(f"{where}:{number} is called a copy of source line "
@@ -360,13 +362,45 @@ def line_origins(layout: Layout, root: Path
             if not origin.copied and (origin.first, origin.last) not in spans:
                 failures.append(f"{where}:{number} is called an import from source lines "
                                 f"{origin.first}-{origin.last}, which hold no import")
-        composed = [lines[node.lineno - 1][1] is None for node in ast.parse(
+        composed = [not isinstance(lines[node.lineno - 1][1], Origin) for node in ast.parse(
             text_of(lines)).body if isinstance(node, (ast.Import, ast.ImportFrom))]
         if True in composed and False in composed[composed.index(True):]:
             failures.append(f"{where}: an import the writer composed sits before a "
                             "source-derived one")
         origins[where] = [origin for _, origin in lines]
     return origins, failures
+
+
+def importer_lines(root: Path, recorded: dict[str, dict]
+                   ) -> tuple[dict[str, set[int]], list[str]]:
+    """Each re-pointed importer's re-pointed statement lines, by repository-relative path, for
+    judging its pylint messages by origin; and a failure for every importer that is not its
+    recorded text with exactly its recorded imports re-pointed.
+
+    ``recorded`` is what ``record`` took before anything moved: each importer's sha256 and
+    its rewrites, ``[line, last, old, new]``.  The pylint arm reads a message on any other
+    line as one the importer may have held on that same line before
+    (:func:`tools.split._dynamic.compare_importers`), which holds only when the re-point
+    changed no other line and moved none: so each rewritten line is reverted and the whole
+    text must hash to the recorded sha256, checked here rather than taken on the writer's
+    word."""
+    repointed: dict[str, set[int]] = {}
+    failures = []
+    for path, entry in sorted(recorded.items()):
+        lines = (root / path).read_text(encoding="utf-8").split("\n")
+        spans: set[int] = set()
+        for line, last, old, new in entry["rewrites"]:
+            if line > len(lines) or lines[line - 1] != new:
+                failures.append(f"{path}:{line} is not its re-pointed import {new!r}")
+                continue
+            lines[line - 1] = old
+            spans |= set(range(line, last + 1))
+        before = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+        if before != entry["sha256"]:
+            failures.append(f"{path} changed beyond its re-pointed imports since it was "
+                            "recorded")
+        repointed[path] = spans
+    return repointed, failures
 
 
 def import_block(layout: Layout) -> tuple[int, int]:

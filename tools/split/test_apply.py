@@ -21,15 +21,16 @@ from tools.split._render import (
     write,
 )
 from tools.split._run import pylint_messages
-from tools.split._source import collect_rules, read_module
+from tools.split._source import Refusal, collect_rules, read_module
 from tools.split.conftest import SAMPLE, SOURCE, layout_of
 
 PACKAGE = "tests/test_area/test_sample"
 
 
-def applied(repo: Path) -> Layout:
-    """Split the sample under its plan and return the layout the prover holds it to."""
-    layout = layout_of(repo)
+def applied(repo: Path, plan: dict | None = None) -> Layout:
+    """Split the sample under ``plan`` (the sample plan when None) and return the layout the
+    prover holds it to."""
+    layout = layout_of(repo, plan)
     texts = render_all(layout, line_limit(repo))
     write(layout, repo, texts, importer_rewrites(layout, repo))
     return layout
@@ -101,6 +102,23 @@ class TestTheSampleSplits:
         applied(repo)
         importer = (repo / "tests/test_other.py").read_text(encoding="utf-8")
         assert "from tests.test_area.test_sample._helpers import _make" in importer
+
+
+def test_a_refused_write_leaves_the_tree_as_it_was(repo):
+    """The importer's line changed between reading and writing: refused before the package
+    is written or the source deleted (the review's F8a; the re-check ran after both)."""
+    layout = layout_of(repo)
+    texts = render_all(layout, line_limit(repo))
+    rewrites = importer_rewrites(layout, repo)
+    importer = repo / "tests/test_other.py"
+    edited = importer.read_text(encoding="utf-8").replace(
+        "import _make", "import _make  # edited", 1)
+    importer.write_text(edited, encoding="utf-8")
+    with pytest.raises(Refusal, match="changed since it was read"):
+        write(layout, repo, texts, rewrites)
+    assert (repo / SOURCE).read_text(encoding="utf-8") == SAMPLE
+    assert not (repo / PACKAGE).exists()
+    assert importer.read_text(encoding="utf-8") == edited
 
 
 class TestEveryProofArmFails:
@@ -193,8 +211,8 @@ class TestEveryProofArmFails:
     def test_a_part_over_the_line_budget(self, repo):
         """A part padded past 999 lines is over the budget."""
         layout = applied(repo)
-        rewrite(repo, "test_first", '"""The first section and the top-level test."""',
-                '"""The first section and the top-level test.' + "\n" * 1000 + '"""')
+        rewrite(repo, "test_first", '"""The first section and the top-level test.\n',
+                '"""The first section and the top-level test.\n' + "\n" * 1000)
         assert any("over the 1000-line budget" in f for f in proof(repo, layout))
 
     def test_a_hook_function(self, repo):
@@ -285,7 +303,7 @@ class TestTheLineOrigins:
             files = real(layout, limit)
             lines = files["test_first.py"]
             index = next(i for i, (_, origin) in enumerate(lines)
-                         if origin and swap(origin) is not None)
+                         if isinstance(origin, Origin) and swap(origin) is not None)
             lines[index] = (lines[index][0], swap(lines[index][1]))
             return files
         monkeypatch.setattr(_prove, "rendered", lying)

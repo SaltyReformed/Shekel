@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,7 @@ from tools.split._model import parse_plan
 from tools.split._observe import OBSERVE_ENV, verdict
 from tools.split._prove import line_origins
 from tools.split._render import Origin
-from tools.split._run import census, mentions
+from tools.split._run import census, mentions, merged_setups
 from tools.split._source import Refusal
 from tools.split.conftest import SAMPLE, SOURCE, build, layout_of, plan_dict
 from tools.split.test_apply import applied
@@ -273,11 +274,45 @@ class TestThePylintComparison:
                                            self.message("duplicate-code", 1)],
                                           {"a.py": self.copied(3)})
 
-    def test_new_kinds_are_named_per_importer(self):
-        """An edited importer's new kind is reported against its own file."""
-        before = [self.message("unused-argument", 4, path="t.py")]
-        after = before + [self.message("shekel-private-module-import", 2, path="t.py")]
-        assert dynamic.new_kinds(before, after) == {"t.py": ["shekel-private-module-import"]}
+
+
+class TestTheImportersAreJudgedByOrigin:
+    """An importer's only changed lines are its re-pointed imports (the coordinator's ruling on
+    the follow-up leaf's fork B): a message elsewhere is answered by its own line before or
+    refused, and one on a re-pointed import is named."""
+
+    message = staticmethod(TestThePylintComparison.message)
+
+    def test_a_message_its_line_held_before_passes(self):
+        """The same symbol on the same line, re-pointed or not, is the importer's own."""
+        before = [self.message("unused-argument", 9, "t.py"), self.message("unused-import", 2,
+                                                                           "t.py")]
+        assert dynamic.compare_importers(before, before, {"t.py": {2}}) == ([], [])
+
+    def test_a_new_message_on_an_unchanged_line_is_refused(self):
+        """A change the split made to a module it did not move."""
+        failures, named = dynamic.compare_importers(
+            [], [self.message("no-member", 7, "t.py")], {"t.py": {2}})
+        assert failures == ["t.py:7: no-member, which the importer's line 7 did not hold "
+                            "before the split"] and not named
+
+    def test_a_new_message_hidden_by_a_vanished_one_of_its_kind_is_refused(self):
+        """The per-kind unit's hole: two unused-argument before, two after, one of them on a
+        line that held none."""
+        before = [self.message("unused-argument", 4, "t.py"),
+                  self.message("unused-argument", 9, "t.py")]
+        after = [self.message("unused-argument", 4, "t.py"),
+                 self.message("unused-argument", 7, "t.py")]
+        assert dynamic.compare_importers(before, after, {"t.py": {2}})[0] == [
+            "t.py:7: unused-argument, which the importer's line 7 did not hold before the "
+            "split"]
+
+    def test_a_new_message_on_a_repointed_import_is_named_not_refused(self):
+        """test_salary's shekel-private-module-import on the re-pointed statement, any of its
+        lines: the commit's own edit, named in the proof block."""
+        failures, named = dynamic.compare_importers(
+            [], [self.message("shekel-private-module-import", 3, "t.py")], {"t.py": {2, 3}})
+        assert not failures and named == ["t.py:3: shekel-private-module-import"]
 
 
 class TestTheCensus:
@@ -318,7 +353,7 @@ class TestTheCensus:
         assert bool(mentions(parse_plan(plan_dict())).search(line)) is listed
 
     #: The one line of :meth:`tracked_notes` the census lists.
-    NOTES_HIT = ["docs/notes.md:1:see ``test_sample.TestBig``"]
+    NOTES_HIT = [("docs/notes.md", 1, "see ``test_sample.TestBig``")]
 
     @staticmethod
     def tracked_notes(parent: Path) -> Path:
@@ -338,6 +373,45 @@ class TestTheCensus:
         only hold the name as a substring or continue into the package."""
         assert census(self.tracked_notes(tmp_path), parse_plan(plan_dict())) == self.NOTES_HIT
 
+    def test_the_census_reads_the_whole_tree(self, tmp_path):
+        """No directory list: a top-level README and a migration's docstring are lines a
+        reader follows, and the six roots the census once read missed both (lane A's live
+        misses, README.md:440 and a migration's :14; the branch's neutral review, F2)."""
+        root = self.tracked_notes(tmp_path)
+        for path in ("README.md", "migrations/versions/a1_rename.py"):
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_text("first\n``test_sample.TestFirst`` holds it\n",
+                                     encoding="utf-8")
+        scratch.run(root, "add", "-A")
+        found = census(root, parse_plan(plan_dict()))
+        assert [(path, line) for path, line, _ in found] == [
+            ("README.md", 2), ("docs/notes.md", 1), ("migrations/versions/a1_rename.py", 2)]
+
+    def test_the_census_reads_untracked_files_and_honours_gitignore(self, tmp_path):
+        """``prove`` runs before the new package is tracked, so the census reads untracked
+        files (the branch's neutral review, F1); an ignored file is no reader's line."""
+        root = self.tracked_notes(tmp_path)
+        (root / ".gitignore").write_text("build/\n", encoding="utf-8")
+        for path in ("docs/draft.md", "build/out.md"):
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_text("``test_sample.TestBig``\n", encoding="utf-8")
+        found = census(root, parse_plan(plan_dict()))
+        assert [(path, line) for path, line, _ in found] == [
+            ("docs/draft.md", 1), ("docs/notes.md", 1)]
+
+    def test_each_record_is_read_whole(self, tmp_path):
+        """A path git would quote (a non-ASCII name) or that holds a colon, and a line holding
+        a form feed (a line break to ``str.splitlines``, not to git) each come back as the
+        file and line they are; a binary file holds no line and is skipped."""
+        root = self.tracked_notes(tmp_path)
+        (root / "docs" / "café:notes.md").write_text(
+            "x\fsee ``test_sample.TestBig``\n", encoding="utf-8")
+        (root / "docs" / "blob.bin").write_bytes(b"\0test_sample.TestBig\n")
+        scratch.run(root, "add", "-A")
+        found = census(root, parse_plan(plan_dict()))
+        assert found == [("docs/café:notes.md", 1, "x\fsee ``test_sample.TestBig``"),
+                         *self.NOTES_HIT]
+
     @pytest.mark.parametrize("binding", scratch.BINDINGS)
     def test_a_bound_environment_reaches_no_repository_but_the_one_named(
             self, binding, tmp_path, monkeypatch):
@@ -354,43 +428,198 @@ class TestTheCensus:
         assert scratch.sentinel_state(sentinel) == before
 
     def test_archived_documents_are_classified(self, tmp_path):
-        """archive/, historical/ and an ARCHIVED first line are records; the rest is live."""
+        """The plan gate's rule from its one home (:mod:`tools.ci.archive`; the review's F3):
+        archive/ and historical/ at any depth, and a first line, past leading blank lines,
+        that STARTS with the banner, are records.  A live module whose first line merely
+        holds ``ARCHIVED`` is live: ``tests/test_routes/test_archived_definition_edit.py``
+        is one, and the rule this replaced would have hidden it."""
         for path, first in {"docs/archive/a.md": "x", "docs/plans/historical/b.md": "x",
-                            "docs/c.md": "> **ARCHIVED.** old", "docs/d.md": "# Live"}.items():
+                            "docs/c.md": "> **ARCHIVED.** old", "docs/d.md": "\n\n> **ARCHIVED.**",
+                            "docs/e.md": "# Live", "tests/f.py": '"""ARCHIVED definitions."""',
+                            "docs/g.md": "The banner > **ARCHIVED.** is quoted here"}.items():
             (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
             (tmp_path / path).write_text(first + "\n", encoding="utf-8")
-        hits = dynamic.classify(tmp_path, ["docs/archive/a.md:3:x", "docs/plans/historical/b.md:"
-                                           "4:x", "docs/c.md:5:x", "docs/d.md:6:x"], {})
-        assert [h.archived for h in hits] == [True, True, True, False]
+        hits = dynamic.classify(tmp_path, [
+            ("docs/archive/a.md", 3, "x"), ("docs/plans/historical/b.md", 4, "x"),
+            ("docs/c.md", 5, "x"), ("docs/d.md", 6, "x"), ("docs/e.md", 7, "x"),
+            ("tests/f.py", 8, "x"), ("docs/g.md", 9, "x")], {})
+        assert [h.archived for h in hits] == [True, True, True, True, False, False, False]
 
-    @staticmethod
-    def package_hits(tmp_path: Path) -> list[dynamic.Hit]:
-        """The sample, one of whose tests cites the old path in its docstring, split; every
-        line of the package the census judge finds, classified with the verified origins
-        (``git grep`` is the census's own reader; the sample is not a repository)."""
-        repo = build(tmp_path, SAMPLE.replace(
+    #: The sample's docstrings, each naming the old module once: a part's own plan text and a
+    #: slice's, which a plan author wrote and the census must list.
+    PART_TEXT = "The first section; the twin of test_sample.TestBig's opening tests."
+    SLICE_TEXT = "test_a and test_b, which test_sample.py held first."
+
+    def package_hits(self, tmp_path: Path) -> list[dynamic.Hit]:
+        """The sample tracked in a repository, one of its tests citing the old path in its
+        docstring and a part's and a slice's plan text naming the old module, then split and
+        its package LEFT UNTRACKED, as ``prove`` finds it; the real census over it,
+        classified with the verified origins (the review's F1: a hand scan of the package
+        never ran the reader that missed it)."""
+        root = scratch.repository(tmp_path)
+        build(root, SAMPLE.replace(
             '"""One."""', '"""One; its twin lives in tests/test_area/test_sample.py."""'))
-        layout = applied(repo)
-        origins, failures = line_origins(layout, repo)
+        scratch.run(root, "add", "-A")
+        plan = plan_dict()
+        plan["parts"][0]["docstring"] = self.PART_TEXT
+        plan["parts"][1]["nodes"][0]["docstring"] = self.SLICE_TEXT
+        layout = applied(root, plan)
+        origins, failures = line_origins(layout, root)
         assert not failures
-        pattern = mentions(layout.plan)
-        raw = [f"{path}:{number}:{line}" for path in sorted(origins)
-               for number, line in enumerate((repo / path).read_text(
-                   encoding="utf-8").splitlines(), start=1) if pattern.search(line)]
-        return dynamic.classify(repo, raw, origins)
+        assert not scratch.run(root, "ls-files", PACKAGE), "the package must be untracked"
+        return dynamic.classify(root, census(root, layout.plan), origins)
 
     def test_the_tools_own_provenance_is_not_counted(self, tmp_path):
-        """conftest.py's and _helpers.py's docstrings name the source by design: composed."""
-        composed = [h for h in self.package_hits(tmp_path) if h.composed]
-        assert sorted(Path(h.path).name for h in composed) == ["_helpers.py", "conftest.py"]
-        assert all("test_sample.py" in h.text for h in composed)
+        """Each part's "Split from" paragraph and conftest.py's and _helpers.py's docstrings
+        name the source by design: the tool composed them, and only they are dropped."""
+        provenance = [h for h in self.package_hits(tmp_path) if h.provenance]
+        assert sorted(Path(h.path).name for h in provenance) == [
+            "_helpers.py", "conftest.py", "test_big_early.py", "test_big_late.py",
+            "test_first.py"]
+        assert all("test_sample.py" in h.text for h in provenance)
 
-    def test_a_stale_pointer_inside_the_package_is_counted(self, tmp_path):
-        """The moved docstring citing the old path is the source's line, not the tool's: it
-        stays live although it sits inside the new package."""
-        live = [h for h in self.package_hits(tmp_path) if not h.composed and not h.archived]
-        assert [(Path(h.path).name, h.text) for h in live] == [
+    def test_a_pointer_inside_the_package_is_counted(self, tmp_path):
+        """The moved docstring citing the old path is the source's line, and a part's and a
+        slice's plan text is the plan author's: each stays live although it sits inside the
+        new package, and the importer's re-pointed import continues into the package."""
+        live = [(Path(h.path).name, h.text) for h in self.package_hits(tmp_path)
+                if not h.provenance and not h.archived]
+        assert live == [
+            ("test_big_early.py", f'"""{self.SLICE_TEXT}"""'),
+            ("test_first.py", f'"""{self.PART_TEXT}'),
             ("test_first.py", '"""One; its twin lives in tests/test_area/test_sample.py."""')]
+
+
+class TestTheFixtureSetups:
+    """Every fixture the record run SETS UP, read through pytest's public hook (the
+    coordinator's ruling on the follow-up leaf's fork F): one whose reach the split would
+    change is refused, on hand-built observations and under a real pytest, lone and with
+    xdist workers."""
+
+    #: Where the source module's functions are defined, as the hook resolves it.
+    SOURCE_FILE = "/repo/tests/test_area/test_sample.py"
+
+    @staticmethod
+    def setup(argname: str, scope: str = "function", baseid: str = "",
+              file: str | None = "/venv/plugin.py") -> dict:
+        """One fixture set up."""
+        return {"argname": argname, "scope": scope, "baseid": baseid, "file": file,
+                "by": f"{SOURCE}::test_top_level"}
+
+    def judge(self, *setups: dict, ran: tuple[str, ...] = ("t",)) -> list[str]:
+        """The arm's failures for a run that reported one test, ``t``."""
+        return dynamic.fixture_failures({"outcomes": {"t": "passed"}, "setups": list(setups),
+                                         "setups_ran": list(ran)}, SOURCE, self.SOURCE_FILE)
+
+    def test_function_and_session_fixtures_from_anywhere_pass(self):
+        """A plugin's or a parent conftest's fixture whose instance is per test or per run."""
+        assert not self.judge(self.setup("monkeypatch"), self.setup("db", "session", "tests"),
+                              self.setup("_frozen", baseid=SOURCE, file=self.SOURCE_FILE))
+
+    @pytest.mark.parametrize("scope", ["module", "class", "package"])
+    def test_a_scoped_fixture_defined_outside_the_source_is_refused(self, scope):
+        """Its one instance per module, class or package would be cut into one per part."""
+        failures = self.judge(self.setup("area", scope, "tests", "/repo/tests/conftest.py"))
+        assert len(failures) == 1 and "would be cut into one per part" in failures[0]
+
+    def test_a_scoped_fixture_of_the_source_itself_passes(self):
+        """A class-scoped fixture a whole class defines moves with that class."""
+        assert not self.judge(self.setup("_once", "class", f"{SOURCE}::TestFirst",
+                                         self.SOURCE_FILE))
+
+    @pytest.mark.parametrize("baseid", [SOURCE, f"{SOURCE}::TestFirst"])
+    def test_an_imported_fixture_is_refused(self, baseid):
+        """Registered on the source by an import, it would reach one part only."""
+        failures = self.judge(self.setup("shared", baseid=baseid, file="/repo/tests/fx.py"))
+        assert len(failures) == 1 and "imported into the source" in failures[0]
+
+    def test_a_scoped_fixture_whose_file_cannot_be_read_is_refused(self):
+        """No code object to read: treated as defined elsewhere."""
+        assert self.judge(self.setup("odd", "module", "tests", None))
+
+    def test_a_test_no_process_recorded_is_refused(self):
+        """A worker whose file is missing would leave its fixtures unseen."""
+        failures = self.judge(ran=())
+        assert failures == ["no process recorded the fixtures of 1 test(s) the run reported, "
+                            "e.g. ['t']"]
+
+    #: A module that reaches a parent conftest's module-scoped fixture and an imported one.
+    REACHING = textwrap.dedent('''\
+        """Fixtures from elsewhere."""
+        import pytest
+
+        from tests.fixtures_mod import shared_fx
+
+
+        @pytest.fixture
+        def own_fx():
+            """Its own."""
+            return 1
+
+
+        def test_uses(shared_fx, area_fx, own_fx):
+            """All three."""
+            assert shared_fx + area_fx + own_fx == 3
+
+
+        def test_twice(area_fx):
+            """The module fixture again."""
+            assert area_fx == 1
+        ''')
+
+    @staticmethod
+    def reaching_repo(root: Path) -> Path:
+        """The sample repository plus :attr:`REACHING` at ``tests/test_area/test_fx.py``, a
+        module-scoped fixture in the area's conftest and a fixture module it imports."""
+        build(root)
+        for path, text in {
+            "tests/test_area/test_fx.py": TestTheFixtureSetups.REACHING,
+            "tests/test_area/conftest.py": '"""Area."""\nimport pytest\n\n\n'
+                                           '@pytest.fixture(scope="module")\ndef area_fx():\n'
+                                           '    """Module."""\n    return 1\n',
+            "tests/fixtures_mod.py": '"""Shared."""\nimport pytest\n\n\n@pytest.fixture\n'
+                                     'def shared_fx():\n    """Shared."""\n    return 1\n',
+        }.items():
+            (root / path).write_text(text, encoding="utf-8")
+        return root
+
+    @staticmethod
+    def run(root: Path, target: str, *args: str) -> dict:
+        """pytest on ``target`` with the observer, then every process's setups merged by
+        the reader ``record`` uses."""
+        observed = TestTheObserver.observed(root, target, False, *args)
+        observed["setups"], observed["setups_ran"] = merged_setups(root / "observed.json")
+        return observed
+
+    @pytest.mark.parametrize("workers", [(), ("-n", "2")], ids=["lone", "xdist"])
+    def test_the_hook_refuses_what_the_run_set_up(self, tmp_path, workers):
+        """The parent conftest's module fixture and the imported one, each named once; the
+        module's own fixture and pytest's and plugins' function fixtures pass."""
+        root = self.reaching_repo(tmp_path)
+        target = "tests/test_area/test_fx.py"
+        observed = self.run(root, target, *workers)
+        assert sorted(observed["outcomes"].values()) == ["passed", "passed"]
+        failures = dynamic.fixture_failures(observed, target, str((root / target).resolve()))
+        assert sorted(f.split(" (")[0] for f in failures) == [
+            "fixture area_fx", "fixture shared_fx"]
+
+    @pytest.mark.parametrize("workers", [(), ("-n", "2")], ids=["lone", "xdist"])
+    def test_the_sample_sets_up_nothing_to_refuse(self, repo, workers):
+        """The sample's own autouse fixture and the plugins' are no reason to refuse."""
+        observed = self.run(repo, SOURCE, *workers)
+        assert len(observed["outcomes"]) == len(BEFORE_IDS)
+        assert not dynamic.fixture_failures(observed, SOURCE, str((repo / SOURCE).resolve()))
+
+    def test_a_missing_worker_file_is_seen(self, repo):
+        """One xdist worker's file deleted: its tests are no process's, and refused."""
+        observed = self.run(repo, SOURCE, "-n", "2")
+        files = sorted(repo.glob("observed.json.setups-gw*.json"))
+        assert len(files) == 2, "both workers must have written"
+        busiest = max(files, key=lambda f: len(json.loads(f.read_text(encoding="utf-8"))["ran"]))
+        busiest.unlink()
+        observed["setups"], observed["setups_ran"] = merged_setups(repo / "observed.json")
+        failures = dynamic.fixture_failures(observed, SOURCE, str((repo / SOURCE).resolve()))
+        assert len(failures) == 1 and "no process recorded the fixtures" in failures[0]
 
 
 class TestTheObserver:
@@ -412,14 +641,15 @@ class TestTheObserver:
         assert verdict(phases) == status
 
     @staticmethod
-    def observed(root: Path, target: str, collect_only: bool) -> dict:
-        """Run pytest on ``target`` in ``root`` with the observer, as the tool's runs do."""
+    def observed(root: Path, target: str, collect_only: bool, *extra: str) -> dict:
+        """Run pytest on ``target`` in ``root`` with the observer, as the tool's runs do
+        (``extra``: more pytest arguments, such as xdist's ``-n``)."""
         out = root / "observed.json"
         env = dict(os.environ)
         env[OBSERVE_ENV] = str(out)
         env["PYTHONPATH"] = str(REPO)
         args = [sys.executable, "-m", "pytest", target, "-c", "pytest.ini", "-q",
-                "-p", "tools.split._observe", "-p", "no:cacheprovider"]
+                "-p", "tools.split._observe", "-p", "no:cacheprovider", *extra]
         subprocess.run(args + (["--collect-only"] if collect_only else []), cwd=root,
                        env=env, capture_output=True, text=True, check=False)
         return json.loads(out.read_text(encoding="utf-8"))
