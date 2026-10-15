@@ -23,7 +23,6 @@ from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import transfer_service
-from app.services.transfer_legs import transfer_side_leg
 from tests._test_helpers import create_account_of_type
 
 
@@ -49,22 +48,25 @@ def _spec(td, *, from_account_id, to_account_id):
     )
 
 
-def _legs(xfer):
-    """Return this transfer's ``(expense, income)`` legs, by SIDE.
+def _reread(xfer_id):
+    """Commit, expire every loaded object, and return the transfer's row re-read.
 
-    The from-side and to-side :class:`~app.services.transfer_legs.TransferLeg`
-    (``transfer_side_leg``, keyed by the side and never by an account, so it is
-    safe across an endpoint move once the move is flushed).  It returned the
-    two shadow rows, found by their transaction TYPE, until plan step
-    ``balance:X-bi-6-4d-3`` (ruling R-BAL167 class 4: the callers' assertions
-    are unchanged): a transfer is one row since then, and a leg is derived from
-    it.  A leg's ``account_id`` is its side's endpoint column, and its ``name``
-    is composed from the endpoints' current names.
+    What a door WROTE is what the database holds after the commit, not what
+    the session's in-memory object says, so a case reads the row this returns
+    (ruling R-BAL290 part 1), as ``test_transfer_service.py``'s helper of the
+    same name does.  The commit writes whatever a REFUSED door staged, so a
+    refusal case reads what the session would have written.  The cases read
+    the transfer's two legs, by side, until plan step
+    ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-3; the legs were two shadow
+    rows until that step (ruling R-BAL167 class 4), and each is derived from
+    the transfer now: a side's account is its endpoint column
+    (``test_transfer_legs.py``'s ``TestLegOf``) and its label is composed
+    from the endpoints' current names (that file's
+    ``TestALegsDisplayProjections``).
     """
-    return (
-        transfer_side_leg(xfer, is_income=False),
-        transfer_side_leg(xfer, is_income=True),
-    )
+    db.session.commit()
+    db.session.expire_all()
+    return db.session.get(Transfer, xfer_id)
 
 
 class TestTheCreateDoor:
@@ -103,11 +105,13 @@ class TestTheCreateDoor:
         """The control: the same spec with the endpoints swapped succeeds.
 
         A transfer INTO the card is how the card is paid (design 3.5), so it
-        must pass the guard that refuses the reverse.  The transfer exists and
-        its income leg sits on the card, which attributes the refusal above to
-        the card being the SOURCE and to nothing else about a card.  Its legs
-        were its two shadows until plan step ``balance:X-bi-6-4d-3`` (ruling
-        R-BAL167 class 4, :func:`_legs`).
+        must pass the guard that refuses the reverse.  The transfer exists
+        from the spec's source to the card, which attributes the refusal above
+        to the card being the SOURCE and to nothing else about a card.  Read
+        off the row re-read from the database since the checkpoint
+        :func:`_reread` names, where it read the transfer's destination, its
+        legs' accounts and the income leg's label, so its source was asked
+        only of the expense leg.
         """
         with app.app_context():
             td = seed_full_user_data
@@ -117,13 +121,11 @@ class TestTheCreateDoor:
             xfer = transfer_service.create_transfer(_spec(
                 td, from_account_id=td["account"].id, to_account_id=card.id,
             ))
-            db.session.flush()
 
-            assert xfer.to_account_id == card.id
-            expense, income = _legs(xfer)
-            assert expense.account_id == td["account"].id
-            assert income.account_id == card.id
-            assert income.name == f"Transfer from {td['account'].name}"
+            row = _reread(xfer.id)
+            assert (row.from_account_id, row.to_account_id) == (
+                td["account"].id, card.id,
+            )
 
 
 class TestTheEndpointMoveDoor:
@@ -137,10 +139,15 @@ class TestTheEndpointMoveDoor:
         The create door refuses a card source; the edit path can move a
         source (plan step R10-b), so it inherits the rule -- otherwise the one
         guard would have a second door straight past it.  The refusal runs in
-        ``_resolve_endpoints``, which writes nothing, so the transfer and both
-        its legs still name their pre-edit accounts when it raises (the legs
-        were its two shadow rows until plan step ``balance:X-bi-6-4d-3``;
-        ruling R-BAL167 class 4, :func:`_legs`).
+        ``_resolve_endpoints``, which writes nothing, so the transfer still
+        names its pre-edit accounts when it raises: read off the row re-read
+        after a commit, which writes whatever the refused update staged
+        (:func:`_reread`).  A move assigns the endpoint RELATIONSHIPS
+        (``_apply_endpoint_move``), whose columns sync only at a flush, so
+        until the checkpoint :func:`_reread` names the case flushed, read the
+        session's source column and relationship and both legs' accounts, and
+        rolled the edit back; its destination was asked only of the income
+        leg.
         """
         with app.app_context():
             td = seed_full_user_data
@@ -157,18 +164,10 @@ class TestTheEndpointMoveDoor:
                     xfer.id, td["user"].id, from_account_id=card.id,
                 )
 
-            # The move assigns RELATIONSHIPS (``_apply_endpoint_move``), whose
-            # FK columns sync only at a flush -- so a staged move would still
-            # read the old ``from_account_id`` here.  Flush first, so the
-            # column assertions grade what the session would have written,
-            # then roll the refused edit back.
-            db.session.flush()
-            assert xfer.from_account_id == td["account"].id
-            assert xfer.from_account.id == td["account"].id
-            expense, income = _legs(xfer)
-            assert expense.account_id == td["account"].id
-            assert income.account_id == td["savings_account"].id
-            db.session.rollback()
+            row = _reread(xfer.id)
+            assert (row.from_account_id, row.to_account_id) == (
+                td["account"].id, td["savings_account"].id,
+            )
 
     def test_a_move_of_the_destination_onto_a_card_is_allowed(
         self, app, db, seed_full_user_data,
@@ -176,11 +175,12 @@ class TestTheEndpointMoveDoor:
         """The control: the same edit naming the card as DESTINATION lands.
 
         Moving where a transfer arrives onto a card turns it into that card's
-        payment, which is allowed; the income leg follows and the expense
-        leg's derived name states the new destination.  The legs were the two
-        shadow rows, whose names the move re-wrote, until plan step
-        ``balance:X-bi-6-4d-3`` (ruling R-BAL167 class 4, :func:`_legs`); a
-        leg's name is composed from the endpoints now.
+        payment, which is allowed: the destination is the card and the source
+        is where it was, read off the row re-read from the database since the
+        checkpoint :func:`_reread` names, where it also read the legs'
+        accounts and the expense leg's label; the legs were the two shadow
+        rows, whose names the move re-wrote, until plan step
+        ``balance:X-bi-6-4d-3``.
         """
         with app.app_context():
             td = seed_full_user_data
@@ -195,14 +195,11 @@ class TestTheEndpointMoveDoor:
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, to_account_id=card.id,
             )
-            db.session.flush()
 
-            assert xfer.from_account_id == td["account"].id
-            assert xfer.to_account_id == card.id
-            expense, income = _legs(xfer)
-            assert expense.account_id == td["account"].id
-            assert expense.name == f"Transfer to {card.name}"
-            assert income.account_id == card.id
+            row = _reread(xfer.id)
+            assert (row.from_account_id, row.to_account_id) == (
+                td["account"].id, card.id,
+            )
 
     def test_a_legacy_card_source_row_can_still_move_its_destination(
         self, app, db, seed_full_user_data,
@@ -219,7 +216,9 @@ class TestTheEndpointMoveDoor:
         the transfer alone since plan step ``balance:X-bi-6-4d-3``, where it was
         planted on the transfer AND its expense shadow: a leg is derived from
         its transfer, so there is no second row to plant it on (ruling
-        R-BAL167 class 1).
+        R-BAL167 class 1).  The move is read off the row re-read from the
+        database since the checkpoint :func:`_reread` names, where it read
+        the session's columns and the income leg's account.
         """
         with app.app_context():
             td = seed_full_user_data
@@ -242,11 +241,9 @@ class TestTheEndpointMoveDoor:
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, to_account_id=elsewhere.id,
             )
-            db.session.flush()
 
-            assert xfer.from_account_id == card.id, (
+            row = _reread(xfer.id)
+            assert row.from_account_id == card.id, (
                 "the source it did not touch stayed where it was"
             )
-            assert xfer.to_account_id == elsewhere.id
-            _, income = _legs(xfer)
-            assert income.account_id == elsewhere.id
+            assert row.to_account_id == elsewhere.id

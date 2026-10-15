@@ -12,8 +12,10 @@ thing still stored per side (ruling R-BAL290 part 1, the developer,
 2026-10-14).  The edit group, :class:`TestUpdateTransfer`, reads so since
 that step's checkpoint 2e-2b-1b-1, and the create and figure groups,
 :class:`TestCreateTransfer` and :class:`TestTheFigureCorrectionDoorOnAPair`,
-since its checkpoint 2e-2b-1b-2; the move and restore groups move onto the
-same reads at its later checkpoints.  What each side shows of a Projected or
+since its checkpoint 2e-2b-1b-2, and the move group,
+:class:`TestMovingATransferBetweenAccounts`, since its checkpoint 2e-2b-1b-3;
+the restore group moves onto the same reads at a later checkpoint.  What
+each side shows of a Projected or
 Cancelled row is ``test_transfer_legs.py``'s
 ``TestBothSidesShowTheTransfer``, and a settled row's price that file's
 ``TestTheLegMapProducers::test_a_settled_leg_records_its_movements_figure``
@@ -56,7 +58,6 @@ from app.services import (
 from app.services.transfer_legs import (
     grid_transfer_leg,
     planned_transfer_legs,
-    transfer_side_leg,
 )
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
@@ -2493,10 +2494,23 @@ class TestMovingATransferBetweenAccounts:
     definition's account change reached its generated rows by DESTROYING and
     re-creating every one of them, and a NON-repeating transfer refused the same
     edit outright because nothing could carry it.  The arm moves the transfer
-    and reconciles the ledger on both sides of the move; its two legs, and
-    each leg's display name, are derived from the transfer's endpoints.  Until
-    plan step ``balance:X-bi-6-4d-3`` the legs were two shadow rows, which the
-    arm re-pointed and re-named (that upkeep is deleted at the step's leaf 3b).
+    and reconciles the ledger on both sides of the move.  Until plan step
+    ``balance:X-bi-6-4d-3`` its two legs were two shadow rows, which the arm
+    re-pointed and re-named (that upkeep is deleted at the step's leaf 3b);
+    each is derived from the transfer's endpoints now.  So a case that grades
+    where the move LEFT the transfer reads the endpoint columns of the row
+    re-read from the database since that step's checkpoint 2e-2b-1b-3, where
+    it read the session's columns and, in five of the six, legs' accounts or
+    labels (ruling R-BAL290 part 1).  Which endpoint each side is on is
+    ``test_transfer_legs.py``'s ``TestLegOf`` and its
+    ``TestBothSidesShowTheTransfer``, and each side's label, composed from
+    the endpoints' current names, its ``TestALegsDisplayProjections``.  A
+    ledger case that reads the transfer reads the session's row after the
+    update's own flush, as the reconcile inside the update does, and
+    :meth:`test_moving_a_settled_payment_ONTO_a_loan_reconciles_that_loan`'s
+    relationship read is the firing control for a move that assigns the
+    foreign key and not the relationship, which a re-read row cannot be: it
+    loads the relationship by that column.
     """
 
     def _other_savings(self, td, name="Second Savings", observed_on=None):
@@ -2532,37 +2546,21 @@ class TestMovingATransferBetweenAccounts:
         db.session.flush()
         return account
 
-    def _legs(self, xfer):
-        """Return this transfer's ``(expense, income)`` legs, by SIDE.
-
-        The from-side and to-side :class:`~app.services.transfer_legs.TransferLeg`
-        (``transfer_side_leg``, keyed by the side and never by an account, so
-        it is safe across an endpoint move once the move is flushed).  It
-        returned the two shadow rows, found by their transaction TYPE, until
-        plan step ``balance:X-bi-6-4d-3`` (ruling R-BAL167 class 4: the
-        callers' assertions are unchanged).  A leg's ``account_id`` is its
-        side's endpoint COLUMN, and its ``name`` is composed from the endpoint
-        RELATIONSHIPS' current names.
-        """
-        return (
-            transfer_side_leg(xfer, is_income=False),
-            transfer_side_leg(xfer, is_income=True),
-        )
-
-    def test_the_destination_move_carries_the_income_leg_and_its_name(
-        self, app, db, transfer_data
+    def test_a_destination_move_writes_the_new_destination(
+        self, app, transfer_data
     ):
-        """Moving the destination moves the income leg and re-labels the expense leg.
+        """Moving the destination writes the new one and leaves the source where it was.
 
-        The expense leg stays on the unchanged source, but its NAME says where
-        the money is going -- so it must follow too.  A leg on the new account
-        still labelled with the old one contradicts itself, and the
-        delete-and-recreate this replaces got that right for free by rebuilding
-        the pair.  The legs were two shadow rows whose names the arm re-wrote
-        until plan step ``balance:X-bi-6-4d-3``; each is derived from the
-        transfer now, its name composed from the endpoints (ruling R-BAL167
-        class 4, :meth:`_legs`), and the re-write goes with the shadows at that
-        step's leaf 3b.
+        What the move wrote, re-read from the database (ruling R-BAL290
+        part 1).  It also read both legs' accounts and labels until plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-3: the legs were two
+        shadow rows whose accounts and names the arm re-wrote until that
+        step, and the expense leg's label had to follow a destination it does
+        not sit on.  Each leg is derived from the transfer now, so a side's
+        account is its endpoint column (``test_transfer_legs.py``'s
+        ``TestLegOf``) and its label is composed from the endpoints' current
+        names (that file's ``TestALegsDisplayProjections``).  Renamed from
+        ``test_the_destination_move_carries_the_income_leg_and_its_name``.
         """
         with app.app_context():
             td = transfer_data
@@ -2572,20 +2570,19 @@ class TestMovingATransferBetweenAccounts:
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, to_account_id=elsewhere.id,
             )
-            db.session.flush()
 
-            assert xfer.from_account_id == td["account"].id
-            assert xfer.to_account_id == elsewhere.id
-            expense, income = self._legs(xfer)
-            assert expense.account_id == td["account"].id
-            assert income.account_id == elsewhere.id
-            assert expense.name == f"Transfer to {elsewhere.name}"
-            assert income.name == f"Transfer from {td['account'].name}"
+            row = _reread(xfer.id)
+            assert (row.from_account_id, row.to_account_id) == (
+                td["account"].id, elsewhere.id,
+            )
 
-    def test_the_source_move_carries_the_expense_leg_and_its_name(
-        self, app, db, transfer_data
-    ):
-        """The mirror of the case above, on the other leg (class 4 likewise)."""
+    def test_a_source_move_writes_the_new_source(self, app, transfer_data):
+        """The mirror of the case above, on the source.
+
+        Renamed from ``test_the_source_move_carries_the_expense_leg_and_its_name``
+        at the same checkpoint, which dropped its legs' accounts and labels
+        likewise.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
@@ -2594,20 +2591,14 @@ class TestMovingATransferBetweenAccounts:
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, from_account_id=elsewhere.id,
             )
-            db.session.flush()
 
-            assert xfer.from_account_id == elsewhere.id
-            assert xfer.to_account_id == td["savings_account"].id
-            expense, income = self._legs(xfer)
-            assert expense.account_id == elsewhere.id
-            assert income.account_id == td["savings_account"].id
-            assert expense.name == (
-                f"Transfer to {td['savings_account'].name}"
+            row = _reread(xfer.id)
+            assert (row.from_account_id, row.to_account_id) == (
+                elsewhere.id, td["savings_account"].id,
             )
-            assert income.name == f"Transfer from {elsewhere.name}"
 
     def test_an_update_naming_no_account_leaves_the_transfer_where_it_is(
-        self, app, db, transfer_data
+        self, app, transfer_data
     ):
         """The control: an ordinary edit moves neither endpoint.
 
@@ -2629,14 +2620,18 @@ class TestMovingATransferBetweenAccounts:
         checkpoint 2e-1a and by its review).  Under one that renames the
         destination ACCOUNT on every edit (the review of checkpoint 2e-2a-1
         named it R-RENAME-ON-EDIT), the name half, re-expressed on the legs,
-        fails while the endpoint half passes; in this file
-        ``test_the_source_move_carries_the_expense_leg_and_its_name``'s
-        expense-name assert fails under it (measured at checkpoint 2e-2a-1a
-        and by that review).  That a
+        fails while the endpoint half passes; in this file the source move's
+        expense-label assert failed under it (measured at checkpoint 2e-2a-1a
+        and by that review), and only because that case's expected label was
+        read off a fixture account outside the test's session.  That case
+        reads no label since that step's checkpoint 2e-2b-1b-3, and nothing
+        in this file catches the mutant since (measured there).  That a
         leg's name is composed from its endpoints' current names is pinned by
         ``test_transfer_legs.py``'s ``TestALegsDisplayProjections``
         (``test_the_label_is_composed_from_the_endpoints_current_names``).
-        The endpoint half stands.  Renamed from
+        The endpoint half stands, read off the row re-read from the database
+        since that checkpoint, where it read the object in the session
+        (ruling R-BAL290 part 1).  Renamed from
         ``test_an_update_naming_no_account_leaves_the_pair_where_it_is``.
         """
         with app.app_context():
@@ -2646,10 +2641,11 @@ class TestMovingATransferBetweenAccounts:
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, amount_ownership=AmountOwnership.own(Decimal("300.00")),
             )
-            db.session.flush()
 
-            assert xfer.from_account_id == td["account"].id
-            assert xfer.to_account_id == td["savings_account"].id
+            row = _reread(xfer.id)
+            assert (row.from_account_id, row.to_account_id) == (
+                td["account"].id, td["savings_account"].id,
+            )
 
     def test_a_move_that_would_make_the_endpoints_equal_is_refused(
         self, app, db, transfer_data
@@ -2717,7 +2713,10 @@ class TestMovingATransferBetweenAccounts:
         It is planted on the transfer alone since plan step
         ``balance:X-bi-6-4d-3``, where it was planted on the transfer AND its
         expense shadow: a leg is derived from its transfer, so there is no
-        second row to plant it on (ruling R-BAL167 class 1).
+        second row to plant it on (ruling R-BAL167 class 1).  Each move is
+        read off the row re-read from the database since that step's
+        checkpoint 2e-2b-1b-3, where it read the object in the session and
+        the moved side's leg (ruling R-BAL290 part 1).
         """
         with app.app_context():
             td = transfer_data
@@ -2735,14 +2734,12 @@ class TestMovingATransferBetweenAccounts:
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, to_account_id=elsewhere.id,
             )
-            db.session.flush()
 
-            assert xfer.from_account_id == loan.id, (
+            row = _reread(xfer.id)
+            assert row.from_account_id == loan.id, (
                 "the source it did not touch stayed where it was"
             )
-            assert xfer.to_account_id == elsewhere.id
-            _, income = self._legs(xfer)
-            assert income.account_id == elsewhere.id
+            assert row.to_account_id == elsewhere.id
 
             # And moving that source OFF the loan is the edit the narrowing
             # makes reachable at all -- it is the vacated-SOURCE arm of
@@ -2753,10 +2750,7 @@ class TestMovingATransferBetweenAccounts:
                 xfer.id, td["user"].id,
                 from_account_id=td["account"].id,
             )
-            db.session.flush()
-            assert xfer.from_account_id == td["account"].id
-            expense, _ = self._legs(xfer)
-            assert expense.account_id == td["account"].id
+            assert _reread(xfer.id).from_account_id == td["account"].id
             # The loan it left was reconciled by the move: a follow-up sync
             # writes nothing.
             after_move = db.session.query(JournalEntry).count()
@@ -2817,7 +2811,7 @@ class TestMovingATransferBetweenAccounts:
             db.session.rollback()
 
     def test_a_refused_amount_does_not_move_the_transfer_first(
-        self, app, db, transfer_data
+        self, app, transfer_data
     ):
         """A refusal LATER in the payload still leaves the transfer and its legs untouched.
 
@@ -2831,33 +2825,27 @@ class TestMovingATransferBetweenAccounts:
         a loan payment's split reversal, so this exact payload moved the pair
         and reversed a ledger correction before deciding the edit was illegal.
 
-        Asserts the legs, not just the transfer's columns: a half-applied move
-        leaves the legs on accounts the money does not move between, and their
-        display names saying so.  The legs were two shadow rows until plan
-        step ``balance:X-bi-6-4d-3`` (ruling R-BAL167 class 4, :meth:`_legs`).
-        The update does not flush before the amount's refusal raises, so the
-        case flushes explicitly first: with the refusal moved below the
-        endpoint apply, the staged move then reaches the transfer's own
-        destination column, and that column fails the case on its own
-        (measured at that step's checkpoint 2e-1a, on this case and on a copy
-        of it asserting the transfer's three columns alone).  Until then its
-        column elements caught the move only through its own :meth:`_legs`
-        re-read, a query whose autoflush wrote the staged move.  Its leg NAMES
-        catch it with no flush at all, since a name reads the endpoint
-        relationship that the move assigns at once (measured by the review of
-        checkpoint 2e-1a).  Renamed from
+        It reads what the refused update would have WRITTEN: the transfer's
+        row re-read after a commit, which writes whatever the update staged
+        (ruling R-BAL290 part 1, since plan step ``balance:X-bi-6-4d-3``'s
+        checkpoint 2e-2b-1b-3).  A move assigns the endpoint RELATIONSHIPS
+        (``_apply_endpoint_move``), whose columns sync only at a flush, and
+        the update does not flush before the amount's refusal raises; with
+        the refusal moved below the endpoint apply, the commit writes the
+        staged move and the re-read destination column fails the case
+        (measured at that checkpoint).  Until then it flushed explicitly and
+        read the session's three columns and both legs' accounts and labels,
+        the legs two shadow rows until that step (ruling R-BAL167 class 4);
+        at checkpoint 2e-1a the flush was added, since its column elements had
+        caught the move only through its leg re-read, a query whose autoflush
+        wrote the staged move.  Renamed from
         ``test_a_refused_amount_does_not_move_the_pair_first``.
         """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
             elsewhere = self._other_savings(td)
-            expense, income = self._legs(xfer)
-            before = (
-                xfer.from_account_id, xfer.to_account_id, xfer.amount,
-                expense.account_id, income.account_id,
-                expense.name, income.name,
-            )
+            before = (xfer.from_account_id, xfer.to_account_id, xfer.amount)
 
             with pytest.raises(ValidationError, match="must be positive"):
                 transfer_service.update_transfer(
@@ -2866,40 +2854,31 @@ class TestMovingATransferBetweenAccounts:
                     amount_ownership=AmountOwnership.own(Decimal("-5.00")),
                 )
 
-            # A move assigns RELATIONSHIPS (``_apply_endpoint_move``), whose
-            # FK columns sync only at a flush, and the update does not flush
-            # before the refusal raises -- so a staged move would still read
-            # the old ``to_account_id`` here.  Flush first, so the column
-            # assertions grade what the session would have written.
-            db.session.flush()
-            expense, income = self._legs(xfer)
-            assert (
-                xfer.from_account_id, xfer.to_account_id, xfer.amount,
-                expense.account_id, income.account_id,
-                expense.name, income.name,
-            ) == before
+            row = _reread(xfer.id)
+            assert (row.from_account_id, row.to_account_id, row.amount) == before
 
-    def test_a_refused_move_leaves_the_transfer_and_its_legs_untouched(
-        self, app, db, transfer_data
+    def test_a_refused_move_leaves_the_transfer_untouched(
+        self, app, transfer_data
     ):
         """An endpoint refusal itself writes nothing either.
 
         The complementary half: the endpoint gates are read-only, so a move
         refused for its OWN reason -- here, endpoints that would end up equal --
-        leaves the transfer and both its legs exactly as they were.  Renamed
-        from ``test_a_refused_move_leaves_all_three_rows_untouched``: the
-        legs were the transfer's two shadow rows until plan step
-        ``balance:X-bi-6-4d-3`` (ruling R-BAL167 class 4, :meth:`_legs`).
+        leaves the transfer exactly as it was, beside an amount the same
+        request states.  Read off the row re-read after a commit, which writes
+        whatever the refused update staged (ruling R-BAL290 part 1), since
+        plan step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-3, where it
+        read the session's three columns and both legs' accounts and labels.
+        Renamed from
+        ``test_a_refused_move_leaves_the_transfer_and_its_legs_untouched``,
+        and before that ``test_a_refused_move_leaves_all_three_rows_untouched``:
+        the legs were the transfer's two shadow rows until that step (ruling
+        R-BAL167 class 4).
         """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
-            expense, income = self._legs(xfer)
-            before = (
-                xfer.from_account_id, xfer.to_account_id, xfer.amount,
-                expense.account_id, income.account_id,
-                expense.name, income.name,
-            )
+            before = (xfer.from_account_id, xfer.to_account_id, xfer.amount)
 
             with pytest.raises(ValidationError, match="must be different"):
                 transfer_service.update_transfer(
@@ -2908,12 +2887,8 @@ class TestMovingATransferBetweenAccounts:
                     to_account_id=td["account"].id,
                 )
 
-            expense, income = self._legs(xfer)
-            assert (
-                xfer.from_account_id, xfer.to_account_id, xfer.amount,
-                expense.account_id, income.account_id,
-                expense.name, income.name,
-            ) == before
+            row = _reread(xfer.id)
+            assert (row.from_account_id, row.to_account_id, row.amount) == before
 
     def test_moving_a_settled_payment_off_a_loan_reconciles_the_loan_it_left(
         self, app, db, transfer_data
