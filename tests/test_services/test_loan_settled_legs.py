@@ -490,7 +490,8 @@ class TestTheSettledHalfComplementsThePlanHalf:
         graded by ``test_loan_payment_service.py``'s
         ``test_excludes_deleted_transactions`` (both its cases); a ``$0.00``
         close held nothing and stays Paid (measured 2026-10-15), so the
-        SETTLED half's filter is what drops that one.
+        SETTLED half's filter is what drops that one, graded by
+        :meth:`test_a_soft_deleted_zero_dollar_close_is_in_neither_half`.
 
         The old partition keyed the settled half on the TWIN's status, so a
         twin Paid under a Projected parent was in BOTH halves and a parent
@@ -631,6 +632,88 @@ class TestTheSettledHalfComplementsThePlanHalf:
             assert planned == sorted([plain.id, reverted.id])
             assert cancelled.id not in settled + planned
             assert cancelled_moved.id not in settled + planned
+
+    def test_a_soft_deleted_zero_dollar_close_is_in_neither_half(
+        self, app, seed_user, seed_periods,
+    ):
+        """A $0.00 close deleted through the door: in NEITHER half, and the walk books no split.
+
+        Not a member of the partition above: "neither half" is its own claim.
+        The door's soft delete takes a Paid payment's records off and returns
+        it as a plan (ruling **R-BAL246**), so a deleted payment that held
+        records is the PLAN half's filter's to drop
+        (``test_loan_payment_service.py``'s
+        ``test_excludes_deleted_transactions``).  A ``$0.00`` close holds no
+        record (ruling **R-BAL141**: ``$0.00`` is the absence of one), so the
+        delete takes nothing off and keeps it Paid
+        (:func:`~app.utils.balance_predicates.delete_returns_to_plan`), and
+        only the SETTLED half's own ``Transfer.is_deleted`` filter drops it.
+        That half is the view the loan walk, the posting reader and the
+        escrow guard read (:func:`~app.services.loan_loaders.income_shadows`
+        names them), so a deleted close it kept would still book the 03-01
+        installment's whole charge as unpaid -- the split
+        :class:`TestAZeroDollarCloseIsDatedByTheInstallmentItSkips` reads on
+        a live close -- for a payment its owner deleted.
+
+        The close is read before the delete too: in the settled half, with
+        one split on the installment, so the delete is what moves it.  The
+        guards: before the delete the close holds no side record (why the
+        door keeps it Paid); after it, it is hidden and still settled.  A
+        side record is not read AFTER the delete, because that read could not
+        fail: the database refuses to hide a transfer still holding one
+        (``budget.refuse_hiding_a_transfer_holding_money`` in
+        ``app/deleted_row_infrastructure.py``, ruling **R-CC92**).  Measured
+        2026-10-15 on this case with the close settled at its plan and a
+        delete that took nothing off: the commit was refused, "transfer 1
+        was deleted while it still holds a recorded payment: take it off the
+        books first".
+
+        Added at plan step ``balance:X-bi-6-4d-3``: the settled half's filter
+        had no test (measured 2026-10-15: with it dropped, the full suite's
+        failing set was unchanged).
+        """
+        with app.app_context():
+            loan = _loan(seed_user)
+            checking = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            close = create_settled_transfer(
+                seed_user, db.session, checking, loan, seed_periods[_PERIOD],
+                amount=Decimal("1000.00"), settled_amount=Decimal("0.00"),
+                settled_on=_CLOSED_ON, due_date=_DUE,
+            )
+            db.session.commit()
+            transfer_id = close.id
+            assert [
+                transfer_side_record(db.session, transfer_id, account.id)
+                for account in (checking, loan)
+            ] == [None, None], "the guard: a $0.00 close holds no side record"
+            before = loan_loaders.income_shadows(
+                loan.id, scenario_id, options=(), leg_options=(),
+            )
+            assert [leg.transfer.id for leg in before.settled] == [transfer_id]
+            assert [
+                outcome.due_date
+                for outcome in walk_loan_ledger(loan.id, scenario_id).settled_splits
+            ] == [_DUE]
+
+            transfer_service.delete_transfer(
+                transfer_id, seed_user["user"].id, soft=True,
+            )
+            db.session.commit()
+            db.session.expire_all()
+            deleted = db.session.get(Transfer, transfer_id)
+            assert deleted.is_deleted is True, "the guard: the door hid it"
+            assert deleted.status.is_settled is True, (
+                "the guard: a close that held nothing stays settled, so only "
+                "the settled half's filter can drop it"
+            )
+
+            after = loan_loaders.income_shadows(
+                loan.id, scenario_id, options=(), leg_options=(),
+            )
+            assert [leg.transfer.id for leg in after.settled] == []
+            assert [leg.transfer.id for leg in after.projected] == []
+            assert walk_loan_ledger(loan.id, scenario_id).settled_splits == []
 
     def test_a_drifted_payment_whose_money_moved_is_counted_once_by_its_money(
         self, app, db, seed_user, seed_periods,
