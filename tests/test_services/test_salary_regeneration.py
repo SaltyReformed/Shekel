@@ -17,7 +17,7 @@ does with plain data:
 
 What it does with a template-backed profile end to end -- the re-priced
 template amount, the regenerated rows -- is graded where the doors are:
-``tests/test_routes/test_salary.py`` for the salary page and
+``tests/test_routes/test_salary/`` for the salary page and
 ``tests/test_routes/test_retirement.py::TestTheRailSavesARaisesEndYear`` for
 the rail, both of which observe the template's amount move.
 """

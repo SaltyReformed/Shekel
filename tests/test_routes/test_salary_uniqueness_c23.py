@@ -57,7 +57,7 @@ PAYCHECK_LINES_UNIQUE = "uq_paycheck_lines_profile_name"
 def _freeze_today_inside_seed_range(monkeypatch):
     """Freeze today inside the seeded period range.
 
-    Mirrors the fixture in ``test_salary.py``.  Required because
+    Mirrors the fixture in ``test_salary/conftest.py``.  Required because
     these tests exercise routes that call ``_regenerate_salary_transactions``,
     which in turn asks which paycheck contains today; that lookup
     needs to find a seeded period at "today" or it
