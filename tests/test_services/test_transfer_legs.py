@@ -32,6 +32,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
+from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -94,6 +95,7 @@ from app.services.transfer_service import (
     TransferSpec,
     create_transfer as create_transfer_from_spec,
     delete_transfer,
+    settle_transfer,
     update_transfer,
 )
 from app.utils.balance_predicates import is_projected_clause
@@ -111,6 +113,7 @@ from tests._test_helpers import (
     create_settled_transfer,
     create_transfer,
     figure_source_columns,
+    generate_transfer_of,
     loan_params_for,
     make_investment_account,
     read_pass,
@@ -182,6 +185,7 @@ def _shown(leg, basis):
         "category": leg.category,
         "is_override": leg.is_override,
         "notes": leg.notes,
+        "template_id": leg.template_id,
     }
 
 
@@ -190,7 +194,9 @@ def _held(stored, is_income):
 
     *stored* is the row read by SQL, so its values are the database's own;
     the status, period and category ROWS are the ones its id columns name,
-    and a row filed under no category names no category row.
+    and a row filed under no category names no category row.  A side names
+    no transaction definition, so its ``template_id`` is ``None`` whatever
+    the row holds.
     """
     return {
         "account_id": stored["to_account_id" if is_income else "from_account_id"],
@@ -208,6 +214,7 @@ def _held(stored, is_income):
         ),
         "is_override": stored["is_override"],
         "notes": stored["notes"],
+        "template_id": None,
     }
 
 
@@ -308,7 +315,16 @@ class TestBothSidesShowTheTransfer:
         of the row's columns are read through a side and are not in it: the
         id (the side's cell key), the owner, the scenario and the delete
         flag; :class:`TestLegOf`'s in-memory case grades the owner's and the
-        scenario's reads.
+        scenario's reads.  The table also reads each side's
+        ``template_id``, which no column answers: a side names no
+        transaction definition, so the table expects ``None`` on every
+        side.  The three transfers are ad-hoc and committed, so a side that
+        answered a persisted id for a transfer with no definition -- its
+        transfer's own -- disagrees here, which neither case of
+        :class:`TestALegsDisplayProjections` can see: the label case's
+        transfers have no id, and the saved transfer there has a definition
+        (the mutant TMPL-ONEOFF-ID of the review of plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2a, which passes both).
 
         Three transfers are written through the doors: Savings to Reserve
         at $1,062.48, Projected, in the sixth period, due nine days in,
@@ -1742,61 +1758,146 @@ class TestALegsDisplayProjections:
     def test_the_label_is_composed_from_the_endpoints_current_names(self):
         """Each side's label names the OTHER endpoint, as it is named now.
 
-        Whatever the transfer itself is named, generated or one-off: both
-        transfers here carry a custom name, one with a template link and one
-        without, so a side that read the transfer's name would answer it on
-        either (the one-off joined after the review of plan step
-        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2: a side answering a
-        one-off's own name passed the linked transfer).  And
-        neither side names a transaction definition, though the first
-        transfer has one: it carries its template link on BOTH the column
-        and the relationship, so a side that read the link either way would
-        answer it.  Until the review of that checkpoint the link was on the
-        column alone, and a side reading the relationship passed this case
-        and every other test in the suite (the review's mutant TMPL-REL).
-        ``test_transfer_service.py``'s
-        ``test_with_custom_name`` and ``test_with_template_id`` asked a
-        created transfer's two sides those questions until plan step
-        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2, which moved them
-        here (ruling R-BAL290 part 1); its
+        Three transfers, one of each shape the model's own accessors
+        (``Transfer.recurs``, ``Transfer.is_placed``) tell apart: GENERATED,
+        its definition carrying a recurrence rule; PLACED, its definition
+        carrying none (a one-time transfer); and AD-HOC, naming no
+        definition.  Each carries a custom name, and each linked one carries
+        its link on BOTH spellings, the column and the relationship, its
+        definition active.  Guards on the input check the three shapes and
+        the links first.  On all six sides the case reads the label, the
+        ``template_id`` and ``recurs``: the label names the other endpoint
+        whatever the transfer is named, and no side names a transaction
+        definition or recurs, whatever its transfer's shape (the grid's
+        row-key contract, ``TransferLeg.template_id``).  So a side that
+        answered its transfer's own name, or its link, on any one of the
+        three shapes -- through the column or the relationship, or only where
+        the rule, the active flag, ``recurs`` or ``is_placed`` is set --
+        disagrees here.  None of the three has an id or a record, so the
+        case cannot see an answer gated on either: the next case asks a
+        saved, settled, generated transfer's sides, and the projection table
+        (:class:`TestBothSidesShowTheTransfer`) committed ad-hoc ones.
+
+        ``test_transfer_service.py``'s ``test_with_custom_name`` and
+        ``test_with_template_id`` asked a created transfer's two sides these
+        questions until plan step ``balance:X-bi-6-4d-3``'s checkpoint
+        2e-2b-1b-2, which moved them here (ruling R-BAL290 part 1); the
+        second asked them of an ENGINE-generated transfer of a definition
+        whose rule recurs every period.  Its
         ``test_leg_names_reference_the_other_endpoint``, which asked only
-        each side's label, was deleted there.
+        each side's label, was deleted there.  The case moved held one
+        transfer, its link on the column alone, and two reviews widened it.
+        After that checkpoint's review the link rides the relationship too
+        (a side reading the relationship passed this case and, by that
+        review's full-suite run, changed no other test's outcome: its mutant
+        TMPL-REL), which made the transfer PLACED, and an ad-hoc transfer is
+        asked its label.  After checkpoint 2e-2b-1b-2a's review the
+        generated transfer joined and every side is asked all three: a side
+        answering its link only where its transfer recurs passed (its HIGH 1).
         """
         savings = Account(name="Savings")
         checking = Account(name="Checking")
-        transfer = Transfer(
-            from_account=checking, to_account=savings,
-            template=TransferTemplate(id=5, name="Mortgage"),
-            name="Mortgage Payment",
+        generated = Transfer(
+            from_account=checking, to_account=savings, name="Mortgage Payment",
+            template=TransferTemplate(
+                id=5, name="Mortgage", is_active=True,
+                recurrence_rule=RecurrenceRule(),
+            ),
         )
-        transfer.from_account_id, transfer.to_account_id = 1, 2
-        transfer.transfer_template_id = 5
-        # A guard on the INPUT: the link is on both of its spellings.
-        assert (transfer.transfer_template_id, transfer.template.id) == (5, 5)
-        expense = TransferLeg(transfer=transfer, account_id=1, is_income=False)
-        income = TransferLeg(transfer=transfer, account_id=2, is_income=True)
+        placed = Transfer(
+            from_account=checking, to_account=savings, name="Car Down Payment",
+            template=TransferTemplate(id=6, name="Down Payment", is_active=True),
+        )
+        ad_hoc = Transfer(
+            from_account=checking, to_account=savings, name="Rent Share",
+        )
+        generated.transfer_template_id, placed.transfer_template_id = 5, 6
+        transfers = (generated, placed, ad_hoc)
+        for transfer in transfers:
+            transfer.from_account_id, transfer.to_account_id = 1, 2
+        # Guards on the INPUT: the three shapes, and each link on both of
+        # its spellings.
+        assert [(t.recurs, t.is_placed) for t in transfers] == [
+            (True, False), (False, True), (False, False),
+        ]
+        assert [
+            (t.transfer_template_id, None if t.template is None else t.template.id)
+            for t in transfers
+        ] == [(5, 5), (6, 6), (None, None)]
+        sides = [
+            TransferLeg(transfer=t, account_id=account_id, is_income=is_income)
+            for t in transfers
+            for account_id, is_income in ((1, False), (2, True))
+        ]
 
-        assert expense.name == "Transfer to Savings"
-        assert income.name == "Transfer from Checking"
+        assert [(side.name, side.template_id, side.recurs) for side in sides] == [
+            ("Transfer to Savings", None, False),
+            ("Transfer from Checking", None, False),
+        ] * 3
         assert leg_label(checking, savings) == (
             "Transfer to Savings", "Transfer from Checking",
         )
-        assert expense.account is checking and income.account is savings
-        one_off = Transfer(
-            from_account=checking, to_account=savings, name="Rent Share",
-        )
-        one_off.from_account_id, one_off.to_account_id = 1, 2
-        assert [
-            TransferLeg(transfer=one_off, account_id=1, is_income=False).name,
-            TransferLeg(transfer=one_off, account_id=2, is_income=True).name,
-        ] == ["Transfer to Savings", "Transfer from Checking"]
+        assert [side.account for side in sides] == [checking, savings] * 3
 
         savings.name = "Emergency Fund"
-        assert expense.name == "Transfer to Emergency Fund"
-        assert [(leg.template_id, leg.recurs) for leg in (expense, income)] == [
-            (None, False), (None, False),
-        ]
-        assert expense.record is None
+        assert [side.name for side in sides if side.is_expense] == [
+            "Transfer to Emergency Fund",
+        ] * 3
+        assert all(side.record is None for side in sides)
+
+    def test_a_saved_and_settled_generated_transfers_sides_name_no_definition(
+        self, app, seed_full_user_data,
+    ):
+        """A generated transfer, saved and settled, names no definition on either side.
+
+        The fact the label case above asks in memory -- a side names no
+        transaction definition and does not recur, whatever its transfer's
+        shape -- asked on the two axes an in-memory transfer cannot hold:
+        this transfer is PERSISTED (it has an id), and each side carries its
+        RECORD (its payment).  Every leg the grid draws in production is
+        persisted, and many are settled, and the grid's row match reads a
+        side's ``template_id`` (``grid_view_service._match_row_in_period``).
+        A side that answered its link only for a saved transfer, or only
+        where it carries a record, passed the label case and the projection
+        table (measured at plan step ``balance:X-bi-6-4d-3``'s checkpoint
+        2e-2b-1b-2b: the mutants TMPL-IF-PERSISTED and TMPL-IF-RECORD).
+
+        The transfer is the ENGINE's (:func:`generate_transfer_of`) over the
+        fixture's every-period definition, settled through the transfer
+        service's door (``settle_transfer``), committed and re-read.  Guards
+        on the input come first: the row is saved, linked and recurs, and
+        every side read carries a record.  Each side is read through two
+        doors: by ACCOUNT (``grid_transfer_leg``, the grid's) and by SIDE
+        (``transfer_side_leg``, the transfer service's).  It asks
+        ``template_id`` and ``recurs`` alone; the label is the label case's.
+        """
+        with app.app_context():
+            data = seed_full_user_data
+            transfer_id = generate_transfer_of(
+                data["transfer_template"], data["periods"][0],
+            ).id
+            settle_transfer(transfer_id, data["user"].id)
+            db.session.commit()
+            db.session.expire_all()
+            row = db.session.get(Transfer, transfer_id)
+            sides = [
+                grid_transfer_leg(row, row.from_account_id),
+                grid_transfer_leg(row, row.to_account_id),
+                transfer_side_leg(row, is_income=False),
+                transfer_side_leg(row, is_income=True),
+            ]
+            # Guards on the INPUT: a saved transfer of the recurring
+            # definition, every side of it carrying its record.
+            assert (row.id is not None, row.transfer_template_id, row.recurs) == (
+                True, data["transfer_template"].id, True,
+            ), "precondition: a saved transfer of the recurring definition"
+            assert [side.record is not None for side in sides] == [True] * 4, (
+                "precondition: every side carries its record"
+            )
+
+            assert [(side.template_id, side.recurs) for side in sides] == [
+                (None, False),
+            ] * 4
 
 
 class TestTheSettledHalfReadsTheLegOffItsTransfer:

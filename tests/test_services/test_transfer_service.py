@@ -269,17 +269,22 @@ class TestCreateTransfer:
 
         The linked transfer is the ENGINE's (:func:`generate_transfer_of`,
         plan step balance:X-ch), which reaches ``create_transfer`` with the
-        link in its spec the way the application does.  It also asked each
-        side for a definition until plan step ``balance:X-bi-6-4d-3``'s
-        checkpoint 2e-2b-1b-2, which reads the row re-read from the database
-        instead (ruling R-BAL290 part 1): that a side names no TRANSACTION
-        definition whatever transfer definition generated its parent (the
-        grid's row-key contract) is ``test_transfer_legs.py``'s
-        ``TestALegsDisplayProjections``, whose transfer carries a link.
+        link in its spec the way the application does: a GENERATED transfer
+        of the fixture's definition, whose rule recurs every period.  It
+        also asked each side for a definition until plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2, which reads the row
+        re-read from the database instead (ruling R-BAL290 part 1): that a
+        side names no TRANSACTION definition whatever its transfer's shape
+        (the grid's row-key contract) is ``test_transfer_legs.py``'s
+        ``TestALegsDisplayProjections``, which asks it in memory of a
+        generated, a placed and an ad-hoc transfer and, saved and settled,
+        of an engine-generated one, and that file's
+        ``TestBothSidesShowTheTransfer``, which asks it of committed ad-hoc
+        transfers.
         **The link read is not graded by a mutant**: dropping the link at
         the create is refused there by the transfers' CHECK, so that mutant
-        never reaches the read (measured at that checkpoint, where it read
-        the object the engine returned).
+        never reaches the read (measured on this read and on the one before
+        it: the create raises first).
         """
         with app.app_context():
             td = transfer_data
@@ -302,7 +307,7 @@ class TestCreateTransfer:
         database instead (ruling R-BAL290 part 1): that a custom name leaves
         each side's label composed from the endpoints is
         ``test_transfer_legs.py``'s ``TestALegsDisplayProjections``, whose
-        transfer carries a name.
+        three transfers each carry one.
         """
         with app.app_context():
             td = transfer_data
