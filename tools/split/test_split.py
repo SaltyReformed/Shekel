@@ -5,6 +5,7 @@ real ``git grep``).  The branch's neutral review (F7) found no test reaching thi
 the proof block printed its fixed sentences even beside a failed arm, and nothing showed it."""
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
 
@@ -13,9 +14,11 @@ import pytest
 from tools.ci import scratch
 from tools.split import _run as run
 from tools.split import _dynamic as dynamic
+from tools.split._model import parse_plan
 from tools.split._observe import LONE, setups_path
-from tools.split.conftest import SOURCE, build, layout_of, plan_dict
-from tools.split.split import _BEFORE_RUN, _META, main
+from tools.split._source import Refusal
+from tools.split.conftest import SOURCE, build, layout_of, plan_dict, tree
+from tools.split.split import _BEFORE_RUN, _META, Context, main
 from tools.split.test_dynamic import BEFORE_IDS, PACKAGE
 
 #: The importer the sample's split re-points, and the line it rewrites.
@@ -25,11 +28,20 @@ IMPORTER, REPOINTED = "tests/test_other.py", 2
 OUTCOMES = {**dict.fromkeys(BEFORE_IDS, "passed"), f"{SOURCE}::TestBig::test_c": "skipped",
             f"{SOURCE}::TestBig::test_d": "xfailed", f"{SOURCE}::TestBig::test_e": "xpassed"}
 
+#: Each step of ``record`` a stub can stop, as a process that did not observe would.
+RECORD_STEPS = ("the source's pylint", "the importers' pylint", "the collect", "the run")
+
+#: The shape every run had in the delta review's M-A: nothing collected, nothing run, and
+#: pytest interrupted.
+EMPTY = {"collected": [], "outcomes": {}, "exitstatus": 2}
+
 
 class Stubs:
     """The process arms, answering as a faithful run of the sample would, and what a case
-    changes: the importer's pylint messages after the split, the plan gate's verdict, and
-    the fixtures the record run set up."""
+    changes: the importer's pylint messages after the split, the plan gate's verdict, the
+    fixtures the record run set up, the step of a record that stops (``stop_at``, one of
+    :data:`RECORD_STEPS`), and what each kind of run observed instead (``changed``, keyed
+    ``"<source|split|alone> <collect|run>"``)."""
 
     def __init__(self, mapping: dict[str, str]) -> None:
         """Answer under ``mapping``, the sample's old -> new id map."""
@@ -38,28 +50,41 @@ class Stubs:
         self.gate = (0, "3 passed")
         self.setups: list[dict] = []
         self.recorded = False
+        self.stop_at: str | None = None
+        self.changed: dict[str, dict] = {}
+
+    def _stop(self, step: str) -> None:
+        """Stop the run at ``step`` when the case says so."""
+        if self.stop_at == step:
+            raise run.RunError(f"stopped at {step}")
 
     def observe(self, _root: Path, targets: list[str], out: Path, collect_only: bool) -> dict:
         """The run of ``targets``: the source before, the package or one part after."""
         target = targets[0]
         if target == SOURCE:
-            outcomes = OUTCOMES
+            self._stop("the collect" if collect_only else "the run")
+            outcomes, kind = OUTCOMES, "source"
         else:
             outcomes = {new: OUTCOMES[old] for old, new in self.mapping.items()
                         if new.startswith(target if target.endswith(".py") else target + "/")}
+            kind = "alone" if target.endswith(".py") else "split"
         observed = {"collected": sorted(outcomes) if collect_only else [], "deselected": [],
-                    "outcomes": {} if collect_only else outcomes, "exitstatus": 0}
+                    "outcomes": {} if collect_only else outcomes, "exitstatus": 0,
+                    **self.changed.get(f"{kind} {'collect' if collect_only else 'run'}", {})}
         out.write_text(json.dumps(observed), encoding="utf-8")
         setups_path(out, LONE).write_text(json.dumps({
             "setups": self.setups if target == SOURCE else [],
-            "ran": [] if collect_only else sorted(outcomes)}), encoding="utf-8")
+            "ran": sorted(observed["outcomes"])}), encoding="utf-8")
         return {**observed, "returncode": 0, "summary": "ok"}
 
     def pylint(self, _root: Path, paths: list[str]) -> list[dict]:
         """No message anywhere, but the importer's after the split."""
         if paths == [IMPORTER]:
+            self._stop("the importers' pylint")
             after, self.recorded = (self.importer_after if self.recorded else []), True
             return after
+        if paths == [SOURCE]:
+            self._stop("the source's pylint")
         return []
 
 
@@ -99,13 +124,6 @@ def cut_fixture(root: Path) -> dict:
     instance per module the split would cut into one per part (fork F)."""
     return {"argname": "area", "scope": "module", "baseid": "tests",
             "file": str(root / "tests/conftest.py"), "by": SOURCE}
-
-
-def tree(root: Path) -> dict[str, bytes]:
-    """Every file of the working tree but git's own, by path: what a refusal leaves as it
-    was."""
-    return {str(path.relative_to(root)): path.read_bytes() for path in sorted(root.rglob("*"))
-            if path.is_file() and ".git" not in path.relative_to(root).parts}
 
 
 def test_a_proved_split_prints_its_block(split, capsys):
@@ -330,3 +348,134 @@ def test_carriage_returns_in_a_module_the_writer_leaves_alone_are_accepted(split
     line endings, because nothing rewrites it."""
     (split.root / "tests/test_notes.py").write_bytes(b'"""Names test_sample in prose."""\r\n')
     assert split("record") == 0
+
+
+@pytest.mark.parametrize("step", RECORD_STEPS)
+def test_a_record_that_stops_part_way_leaves_no_record(split, capsys, step):
+    """A complete record, then the source edited and recorded again into the same directory,
+    stopped at ``step``: no token, so apply refuses with the tree as it was, and prove
+    refuses (the delta review's H-A: the second record wrote its token first, and apply and
+    prove read the first record's observations as the edited source's)."""
+    assert split("record") == 0
+    source = split.root / SOURCE
+    source.write_text(source.read_text(encoding="utf-8").replace('"""One."""',
+                                                               '"""One, edited."""'),
+                      encoding="utf-8")
+    split.stubs.stop_at = step
+    capsys.readouterr()
+    assert split("record") == 1
+    assert f"REFUSED: stopped at {step}" in capsys.readouterr().err
+    assert not (split.into / _META).exists()
+    before = tree(split.root)
+    assert split("apply") == 1
+    assert (f"REFUSED: {split.into}: no complete record; record again"
+            in capsys.readouterr().err)
+    assert tree(split.root) == before
+    assert not split.idmap.exists()
+    assert split("prove") == 1
+    assert (f"REFUSED: {split.into}: no complete record; record again"
+            in capsys.readouterr().err)
+
+
+@pytest.mark.parametrize("command", ["apply", "prove"])
+def test_a_directory_holding_no_record_is_refused_by_name(split, capsys, command):
+    """Nothing was ever recorded there: refused, naming the directory, not a traceback."""
+    assert split(command) == 1
+    assert (f"REFUSED: {split.into}: no complete record; record again"
+            in capsys.readouterr().err)
+
+
+def test_a_record_whose_runs_observed_nothing_is_refused_at_record_and_apply(split, capsys):
+    """The delta review's M-A shape (every run collected nothing, pytest interrupted):
+    record fails it, and apply refuses it with nothing written."""
+    split.stubs.changed = {"source collect": EMPTY, "source run": EMPTY}
+    assert split("record") == 1
+    err = capsys.readouterr().err
+    assert ("FAILED: the source's collection: pytest exit status 2, not a session run to its "
+            "end") in err
+    assert ("FAILED: the source's run: no id for 7 test(s) of the source, e.g. "
+            "['TestFirst', 'test_top_level', 'TestBig::test_a']") in err
+    before = tree(split.root)
+    assert split("apply") == 1
+    assert "REFUSED: the record did not pass (4 failure(s)" in capsys.readouterr().err
+    assert tree(split.root) == before
+    assert not split.idmap.exists()
+
+
+@pytest.mark.parametrize("status,code", [(1, 0), (3, 1), (5, 1)])
+def test_a_record_is_refused_unless_pytest_ran_its_session_to_the_end(split, capsys, status,
+                                                                     code):
+    """Every test collected and run as before, the run's exit status alone decides: failing
+    tests (1) are still an observation of the tests; an internal error (3), or pytest
+    reporting no tests (5), is not."""
+    split.stubs.changed = {"source run": {"exitstatus": status}}
+    assert split("record") == code
+    refused = (f"FAILED: the source's run: pytest exit status {status}, not a session run to "
+               "its end")
+    assert (refused in capsys.readouterr().err) == bool(code)
+
+
+@pytest.mark.parametrize("dropped,named", [("::TestFirst::", "TestFirst"),
+                                           ("::TestBig::test_c", "TestBig::test_c")])
+def test_a_record_is_refused_when_a_test_of_the_source_yields_no_id(split, capsys, dropped,
+                                                                    named):
+    """pytest ran to its end and the collection agrees with the run, but neither holds a
+    test the source holds (a whole class, or one test of a split class): refused, because
+    the proof would never compare it."""
+    kept = {nodeid: outcome for nodeid, outcome in OUTCOMES.items() if dropped not in nodeid}
+    split.stubs.changed = {"source collect": {"collected": sorted(kept)},
+                           "source run": {"outcomes": kept}}
+    assert split("record") == 1
+    assert (f"FAILED: the source's collection: no id for 1 test(s) of the source, e.g. "
+            f"['{named}']") in capsys.readouterr().err
+
+
+def test_prove_refuses_a_split_whose_runs_observed_nothing(split, capsys):
+    """The M-A shape after the split: every run of the package and of each part empty."""
+    applied(split)
+    split.stubs.changed = dict.fromkeys(("split collect", "split run", "alone run"), EMPTY)
+    capsys.readouterr()
+    assert split("prove") == 1
+    out, err = capsys.readouterr()
+    assert out == "prove: FAILED\n"
+    assert ("FAILED: the split's collection: no id for 7 test(s) of the source, e.g. "
+            "['TestFirst', 'test_top_level', 'TestBig::test_a']") in err
+    assert ("FAILED: test_big_late alone: no id for 3 test(s) of the source, e.g. "
+            "['TestBig::test_c', 'TestBig::test_d', 'TestBig::test_e']") in err
+
+
+@pytest.mark.parametrize("kind,what", [("split collect", "the split's collection"),
+                                       ("split run", "the split's run"),
+                                       ("alone run", "test_first alone")])
+def test_prove_refuses_a_run_of_the_split_that_did_not_run_to_its_end(split, capsys, kind,
+                                                                      what):
+    """Every id observed and every outcome as before, but pytest did not run the session to
+    its end: only the run's own exit status shows it, and prove fails it."""
+    applied(split)
+    split.stubs.changed = {kind: {"exitstatus": 3}}
+    capsys.readouterr()
+    assert split("prove") == 1
+    out, err = capsys.readouterr()
+    assert out == "prove: FAILED\n"
+    assert f"FAILED: {what}: pytest exit status 3, not a session run to its end" in err
+
+
+def test_a_token_stopped_mid_write_is_no_token(tmp_path, monkeypatch):
+    """The token is written beside its name and renamed onto it, so a record stopped while
+    writing it (here, a full disk half way through) leaves no ``meta.json``, never a part
+    of one that ``apply`` would read as the record's."""
+    ctx = Context(plan=parse_plan(plan_dict()), root=tmp_path, into=tmp_path)
+    real = Path.write_text
+
+    def stopped(self, data, *args, **kwargs):
+        if self.name.startswith(_META):
+            real(self, data[:len(data) // 2], *args, **kwargs)
+            raise OSError(errno.ENOSPC, "No space left on device", str(self))
+        return real(self, data, *args, **kwargs)
+    monkeypatch.setattr(Path, "write_text", stopped)
+    with pytest.raises(OSError):
+        ctx.save(_META, {"source": SOURCE, "sha256": "0" * 64})
+    monkeypatch.undo()
+    assert not (tmp_path / _META).exists()
+    with pytest.raises(Refusal, match="no complete record; record again"):
+        ctx.meta()

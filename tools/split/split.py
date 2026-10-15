@@ -7,10 +7,11 @@
 ``record`` refuses the plan or measures the source BEFORE anything moves: a copy of it, its
 collection and every test's outcome through ``./scripts/test.sh``, every fixture its tests set
 up (refusing one whose reach the split would change), and pylint's messages for it and for
-each module that imports it, whose text it fingerprints.  ``apply`` writes the package,
-deletes the source, re-points the importers, writes the node-id map and runs the static
-proof.  ``prove`` runs the static proof again and every run arm, and prints the block a
-commit body quotes when every arm passed.
+each module that imports it, whose text it fingerprints; its ``meta.json``, written last,
+marks the record complete, and ``apply`` and ``prove`` refuse without one.  ``apply`` writes
+the package, deletes the source, re-points the importers, writes the node-id map and runs
+the static proof.  ``prove`` runs the static proof again and every run arm, and prints the
+block a commit body quotes when every arm passed.
 Exit status 0 means proved; 1 means refused or failed, with every reason printed.
 """
 from __future__ import annotations
@@ -47,10 +48,14 @@ from tools.split._render import (
 )
 from tools.split._source import CollectRules, Refusal, collect_rules, read_module
 
-#: The record directory's files.
+#: The record directory's files.  ``meta.json`` is the record's completion token.
 _SOURCE, _META = "source.py", "meta.json"
 _BEFORE_COLLECT, _BEFORE_RUN = "before_collect.json", "before_run.json"
 _BEFORE_PYLINT, _BEFORE_IMPORTERS = "before_pylint.json", "before_importers_pylint.json"
+
+#: Every file a record holds, in the order ``record`` deletes them, the token first (each
+#: observation with its processes' fixture-setup files: :func:`tools.split._run.discard`).
+_RECORD = (_META, _SOURCE, _BEFORE_PYLINT, _BEFORE_IMPORTERS, _BEFORE_COLLECT, _BEFORE_RUN)
 
 
 @dataclass(frozen=True)
@@ -74,10 +79,22 @@ class Context:
         """A JSON file the record holds."""
         return json.loads((self.into / name).read_text(encoding="utf-8"))
 
+    def meta(self) -> dict:
+        """The record's completion token, which ``record`` writes last; refused, by name,
+        when the directory holds none, as after a record that stopped part-way."""
+        if not (self.into / _META).is_file():
+            raise Refusal(f"{self.into}: no complete record; record again")
+        return self.read(_META)
+
     def save(self, name: str, value: object) -> None:
-        """Write a JSON file into the record."""
-        (self.into / name).write_text(json.dumps(value, indent=1, sort_keys=True) + "\n",
-                                      encoding="utf-8")
+        """Write a JSON file into the record, whole or not at all: written beside its name
+        and renamed onto it, so a run stopped mid-write leaves no part of a file under the
+        name, which is what lets the token's presence mean the record completed."""
+        path = self.into / name
+        partial = path.with_name(f"{name}.partial")
+        partial.write_text(json.dumps(value, indent=1, sort_keys=True) + "\n",
+                           encoding="utf-8")
+        partial.replace(path)
 
 
 def _sha256(path: Path) -> str:
@@ -104,16 +121,19 @@ def _importer_record(rewrites: list[Rewrite], root: Path) -> dict[str, dict]:
     return importers
 
 
-def _record_verdict(ctx: Context) -> tuple[list[str], int]:
-    """The record's arms, judged from the record's own files: its failures, and how many
-    fixtures the source's tests set up.
+def _record_verdict(ctx: Context, layout: Layout) -> tuple[list[str], int]:
+    """The record's arms, judged from the record's own files against ``layout``: its
+    failures, and how many fixtures the source's tests set up.
 
     One home for the verdict (the branch's neutral review of this leaf, H1: the fixture arm
     refused at ``record`` and nothing downstream knew).  ``record`` reports it, ``apply``
-    refuses a record that failed it, and ``prove`` judges it again as an arm of the proof."""
+    refuses a record that failed it, and ``prove`` judges it again as an arm of the proof.
+    Each run must be one pytest ran to its end over every test of the source
+    (:func:`tools.split._dynamic.run_failures`)."""
     collected, ran = ctx.read(_BEFORE_COLLECT), ctx.read(_BEFORE_RUN)
     setups, setups_ran = run.merged_setups(ctx.into / _BEFORE_RUN)
-    failures = []
+    failures = (dynamic.run_failures(layout, collected, "the source's collection")
+                + dynamic.run_failures(layout, ran, "the source's run"))
     if collected["deselected"]:
         failures.append(f"the source run deselects {len(collected['deselected'])} tests; "
                         "the proof covers only what runs")
@@ -126,37 +146,50 @@ def _record_verdict(ctx: Context) -> tuple[list[str], int]:
 
 
 def record(ctx: Context) -> list[str]:
-    """Refuse the plan or measure the source before anything moves."""
+    """Refuse the plan or measure the source before anything moves.
+
+    A record is the files ONE complete run of this command wrote, and ``meta.json``, written
+    last, is the token that the run completed.  It is deleted first, then every other file
+    a record holds, so a run that stops part-way (a refusal, a process that wrote no
+    observation, an interrupt) leaves no record at all, and never the last record's
+    observations under this run's token.  A run that completes but observed no session of
+    the tests is a complete record whose verdict fails, which ``apply`` refuses (the
+    coordinator's ruling on the delta review's H-A, 2026-10-15: the token
+    was written before pylint and the runs, so a record that stopped there reached ``apply``
+    holding the previous source's observations)."""
+    for name in _RECORD:
+        run.discard(ctx.into / name)
     source = ctx.root / ctx.plan.source
     layout = ctx.layout(source)
     render_all(layout, line_limit(ctx.root))
     importers = _importer_record(importer_rewrites(layout, ctx.root), ctx.root)
     ctx.into.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, ctx.into / _SOURCE)
-    ctx.save(_META, {"source": str(ctx.plan.source), "sha256": _sha256(source),
-                     "head": _head(ctx.root), "importers": importers})
+    meta = {"source": str(ctx.plan.source), "sha256": _sha256(source),
+            "head": _head(ctx.root), "importers": importers}
     ctx.save(_BEFORE_PYLINT, run.pylint_messages(ctx.root, [str(ctx.plan.source)]))
     ctx.save(_BEFORE_IMPORTERS,
              run.pylint_messages(ctx.root, sorted(importers)) if importers else [])
     run.observe(ctx.root, [str(ctx.plan.source)], ctx.into / _BEFORE_COLLECT,
                 collect_only=True)
     run.observe(ctx.root, [str(ctx.plan.source)], ctx.into / _BEFORE_RUN, collect_only=False)
-    return _record_verdict(ctx)[0]
+    ctx.save(_META, meta)
+    return _record_verdict(ctx, layout)[0]
 
 
 def apply(ctx: Context, idmap: Path) -> list[str]:
     """Write the package, delete the source, re-point importers, write the id map, and run
-    the static proof; refused, with nothing written, unless the record passed and the source
-    and every importer are as it found them."""
-    meta = ctx.read(_META)
+    the static proof; refused, with nothing written, unless a complete record passed and the
+    source and every importer are as it found them."""
+    meta = ctx.meta()
     source = ctx.root / ctx.plan.source
     if _sha256(source) != meta["sha256"]:
         raise Refusal(f"{source} changed since it was recorded; record again")
-    refused, _ = _record_verdict(ctx)
+    layout = ctx.layout(source)
+    refused, _ = _record_verdict(ctx, layout)
     if refused:
         raise Refusal(f"the record did not pass ({len(refused)} failure(s), first: "
                       f"{refused[0]}); nothing is applied")
-    layout = ctx.layout(source)
     texts = render_all(layout, line_limit(ctx.root))
     rewrites = importer_rewrites(layout, ctx.root)
     if _importer_record(rewrites, ctx.root) != meta["importers"]:
@@ -171,18 +204,23 @@ def apply(ctx: Context, idmap: Path) -> list[str]:
 
 
 def _run_arms(ctx: Context, layout: Layout, mapping: dict[str, str]) -> tuple[list[str], dict]:
-    """The collection, outcome and part-alone arms; their failures and what they saw."""
+    """The collection, outcome and part-alone arms; their failures and what they saw.  Each
+    run, like the record's, must be one pytest ran to its end over every test it was run on
+    (:func:`tools.split._dynamic.run_failures`)."""
     package = str(layout.plan.package)
     before = ctx.read(_BEFORE_RUN)["outcomes"]
     collected = run.observe(ctx.root, [package], ctx.into / "after_collect.json", True)
-    failures = dynamic.compare_collection(mapping, collected["collected"])
+    failures = dynamic.run_failures(layout, collected, "the split's collection")
+    failures += dynamic.compare_collection(mapping, collected["collected"])
     if collected["deselected"]:
         failures.append(f"the split deselects {collected['deselected'][:5]}")
     ran = run.observe(ctx.root, [package], ctx.into / "after_run.json", False)
+    failures += dynamic.run_failures(layout, ran, "the split's run")
     failures += dynamic.compare_outcomes(mapping, before, ran["outcomes"])
     for module in (p.module for p in layout.plan.parts):
         target = f"{package}/{module}.py"
         alone = run.observe(ctx.root, [target], ctx.into / f"alone_{module}.json", False)
+        failures += dynamic.run_failures(layout, alone, f"{module} alone", module)
         scope = {old for old, new in mapping.items() if new.startswith(target + "::")}
         failures += [f"alone: {f}" for f in
                      dynamic.compare_outcomes(mapping, before, alone["outcomes"], scope)]
@@ -201,9 +239,11 @@ def _static_arms(ctx: Context, layout: Layout) -> tuple[list[str], dict]:
 def prove(ctx: Context, idmap: Path) -> list[str]:
     """Every arm of the proof; print the block a commit body quotes only when every arm
     passed.  The block's fixed sentences claim that each arm held, so printed beside a
-    failure they would state what the run refuted (the branch's neutral review, F7)."""
+    failure they would state what the run refuted (the branch's neutral review, F7).
+    Refused without a complete record."""
+    ctx.meta()
     layout = ctx.layout(ctx.into / _SOURCE)
-    recorded = _record_verdict(ctx)
+    recorded = _record_verdict(ctx, layout)
     failures, origins = _static_arms(ctx, layout)
     failures = [f"record: {f}" for f in recorded[0]] + failures
     mapping = json.loads(idmap.read_text(encoding="utf-8"))

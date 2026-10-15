@@ -29,9 +29,7 @@ def observe(root: Path, targets: list[str], out: Path, collect_only: bool) -> di
     observation (collect-only runs single-process, so the collection is the run's own),
     with every process's fixture setups merged in: ``setups``, each fixture once, and
     ``setups_ran``, every test some process recorded running."""
-    out.unlink(missing_ok=True)
-    for stale in _setups_files(out):
-        stale.unlink()
+    discard(out)
     env = dict(os.environ)
     env[OBSERVE_ENV] = str(out)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (str(root), env.get("PYTHONPATH")) if p)
@@ -62,6 +60,14 @@ def merged_setups(out: Path) -> tuple[list[dict], list[str]]:
             setups.setdefault(setup_key(setup), setup)
         ran.update(held["ran"])
     return list(setups.values()), sorted(ran)
+
+
+def discard(out: Path) -> None:
+    """Delete the file ``out`` and, when it is an observation, every process's fixture-setup
+    file beside it, so nothing a previous run wrote is read as this run's."""
+    out.unlink(missing_ok=True)
+    for stale in _setups_files(out):
+        stale.unlink()
 
 
 def _setups_files(out: Path) -> list[Path]:

@@ -181,6 +181,13 @@ def layout_of(root: Path, plan: dict | None = None) -> Layout:
     return resolve(read_module(root / SOURCE, rules), parse_plan(plan or plan_dict()), rules)
 
 
+def tree(root: Path) -> dict[str, bytes]:
+    """Every file of the working tree but git's own, by path: what a refusal, or a write
+    that undid itself, leaves as it was."""
+    return {str(path.relative_to(root)): path.read_bytes() for path in sorted(root.rglob("*"))
+            if path.is_file() and ".git" not in path.relative_to(root).parts}
+
+
 def write_plan(root: Path, plan: dict | None = None) -> Path:
     """Write ``plan`` (the sample plan when None) to a file and return its path."""
     path = root / "sample.plan.json"

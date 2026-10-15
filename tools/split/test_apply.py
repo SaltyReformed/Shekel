@@ -4,6 +4,8 @@ its passes measures nothing)."""
 from __future__ import annotations
 
 import ast
+import errno
+import re
 from pathlib import Path
 
 import pytest
@@ -20,9 +22,9 @@ from tools.split._render import (
     text_of,
     write,
 )
-from tools.split._run import pylint_messages
+from tools.split._run import RunError, pylint_messages
 from tools.split._source import Refusal, collect_rules, read_module
-from tools.split.conftest import SAMPLE, SOURCE, layout_of
+from tools.split.conftest import SAMPLE, SOURCE, layout_of, tree
 
 PACKAGE = "tests/test_area/test_sample"
 
@@ -119,6 +121,112 @@ def test_a_refused_write_leaves_the_tree_as_it_was(repo):
     assert (repo / SOURCE).read_text(encoding="utf-8") == SAMPLE
     assert not (repo / PACKAGE).exists()
     assert importer.read_text(encoding="utf-8") == edited
+
+
+class TestAWriteThatFailsPartWay:
+    """An :class:`OSError` mid-write undoes the write: the tree is byte-identical after it
+    (the delta review's L-B: the one path that was not fail-closed for the tree)."""
+
+    @staticmethod
+    def prepared(repo: Path) -> tuple[Layout, dict[str, str], list, Path]:
+        """The sample with a second importer, so one importer can be rewritten before the
+        write fails at the next; its layout, texts, rewrites and the second importer."""
+        second = repo / "tests/test_zz.py"
+        second.write_text("from tests.test_area.test_sample import _make\n", encoding="utf-8")
+        layout = layout_of(repo)
+        rewrites = importer_rewrites(layout, repo)
+        assert [r.path for r in rewrites] == [repo / "tests/test_other.py", second]
+        return layout, render_all(layout, line_limit(repo)), rewrites, second
+
+    @staticmethod
+    def failing(monkeypatch, method: str, target: Path, seen: list, root: Path) -> None:
+        """Make ``Path.<method>`` on ``target`` fail as a full disk does, a ``write_text``
+        leaving the file empty; ``seen`` takes ``root``'s tree at that moment."""
+        real, empty = getattr(Path, method), Path.write_bytes
+
+        def fail(self, *args, **kwargs):
+            if self != target:
+                return real(self, *args, **kwargs)
+            seen.append(tree(root))
+            if method == "write_text":
+                empty(self, b"")
+            raise OSError(errno.ENOSPC, "No space left on device", str(self))
+        monkeypatch.setattr(Path, method, fail)
+
+    def test_after_the_package_is_written(self, repo, monkeypatch):
+        """It fails deleting the source, with every file of the package written."""
+        layout, texts, rewrites, _ = self.prepared(repo)
+        before, seen = tree(repo), []
+        self.failing(monkeypatch, "unlink", repo / SOURCE, seen, repo)
+        with pytest.raises(RunError, match="every file it created is removed and every file "
+                                           "it changed put back"):
+            write(layout, repo, texts, rewrites)
+        monkeypatch.undo()
+        assert sorted(p for p in seen[0] if p.startswith(f"{PACKAGE}/")) == sorted(
+            f"{PACKAGE}/{name}" for name in texts)
+        assert tree(repo) == before
+        assert not (repo / PACKAGE).exists()
+
+    def test_after_an_importer_is_rewritten(self, repo, monkeypatch):
+        """It fails rewriting the second importer, leaving it empty, with the first already
+        re-pointed and the source deleted."""
+        layout, texts, rewrites, second = self.prepared(repo)
+        before, seen = tree(repo), []
+        self.failing(monkeypatch, "write_text", second, seen, repo)
+        with pytest.raises(RunError, match="every file it created is removed and every file "
+                                           "it changed put back"):
+            write(layout, repo, texts, rewrites)
+        monkeypatch.undo()
+        assert "test_sample._helpers import _make" in seen[0]["tests/test_other.py"].decode()
+        assert SOURCE not in seen[0]
+        assert tree(repo) == before
+        assert not (repo / PACKAGE).exists()
+
+    def test_an_undo_that_fails_is_named(self, repo, monkeypatch):
+        """The second importer can be neither rewritten nor put back: the error names it,
+        and the rest of the undo still ran."""
+        layout, texts, rewrites, second = self.prepared(repo)
+        self.failing(monkeypatch, "write_text", second, [], repo)
+        self.failing(monkeypatch, "write_bytes", second, [], repo)
+        with pytest.raises(RunError, match="NOT undone: " + re.escape(f"{second}: [Errno 28]")):
+            write(layout, repo, texts, rewrites)
+        monkeypatch.undo()
+        assert second.read_bytes() == b""
+        assert (repo / SOURCE).read_text(encoding="utf-8") == SAMPLE
+        assert not (repo / PACKAGE).exists()
+
+    def test_a_file_the_failed_step_never_touched_is_not_written_again(self, repo,
+                                                                         monkeypatch):
+        """The source's deletion fails, leaving it whole, and it could not be written either:
+        the undo leaves it alone rather than naming it NOT undone."""
+        layout, texts, rewrites, _ = self.prepared(repo)
+        before = tree(repo)
+        self.failing(monkeypatch, "unlink", repo / SOURCE, [], repo)
+        self.failing(monkeypatch, "write_bytes", repo / SOURCE, [], repo)
+        with pytest.raises(RunError, match="every file it created is removed and every file "
+                                           "it changed put back"):
+            write(layout, repo, texts, rewrites)
+        monkeypatch.undo()
+        assert tree(repo) == before
+
+    def test_the_packages_space_is_freed_before_anything_is_put_back(self, repo, monkeypatch):
+        """On a full disk the source can be written back only once the package's files are
+        gone: the undo removes them first."""
+        layout, texts, rewrites, second = self.prepared(repo)
+        before, package, source = tree(repo), repo / PACKAGE, repo / SOURCE
+        self.failing(monkeypatch, "write_text", second, [], repo)
+        real = Path.write_bytes
+
+        def full(self, data):
+            if self == source and package.exists():
+                raise OSError(errno.ENOSPC, "No space left on device", str(self))
+            return real(self, data)
+        monkeypatch.setattr(Path, "write_bytes", full)
+        with pytest.raises(RunError, match="every file it created is removed and every file "
+                                           "it changed put back"):
+            write(layout, repo, texts, rewrites)
+        monkeypatch.undo()
+        assert tree(repo) == before
 
 
 class TestEveryProofArmFails:

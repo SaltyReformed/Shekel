@@ -7,7 +7,8 @@ by shape: module docstrings, import statements filtered from the source's own (i
 source's order and blank-line groups), a split class's ``class`` line and one-line
 docstring, and its mixin's ``class`` line.  Nothing is written until every output has
 rendered under the line budget and every importer's line has been re-read (:func:`write`),
-so a refusal leaves the tree as it was.
+so a refusal leaves the tree as it was; and a write that fails part-way puts it back, or
+names what it could not.
 
 Every line it renders carries its mark: an :class:`Origin` (the source line it copies, or
 the source statement an import was filtered from), :data:`PROVENANCE` for a composed line
@@ -30,7 +31,7 @@ from typing import NamedTuple
 from tools.split._classes import mixin_name
 from tools.split._layout import Layout, Output, Piece
 from tools.split._model import HELPERS, INIT
-from tools.split._run import python_files
+from tools.split._run import RunError, python_files
 from tools.split._source import ImportStmt, Refusal, bound_name
 
 #: R-BAL301 (Josh, 2026-10-15): "every Python file under 1,000 lines".  A part may hold at
@@ -314,21 +315,87 @@ def write(layout: Layout, root: Path, texts: dict[str, str], rewrites: list[Rewr
     Every check runs before the first write, so a refusal leaves the tree as it was (the
     branch's neutral review, F8a: the importers' re-check ran after the package was written
     and the source deleted).  Each importer is read once and rewritten whole, so two
-    rewrites in one file are applied together."""
+    rewrites in one file are applied together.
+
+    A write that fails part-way (any :class:`OSError`: a full disk, a permission) undoes
+    itself before it raises a :class:`tools.split._run.RunError`: the source's and every
+    importer's bytes are held from before the first write, so every file it created is
+    removed and every file it changed put back, and the error names any step of that which
+    failed (the coordinator's ruling on the delta review's L-B, 2026-10-15: a failed write
+    left the package written, the source deleted and the importers part rewritten)."""
     package = root / layout.plan.package
     if package.exists():
         raise Refusal(f"{package} already exists")
+    source = root / layout.plan.source
+    originals, edited = _rewritten(rewrites)
+    originals[source] = source.read_bytes()
+    created: list[Path] = []
+    changed: list[Path] = []
+    try:
+        _write_steps(package, texts, source, edited, (created, changed))
+    except OSError as exc:
+        failed = _undo(created, changed, originals)
+        raise RunError(f"the split's write failed ({exc}); " + (
+            f"NOT undone: {'; '.join(failed)}" if failed else
+            "every file it created is removed and every file it changed put back")) from exc
+
+
+def _rewritten(rewrites: list[Rewrite]) -> tuple[dict[Path, bytes], dict[Path, list[str]]]:
+    """Each importer's bytes as read, and its lines with every rewrite applied; refused if
+    a line to rewrite is not what it was when the rewrite was derived."""
+    originals: dict[Path, bytes] = {}
     edited: dict[Path, list[str]] = {}
     for rewrite in rewrites:
         if rewrite.path not in edited:
-            edited[rewrite.path] = rewrite.path.read_text(encoding="utf-8").split("\n")
+            originals[rewrite.path] = rewrite.path.read_bytes()
+            edited[rewrite.path] = originals[rewrite.path].decode("utf-8").split("\n")
         lines = edited[rewrite.path]
         if lines[rewrite.line - 1] != rewrite.old:
             raise Refusal(f"{rewrite.path}:{rewrite.line} changed since it was read")
         lines[rewrite.line - 1] = rewrite.new
+    return originals, edited
+
+
+def _write_steps(package: Path, texts: dict[str, str], source: Path,
+                 edited: dict[Path, list[str]], progress: tuple[list[Path], list[Path]]
+                 ) -> None:
+    """:func:`write`'s writes, in order: the package and its files, the source's deletion,
+    each importer.  Each file goes into ``progress`` (what was created, what was changed)
+    BEFORE its step runs, so a step that fails part-way is undone with the rest; the
+    package goes in once made, because a ``mkdir`` that fails made nothing."""
+    created, changed = progress
     package.mkdir()
+    created.append(package)
     for name, text in texts.items():
+        created.append(package / name)
         (package / name).write_text(text, encoding="utf-8")
-    (root / layout.plan.source).unlink()
+    changed.append(source)
+    source.unlink()
     for path, lines in edited.items():
+        changed.append(path)
         path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _undo(created: list[Path], changed: list[Path], originals: dict[Path, bytes]
+          ) -> list[str]:
+    """Undo a failed :func:`write`: remove what it created, newest first (the package's
+    files, then the package), which frees their space before anything is put back; then
+    write back, from its bytes before the write, each file it began to change that no
+    longer holds them (a step that failed before it touched its file left nothing to put
+    back).  Each step that fails is named, and the rest still run."""
+    failed = []
+    for path in reversed(created):
+        try:
+            if path.is_dir():
+                path.rmdir()
+            else:
+                path.unlink(missing_ok=True)
+        except OSError as exc:
+            failed.append(f"{path}: {exc}")
+    for path in changed:
+        try:
+            if not (path.is_file() and path.read_bytes() == originals[path]):
+                path.write_bytes(originals[path])
+        except OSError as exc:
+            failed.append(f"{path}: {exc}")
+    return failed

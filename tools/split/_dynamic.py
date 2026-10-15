@@ -10,16 +10,29 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+import pytest
 from pylint.checkers.imports import MSGS as IMPORT_MESSAGES
 
 from tools.ci.archive import declares_archived, in_archived_dir
 from tools.split._layout import Layout
 from tools.split._render import Mark, Origin, Provenance
-from tools.split._source import Refusal
+from tools.split._source import Kind, Refusal
 
 #: pylint's symbol for the cross-file duplicate check, judged pair by pair in
 #: :mod:`tools.split._similar` (the coordinator's correction to Fork 5 item 4).
 DUPLICATE_CODE = "duplicate-code"
+
+#: The pytest exit statuses of a session that ran to its end: every test passed, or some
+#: failed.  Any other (interrupted, as by a collection error; an internal error; a usage
+#: error; no tests collected) means the run observed no session of the tests.
+_COMPLETED = frozenset({pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED})
+
+
+def id_names(nodeid: str) -> tuple[str, str | None]:
+    """A node id's top-level name and, under a class, the name that follows it (a method,
+    or a nested class), each without its parameters."""
+    parts = nodeid.partition("::")[2].split("::")
+    return parts[0].split("[")[0], parts[1].split("[")[0] if len(parts) > 1 else None
 
 
 def id_map(layout: Layout, before: list[str]) -> dict[str, str]:
@@ -31,13 +44,42 @@ def id_map(layout: Layout, before: list[str]) -> dict[str, str]:
         path, _, rest = nodeid.partition("::")
         if path != source or not rest:
             raise Refusal(f"collected id {nodeid!r} is not a test of {source}")
-        parts = rest.split("::")
-        top = parts[0].split("[")[0]
-        method = parts[1].split("[")[0] if len(parts) > 1 else None
-        mapped[nodeid] = f"{layout.plan.package}/{layout.module_of(top, method)}.py::{rest}"
+        mapped[nodeid] = (f"{layout.plan.package}/{layout.module_of(*id_names(nodeid))}.py"
+                          f"::{rest}")
     if len(mapped) != len(before) or len(set(mapped.values())) != len(mapped):
         raise Refusal("the node-id map is not one-to-one")
     return mapped
+
+
+def run_failures(layout: Layout, observed: dict, what: str, module: str | None = None
+                 ) -> list[str]:
+    """Why one run's observation, ``what``, is no observation of the tests it was run on.
+
+    pytest must have run the session to its end (exit status 0, or 1 when tests failed),
+    and every test the layout places whole, and every test of a split class, must yield at
+    least one id the run collected or ran: only those placed in ``module`` for a run of one
+    part.  A run that collected nothing compares equal to another that collected nothing,
+    so without this a split whose every run was empty proved (the coordinator's ruling on
+    the delta review's M-A, 2026-10-15).  The ids are read whatever kind of run it was: a
+    collect-only run lists them as collected, and a run under xdist only as outcomes."""
+    failures = []
+    if observed["exitstatus"] not in _COMPLETED:
+        failures.append(f"{what}: pytest exit status {observed['exitstatus']}, not a session "
+                        "run to its end")
+    seen = {id_names(nodeid) for nodeid in [*observed["collected"], *observed["outcomes"]]}
+    tops = {top for top, _ in seen}
+    missing = []
+    for unit in (u for u in layout.source.units if u.kind is Kind.TEST):
+        if unit.name in layout.split:
+            missing += [f"{unit.name}::{test}" for test in layout.split[unit.name].test_order()
+                        if module in (None, layout.module_of(unit.name, test))
+                        and (unit.name, test) not in seen]
+        elif module in (None, layout.home[unit.name]) and unit.name not in tops:
+            missing.append(unit.name)
+    if missing:
+        failures.append(f"{what}: no id for {len(missing)} test(s) of the source, e.g. "
+                        f"{missing[:3]}")
+    return failures
 
 
 def compare_collection(mapping: dict[str, str], after: list[str]) -> list[str]:
