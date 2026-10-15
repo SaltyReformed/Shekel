@@ -2,28 +2,18 @@
 the tool never guesses, so a split it cannot prove is not made."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from tools.split._model import PlanError, parse_plan
 from tools.split._render import line_limit, render_all
-from tools.split._source import Refusal
-from tools.split.conftest import SAMPLE, build, layout_of, plan_dict
-
-
-def refusal(tmp_path: Path, source: str = SAMPLE, plan: dict | None = None) -> str:
-    """The refusal message for ``source`` under ``plan``; fails if the tool accepts it."""
-    root = build(tmp_path, source)
-    with pytest.raises(Refusal) as caught:
-        render_all(layout_of(root, plan), line_limit(root))
-    return str(caught.value)
-
-
-def sample_with(old: str, new: str) -> str:
-    """The sample with ``old`` (which must occur once) replaced by ``new``."""
-    assert SAMPLE.count(old) == 1, old
-    return SAMPLE.replace(old, new)
+from tools.split.conftest import (
+    SAMPLE,
+    build,
+    layout_of,
+    plan_dict,
+    refusal,
+    sample_with,
+)
 
 
 #: A module-level node appended to the sample, placed (when it is a test) in test_first.
@@ -195,8 +185,19 @@ class TestTheLayoutRefuses:
         assert "patches globals() outside a test function's body" in refusal(tmp_path, source)
 
     def test_a_globals_call_whose_key_cannot_be_read(self, tmp_path):
-        """A computed key could be any name."""
+        """A computed key could be any name.  The dict itself is refused by the identity
+        screen (rule 4: ``globals`` reads the namespace of the module it runs in), before the
+        reach rule reads its keys."""
         source = appended('def test_any():\n    """Any."""\n    assert globals()')
+        assert "globals reads, imports or compiles by a name or a namespace" in refusal(
+            tmp_path, source, with_test_first("test_any"))
+
+    def test_a_patched_globals_key_computed_at_run_time(self, tmp_path):
+        """The reach rule's own shape with a key it cannot read: the screen lets the
+        ``setitem(globals(), ...)`` shape through to the reach rule, which refuses it."""
+        source = appended('def test_any(monkeypatch):\n    """Any."""\n'
+                          '    name = "helper_" + "one"\n'
+                          '    monkeypatch.setitem(globals(), name, lambda n: 0)')
         assert "a shape the tool cannot prove" in refusal(
             tmp_path, source, with_test_first("test_any"))
 
@@ -204,7 +205,7 @@ class TestTheLayoutRefuses:
         """inspect reads the file a node now sits in."""
         source = sample_with("import re\n", "import inspect\nimport re\n") + EXTRA_TOP.format(
             body='def test_src():\n    """S."""\n    assert inspect.getsource(_make)')
-        assert "inspect reads a frame, or an object the code being moved" in refusal(
+        assert "inspect.getsource reaches inspect, which reads where code runs" in refusal(
             tmp_path, source, with_test_first("test_src"))
 
     def test_a_part_over_the_line_budget(self, tmp_path):
@@ -224,7 +225,7 @@ class TestARunTimeReadOfTheModuleIsRefused:
         source = sample_with('monkeypatch.setenv("SAMPLE", "1")',
                              'monkeypatch.setenv("SAMPLE", request.module.__name__)').replace(
             "def _frozen(monkeypatch):", "def _frozen(monkeypatch, request):")
-        assert "names the requesting module or file" in refusal(tmp_path, source)
+        assert "request...module names the requesting module" in refusal(tmp_path, source)
 
     @pytest.mark.parametrize("read", [
         "self.__module__", "type(self).__module__", 'getattr(self, "__module__")',
@@ -233,7 +234,7 @@ class TestARunTimeReadOfTheModuleIsRefused:
     def test_a_module_read_off_the_running_test(self, tmp_path, read):
         """The running test's module is the part it now sits in (the review's F9)."""
         source = sample_with('"""One."""\n', f'"""One."""\n        assert {read}\n')
-        assert "__module__ may name the module or file it runs in" in refusal(tmp_path, source)
+        assert "__module__ may name or reach where the code runs" in refusal(tmp_path, source)
 
     def test_a_module_read_off_the_request(self, tmp_path):
         """``request.function.__module__`` names the part a test now sits in."""
@@ -241,19 +242,19 @@ class TestARunTimeReadOfTheModuleIsRefused:
                              'monkeypatch.setenv("SAMPLE", request.function.__module__)'
                              ).replace("def _frozen(monkeypatch):",
                                        "def _frozen(monkeypatch, request):")
-        assert "request...__module__ may name the module or file it runs in" in refusal(
+        assert "request.function.__module__ may name or reach where the code runs" in refusal(
             tmp_path, source)
 
     def test_a_class_docstring_read_through_the_request_when_a_class_is_split(self, tmp_path):
         """``request.cls.__doc__`` reads a slice's one-line docstring once TestBig is split."""
-        assert "which a split class states once per slice" in refusal(
+        assert "request...__doc__ may read a split class" in refusal(
             tmp_path, request_reads_a_class_docstring())
 
     @pytest.mark.parametrize("body, why", [
         ("s = self\n        assert s.__module__", "__module__ may name"),
-        ("assert inspect.getfile(type(self))", "inspect reads a frame"),
-        ("assert inspect.stack()[0].filename", "inspect reads a frame"),
-        ('assert sys._getframe().f_globals["__name__"]', "_getframe reads the frame"),
+        ("assert inspect.getfile(type(self))", "inspect.getfile reaches inspect"),
+        ("assert inspect.stack()[0].filename", "inspect.stack reaches inspect"),
+        ('assert sys._getframe().f_globals["__name__"]', "sys._getframe reaches sys._getframe"),
         ("assert _make.__code__.co_filename", "co_filename may name"),
         ('assert _make.__globals__["__name__"]', "__globals__ may name"),
         ("assert self.test_one.__code__", "__code__ may name"),
@@ -355,6 +356,10 @@ class TestASplitClassIsRefused:
          "reads its class's docstring"),
         ('    @classmethod\n    def _about(cls):\n        """A."""\n'
          '        return getattr(cls, "__doc__")', "reads its class's docstring"),
+        ('    def _about(self):\n        """A."""\n        return self.test_a.__qualname__',
+         "reads its class's docstring, name, namespace or bases"),
+        ('    @classmethod\n    def _about(cls):\n        """A."""\n        return cls.__mro__',
+         "reads its class's docstring, name, namespace or bases"),
     ])
     def test_a_member_that_changes_meaning(self, tmp_path, member, why):
         """Each would mean something different on a mixin or a per-part class."""
@@ -382,6 +387,20 @@ class TestASplitClassIsRefused:
         source = sample_with("assert self._shared() == 2",
                              "assert self._shared() == 2 and self.test_c")
         assert "reaches ['test_c'] through self" in refusal(tmp_path, source)
+
+    @pytest.mark.parametrize("part, body", [
+        (1, "TestBig.flag = 1"), (1, "assert TestBig.__doc__"), (0, "assert TestBig"),
+    ], ids=["a-write-in-a-part-holding-a-slice", "a-read-in-a-part-holding-a-slice",
+            "a-read-in-another-part"])
+    def test_a_node_outside_the_class_naming_it(self, tmp_path, part, body):
+        """In a part holding a slice the name reaches that slice, not the class (a write
+        there misses every other slice); in another part it has no single home."""
+        plan = plan_dict()
+        plan["parts"][part]["nodes"].append("test_names_it")
+        source = SAMPLE + f'\n\ndef test_names_it():\n    """N."""\n    {body}\n'
+        assert "test_names_it (to " in refusal(tmp_path, source, plan)
+        assert "reads the split class ['TestBig'], of which each part holds one slice" in (
+            refusal(tmp_path, source, plan))
 
     def test_a_class_without_a_docstring(self, tmp_path):
         """The mixin carries the class's docstring; there must be one."""

@@ -2,7 +2,8 @@
 module that exercises every shape the tool moves (an autouse fixture, banner comments, a
 helper, constants, a parametrize list, whole classes, a module-level test, and a class split
 across two parts whose tests pass, skip, xfail and xpass), a module it imports from, an
-importer of one of its helpers, and a plan for it."""
+importer of one of its helpers, and a plan for it; and the readers of what the tool refuses
+or accepts for a source built from the sample."""
 from __future__ import annotations
 
 import copy
@@ -15,7 +16,8 @@ import pytest
 from tools.ci import scratch
 from tools.split._layout import Layout, resolve
 from tools.split._model import parse_plan
-from tools.split._source import collect_rules, read_module
+from tools.split._render import line_limit, render_all
+from tools.split._source import Refusal, collect_rules, read_module
 
 SOURCE = "tests/test_area/test_sample.py"
 
@@ -179,6 +181,26 @@ def layout_of(root: Path, plan: dict | None = None) -> Layout:
     """The sample's layout under ``plan`` (the sample plan when None)."""
     rules = collect_rules(root)
     return resolve(read_module(root / SOURCE, rules), parse_plan(plan or plan_dict()), rules)
+
+
+def refusal(tmp_path: Path, source: str = SAMPLE, plan: dict | None = None) -> str:
+    """The refusal message for ``source`` under ``plan``; fails if the tool accepts it."""
+    root = build(tmp_path, source)
+    with pytest.raises(Refusal) as caught:
+        render_all(layout_of(root, plan), line_limit(root))
+    return str(caught.value)
+
+
+def accepted(tmp_path: Path, source: str = SAMPLE, plan: dict | None = None) -> None:
+    """Fail unless the tool lays ``source`` out under ``plan`` with no refusal."""
+    root = build(tmp_path, source)
+    assert render_all(layout_of(root, plan), line_limit(root))
+
+
+def sample_with(old: str, new: str) -> str:
+    """The sample with ``old`` (which must occur once) replaced by ``new``."""
+    assert SAMPLE.count(old) == 1, old
+    return SAMPLE.replace(old, new)
 
 
 def tree(root: Path) -> dict[str, bytes]:

@@ -106,6 +106,41 @@ class TestTheSampleSplits:
         assert "from tests.test_area.test_sample._helpers import _make" in importer
 
 
+class TestAnImportOfTheSourceTheWriterCannotRepoint:
+    """The writer and the identity screen ask ONE producer whether an import names the
+    source (:func:`tools.split._source.imported`, a relative import resolved against the
+    importer's package: the delta review's L-C), so they read a relative spelling alike."""
+
+    @pytest.mark.parametrize("path, line, why", [
+        ("tests/test_zz.py", "import tests.test_area.test_sample\n",
+         "imports the source as a module"),
+        ("tests/test_zz.py", "from tests.test_area import test_sample\n",
+         "imports the source module by name from its package"),
+        ("tests/test_area/test_zz.py", "from .test_sample import _make\n",
+         "a relative import of the source"),
+        ("tests/test_area/test_zz.py", "from . import test_sample\n",
+         "a relative import of the source"),
+        ("tests/test_area/deeper/test_zz.py", "from ..test_sample import _make\n",
+         "a relative import of the source"),
+    ], ids=["as-a-module", "by-name-from-its-package", "relative-from-a-sibling",
+            "relative-by-name", "relative-from-a-package-below"])
+    def test_each_is_refused(self, repo, path, line, why):
+        """Each needs a hand rewrite: the tool points only ``from <source> import`` of names
+        homed in _helpers.py."""
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(line, encoding="utf-8")
+        with pytest.raises(Refusal, match=why):
+            importer_rewrites(layout_of(repo), repo)
+
+    def test_a_module_whose_name_only_begins_with_the_sources_is_not_an_importer(self, repo):
+        """``test_sample_extra`` is another module, not one inside the source."""
+        (repo / "tests/test_area/test_sample_extra.py").write_text("X = 1\n", encoding="utf-8")
+        (repo / "tests/test_zz.py").write_text(
+            "from tests.test_area.test_sample_extra import X\n", encoding="utf-8")
+        assert [r.path for r in importer_rewrites(layout_of(repo), repo)] == [
+            repo / "tests/test_other.py"]
+
+
 def test_a_refused_write_leaves_the_tree_as_it_was(repo):
     """The importer's line changed between reading and writing: refused before the package
     is written or the source deleted (the review's F8a; the re-check ran after both)."""

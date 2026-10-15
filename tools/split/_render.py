@@ -32,7 +32,7 @@ from tools.split._classes import mixin_name
 from tools.split._layout import Layout, Output, Piece
 from tools.split._model import HELPERS, INIT
 from tools.split._run import RunError, python_files
-from tools.split._source import ImportStmt, Refusal, bound_name
+from tools.split._source import ImportStmt, Refusal, bound_name, imported, within
 
 #: R-BAL301 (Josh, 2026-10-15): "every Python file under 1,000 lines".  A part may hold at
 #: most ``LINE_BUDGET - 1`` lines.
@@ -256,25 +256,28 @@ class Rewrite:
     new: str
 
 
-def _importer_rewrite(layout: Layout, path: Path, node: ast.AST, lines: list[str]
-                      ) -> Rewrite | None:
+def _importer_rewrite(layout: Layout, path: Path, node: ast.AST, lines: list[str],
+                      package: str) -> Rewrite | None:
     """The rewrite one import statement in another module needs, None when it does not
-    import the source, or a refusal when the tool cannot point it anywhere single."""
+    import the source, or a refusal when the tool cannot point it anywhere single.
+    ``package`` is the importing module's package, against which a relative import is
+    resolved (:func:`tools.split._source.imported`).  An absolute import from INSIDE the
+    package the source becomes is the re-pointed form, which the prover holds to what
+    ``_helpers.py`` holds (:func:`tools.split._prove._check_importers`), so it needs none."""
+    if not isinstance(node, (ast.Import, ast.ImportFrom)):
+        return None
     dotted = layout.plan.dotted
-    parent, _, stem = dotted.rpartition(".")
-    where = f"{path}:{getattr(node, 'lineno', '?')}"
-    if isinstance(node, ast.Import) and any(
-            a.name == dotted or a.name.startswith(dotted + ".") for a in node.names):
+    if not any(imported(node, alias, package).names(dotted) for alias in node.names):
+        return None
+    where = f"{path}:{node.lineno}"
+    if isinstance(node, ast.Import):
         raise Refusal(f"{where}: imports the source as a module; rewrite it by hand first")
-    if not isinstance(node, ast.ImportFrom):
-        return None
-    if node.level == 0 and node.module == parent and any(a.name == stem for a in node.names):
-        raise Refusal(f"{where}: imports the source module by name from its package")
-    if node.level and (node.module == stem or (node.module is None and any(
-            a.name == stem for a in node.names))):
+    if node.level:
         raise Refusal(f"{where}: a relative import of the source")
-    if node.level or node.module != dotted:
+    if within(node.module, dotted) and node.module != dotted:
         return None
+    if node.module != dotted:
+        raise Refusal(f"{where}: imports the source module by name from its package")
     homes = {layout.home.get(a.name) for a in node.names}
     if homes != {HELPERS}:
         raise Refusal(f"{where}: imports {[a.name for a in node.names]}, homed at {homes}; "
@@ -289,17 +292,21 @@ def _importer_rewrite(layout: Layout, path: Path, node: ast.AST, lines: list[str
 
 def importer_rewrites(layout: Layout, root: Path) -> list[Rewrite]:
     """Every import of the source in another module of the working tree
-    (:func:`tools.split._run.python_files`), rewritten to ``_helpers.py``."""
+    (:func:`tools.split._run.python_files`), rewritten to ``_helpers.py``.  The source and the
+    package it becomes are the split itself, not modules importing it: a part's own
+    ``from ._helpers import`` names the package, and is the writer's."""
     source = (root / layout.plan.source).resolve()
+    package = (root / layout.plan.package).resolve()
     found = []
     for path in python_files(root):
-        if path.resolve() == source:
+        if path.resolve() == source or path.resolve().is_relative_to(package):
             continue
         text = path.read_bytes().decode("utf-8")
         if layout.plan.stem not in text:
             continue
         lines = text.splitlines()
-        here = [rewrite for rewrite in (_importer_rewrite(layout, path, node, lines)
+        its_package = ".".join(path.relative_to(root).parent.parts)
+        here = [rewrite for rewrite in (_importer_rewrite(layout, path, node, lines, its_package)
                                         for node in ast.walk(ast.parse(text, str(path))))
                 if rewrite]
         if here and "\r" in text:

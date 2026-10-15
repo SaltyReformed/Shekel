@@ -153,6 +153,49 @@ def bound_name(alias: ast.alias, node: ast.Import | ast.ImportFrom) -> str:
     return alias.name.split(".")[0] if isinstance(node, ast.Import) else alias.name
 
 
+def within(dotted: str, module: str) -> bool:
+    """Whether the dotted name ``dotted`` is ``module`` or lies inside it."""
+    return dotted == module or dotted.startswith(module + ".")
+
+
+@dataclass(frozen=True)
+class Imported:
+    """What one alias of an import statement does, as dotted names: ``bound``, the name it
+    binds; ``refers``, what that name then refers to (``import a.b`` binds ``a``, the package
+    ``a``; ``import a.b as x`` binds ``x``, the module ``a.b``); and ``imports``, every module
+    or object the statement imports for it (``a.b``; or ``m`` and ``m.n`` for
+    ``from m import n``)."""
+
+    bound: str
+    refers: str
+    imports: tuple[str, ...]
+
+    def names(self, module: str) -> bool:
+        """Whether this alias imports ``module`` or anything inside it."""
+        return any(within(dotted, module) for dotted in self.imports)
+
+
+def imported(node: ast.Import | ast.ImportFrom, alias: ast.alias, package: str) -> Imported:
+    """What ``alias`` of ``node`` imports, a relative import resolved against ``package``,
+    the package of the module the statement sits in (its ``__package__``).
+
+    The one producer of "this import names the source" (the coordinator's ruling on the
+    delta review's L-C, 2026-10-15): the writer re-pointing importers and the identity screen
+    both ask it, so they cannot disagree about a relative spelling again.  Refused when the
+    dots climb above the top package, which Python refuses too."""
+    if isinstance(node, ast.Import):
+        refers = alias.name if alias.asname else alias.name.split(".")[0]
+        return Imported(bound_name(alias, node), refers, (alias.name,))
+    base = node.module or ""
+    if node.level:
+        parts = package.split(".") if package else []
+        if node.level > len(parts):
+            raise Refusal(f"line {node.lineno}: a relative import climbs above the top package")
+        base = ".".join(parts[:len(parts) - (node.level - 1)] + ([base] if base else []))
+    full = f"{base}.{alias.name}" if base else alias.name
+    return Imported(bound_name(alias, node), full, (base, full) if base else (full,))
+
+
 def is_docstring(node: ast.stmt) -> bool:
     """Whether ``node`` is a string-literal expression statement."""
     return (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)

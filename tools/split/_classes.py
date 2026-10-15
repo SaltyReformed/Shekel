@@ -11,8 +11,10 @@ decorator, base or keyword on the class (a mark would have to be repeated, a bas
 in the MRO); a class without a docstring; a non-blank line between the ``class`` line and the
 docstring; a fixture member of any scope but ``function`` (each part would run it again);
 ``setup_class`` / ``teardown_class`` and their unittest spellings; ``super``, ``__class__``,
-``self.__class__`` or ``type(self)`` (each now names a different class); ``self.__doc__`` or
-``cls.__doc__`` (each slice states its own docstring, and the class's is on the mixin); a
+``self.__class__`` or ``type(self)`` (each now names a different class); a read off
+``self`` or ``cls`` of what differs for a split class (its docstring, which each slice states
+anew while the class's is on the mixin; its name, qualname, namespace, bases or order:
+:data:`tools.split._identity.SPLIT_CLASS`); a
 member that names its own class; an assignment to a class attribute, or to any attribute of
 ``cls`` or of the class by name (each part would hold its own); ``globals()``; and a test
 that reaches a test placed in another slice through ``self``.
@@ -22,6 +24,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 
+from tools.split._identity import SPLIT_CLASS
 from tools.split._model import ClassSlice
 from tools.split._source import (
     Block,
@@ -133,11 +136,23 @@ def _reaches_own_class(node: ast.AST) -> bool:
     return False
 
 
-def _reads_own_docstring(node: ast.AST) -> bool:
-    """Whether ``node`` reads ``__doc__`` through ``self`` or ``cls``, by attribute or by
-    ``getattr``."""
-    return any(read[1] == "__doc__" and _is_self(read[0])
-               for read in map(attribute_read, ast.walk(node)) if read is not None)
+def _reads_own_split_class(node: ast.AST) -> bool:
+    """Whether ``node`` reads what differs for a split class (:data:`SPLIT_CLASS`: its
+    docstring, name, qualname, namespace, bases, ...) off a chain rooted at ``self`` or
+    ``cls``, by attribute or by ``getattr``.  Keyed on those two names, which is sound because
+    in a split class's members the identity screen refuses either used as anything but a
+    chain's root or a callee, and one of the class's methods reached through them used as
+    anything but a callee, so no other name can hold them (the coordinator's ruling on the
+    delta review's H-B rule 5 and L-D: ``s = self; s.__doc__`` read a slice's docstring)."""
+    for read in map(attribute_read, ast.walk(node)):
+        if read is None or read[1] not in SPLIT_CLASS:
+            continue
+        root = read[0]
+        while isinstance(root, (ast.Attribute, ast.Subscript, ast.Call)):
+            root = root.func if isinstance(root, ast.Call) else root.value
+        if _is_self(root):
+            return True
+    return False
 
 
 def _assigned_attributes(node: ast.AST) -> set[tuple[str, str]]:
@@ -177,9 +192,9 @@ def _check_member(shape: ClassShape, member: Block, lines: tuple[str, ...],
     if reaching or _reaches_own_class(member.node):
         raise Refusal(f"{where}: reaches its own class ({sorted(reaching) or 'by type'}), "
                       "which is a different class in each part")
-    if _reads_own_docstring(member.node):
-        raise Refusal(f"{where}: reads its class's docstring, which each slice states anew "
-                      "and the mixin keeps")
+    if _reads_own_split_class(member.node):
+        raise Refusal(f"{where}: reads its class's docstring, name, namespace or bases, which "
+                      "each slice states anew and the mixin keeps")
     if "globals" in free:
         raise Refusal(f"{where}: globals() inside a split class")
     for name, attribute in _assigned_attributes(member.node):

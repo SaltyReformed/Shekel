@@ -12,18 +12,15 @@ the tool never guesses where a name comes from.
 plan does not place, a fixture a part names, a name placed twice; a module-level fixture of
 any scope but ``function`` (a package ``conftest.py`` would run it once per part); a
 module-level ``pytest_*`` hook, ``pytestmark``, ``pytest_plugins`` or dunder (a conftest
-widens a hook's reach, and a part would not carry the others); ``global``; a no-argument
-``vars()``; ``request.getfixturevalue`` (its fixture's reach is unobserved on a branch the
-record run did not take); a read that may carry the identity of the module or file the
-code runs in (``__module__``, ``__file__``, ``__code__``, ``__globals__``, a frame, a call into
-:mod:`inspect`), unless it is read off a name an import binds to something other than the
-source or its package; a ``request`` attribute naming the requesting module, its file or its
-place in the tree, or a docstring read through ``request`` when a class is split; a free
-name naming the module
-itself (``__file__``, ``__name__``, ...: a part sits one directory deeper); a node in one
-part reading a node placed in another; ``globals()`` unless every node reading each key it
-writes lands in the same output; and an import alias nothing reads that the plan does not
-place.
+widens a hook's reach, and a part would not carry the others); ``global``;
+``request.getfixturevalue`` (its fixture's reach is unobserved on a branch the record run
+did not take); anything the identity screen refuses, a read of where the code runs outside
+its one exempt shape (:mod:`tools.split._identity`); a free name naming the module itself
+(``__file__``, ``__name__``, ...: a part sits one directory deeper); a node in one part
+reading a node placed in another; a node outside a split class reading the class by name,
+even in a part holding one of its slices (the name reaches that slice, not the class);
+``globals()`` unless every node reading each key it writes lands in the same output; and an
+import alias nothing reads that the plan does not place.
 """
 from __future__ import annotations
 
@@ -32,14 +29,13 @@ import builtins
 from dataclasses import dataclass, field
 
 from tools.split._classes import ClassShape, check_split, class_shape, mixin_name
+from tools.split._identity import Screen
 from tools.split._model import CONFTEST, HELPERS, ClassSlice, Part, Plan
 from tools.split._source import (
     CollectRules,
     Kind,
     Refusal,
     SourceModule,
-    attribute_read,
-    bound_name,
     fixture_decorator,
     fixture_scope,
     free_names,
@@ -57,16 +53,6 @@ BUILTINS = frozenset(dir(builtins)) - MODULE_DUNDERS
 
 #: Module-level names pytest reads off a module, which a part would not carry.
 _PYTEST_MODULE_NAMES = frozenset({"pytestmark", "pytest_plugins"})
-
-#: Attributes of a fixture's ``request``, or of its node, that name or lead to the requesting
-#: module, its file, or the node's place in the tree.
-_REQUEST_LOCATION = frozenset({"module", "fspath", "path", "nodeid", "location", "reportinfo",
-                               "parent", "getparent", "listchain", "iter_parents"})
-
-#: Attributes whose value carries the identity of the module or file code runs in: a
-#: module's or object's module name and file, a function's code and globals, a frame's.
-_IDENTITY = frozenset({"__module__", "__file__", "__code__", "__globals__", "co_filename",
-                       "f_globals", "f_code", "f_back"})
 
 #: The marker a split class's name is homed at: it is bound in several parts, so no other
 #: output may reach it by name.
@@ -275,118 +261,43 @@ def globals_keys(nodes: tuple[ast.AST, ...]) -> set[str] | None:
     return set(patched) if len(patched) == calls else None
 
 
-def _root_name(node: ast.AST) -> str | None:
-    """The name an attribute or subscript chain starts from."""
-    while isinstance(node, (ast.Attribute, ast.Subscript, ast.Call)):
-        node = node.func if isinstance(node, ast.Call) else node.value
-    return node.id if isinstance(node, ast.Name) else None
-
-
-@dataclass(frozen=True)
-class _Imports:
-    """What the imports a piece can see bind: every name an import binds that is NOT the
-    source module or a module of the package being written (``foreign``), and every name
-    bound to the standard library's :mod:`inspect` or one of its functions."""
-
-    foreign: frozenset[str]
-    inspect: frozenset[str]
-
-
-def _binds_the_split(node: ast.Import | ast.ImportFrom, alias: ast.alias, plan: Plan) -> bool:
-    """Whether ``alias`` of ``node`` binds the source module or a module of its package."""
-    dotted = plan.dotted
-    parent, _, stem = dotted.rpartition(".")
-    if isinstance(node, ast.Import):
-        return alias.name == dotted or alias.name.startswith(dotted + ".")
-    module = node.module or ""
-    return (module == dotted or module.startswith(dotted + ".")
-            or (module == parent and alias.name == stem))
-
-
-def _imports_seen(statements: list[ast.Import | ast.ImportFrom], plan: Plan) -> _Imports:
-    """What ``statements`` bind (the source's import block and a piece's own local
-    imports)."""
-    foreign, inspect = set(), set()
-    for node in statements:
-        for alias in node.names:
-            name = bound_name(alias, node)
-            if not _binds_the_split(node, alias, plan):
-                foreign.add(name)
-            origin = alias.name if isinstance(node, ast.Import) else node.module
-            if origin == "inspect":
-                inspect.add(name)
-    return _Imports(frozenset(foreign), frozenset(inspect))
-
-
-def _is_foreign(node: ast.AST, imports: _Imports) -> bool:
-    """Whether ``node`` is a chain rooted at a name an import binds to something other than
-    the code being moved: its module, file, code and frames are not the part's."""
-    return _root_name(node) in imports.foreign
-
-
-def _check_call(sub: ast.Call, imports: _Imports) -> str | None:
-    """Why one call could change meaning once moved, or None."""
-    func = sub.func
-    if isinstance(func, ast.Name) and func.id == "vars" and not sub.args:
-        return "vars() reads the module it runs in"
-    if isinstance(func, ast.Attribute) and func.attr == "getfixturevalue":
-        return ("getfixturevalue sets up a fixture by name at run time, on a branch the "
-                "record run may not have taken, so its reach is unobserved")
-    callee = func.value if isinstance(func, ast.Attribute) else func
-    if isinstance(callee, ast.Name) and callee.id in imports.inspect and not (
-            sub.args and all(_is_foreign(a, imports) for a in sub.args)):
-        return ("inspect reads a frame, or an object the code being moved may define, so its "
-                "module or file")
-    return None
-
-
-def _check_node(sub: ast.AST, imports: _Imports, split: bool) -> str | None:
-    """Why one AST node could change meaning once moved, or None.  ``split``: the plan splits
-    a class, so a class's docstring read through ``request`` may be a slice's.
-
-    An identity-carrying read (:data:`_IDENTITY`, a ``_getframe``, a call into
-    :mod:`inspect`) is refused whatever it is read off, unless the chain is rooted at a name
-    an import binds to something other than the source or its package (the coordinator's
-    ruling on the follow-up leaf's review fork M2, 2026-10-15): a list of the names running
-    code reaches itself through (``self``, ``cls``, ...) was a list of spellings, and
-    ``s = self; s.__module__`` or ``inspect.getfile(type(self))`` walked past it."""
+def _check_node(sub: ast.AST) -> str | None:
+    """Why one AST node could change meaning once moved, beyond what it reads of where it
+    runs (:mod:`tools.split._identity`), or None."""
     if isinstance(sub, ast.Global):
         return f"global {', '.join(sub.names)}"
-    if isinstance(sub, ast.Call):
-        why = _check_call(sub, imports)
-        if why:
-            return why
-    read = attribute_read(sub)
-    return None if read is None else _check_read(read, imports, split)
-
-
-def _check_read(read: tuple[ast.expr, str], imports: _Imports, split: bool) -> str | None:
-    """Why reading attribute ``read[1]`` off ``read[0]`` could change meaning once moved, or
-    None (:func:`_check_node`)."""
-    root, attribute = _root_name(read[0]), read[1]
-    if attribute == "_getframe":
-        return "_getframe reads the frame it runs in"
-    if attribute in _IDENTITY and not _is_foreign(read[0], imports):
-        return f"{root or 'an expression'}...{attribute} may name the module or file it runs in"
-    if attribute in _REQUEST_LOCATION and root == "request":
-        return f"request...{attribute} names the requesting module or file"
-    if attribute == "__doc__" and root == "request" and split:
-        return ("request...__doc__ may read a test's class docstring, which a split class "
-                "states once per slice")
+    if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+            and sub.func.attr == "getfixturevalue"):
+        return ("getfixturevalue sets up a fixture by name at run time, on a branch the "
+                "record run may not have taken, so its reach is unobserved")
     return None
 
 
-def _check_nodes(output: Output, source: SourceModule, plan: Plan, split: bool) -> None:
+def piece_refusals(nodes: tuple[ast.AST, ...], screen: Screen, class_name: str | None,
+                   split: bool) -> list[str]:
+    """Every reason moving ``nodes`` (a whole unit, or members of the class ``class_name``)
+    could change their meaning: :func:`_check_node`'s, then the identity screen's.  The one
+    check :func:`_check_nodes` and the census both call."""
+    found = [why for node in nodes for why in map(_check_node, ast.walk(node)) if why]
+    return found + screen.refusals(nodes, class_name, split)
+
+
+def unit_refusals(source: SourceModule, plan: Plan) -> list[tuple[str, str]]:
+    """Every top-level unit of ``source`` that could change meaning if moved WHOLE under
+    ``plan``, with each reason: the census of what the screen refuses in a module before a
+    plan is written for it."""
+    screen = Screen(source, plan)
+    return [(unit.name, why) for unit in source.units
+            for why in piece_refusals((unit.block.node,), screen, None, False)]
+
+
+def _check_nodes(output: Output, screen: Screen, split: bool) -> None:
     """Refuse a construct in ``output`` whose meaning depends on the module it runs in."""
-    block = [stmt.node for stmt in source.imports]
     for piece in output.pieces:
-        walked = [s for top in piece.nodes for s in ast.walk(top)]
-        imports = _imports_seen(block + [s for s in walked
-                                         if isinstance(s, (ast.Import, ast.ImportFrom))], plan)
-        for sub in walked:
-            why = _check_node(sub, imports, split)
-            if why:
-                raise Refusal(f"{piece.binds} (to {output.module}): {why}")
+        found = piece_refusals(piece.nodes, screen, piece.shape.name if piece.shape else None,
+                               split)
+        if found:
+            raise Refusal(f"{piece.binds} (to {output.module}): {'; '.join(found)}")
 
 
 def _patches_outside_a_test_body(unit_node: ast.AST, rules: CollectRules) -> bool:
@@ -472,6 +383,22 @@ def _check_globals(outputs: dict[str, Output], source: SourceModule, rules: Coll
                                   f"{output.module}")
 
 
+def _check_split_reach(outputs: dict[str, Output], home: dict[str, str]) -> None:
+    """Refuse a node outside a split class that reads the class by name, in whatever output
+    it lands: each part holds one slice under the class's name, so in a part holding a slice
+    the name reaches that slice (a write there misses every other), and in any other no
+    single home exists.  The class's own members are judged by
+    :func:`tools.split._classes.check_split`."""
+    split = {name for name, where in home.items() if where == SPLIT_HOME}
+    for output in outputs.values():
+        for piece in output.pieces:
+            own = {piece.shape.name} if piece.shape else set()
+            reaching = sorted((piece.free & split) - own)
+            if reaching:
+                raise Refusal(f"{piece.binds} (to {output.module}) reads the split class "
+                              f"{reaching}, of which each part holds one slice")
+
+
 def _resolve(outputs: dict[str, Output], source: SourceModule, home: dict[str, str]) -> None:
     """Fill each output's imports from its free names; refuse any name with no source."""
     bindings = source.import_bindings()
@@ -522,10 +449,12 @@ def resolve(source: SourceModule, plan: Plan, rules: CollectRules) -> Layout:
                                (HELPERS, helpers_docstring(plan))):
         if pieces.get(module):
             outputs[module] = Output(module, "", provenance, pieces[module])
+    screen = Screen(source, plan)
     for output in outputs.values():
         output.pieces.sort(key=lambda p: p.position)
-        _check_nodes(output, source, plan, bool(shapes))
+        _check_nodes(output, screen, bool(shapes))
     _check_globals(outputs, source, rules)
+    _check_split_reach(outputs, home)
     _resolve(outputs, source, home)
     _place_unused(outputs, source, plan)
     return Layout(source=source, plan=plan, outputs=outputs, home=home, split=shapes)
