@@ -5,6 +5,7 @@ Covers dashboard, setup, parameter updates, escrow management,
 rate history, and payoff calculator across multiple loan types.
 """
 
+import inspect
 import re
 from datetime import date, time, timedelta
 from html.parser import HTMLParser
@@ -23,6 +24,7 @@ from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory
 from app.extensions import db as _db
 from app.models.ref import AccountType, Status
+from app.routes import loan as loan_routes
 from app.routes.loan._helpers import accelerated_overlay, build_band_chart
 from app.services.balance_at import BalanceContext
 from app.services.loan_loaders import load_loan_params, load_rate_changes
@@ -3470,11 +3472,15 @@ class TestPayoffChartShape:
 
         # loan.py is now the app/routes/loan/ package (Phase 3 pylint
         # cleanup split); grep every sub-module so coverage is preserved.
-        loan_pkg = Path(__file__).resolve().parents[2] / "app" / "routes" / "loan"
-        text = "\n".join(
-            p.read_text(encoding="utf-8")
-            for p in sorted(loan_pkg.glob("*.py"))
+        # The package is found from its own module, never from this test's
+        # place in the tree, and the read must hold the module the payoff
+        # route lives in: a "not in" over an empty read passes on nothing.
+        loan_pkg = Path(inspect.getfile(loan_routes)).parent
+        modules = sorted(loan_pkg.glob("*.py"))
+        assert loan_pkg / "calculators.py" in modules, (
+            f"read no loan route modules from {loan_pkg}: {modules}"
         )
+        text = "\n".join(p.read_text(encoding="utf-8") for p in modules)
         assert "amortization_engine.calculate_summary" not in text, (
             "app/routes/loan/ still references "
             "amortization_engine.calculate_summary -- the Commit 4 "
@@ -3495,10 +3501,10 @@ class TestPayoffChartShape:
         """
         from pathlib import Path  # pylint: disable=import-outside-toplevel
 
-        calculators = (
-            Path(__file__).resolve().parents[2]
-            / "app" / "routes" / "loan" / "calculators.py"
-        )
+        # Found from the package's own module, never from this test's place
+        # in the tree; a missing file raises and the marker assert below
+        # fails on an empty read.
+        calculators = Path(inspect.getfile(loan_routes)).parent / "calculators.py"
         text = calculators.read_text(encoding="utf-8")
         start_marker = "def _payoff_extra_payment_result("
         end_marker = "\ndef _payoff_target_date_result("
@@ -8621,10 +8627,10 @@ class TestRefinanceAndPayoffByDateProjectForwardMigration:
         """
         from pathlib import Path  # pylint: disable=import-outside-toplevel
 
-        calculators = (
-            Path(__file__).resolve().parent.parent.parent
-            / "app" / "routes" / "loan" / "calculators.py"
-        )
+        # Found from the package's own module, never from this test's place
+        # in the tree; a missing file raises and ``index`` below raises on an
+        # empty read.
+        calculators = Path(inspect.getfile(loan_routes)).parent / "calculators.py"
         source = calculators.read_text(encoding="utf-8")
         marker = "def _project_refinance("
         start = source.index(marker)
