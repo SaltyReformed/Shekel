@@ -720,10 +720,11 @@ class TestTheFeedPricesADerivedRow:
     ):
         """A payment storing no figure is priced through the amount model: $1,500.00.
 
-        The transfer stores nothing -- asserted FIRST, because a stored
-        figure would let the plan column answer and the feed's route would
-        grade nothing -- and the feed's projected half resolves it from its
-        definition through
+        The transfer stores nothing -- asserted FIRST, because a feed that
+        read the transfer's own ``amount`` column, past the amount model,
+        would answer a STORED ``$1,500.00`` and pass, where on a payment
+        storing none only the amount model can answer -- and the feed's
+        projected half resolves it from its definition through
         :func:`~app.services.cash_ledger.planned_leg_contribution`, at the
         $1,500.00 the definition states.
 
@@ -738,8 +739,8 @@ class TestTheFeedPricesADerivedRow:
             xfer = _generated_loan_payment(seed_user, loan, seed_periods[1])
             db.session.commit()
             assert db.session.get(Transfer, xfer.id).amount is None, (
-                "the payment stores a figure, so the plan column could answer "
-                "it and the feed's route would grade nothing"
+                "the payment stores a figure, so a feed reading the plan "
+                "column past the amount model would pass this case"
             )
 
             result = get_payment_history(
@@ -1316,10 +1317,10 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
         after.  The settled half moved onto the transfers at plan step
         balance:X-bi-6-4b, and since a transfer became one row (ruling
         **R-BAL258**) the shadow delete this case also ran removed NOTHING
-        (measured: 0 rows, 2026-10-15), so it went (ruling **R-BAL167**
-        class 1).  The feed is asserted EMPTY after the delete, which is the
-        non-vacuity the old "non-empty before" assertion could not supply on
-        its own.
+        (measured: 0 rows, 2026-10-15): vacuous code, deleted with nothing
+        re-expressed in its place.  The feed is asserted EMPTY after the
+        delete, which is the non-vacuity the old "non-empty before" assertion
+        could not supply on its own.
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)

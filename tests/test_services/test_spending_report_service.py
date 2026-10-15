@@ -35,6 +35,7 @@ from app.services import (
     movement_removal,
     spending_analysis,
     status_seam,
+    template_amount_service,
     transfer_service,
 )
 from app.services.cash_flow_set import CashFlowSet
@@ -1488,13 +1489,19 @@ class TestTheReportReadsTheCashFlowSet:
         INTO checking (allowed), its source re-pointed onto the card by
         assignment, and only THEN settled through ``update_transfer`` -- the
         settle half of ``create_settled_transfer``, split out because the
-        order is load-bearing: the settle writes each side's payment record
-        on the transfer's endpoint (plan step balance:X-bi-6-4d-2) and the
-        posted ledger books the pair off ``xfer.from_account_id`` at settle
-        time, so the source moves first.  Measured 10-15: the card side's
-        record is on the card, checking's on checking, and the helper holds
-        none.  Neither reader here reads postings; the order is kept so the
-        planted state is whole.  The re-point moved the transfer's expense
+        order decides where the POSTINGS land.  A side's payment record
+        follows its endpoint whenever the endpoint moves
+        (``fk_transaction_entries_expense_side`` is ON UPDATE CASCADE, ruling
+        R-BAL168), but the settle books each record's postings on that
+        record's account as it stands at the settle
+        (``_posting_purchases``'s ``_ledger_account_for(entry.account_id)``),
+        and a re-point by assignment passes no door that books them again:
+        settled first, the card side's record follows the source onto the
+        card while its postings stay on the helper's ledger.  Measured 10-15
+        both ways; in this order the card side's record and its postings are
+        on the card, checking's on checking, and the helper holds none.
+        Neither reader here reads postings; the order is kept so the planted
+        state is whole.  The re-point moved the transfer's expense
         shadow row too until plan step balance:X-bi-6-4d-3 made a transfer
         one row (ruling R-BAL258); the transfer is the whole plant now
         (ruling R-BAL167 class 1).  The savings account is not a member of
@@ -2299,18 +2306,28 @@ class TestTheActualHalfAsksTheAmountModel:
 
     @staticmethod
     def _unsettled_derived_row(db, seed_user, period):
-        """Generate a definition's row in *period*: unsettled, priced $321.00.
+        """Generate a definition's row in *period*: unsettled, priced $321.00 on its own date.
 
-        The definition's price is stated effective thirty days before the
-        row, so the version the row's DATE selects is a stated one whatever
-        the clock reads (the trap
-        ``test_a_template_priced_row_reads_the_version_for_its_own_due_date``
-        below names); the price :func:`make_expense_template` states on the owner's
-        today is the same figure, so no case here turns on which version is
-        read.
+        The definition states TWO prices, so the cases grade which one the
+        fall-through reads: ``$321.00`` effective thirty days before the row,
+        the version the row's DATE selects, and ``$200.00`` on the owner's
+        today (:func:`make_expense_template`'s own statement), the NEWEST
+        price and so the one ``default_amount`` holds.  A fall-through that
+        answered the definition's newest price rather than its price on the
+        row's own due date would read ``$200.00``.  Both prices were
+        ``$321.00`` when plan step ``balance:X-bi-6-4d-3`` first built this
+        helper, and a fall-through reading ``default_amount`` passed both
+        cases (measured by that step's delta review).
+
+        The two facts hold on every clock later than the row's due date -- a
+        seeded January 2026 day, so every day this suite runs from now on --
+        and the guards below assert each, so a clock that broke one fails
+        its guard by name rather than the figure (the guard shape of
+        ``test_a_template_priced_row_reads_the_version_for_its_own_due_date``,
+        which names the clock trap).
         """
         template = make_expense_template(
-            db.session, seed_user, amount="321.00", name="Derived Bill",
+            db.session, seed_user, amount="200.00", name="Derived Bill",
         )
         db.session.flush()
         state_template_price(
@@ -2320,6 +2337,16 @@ class TestTheActualHalfAsksTheAmountModel:
         db.session.flush()
         row = generate_row_of(template, period)
         db.session.commit()
+        assert template.default_amount == Decimal("200.00"), (
+            "the newest price must differ from the one the row's date "
+            "selects, or a fall-through reading default_amount passes"
+        )
+        assert template_amount_service.amount_as_of(
+            template, row.due_date,
+        ) == Decimal("321.00"), (
+            "the row's due date must select the $321.00 stated before it, "
+            "which a today-version dated between the two would supersede"
+        )
         return row
 
     def test_an_unsettled_derived_row_is_PRICED_not_refused(

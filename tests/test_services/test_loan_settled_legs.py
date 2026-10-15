@@ -468,7 +468,7 @@ class TestTheSettledHalfComplementsThePlanHalf:
     def test_every_transfer_state_lands_in_exactly_one_half(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Every storable state of a payment, each placed by the transfer's status and its money.
+        """The states this case covers, each placed by the transfer's status and its money.
 
         * Projected, nothing moved                    -> planned;
         * Paid with its movements                     -> settled;
@@ -480,6 +480,17 @@ class TestTheSettledHalfComplementsThePlanHalf:
         * Paid, its loan side's record staged
           un-dated                                    -> refused at commit
           (rolled back: Paid and dated, settled).
+
+        **A soft-deleted transfer is in NEITHER half, by design**, whatever
+        its status: each half filters ``Transfer.is_deleted``.  It is no
+        member here, because "neither" is a different claim than "exactly
+        one".  A soft delete through the door takes a Paid payment's records
+        off and returns it as a plan (ruling **R-BAL246**), so the PLAN
+        half's filter is what drops a deleted Projected or Paid payment,
+        graded by ``test_loan_payment_service.py``'s
+        ``test_excludes_deleted_transactions`` (both its cases); a ``$0.00``
+        close held nothing and stays Paid (measured 2026-10-15), so the
+        SETTLED half's filter is what drops that one.
 
         The old partition keyed the settled half on the TWIN's status, so a
         twin Paid under a Projected parent was in BOTH halves and a parent
