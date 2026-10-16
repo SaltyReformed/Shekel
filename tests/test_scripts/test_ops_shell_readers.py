@@ -34,12 +34,13 @@ tests grade the meaning, not a race.
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
+
+from tests.test_scripts._shell_harness import fake_docker, function_text, run_bash
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DOCKER_LIB = _REPO_ROOT / "scripts" / "_docker_lib.sh"
@@ -51,83 +52,6 @@ _SELF_HOSTED_DEPLOY = _REPO_ROOT / "scripts" / "deploy.sh"
 _DIGEST_A = "sha256:" + "a" * 64
 _DIGEST_B = "sha256:" + "b" * 64
 _DIGEST_C = "sha256:" + "c" * 64
-
-
-def _function_text(script: Path, name: str) -> str:
-    """Return shell function *name*'s definition from *script*, verbatim.
-
-    A definition opens with ``name() {`` at the start of a line and closes
-    with the first ``}`` alone at the start of a line, which is how every
-    top-level function in these scripts is written (shfmt enforces it).
-
-    Args:
-        script: The script holding the function.
-        name: The function's name.
-
-    Returns:
-        The definition, from its first line through its closing brace.
-    """
-    found = re.findall(
-        rf"^{re.escape(name)}\(\) \{{\n.*?^\}}\n",
-        script.read_text(encoding="utf-8"), flags=re.S | re.M,
-    )
-    assert len(found) == 1, (
-        f"expected one definition of {name}() in {script}, found {len(found)}"
-    )
-    return found[0]
-
-
-def _fake_docker(bin_dir: Path, *, stdout: str, status: int) -> Path:
-    """Install a ``docker`` stub that prints *stdout* and exits *status*.
-
-    Every invocation's arguments are appended to ``docker.log`` beside it.
-
-    Args:
-        bin_dir: Directory placed first on ``PATH``.
-        stdout: What the stub prints, verbatim.
-        status: The stub's exit status.
-
-    Returns:
-        The invocation log's path.
-    """
-    bin_dir.mkdir(exist_ok=True)
-    log = bin_dir / "docker.log"
-    answer = bin_dir / "docker.out"
-    answer.write_text(stdout, encoding="utf-8")
-    stub = bin_dir / "docker"
-    stub.write_text(textwrap.dedent(f"""\
-        #!/usr/bin/env bash
-        printf '%s\\n' "$*" >>'{log}'
-        cat '{answer}'
-        exit {status}
-        """), encoding="utf-8")
-    stub.chmod(0o755)
-    return log
-
-
-def _bash(program: str, *args: str, path_prefix: Path | None = None,
-          ) -> subprocess.CompletedProcess:
-    """Run *program* under the swept scripts' own ``set -euo pipefail``.
-
-    A function its script calls inside a command substitution is called the
-    same way here, since bash runs that subshell WITHOUT errexit: grading it
-    bare under ``set -e`` would grade a context its callers never give it.
-
-    Args:
-        program: Bash source, reading its inputs from ``$1``, ``$2`` ...
-        args: The positional parameters.
-        path_prefix: A directory to put first on ``PATH`` (the stubs).
-
-    Returns:
-        The completed process, stdout and stderr captured.
-    """
-    env = None
-    if path_prefix is not None:
-        env = {"PATH": f"{path_prefix}:/usr/bin:/bin"}
-    return subprocess.run(
-        ["bash", "-c", f"set -euo pipefail\n{program}", "_", *args],
-        capture_output=True, text=True, timeout=30, check=False, env=env,
-    )
 
 
 class TestTheRunningCheckHasOneHome:
@@ -146,8 +70,8 @@ class TestTheRunningCheckHasOneHome:
         self, tmp_path, answer, status, expected,
     ):
         """Running is 0; stopped, or unknown to docker, is 1."""
-        log = _fake_docker(tmp_path / "bin", stdout=answer, status=status)
-        result = _bash(
+        log = fake_docker(tmp_path / "bin", stdout=answer, status=status)
+        result = run_bash(
             'source "$1"; container_running "$2" || exit "$?"',
             str(_DOCKER_LIB), "probe-db", path_prefix=tmp_path / "bin",
         )
@@ -158,8 +82,8 @@ class TestTheRunningCheckHasOneHome:
 
     def test_the_backup_helper_asks_through_it(self, tmp_path):
         """``require_db_container`` refuses a stopped container, by name."""
-        _fake_docker(tmp_path / "bin", stdout="false\n", status=0)
-        result = _bash(
+        fake_docker(tmp_path / "bin", stdout="false\n", status=0)
+        result = run_bash(
             'source "$1"; require_db_container "$2" || exit "$?"',
             str(_BACKUP_LIB), "probe-db", path_prefix=tmp_path / "bin",
         )
@@ -168,8 +92,8 @@ class TestTheRunningCheckHasOneHome:
 
     def test_the_backup_helper_passes_a_running_container(self, tmp_path):
         """And lets a running one through, saying nothing."""
-        _fake_docker(tmp_path / "bin", stdout="true\n", status=0)
-        result = _bash(
+        fake_docker(tmp_path / "bin", stdout="true\n", status=0)
+        result = run_bash(
             'source "$1"; require_db_container "$2" || exit "$?"',
             str(_BACKUP_LIB), "probe-db", path_prefix=tmp_path / "bin",
         )
@@ -262,14 +186,14 @@ class TestRestoreWaitsForTheAppThroughTheSharedCheck:
         recorder_log = tmp_path / "asked.log"
         recorder_log.write_text("", encoding="utf-8")
         recorder = "" if recorded_answer is None else self._RECORDER
-        result = _bash(
+        result = run_bash(
             'source "$1"; eval "$2"; APP_CONTAINER=probe-app; '
             'RECORDER_LOG="$3"; RECORDED_ANSWER="$4"; '
             'eval "$5"; eval "$6"; start_app',
             str(_BACKUP_LIB), recorder, str(recorder_log),
             str(recorded_answer or 0),
-            _function_text(_RESTORE, "app_container_exists"),
-            _function_text(_RESTORE, "start_app"),
+            function_text(_RESTORE, "app_container_exists"),
+            function_text(_RESTORE, "start_app"),
             path_prefix=tmp_path / "bin",
         )
         return (
@@ -341,10 +265,10 @@ def _extract_env_value(env_file_text: str | None, key: str, tmp_path: Path,
     """
     if env_file_text is not None:
         (tmp_path / ".env").write_text(env_file_text, encoding="utf-8")
-    return _bash(
+    return run_bash(
         'PROD_ROOT="$1"; eval "$2"; value=$(extract_env_value "$3"); '
         'printf "%s" "$value"',
-        str(tmp_path), _function_text(_RECONCILE, "extract_env_value"), key,
+        str(tmp_path), function_text(_RECONCILE, "extract_env_value"), key,
     )
 
 
@@ -403,10 +327,10 @@ def _compose_image_digest(compose_text: str | None, tmp_path: Path,
         (tmp_path / "docker-compose.yml").write_text(
             compose_text, encoding="utf-8",
         )
-    return _bash(
+    return run_bash(
         'source "$3"; PROD_ROOT="$1"; eval "$2"; '
         'digest=$(compose_image_digest); printf "%s" "$digest"',
-        str(tmp_path), _function_text(_RECONCILE, "compose_image_digest"),
+        str(tmp_path), function_text(_RECONCILE, "compose_image_digest"),
         str(_DOCKER_LIB),
     )
 
@@ -484,11 +408,11 @@ class TestTheSelfHostedDeployResolvesItsDigest:
     )
     def test_it_prints_the_image_id(self, tmp_path, answer, status, digest):
         """A failed inspect is EMPTY with status 0, which the callers refuse."""
-        _fake_docker(tmp_path / "bin", stdout=answer, status=status)
-        result = _bash(
+        fake_docker(tmp_path / "bin", stdout=answer, status=status)
+        result = run_bash(
             'source "$2"; IMAGE_REF=probe:latest; eval "$1"; '
             'digest=$(cosign_resolve_digest); printf "%s" "$digest"',
-            _function_text(_SELF_HOSTED_DEPLOY, "cosign_resolve_digest"),
+            function_text(_SELF_HOSTED_DEPLOY, "cosign_resolve_digest"),
             str(_DOCKER_LIB), path_prefix=tmp_path / "bin",
         )
         assert result.returncode == 0, result.stderr
@@ -503,11 +427,11 @@ class TestTheSelfHostedDeployResolvesItsDigest:
         """
         for answer in (f"sha256:{'a' * 63}\n", f"{'a' * 63}\n",
                        f"{_DIGEST_A}0\n", f"sha256:{'A' * 64}\n"):
-            _fake_docker(tmp_path / "bin", stdout=answer, status=0)
-            result = _bash(
+            fake_docker(tmp_path / "bin", stdout=answer, status=0)
+            result = run_bash(
                 'source "$2"; IMAGE_REF=probe:latest; eval "$1"; '
                 'digest=$(cosign_resolve_digest); printf "%s" "$digest"',
-                _function_text(_SELF_HOSTED_DEPLOY, "cosign_resolve_digest"),
+                function_text(_SELF_HOSTED_DEPLOY, "cosign_resolve_digest"),
                 str(_DOCKER_LIB), path_prefix=tmp_path / "bin",
             )
             assert result.returncode == 0, result.stderr
@@ -544,7 +468,7 @@ class TestTheDigestShapeHasOneHome:
         self, value, digest,
     ):
         """The whole value is a digest, or the answer is empty."""
-        result = _bash(
+        result = run_bash(
             'source "$1"; out=$(image_digest_or_empty "$2"); printf "%s" "$out"',
             str(_DOCKER_LIB), value,
         )
@@ -585,7 +509,7 @@ class TestTheDigestShapeHasOneHome:
         rather than being cut to 64 digits or replaced by a later digest.  A
         digest ended by a quote, a space or the line's end is read whole.
         """
-        result = _bash(
+        result = run_bash(
             'source "$1"; out=$(first_image_digest "$2"); printf "%s" "$out"',
             str(_DOCKER_LIB), text,
         )
@@ -611,14 +535,14 @@ def _carried_image_digest(env_text: str | None, compose_text: str | None,
         (tmp_path / "docker-compose.yml").write_text(
             compose_text, encoding="utf-8",
         )
-    return _bash(
+    return run_bash(
         'source "$1"; PROD_ROOT="$2"; eval "$3"; eval "$4"; eval "$5"; '
         'eval "$6"; digest=$(carried_image_digest); printf "%s" "$digest"',
         str(_DOCKER_LIB), str(tmp_path),
-        _function_text(_RECONCILE, "die"),
-        _function_text(_RECONCILE, "extract_env_value"),
-        _function_text(_RECONCILE, "compose_image_digest"),
-        _function_text(_RECONCILE, "carried_image_digest"),
+        function_text(_RECONCILE, "die"),
+        function_text(_RECONCILE, "extract_env_value"),
+        function_text(_RECONCILE, "compose_image_digest"),
+        function_text(_RECONCILE, "carried_image_digest"),
     )
 
 
@@ -834,7 +758,7 @@ def _run_load_block(loader: Path, lib: Path) -> subprocess.CompletedProcess:
         r"^\w+\(\) \{(?:.*\}$|(?s:\n.*?^\}$))",
         "\n".join(lines[:start]), flags=re.M,
     )
-    return _bash(
+    return run_bash(
         "\n".join(defined_above) + "\n_self=probe\n"
         + "\n".join(['_docker_lib="$1"', *lines[start + 1:end + 1]])
         + "\necho loaded",
@@ -849,7 +773,7 @@ class TestEachDefaultIsTheLibsOwnName:
     review's M3: the deploy behaviour tests always set both overrides, so no
     test read a default, and a db default reading the APP's function would
     have aimed every nightly backup at the app.  Each site's assignment is
-    run alone with the lib loaded, as ``_function_text`` runs a function:
+    run alone with the lib loaded, as ``function_text`` runs a function:
     the scripts that drop or write production are never run here.
 
     **The known limit:** the expected name is the lib's own answer, so a
@@ -899,9 +823,9 @@ class TestEachDefaultIsTheLibsOwnName:
             (_REPO_ROOT / script).read_text(encoding="utf-8"), flags=re.M,
         )
         assert len(lines) == 1, lines
-        expected = _bash('source "$1"; "$2"', str(_DOCKER_LIB), function)
+        expected = run_bash('source "$1"; "$2"', str(_DOCKER_LIB), function)
         assert expected.returncode == 0 and expected.stdout.strip(), expected
-        result = _bash(
+        result = run_bash(
             f'unset {_OVERRIDES}; source "$1"; eval "$2"; printf "%s" "${{!3}}"',
             str(_DOCKER_LIB), lines[0], variable,
         )

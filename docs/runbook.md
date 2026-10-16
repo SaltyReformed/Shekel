@@ -200,13 +200,15 @@ cd /opt/shekel
 
 **What it does (in order):**
 
-1. Pulls the latest code from GitHub (`git pull --ff-only`)
-2. Runs a pre-deploy database backup (`scripts/backup.sh`)
-3. Tags the current Docker image as `:previous` for rollback
-4. Builds the new Docker image (`docker compose build app`)
-5. Restarts the app container (`docker compose up -d --no-deps --force-recreate app`)
-6. Waits for the health endpoint to report healthy (default: 60s timeout)
-7. On health check failure: rolls back to the `:previous` image automatically
+1. Asks compose where nginx is published (`docker compose ... port nginx`) and builds the health
+   check URL from the answer; refuses, before touching anything, when nginx is not running
+2. Pulls the latest code from GitHub (`git pull --ff-only`)
+3. Runs a pre-deploy database backup (`scripts/backup.sh`)
+4. Tags the current Docker image as `:previous` for rollback
+5. Builds the new Docker image (`docker compose build app`)
+6. Restarts the app container (`docker compose up -d --no-deps --force-recreate app`)
+7. Waits for the health endpoint to report healthy (default: 60s timeout)
+8. On health check failure: rolls back to the `:previous` image automatically
 
 **Options:**
 

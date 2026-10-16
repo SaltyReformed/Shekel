@@ -36,6 +36,9 @@
 #     - Docker and Docker Compose installed
 #     - Git repository cloned to DEPLOY_DIR
 #     - .env file configured (see .env.example)
+#     - The stack running (docker compose -f docker-compose.yml
+#       -f docker-compose.build.yml up -d): the health check reaches the app
+#       through nginx, at the address compose published it on
 #     - NAS mounted if using backup before deploy
 
 set -euo pipefail
@@ -63,12 +66,19 @@ DEPLOY_DIR="${DEPLOY_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 APP_CONTAINER="${APP_CONTAINER:-$(shekel_prod_app_container)}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
-NGINX_PORT="${NGINX_PORT:-80}"
-HEALTH_URL="http://localhost:${NGINX_PORT}/health"
 # Array, not a space-joined string: the callers expand it unquoted
 # otherwise -- the precise unquoted-expansion pattern the shell
 # standards ban (OPS/SH-19).
 COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.build.yml)
+# The port nginx listens on INSIDE its container: a COPY of the right-hand
+# side of the nginx service's ``ports:`` mapping in docker-compose.yml and of
+# deploy/nginx-bundled/nginx.conf's ``listen``.  If they part, compose answers
+# "no port" and the deploy refuses (plan step X-ec owns their one home).  The
+# HOST port is compose's to resolve (from .env), so it is asked, never spelled
+# here (plan step balance:X-do, finding BAL-661); resolve_health_url builds
+# HEALTH_URL from compose's answer before anything is touched.
+NGINX_CONTAINER_PORT=8080
+HEALTH_URL=""
 
 # Image reference used by Cosign sign + verify steps.  Matches the
 # tag the local build produces (the COMPOSE_FILES merge tags the
@@ -121,6 +131,7 @@ Usage: $(basename "$0") [OPTIONS]
 Deploy the latest version of the Shekel budget app.
 
 Workflow:
+  0. Ask compose where nginx is published (refused if nginx is not)
   1. Pull latest code from GitHub
   2. Back up the database (optional)
   3. Tag the current Docker image for rollback
@@ -147,7 +158,6 @@ Environment Variables:
     APP_CONTAINER       App container name (default: ${app_container_default})
     HEALTH_TIMEOUT      Health check timeout in seconds (default: 60)
     HEALTH_INTERVAL     Health check retry interval in seconds (default: 5)
-    NGINX_PORT          Nginx host port for health check URL (default: 80)
     IMAGE_REF           Image reference passed to cosign sign/verify
                         (default: ghcr.io/saltyreformed/shekel:latest)
     COSIGN_PUBLIC_KEY   Verifier key path (default: deploy/cosign.pub)
@@ -200,6 +210,52 @@ check_prerequisites() {
         log "ERROR" "docker compose (v2) not found. Install the Docker Compose plugin."
         exit 1
     fi
+}
+
+nginx_health_url() {
+    # Print the URL of /health as compose published nginx on this host, or
+    # NOTHING.  Compose's answer, measured on compose 5.6.0 (2026-10-16), is
+    # ONE line, the IPv4 binding <host-ip>:<port>, or exit 1 with its reason
+    # when nginx never started, is stopped, or does not publish the port.
+    # Only that one-line shape is read: the any-address 0.0.0.0 becomes
+    # localhost, a bound IP is kept, and any other answer prints nothing and
+    # is shown on stderr (compose's own reason for an exit 1 reaches stderr
+    # unread).  Returns 0 either way: its caller assigns the answer under
+    # errexit and refuses an empty one by name, so a non-zero return would
+    # end the script at that assignment, before the refusal.
+    local address
+    if ! address=$(docker compose "${COMPOSE_FILES[@]}" port nginx "${NGINX_CONTAINER_PORT}"); then
+        return 0
+    fi
+    local ipv4='([0-9]{1,3}\.){3}[0-9]{1,3}'
+    if [[ ! "${address}" =~ ^(${ipv4}):([0-9]{1,5})$ ]]; then
+        log "ERROR" "Compose answered '${address}', not one IPv4 <address>:<port> line." >&2
+        return 0
+    fi
+    local host="${BASH_REMATCH[1]}"
+    local port="${BASH_REMATCH[3]}"
+    if [[ "${host}" == "0.0.0.0" ]]; then
+        host=localhost
+    fi
+    printf 'http://%s:%s/health\n' "${host}" "${port}"
+}
+
+resolve_health_url() {
+    # Set HEALTH_URL from compose's published address for nginx, or refuse.
+    # It runs before anything is touched: both of this script's ``up -d``
+    # lines (restart_app's and rollback's) are ``--no-deps --force-recreate
+    # app``, so no deploy starts or recreates nginx and its binding is the
+    # same before the swap and after it.  A stopped nginx is refused here,
+    # with nothing pulled, backed up, built or swapped.
+    cd "${DEPLOY_DIR}"
+    HEALTH_URL=$(nginx_health_url)
+    if [[ -z "${HEALTH_URL}" ]]; then
+        log "ERROR" "No published IPv4 address for nginx's port ${NGINX_CONTAINER_PORT} (compose's answer is above)."
+        log "ERROR" "The health check reaches the app through nginx: start the stack"
+        log "ERROR" "(docker compose ${COMPOSE_FILES[*]} up -d) and retry."
+        exit 1
+    fi
+    log "INFO" "Health check URL: ${HEALTH_URL} (nginx's published address)"
 }
 
 pull_latest() {
@@ -604,8 +660,10 @@ main() {
         exit 1
     fi
 
-    # Step 1: Check prerequisites.
+    # Step 1: Check prerequisites, and resolve where nginx publishes the
+    # health endpoint (refused here, before anything is touched).
     check_prerequisites
+    resolve_health_url
 
     # Step 2: Pull latest code.
     if [ "$SKIP_PULL" = false ]; then
