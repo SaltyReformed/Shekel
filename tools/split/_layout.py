@@ -273,13 +273,13 @@ def _check_node(sub: ast.AST) -> str | None:
     return None
 
 
-def piece_refusals(nodes: tuple[ast.AST, ...], screen: Screen, class_name: str | None,
-                   split: bool) -> list[str]:
+def piece_refusals(nodes: tuple[ast.AST, ...], screen: Screen, class_name: str | None
+                   ) -> list[str]:
     """Every reason moving ``nodes`` (a whole unit, or members of the class ``class_name``)
     could change their meaning: :func:`_check_node`'s, then the identity screen's.  The one
     check :func:`_check_nodes` and the census both call."""
     found = [why for node in nodes for why in map(_check_node, ast.walk(node)) if why]
-    return found + screen.refusals(nodes, class_name, split)
+    return found + screen.refusals(nodes, class_name)
 
 
 def unit_refusals(source: SourceModule, plan: Plan) -> list[tuple[str, str]]:
@@ -288,14 +288,13 @@ def unit_refusals(source: SourceModule, plan: Plan) -> list[tuple[str, str]]:
     plan is written for it."""
     screen = Screen(source, plan)
     return [(unit.name, why) for unit in source.units
-            for why in piece_refusals((unit.block.node,), screen, None, False)]
+            for why in piece_refusals((unit.block.node,), screen, None)]
 
 
-def _check_nodes(output: Output, screen: Screen, split: bool) -> None:
+def _check_nodes(output: Output, screen: Screen) -> None:
     """Refuse a construct in ``output`` whose meaning depends on the module it runs in."""
     for piece in output.pieces:
-        found = piece_refusals(piece.nodes, screen, piece.shape.name if piece.shape else None,
-                               split)
+        found = piece_refusals(piece.nodes, screen, piece.shape.name if piece.shape else None)
         if found:
             raise Refusal(f"{piece.binds} (to {output.module}): {'; '.join(found)}")
 
@@ -452,7 +451,7 @@ def resolve(source: SourceModule, plan: Plan, rules: CollectRules) -> Layout:
     screen = Screen(source, plan)
     for output in outputs.values():
         output.pieces.sort(key=lambda p: p.position)
-        _check_nodes(output, screen, bool(shapes))
+        _check_nodes(output, screen)
     _check_globals(outputs, source, rules)
     _check_split_reach(outputs, home)
     _resolve(outputs, source, home)

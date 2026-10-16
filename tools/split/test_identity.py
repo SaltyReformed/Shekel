@@ -9,7 +9,7 @@ import textwrap
 
 import pytest
 
-from tools.split.conftest import accepted, plan_dict, refusal, sample_with
+from tools.split.conftest import accepted, refusal, sample_with
 
 #: TestFirst.test_one's docstring line, after which a case's body is written (TestFirst is
 #: moved whole to test_first).
@@ -106,19 +106,90 @@ def test_every_spelling_the_review_measured_is_refused(tmp_path, body, imports, 
     assert why in refusal(tmp_path, in_test_one(body, imports))
 
 
+#: Every read that hands back a holder (a namespace, a carrier, a frame or the import
+#: system), hand-listed rather than read from the screen's set.
+_HOLDERS = ["__dict__", "__globals__", "__builtins__", "__self__", "__closure__",
+            "cell_contents", "__getattribute__", "__getattr__", "__spec__", "__loader__",
+            "f_globals", "f_locals", "f_back", "tb_frame", "tb_next", "__traceback__",
+            "gi_frame", "cr_frame", "ag_frame"]
+
+#: Every read that hands back a value naming a place, hand-listed.
+_PLACES = ["__file__", "__cached__", "__package__", "__path__", "__module__",
+           "__firstlineno__", "__code__", "co_filename", "co_firstlineno", "co_lines",
+           "co_positions", "co_linetable", "co_lnotab", "co_qualname", "f_code", "f_lineno",
+           "tb_lineno", "gi_code", "cr_code", "ag_code", "cr_origin"]
+
+
+class TestTheExemptShapesGrammar:
+    """Rule 3 as a grammar (the coordinator's ruling on 3C-3's Fork 1, 2026-10-16): off an
+    import of another module only a read handing back a VALUE naming its place is exempt; a
+    read handing back a namespace, a carrier, a frame or the import system is refused off
+    every root, the exempt shape included."""
+
+    @pytest.mark.parametrize("attribute", _HOLDERS)
+    def test_a_holder_read_off_an_import_of_another_module_is_refused(self, tmp_path,
+                                                                       attribute):
+        """Each was exempt, so ACCEPTED, by f3690b221's screen."""
+        assert f"json.loads.{attribute} may name or reach where the code runs: it hands" in (
+            refusal(tmp_path, in_test_one(f"assert json.loads.{attribute}", "import json\n")))
+
+    @pytest.mark.parametrize("attribute", _PLACES)
+    def test_a_place_read_off_an_import_of_another_module_is_accepted(self, tmp_path,
+                                                                       attribute):
+        """Another module's object is not relocated by the move, so its place reads the
+        same."""
+        accepted(tmp_path, in_test_one(f"assert json.loads.{attribute}", "import json\n"))
+
+    @pytest.mark.parametrize("body, imports, spelled", [
+        ('assert sys.__dict__["modules"]', "import sys\n", "sys.__dict__"),
+        ('assert os.__dict__["sys"].modules', "import os\n", "os.__dict__"),
+        ('assert os.path.join.__globals__["sys"].modules', "import os\n",
+         "os.path.join.__globals__"),
+        ("assert sys.exit.__self__.modules", "import sys\n", "sys.exit.__self__"),
+        ('assert os.__getattribute__("sys").modules', "import os\n", "os.__getattribute__"),
+        ('name = "__imp" + "ort__"\nassert json.loads.__builtins__[name]("tests.shared")',
+         "import json\n", "json.loads.__builtins__"),
+    ], ids=["a-modules-namespace", "a-module-held-in-a-namespace", "a-functions-globals",
+            "a-builtins-owner", "a-getter-by-name", "a-builtins-namespace-by-a-computed-key"])
+    def test_each_route_to_the_import_system_the_probe_measured_is_refused(
+            self, tmp_path, body, imports, spelled):
+        """Each reaches ``sys.modules`` or ``__import__`` off an import of another module,
+        and each was ACCEPTED by f3690b221's screen (3C-3's probe, 2026-10-16; the last one
+        with its key computed, which no string rule sees)."""
+        assert f"{spelled} may name or reach where the code runs: it hands" in refusal(
+            tmp_path, in_test_one(body, imports))
+
+    @pytest.mark.parametrize("body, spelled", [
+        ("coro = _make(1)\nassert coro.cr_origin", "coro.cr_origin"),
+        ("assert type(self).__firstlineno__", "type(self).__firstlineno__"),
+    ], ids=["cr_origin", "__firstlineno__"])
+    def test_a_place_read_off_anything_but_an_import_is_refused(self, tmp_path, body,
+                                                                spelled):
+        """Delta review 2's Low-1: a case for each member no test named."""
+        assert f"{spelled} may name or reach where the code runs, and it is not read" in (
+            refusal(tmp_path, in_test_one(body)))
+
+
+#: The refusal every chain off the fixture ``request`` beyond its allowlist meets.
+_BEYOND = "reads the fixture request beyond what moved code may"
+
+
 class TestTheRequestHalf:
-    """H-B item 7 and rule 5's ``request`` half: the fixture's carriers only as a chain's
-    root, its location members refused, everything else it holds accepted."""
+    """Rule 5's ``request`` half: the fixture only as a chain's root or a callee, and every
+    chain off it within its ALLOWLIST (the coordinator's ruling on delta review 2's High-1):
+    ``request.param`` and what follows it, or ``request.node.get_closest_marker(...)`` /
+    ``add_marker(...)`` called.  The first four tests' shapes were refused until 3C-3b for a
+    carrier or location set's reason; the sets are deleted by that ruling, so each shape is
+    kept and its reason is the allowlist's."""
 
     def test_a_node_held_under_another_name(self, tmp_path):
-        """``node = request.node; node.path`` read the location the rule keyed on
-        ``request`` refuses."""
-        assert "request...node is used as a value" in refusal(
+        """``node = request.node; node.path`` read the location of the requesting test."""
+        assert f"request.node {_BEYOND}" in refusal(
             tmp_path, in_fixture("node = request.node\nassert node.path"))
 
     def test_a_class_held_under_another_name_when_it_is_split(self, tmp_path):
         """``c = request.cls; c.__doc__`` read a slice's docstring."""
-        assert "request...cls is used as a value" in refusal(
+        assert f"request.cls {_BEYOND}" in refusal(
             tmp_path, in_fixture("c = request.cls\nassert c.__doc__"))
 
     @pytest.mark.parametrize("member", [
@@ -126,19 +197,46 @@ class TestTheRequestHalf:
         "listchain", "iter_parents", "keywords", "ihook",
     ])
     def test_every_location_member_is_refused(self, tmp_path, member):
-        """M-C: the location set a5d390943 named, each member refused off the node (read
-        one attribute further, so a member that is also a carrier is judged as a location)."""
-        assert f"request...{member} names the requesting module" in refusal(
+        """M-C: the location set a5d390943 named, each member off the node."""
+        assert f"request.node.{member}.name {_BEYOND}" in refusal(
             tmp_path, in_fixture(f"assert request.node.{member}.name"))
 
     def test_a_private_member_is_refused(self, tmp_path):
         """A private attribute of ``request`` (``_pyfuncitem`` is the test's own node)."""
-        assert "request..._pyfuncitem names the requesting module" in refusal(
+        assert f"request._pyfuncitem {_BEYOND}" in refusal(
             tmp_path, in_fixture("assert request._pyfuncitem"))
 
+    @pytest.mark.parametrize("body, spelled", [
+        ("assert request.fixturenames", "request.fixturenames"),
+        ('found = request.node.funcargs["request"]\nassert found', "request.node.funcargs"),
+        ("items = request.node.session.items\nassert items", "request.node.session.items"),
+        ("assert request.node.session.name", "request.node.session.name"),
+        ("assert request.cls.__name__", "request.cls.__name__"),
+        ("assert request.config", "request.config"),
+        ("assert request.fixturename", "request.fixturename"),
+        ("assert request.node.name", "request.node.name"),
+        ("assert request.node.get_closest_marker", "request.node.get_closest_marker"),
+        ("marker = request.node.add_marker\nassert marker", "request.node.add_marker"),
+    ], ids=["fixturenames", "funcargs-hands-the-request-back", "every-collected-path",
+            "the-session", "a-split-class-name", "config", "fixturename", "the-node-name",
+            "a-marker-read-not-called", "a-marker-adder-held"])
+    def test_every_chain_beyond_the_allowlist_is_refused(self, tmp_path, body, spelled):
+        """Each was ACCEPTED by f3690b221's screen.  ``request.node.funcargs["request"] is
+        request`` under pytest 9.1.1, and ``session.items`` holds every collected path
+        (delta review 2's High-1); ``fixturenames`` carries which fixtures a location
+        offers, so its control changes to refused (the coordinator's ruling on 3C-3's request
+        allowlist, 2026-10-16); ``request.cls.__name__`` reads a slice's name (the subject of
+        a test the allowlist retired: the read is now refused whether or not a class is
+        split); ``session`` is delta review 2's Low-1 member, now held by the allowlist."""
+        assert f"{spelled} {_BEYOND}" in refusal(tmp_path, in_fixture(body))
+
     def test_what_the_request_holds_beyond_its_place_is_accepted(self, tmp_path):
-        """``request.param`` and ``tmp_path.parent`` read nothing the move changes."""
-        accepted(tmp_path, in_fixture("assert request.param and request.fixturenames"))
+        """``request.param`` and what follows it, a marker read or added through the node
+        (called), and ``tmp_path.parent`` read nothing the move changes."""
+        accepted(tmp_path, in_fixture(
+            "assert request.param and request.param.real and request.param[0]\n"
+            'assert request.node.get_closest_marker("skip").kwargs\n'
+            'request.node.add_marker("slow")'))
         source = sample_with("def test_top_level():\n", "def test_top_level(tmp_path):\n")
         (tmp_path / "other").mkdir()
         accepted(tmp_path / "other", source.replace("assert _START.year == 2026",
@@ -215,6 +313,25 @@ class TestARouteToTheModuleBeingSplit:
         assert "names the module being split" in refusal(
             tmp_path, in_test_one('assert "tests.test_area.test_sample._START"'))
 
+    @pytest.mark.parametrize("text", [
+        "tests.test_area:test_sample", "tests/test_area/test_sample.py", "test_sample",
+    ], ids=["a-colon-spelling", "a-path", "the-bare-name"])
+    def test_a_string_naming_the_source_in_any_spelling(self, tmp_path, text):
+        """Judged by the census's own ``mentions`` (one home: the coordinator's ruling on
+        delta review 2's High-2): each was ACCEPTED by f3690b221's dotted test, though
+        ``pkgutil.resolve_name`` reads the colon spelling and ``getattr(tests.test_area,
+        "test_sample")`` the bare name."""
+        assert "names the module being split" in refusal(
+            tmp_path, in_test_one(f"assert {text!r}"))
+
+    def test_a_string_naming_a_module_of_the_new_package_is_accepted(self, tmp_path):
+        """``mentions`` drops a continuation into the package, a correct pointer after the
+        split (the coordinator's ruling, 3C-3b's Q2): moved code USING a module that does not
+        exist yet fails before the split and passes after, which the proof's identical
+        outcomes refuse; a message string carries no outcome."""
+        accepted(tmp_path, in_test_one(
+            'assert "tests.test_area.test_sample.test_first.TestFirst"'))
+
     def test_a_docstring_naming_the_source_is_accepted(self, tmp_path):
         """A bare string statement reaches nothing."""
         accepted(tmp_path, sample_with('"""A module-level test."""',
@@ -256,8 +373,10 @@ class TestTheImportSystem:
         'import importlib\nassert importlib.import_module("json")',
         "import importlib\nimport json\nassert importlib.reload(json)",
         "from importlib import reload\nimport json\nassert reload(json)",
+        'assert __import__("app.models.pay_period", fromlist=["PayPeriod"]).PayPeriod',
     ], ids=["import-a-constant", "import-a-constant-from", "import-module-a-constant",
-            "reload-an-imported-module", "reload-imported-by-name"])
+            "reload-an-imported-module", "reload-imported-by-name",
+            "import-a-model-from-its-module"])
     def test_a_provable_import_is_accepted(self, tmp_path, body):
         """A constant name outside the source, or a reload of an imported module, does the
         same from any file."""
@@ -289,6 +408,22 @@ class TestTheImportSystem:
         assert why in refusal(tmp_path, in_test_one(body))
 
 
+@pytest.mark.parametrize("body, why", [
+    ('import pkgutil\nassert pkgutil.resolve_name("json:loads")',
+     "pkgutil.resolve_name reaches pkgutil"),
+    ("import sys\nassert sys.path_importer_cache",
+     "sys.path_importer_cache reaches sys.path_importer_cache"),
+    ("import sys\nassert sys.path_hooks", "sys.path_hooks reaches sys.path_hooks"),
+    ("import sys\nassert sys.meta_path", "sys.meta_path reaches sys.meta_path"),
+    ("import sys\nassert sys.last_exc", "sys.last_exc reaches sys.last_exc"),
+], ids=["pkgutil", "the-finders", "the-path-hooks", "the-meta-path", "the-last-exception"])
+def test_the_import_systems_other_doors_are_refused(tmp_path, body, why):
+    """``pkgutil`` and the finders and hooks that resolve a module by a computed name, each
+    ACCEPTED by f3690b221's screen (delta review 2's High-2); and ``sys.last_exc``, delta
+    review 2's Low-1 member."""
+    assert why in refusal(tmp_path, in_test_one(body))
+
+
 class TestAnAttributeNamedAtRunTime:
     """Rule 4's by-name arm: a READ by a computed name is refused off anything but an exempt
     chain; a WRITE is not (Josh's answer to the census's first fork)."""
@@ -300,9 +435,16 @@ class TestAnAttributeNamedAtRunTime:
          "operator.attrgetter reads an attribute named at run time"),
         ('from operator import methodcaller\nname = "bit_length"\nassert methodcaller(name)(1)',
          "methodcaller reads an attribute named at run time"),
-    ], ids=["getattr", "hasattr", "attrgetter", "methodcaller"])
+        ('import json\nname = "__glo" + "bals__"\nassert getattr(json.loads, name)',
+         "getattr with a name computed at run time, off json.loads"),
+        ('import json\nname = "loads"\nassert hasattr(json, name)',
+         "hasattr with a name computed at run time, off json"),
+    ], ids=["getattr", "hasattr", "attrgetter", "methodcaller", "getattr-off-an-import",
+            "hasattr-off-an-import"])
     def test_a_read_by_a_computed_name_is_refused(self, tmp_path, body, why):
-        """The screen cannot know which attribute is read."""
+        """The screen cannot know which attribute is read; off an import of another module it
+        may be a holder (the coordinator's ruling on 3C-3's F-a, 2026-10-16: the two last
+        cases were ACCEPTED by f3690b221's screen)."""
         assert why in refusal(tmp_path, in_test_one(body))
 
     def test_a_write_by_a_computed_name_and_a_constant_getter_are_accepted(self, tmp_path):
@@ -313,23 +455,33 @@ class TestAnAttributeNamedAtRunTime:
             '    delattr(row, name)\nassert operator.attrgetter("real")(1) == 1'))
 
 
+@pytest.mark.parametrize("body, imports, why", [
+    ('assert dict(inspect.getmembers(os))["sys"].modules', "import inspect\nimport os\n",
+     "inspect.getmembers reaches inspect"),
+    ("assert inspect.getclosurevars(json.dumps).globals", "import inspect\nimport json\n",
+     "inspect.getclosurevars reaches inspect"),
+    ("assert inspect.getmodule(json.dumps)", "import inspect\nimport json\n",
+     "inspect.getmodule reaches inspect"),
+], ids=["the-members-of-a-module", "a-functions-globals", "a-functions-module"])
+def test_an_inspect_call_beyond_its_allowlist_is_refused(tmp_path, body, imports, why):
+    """Each hands back a namespace or a module, and each was ACCEPTED by f3690b221's screen
+    with its arguments exempt (the coordinator's ruling on 3C-3's F-b, 2026-10-16)."""
+    assert why in refusal(tmp_path, in_test_one(body, imports))
+
+
+def test_the_inspect_allowlist_off_imports_is_accepted(tmp_path):
+    """``getsource``, ``getfile`` and ``signature``: the three ``tests/`` calls, each handing
+    back text or a value read off another module's object."""
+    accepted(tmp_path, in_test_one(
+        "assert inspect.getsource(re) and inspect.getfile(re) and inspect.signature(re.match)",
+        "import inspect\n"))
+
+
 def test_inspect_needs_every_argument_exempt(tmp_path):
     """M-C: ``inspect.<fn>(...)`` is accepted only when EVERY argument is an exempt chain."""
     assert "inspect.getsource reaches inspect" in refusal(
         tmp_path, in_test_one("assert inspect.getsource(re, self)", "import inspect\n"))
     accepted(tmp_path, in_test_one("assert inspect.getsource(re)", "import inspect\n"))
-
-
-def test_a_split_class_read_through_request_is_refused_only_while_split(tmp_path):
-    """``request.cls.__name__`` reads a slice's name once TestBig is split; with every class
-    moved whole it reads the same."""
-    source = in_fixture("assert request.cls.__name__")
-    assert "request...__name__ may read a split class" in refusal(tmp_path, source)
-    plan = plan_dict()
-    plan["parts"][1]["nodes"] = ["TestBig"]
-    del plan["parts"][2]
-    (tmp_path / "whole").mkdir()
-    accepted(tmp_path / "whole", source, plan)
 
 
 def test_a_name_any_import_of_the_source_binds_is_never_exempt(tmp_path):

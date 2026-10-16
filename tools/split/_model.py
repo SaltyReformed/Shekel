@@ -10,6 +10,7 @@ names an unknown key, or a node twice, is refused rather than read generously.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -160,3 +161,26 @@ def parse_plan(data: bytes, where: str) -> Plan:
 def load_plan(path: Path) -> Plan:
     """The plan file at ``path``, read once and parsed (:func:`parse_plan`)."""
     return parse_plan(path.read_bytes(), str(path))
+
+
+def mentions(plan: Plan) -> re.Pattern[str]:
+    """A mention of the source module's NAME, in any spelling, that does not continue INTO
+    the new package.
+
+    The unit is the name, never a list of spellings (the coordinator's ruling on the split
+    session's fork over the fourth split, 2026-10-15): ``m.py``, ``tests.x.m``, ``m.Member``,
+    a module-level ``m.test_fn`` and a bare ``m`` all name the old module, and a census that
+    matched only the first two missed a live ``m.Member`` pointer.  A mention is dropped only
+    where it continues into the package: followed by ``/`` (its directory) or by ``.`` and
+    one of the package's own module names, read from the plan.  Whatever this over-lists is
+    the safe side, because each line is classified by the pointer rule.
+
+    Its two readers are the census of lines naming the old module
+    (:func:`tools.split._run.census`) and the identity screen's judge of a string in moved
+    code (:mod:`tools.split._identity`), so the two agree on what names the module, a
+    colon or path spelling included (the coordinator's ruling on delta review 2's High-2,
+    2026-10-15).  It lives here, beside the plan it reads, so the screen reaches it without
+    importing the module that starts processes."""
+    own = "|".join(sorted(RESERVED | {part.module for part in plan.parts}))
+    return re.compile(rf"(?<![A-Za-z0-9_]){re.escape(plan.stem)}(?![A-Za-z0-9_])"
+                      rf"(?!/|\.(?:{own})(?![A-Za-z0-9_]))")

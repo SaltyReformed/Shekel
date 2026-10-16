@@ -18,10 +18,11 @@ import pytest
 from tools.ci import gitcmd, scratch
 from tools.ci.arcs import REPO
 from tools.split import _dynamic as dynamic
+from tools.split._model import mentions
 from tools.split._observe import OBSERVE_ENV, verdict
 from tools.split._prove import line_origins
 from tools.split._render import Origin
-from tools.split._run import RunError, census, mentions, merged_setups, python_files
+from tools.split._run import RunError, census, merged_setups, python_files
 from tools.split._source import Refusal
 from tools.split.conftest import (
     BEFORE_IDS,

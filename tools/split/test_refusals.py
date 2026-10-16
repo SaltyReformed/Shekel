@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import textwrap
 
 import pytest
 
@@ -225,11 +226,13 @@ class TestARunTimeReadOfTheModuleIsRefused:
     each names the part a test now sits in, or a slice (the review's F9)."""
 
     def test_a_request_module_read(self, tmp_path):
-        """A fixture reading request.module reads a part, not the source."""
+        """A fixture reading request.module reads a part, not the source (refused by the
+        request allowlist since 3C-3b, which deleted the location set's reason)."""
         source = sample_with('monkeypatch.setenv("SAMPLE", "1")',
                              'monkeypatch.setenv("SAMPLE", request.module.__name__)').replace(
             "def _frozen(monkeypatch):", "def _frozen(monkeypatch, request):")
-        assert "request...module names the requesting module" in refusal(tmp_path, source)
+        assert ("request.module.__name__ reads the fixture request beyond what moved code "
+                "may") in refusal(tmp_path, source)
 
     @pytest.mark.parametrize("read", [
         "self.__module__", "type(self).__module__", 'getattr(self, "__module__")',
@@ -250,9 +253,10 @@ class TestARunTimeReadOfTheModuleIsRefused:
             tmp_path, source)
 
     def test_a_class_docstring_read_through_the_request_when_a_class_is_split(self, tmp_path):
-        """``request.cls.__doc__`` reads a slice's one-line docstring once TestBig is split."""
-        assert "request...__doc__ may read a split class" in refusal(
-            tmp_path, request_reads_a_class_docstring())
+        """``request.cls.__doc__`` reads a slice's one-line docstring once TestBig is split
+        (refused by the request allowlist since 3C-3b, whether or not a class is split)."""
+        assert "request.cls.__doc__ reads the fixture request beyond what moved code may" in (
+            refusal(tmp_path, request_reads_a_class_docstring()))
 
     @pytest.mark.parametrize("body, why", [
         ("s = self\n        assert s.__module__", "__module__ may name"),
@@ -298,23 +302,11 @@ class TestARunTimeReadOfTheModuleIsRefused:
 def test_a_read_the_split_cannot_change_is_accepted(tmp_path, source):
     """An imported object's module, an imported module's file (imported at module level or
     inside the test), inspect on an imported module, and the docstring of a class moved
-    WHOLE each read the same after the split, so none is refused.  (Any docstring read
-    through ``request`` is refused while a class is split, ``request.function.__doc__``
-    included: no test reads one, measured 2026-10-15, so the rule is not narrowed to the
-    chains that reach a class.)"""
+    WHOLE each read the same after the split, so none is refused.  (A read through
+    ``request`` beyond its allowlist is refused whether or not a class is split:
+    ``tools/split/test_identity.py``'s ``TestTheRequestHalf``.)"""
     root = build(tmp_path, source)
     assert render_all(layout_of(root), line_limit(root))
-
-
-def test_a_class_docstring_read_through_the_request_is_accepted_when_no_class_is_split(
-        tmp_path):
-    """With every class moved whole, a class's docstring reads the same after the split, so
-    the read refused while TestBig is split is accepted (the review's L4)."""
-    plan = plan_dict()
-    plan["parts"][1]["nodes"] = ["TestBig"]
-    del plan["parts"][2]
-    root = build(tmp_path, request_reads_a_class_docstring())
-    assert render_all(layout_of(root, plan), line_limit(root))
 
 
 def test_a_patch_whose_readers_are_out_of_reach_is_accepted(tmp_path):
@@ -336,6 +328,10 @@ def _split_class_source(member: str) -> str:
     return sample_with('    """The big class, which is split across two parts."""\n',
                        '    """The big class, which is split across two parts."""\n\n'
                        f"{member}\n")
+
+
+#: The refusal a split-class member named with two leading underscores meets.
+_UNDERSCORES = "a member named with two leading underscores"
 
 
 class TestASplitClassIsRefused:
@@ -364,10 +360,142 @@ class TestASplitClassIsRefused:
          "reads its class's docstring, name, namespace or bases"),
         ('    @classmethod\n    def _about(cls):\n        """A."""\n        return cls.__mro__',
          "reads its class's docstring, name, namespace or bases"),
+        ('    def _about(self):\n        """A."""\n        return self.__static_attributes__',
+         "reads its class's docstring, name, namespace or bases"),
     ])
     def test_a_member_that_changes_meaning(self, tmp_path, member, why):
-        """Each would mean something different on a mixin or a per-part class."""
+        """Each would mean something different on a mixin or a per-part class (the last,
+        ``__static_attributes__``, is delta review 2's Low-1 member)."""
         assert why in refusal(tmp_path, _split_class_source(member))
+
+    @pytest.mark.parametrize("member, why", [
+        ('    def _kind(me):\n        """K."""\n        return me.__doc__',
+         "_kind takes its receiver as anything but self"),
+        ('    def _kind(me):\n        """K."""\n        type(me).flag = 1',
+         "_kind takes its receiver as anything but self"),
+        ('    def _kind(me):\n        """K."""\n        handed = me._shared\n'
+         "        return handed.__qualname__", "_kind takes its receiver as anything but self"),
+        ('    def _kind(*args):\n        """K."""\n        return args[0].__doc__',
+         "_kind takes its receiver as anything but self"),
+        ('    @classmethod\n    def _kind(klass):\n        """K."""\n'
+         "        return klass.__doc__", "_kind takes its receiver as anything but cls"),
+        ('    @classmethod\n    def _notes(cls):\n        """N."""\n'
+         "        return cls.__annotations__", "reads its class's docstring, name, namespace"),
+        ('    @classmethod\n    def _notes(cls):\n        """N."""\n'
+         "        return cls.__annotate__", "reads its class's docstring, name, namespace"),
+        ('    def _kind(self):\n        """K."""\n        return __class__.__doc__',
+         "reaches its own class (['__class__'])"),
+        ('    def __init_subclass__(cls, **kw):\n        """S."""', _UNDERSCORES),
+        ('    def __set_name__(self, owner, name):\n        """S."""', _UNDERSCORES),
+        ('    def __class_getitem__(cls, item):\n        """S."""', _UNDERSCORES),
+        ("    __slots__ = ()", _UNDERSCORES),
+        ('    __qualname__ = "x"', _UNDERSCORES),
+        ("    __x = 1", _UNDERSCORES),
+        ('    def _kind(self):\n        """K."""\n        return self.__x',
+         "['__x'] in the private form"),
+        ('    def _kind(self, __limit=1):\n        """K."""\n        __seen = __limit\n'
+         "        return __seen", "['__limit', '__seen'] in the private form"),
+        ("    where = helper_one(1)", "a class attribute must be a constant"),
+        ("    where = helper_one", "a class attribute must be a constant"),
+        ("    where: int", "a class attribute must be a constant"),
+        ("    rows = (n for n in range(3))", "a class attribute must be a constant"),
+        ('    class Inner:\n        """I."""', "a nested class"),
+        ('    @helper_one\n    def _kind(self):\n        """K."""',
+         "_kind's decorator helper_one is not one a split class may hold"),
+        ('    @helper_one.setter\n    def _kind(self, value):\n        """K."""',
+         "_kind's decorator helper_one.setter is not one a split class may hold"),
+    ], ids=["a-receiver-named-otherwise", "a-write-through-a-receiver-named-otherwise",
+            "a-member-handed-out-through-a-receiver-named-otherwise", "a-receiver-in-args",
+            "a-class-receiver-named-otherwise", "the-class-annotations",
+            "the-class-annotation-function", "the-class-cell", "a-subclass-hook",
+            "a-set-name-hook", "a-class-getitem-hook", "slots", "a-qualname",
+            "a-private-member", "a-private-read", "a-private-parameter-and-local", "a-call",
+            "a-name",
+            "an-annotation-with-no-value", "a-generator", "a-nested-class",
+            "a-decorator-of-the-module", "an-accessor-off-an-import"])
+    def test_a_member_outside_the_member_grammar(self, tmp_path, member, why):
+        """The member grammar (the coordinator's ruling on 3C-3's Fork 2 and delta review 2's
+        High-1, 2026-10-16, and on 3C-3b's report): each shape hands the instance or the
+        class to a name no rule keys on, hands a hook the mixin or a slice, puts a name
+        Python reads at class creation on the mixin, spells a private name by the mixin's
+        name on one side of the split and the class's on the other, or may hold a
+        descriptor; each was ACCEPTED by f3690b221's tool."""
+        assert why in refusal(tmp_path, _split_class_source(member))
+
+    def test_a_keyword_name_is_not_in_the_private_form(self, tmp_path):
+        """The compiler does not mangle a call's keyword name (``f(__kw=1)`` passes
+        ``__kw``), so a member passing one is accepted: the rule is the compiler's."""
+        member = '    def _kind(self):\n        """K."""\n        return dict(__kw=1)'
+        root = build(tmp_path, _split_class_source(member))
+        assert render_all(layout_of(root), line_limit(root))
+
+    def test_a_decorator_spelled_as_an_allowed_one_but_bound_to_another(self, tmp_path):
+        """A decorator resolves BY IMPORT: ``cached_property`` bound to a helper of the
+        source's own imports is not :func:`functools.cached_property`."""
+        member = '    @cached_property\n    def _kind(self):\n        """K."""'
+        source = _split_class_source(member).replace(
+            "import re\n", "import re\n\nfrom tests.shared import helper_two as cached_property\n",
+            1)
+        assert "_kind's decorator cached_property is not one a split class may hold" in (
+            refusal(tmp_path, source))
+
+    def test_what_the_member_grammar_admits_is_accepted(self, tmp_path):
+        """Every value, decorator and receiver the grammar names, each in the shape a split
+        class may hold it."""
+        member = textwrap.indent(textwrap.dedent('''\
+            LIMIT = 3
+            NAMES = ("a", "b")
+            TABLE = {"a": [helper_one(1)]}
+            LABEL = f"{1 + 2} rows"
+            SQUARES = [n * n for n in range(3)]
+            SEEN = {n for n in range(3)}
+            BY = {n: n for n in range(3)}
+            PICKED: set = {1}
+
+            @staticmethod
+            def _static(row):
+                """S."""
+                return row
+
+            @classmethod
+            def _made(cls):
+                """M."""
+                return cls._static(1)
+
+            @property
+            def _limit(self):
+                """L."""
+                return 3
+
+            @_limit.setter
+            def _limit(self, value):
+                """S."""
+
+            @functools.cached_property
+            def _cached(self):
+                """C."""
+                return 1
+
+            @pytest.fixture
+            def _rows(self):
+                """R."""
+                return [1]
+
+            @pytest.mark.slow
+            @mock.patch("os.getcwd")
+            @mock.patch.object(re, "compile")
+            def _patched(self, compiled, getcwd):
+                """P."""
+                return compiled, getcwd
+
+            @abc.abstractmethod
+            def _abstract(self):
+                """A."""
+            '''), "    ")
+        root = build(tmp_path, _split_class_source(member).replace(
+            "import re\n", "import abc\nimport functools\nimport re\nfrom unittest import mock\n",
+            1))
+        assert render_all(layout_of(root), line_limit(root))
 
     def test_a_decorated_class(self, tmp_path):
         """Its marks would have to be repeated on every part."""

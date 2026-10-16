@@ -17,7 +17,6 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import os
-import re
 import signal
 import stat
 import subprocess
@@ -26,7 +25,7 @@ import tempfile
 from pathlib import Path
 
 from tools.ci import gitcmd
-from tools.split._model import RESERVED, Plan
+from tools.split._model import Plan, mentions
 from tools.split._observe import OBSERVE_ENV, setup_key, setups_path
 from tools.split._source import decode, lines_of, load_json, read_json, shown, undecodable
 
@@ -351,22 +350,6 @@ def python_files(root: Path) -> list[Path]:
     census's directory-list error again, and the prover reused the writer's walk, so it could
     not see what the writer missed."""
     return tree_files(root, "*.py")
-
-
-def mentions(plan: Plan) -> re.Pattern[str]:
-    """A mention of the source module's NAME, in any spelling, that does not continue INTO
-    the new package.
-
-    The unit is the name, never a list of spellings (the coordinator's ruling on the split
-    session's fork over the fourth split, 2026-10-15): ``m.py``, ``tests.x.m``, ``m.Member``,
-    a module-level ``m.test_fn`` and a bare ``m`` all name the old module, and a census that
-    matched only the first two missed a live ``m.Member`` pointer.  A mention is dropped only
-    where it continues into the package: followed by ``/`` (its directory) or by ``.`` and
-    one of the package's own module names, read from the plan.  Whatever this over-lists is
-    the safe side, because each line is classified by the pointer rule."""
-    own = "|".join(sorted(RESERVED | {part.module for part in plan.parts}))
-    return re.compile(rf"(?<![A-Za-z0-9_]){re.escape(plan.stem)}(?![A-Za-z0-9_])"
-                      rf"(?!/|\.(?:{own})(?![A-Za-z0-9_]))")
 
 
 def census(root: Path, plan: Plan) -> list[tuple[str, int, str]]:

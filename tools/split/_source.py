@@ -22,6 +22,7 @@ import io
 import json
 import symtable
 import tokenize
+import types
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -124,17 +125,28 @@ def read_json(path: Path) -> object:
     return load_json(read_text(path), str(path))
 
 
-def parse(text: str, where: str) -> ast.Module:
-    """``text``'s syntax tree, refused, naming ``where``, unless Python compiles it: a syntax
-    error, a null byte, or an error only the compiler's symbol pass finds (``return`` outside
-    a function, a name both a parameter and ``global``), which :mod:`symtable` would
-    otherwise raise inside the layout."""
+def _not_compiled(exc: SyntaxError, where: str) -> Refusal:
+    """The refusal of ``where``, which Python does not compile."""
+    return Refusal(f"{where}: Python does not compile it ({exc.msg}, line {exc.lineno})")
+
+
+def compiled(text: str, where: str) -> types.CodeType:
+    """``text`` as Python compiles a module, refused, naming ``where``, unless it compiles: a
+    syntax error, a null byte, or an error only the compiler's symbol pass finds (``return``
+    outside a function, a name both a parameter and ``global``)."""
     try:
-        compile(text, where, "exec", dont_inherit=True)
-        return ast.parse(text, filename=where)
+        return compile(text, where, "exec", dont_inherit=True)
     except SyntaxError as exc:
-        raise Refusal(f"{where}: Python does not compile it ({exc.msg}, line {exc.lineno})"
-                      ) from exc
+        raise _not_compiled(exc, where) from exc
+
+
+def parse(text: str, where: str) -> ast.Module:
+    """``text``'s syntax tree, refused, naming ``where``, unless Python compiles it
+    (:func:`compiled`), which :mod:`symtable` would otherwise raise inside the layout; text
+    the compiler accepts, :func:`ast.parse` (the same compiler, stopped at the tree) accepts
+    too."""
+    compiled(text, where)
+    return ast.parse(text, filename=where)
 
 
 def symbols(text: str, where: str) -> symtable.SymbolTable:
@@ -142,8 +154,7 @@ def symbols(text: str, where: str) -> symtable.SymbolTable:
     try:
         return symtable.symtable(text, where, "exec")
     except SyntaxError as exc:
-        raise Refusal(f"{where}: Python does not compile it ({exc.msg}, line {exc.lineno})"
-                      ) from exc
+        raise _not_compiled(exc, where) from exc
 
 
 def read_ini(path: Path) -> configparser.ConfigParser:
@@ -512,12 +523,46 @@ def free_names(text: str) -> frozenset[str]:
     return frozenset(found)
 
 
+#: The stand-in class a class member's lines are read inside, so the class scope is Python's
+#: own.
+_PROBE = "_SplitProbe"
+
+
+def _member_probe(member_lines: tuple[str, ...]) -> str:
+    """A module holding only the stand-in class, its body ``member_lines``."""
+    return f"class {_PROBE}:\n" + "\n".join(member_lines) + "\n"
+
+
 def member_free_names(member_lines: tuple[str, ...]) -> frozenset[str]:
     """:func:`free_names` for a class member's lines, read inside a stand-in class so the
     class scope is Python's own (a method does not see a class attribute by bare name)."""
-    probe = "class _SplitProbe:\n" + "\n".join(member_lines) + "\n"
-    top = symbols(probe, "<member>")
+    top = symbols(_member_probe(member_lines), "<member>")
     found: set[str] = set()
     for child in top.get_children():
         found |= _table_globals(child)
+    return frozenset(found)
+
+
+def member_private_names(member_lines: tuple[str, ...]) -> frozenset[str]:
+    """Every identifier in a class member's lines that the compiler spells by the ENCLOSING
+    class's name: one with two leading underscores and not two trailing, ``__x`` written as
+    ``_<Class>__x``, so a split, which puts a member on the mixin and a test on a slice,
+    spells it apart on each side (the coordinator's ruling on 3C-3b's report, 2026-10-16).
+
+    Read from the code the compiler writes for the member inside a stand-in class (the
+    names, locals, cells and free variables of every code object), so the rule is the
+    compiler's own and no node kind is listed: an attribute (``self.__x``), a name, a
+    parameter, a local, a nested function's or class's name.  A call's keyword name
+    (``f(__kw=1)``) is not mangled, nor is a string: ``getattr(self, "__x")`` reads the
+    attribute ``__x`` as spelled on both sides of a split, and a name computed at run time
+    is refused by :mod:`tools.split._identity`'s by-name rule."""
+    prefix = f"_{_PROBE.lstrip('_')}__"
+    found: set[str] = set()
+    pending = [compiled(_member_probe(member_lines), "<member>")]
+    while pending:
+        code = pending.pop()
+        found |= {"__" + name[len(prefix):] for name in (
+            *code.co_names, *code.co_varnames, *code.co_cellvars, *code.co_freevars)
+                  if name.startswith(prefix)}
+        pending.extend(const for const in code.co_consts if isinstance(const, types.CodeType))
     return frozenset(found)

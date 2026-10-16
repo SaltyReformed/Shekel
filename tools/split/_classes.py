@@ -10,14 +10,33 @@ home per member, and identity for a split class is proved per MEMBER.
 decorator, base or keyword on the class (a mark would have to be repeated, a base re-ordered
 in the MRO); a class without a docstring; a non-blank line between the ``class`` line and the
 docstring; a fixture member of any scope but ``function`` (each part would run it again);
-``setup_class`` / ``teardown_class`` and their unittest spellings; ``super``, ``__class__``,
-``self.__class__`` or ``type(self)`` (each now names a different class); a read off
-``self`` or ``cls`` of what differs for a split class (its docstring, which each slice states
-anew while the class's is on the mixin; its name, qualname, namespace, bases or order:
-:data:`tools.split._identity.SPLIT_CLASS`); a
-member that names its own class; an assignment to a class attribute, or to any attribute of
-``cls`` or of the class by name (each part would hold its own); ``globals()``; and a test
-that reaches a test placed in another slice through ``self``.
+``setup_class`` / ``teardown_class`` and their unittest spellings; ``super``, the class cell
+``__class__``, ``self.__class__`` or ``type(self)`` (each now names a different class); a
+read off ``self`` or ``cls`` of what differs for a split class (its docstring, which each
+slice states anew while the class's is on the mixin; its name, qualname, namespace, bases,
+order or annotations: :data:`tools.split._identity.SPLIT_CLASS`); a member that names its own
+class; an assignment to a class attribute, or to any attribute of ``cls`` or of the class by
+name (each part would hold its own); ``globals()``; and a test that reaches a test placed in
+another slice through ``self``.
+
+**The member grammar** (the coordinator's ruling on 3C-3's Fork 2, 2026-10-16): a split
+class's body holds only its docstring, function definitions and assignments of a value
+:data:`_LITERAL_VALUES` admits, so nothing on it is handed the mixin or a slice as its owner.
+Refused here: a nested class, an attribute assigned any other value (a call, a name or an
+attribute may hold a descriptor, whose ``__set_name__`` is handed the mixin and ``__get__``
+each slice), an annotation with no value, a member whose NAME begins with two underscores,
+and a private-form identifier anywhere in a member (the coordinator's ruling on 3C-3b's
+report, 2026-10-16).  Python reads a dunder member off the class's own namespace when it
+makes the class (``__slots__``, ``__qualname__``, ``__module__``, ``__doc__``) or hands it
+the class (``__init_subclass__``, ``__set_name__``, ``__class_getitem__``), and the mixin,
+not each slice, would hold it; the compiler spells a private-form identifier (``__x``, not
+``__x__``) by the ENCLOSING class's name, the mixin's for a member it holds and the class's
+for a test, so ``self.__x`` stops finding ``__x = 1``.  The private form is read from the
+code the compiler writes (:func:`tools.split._source.member_private_names`), so the rule is
+the compiler's own; a string passed to ``getattr`` is not mangled, so it reads the same
+attribute on both sides of a split (a name computed at run time is the identity screen's
+by-name rule's).  Each method's decorators and receiver are the identity screen's to judge, which
+resolves names by import (:meth:`tools.split._identity.Screen._check_member`).
 """
 from __future__ import annotations
 
@@ -37,13 +56,24 @@ from tools.split._source import (
     fixture_scope,
     is_docstring,
     member_free_names,
+    member_private_names,
 )
 
 #: Class-level setup that runs once per CLASS, so once per part after a split.
 _ONCE_PER_CLASS = frozenset({"setup_class", "teardown_class", "setUpClass", "tearDownClass"})
 
-#: Names that resolve to the class a method was defined in or called on.
-_CLASS_REACHING = frozenset({"super", "__class__"})
+#: Names that resolve to the class a method was defined in or called on: ``super`` is a
+#: global name; the class cell ``__class__`` is not (Python makes it a free variable of the
+#: method), so :func:`_reaches_own_class` finds it by its name node.
+_CLASS_REACHING = frozenset({"super"})
+
+#: What a split class's attribute may be assigned (the coordinator's reading A of Fork 2,
+#: 2026-10-16): a value whose own node builds a builtin string, number or container, which
+#: carries no ``__set_name__`` or ``__get__`` hook.  The hook protocol runs on an
+#: attribute's direct value only, and what sits inside a display is moved code the identity
+#: screen judges like any other.
+_LITERAL_VALUES = (ast.Constant, ast.List, ast.Tuple, ast.Set, ast.Dict, ast.JoinedStr,
+                   ast.ListComp, ast.SetComp, ast.DictComp)
 
 
 def mixin_name(class_name: str) -> str:
@@ -125,15 +155,18 @@ def _is_self(node: ast.AST) -> bool:
     return isinstance(node, ast.Name) and node.id in _SELF_NAMES
 
 
-def _reaches_own_class(node: ast.AST) -> bool:
-    """Whether ``node`` holds ``self.__class__`` / ``cls.__class__`` or ``type(self)``."""
+def _reaches_own_class(node: ast.AST) -> str | None:
+    """How ``node`` reaches its own class, if it does: the class cell ``__class__``,
+    ``self.__class__`` / ``cls.__class__``, or ``type(self)``."""
     for sub in ast.walk(node):
+        if isinstance(sub, ast.Name) and sub.id == "__class__":
+            return "__class__"
         if isinstance(sub, ast.Attribute) and sub.attr == "__class__" and _is_self(sub.value):
-            return True
+            return f"{sub.value.id}.__class__"
         if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
                 and sub.func.id == "type" and len(sub.args) == 1 and _is_self(sub.args[0])):
-            return True
-    return False
+            return f"type({sub.args[0].id})"
+    return None
 
 
 def _reads_own_split_class(node: ast.AST) -> bool:
@@ -184,14 +217,32 @@ def _check_member(shape: ClassShape, member: Block, lines: tuple[str, ...],
     where = f"class {shape.name}.{member.name}"
     if member.name in _ONCE_PER_CLASS:
         raise Refusal(f"{where}: runs once per class, so once per part after a split")
+    if member.name.startswith("__"):
+        raise Refusal(f"{where}: a member named with two leading underscores: Python reads a "
+                      "dunder off the class's own namespace or hands it the class, and spells "
+                      "a private name by the enclosing class's, the mixin's after a split")
+    if isinstance(member.node, ast.ClassDef):
+        raise Refusal(f"{where}: a nested class, whose qualname and owner name the mixin or "
+                      "a slice after a split")
+    if isinstance(member.node, (ast.Assign, ast.AnnAssign)) and not isinstance(
+            member.node.value, _LITERAL_VALUES):
+        raise Refusal(f"{where}: a class attribute must be a constant, a display, an f-string "
+                      "or a comprehension; any other value may hold a descriptor, handed the "
+                      "mixin as its owner and each slice when read")
     decorator = fixture_decorator(member.node)
     if decorator is not None and fixture_scope(decorator) != "function":
         raise Refusal(f"{where}: a fixture scoped beyond one test would run once per part")
+    private = sorted(member_private_names(member.text(lines)))
+    if private:
+        raise Refusal(f"{where}: {private} in the private form, which the compiler spells by "
+                      "the enclosing class's name: the mixin's for a member it holds, the "
+                      "class's for a test")
     free = member_free_names(member.text(lines))
-    reaching = (free & _CLASS_REACHING) | ({shape.name} & free)
-    if reaching or _reaches_own_class(member.node):
-        raise Refusal(f"{where}: reaches its own class ({sorted(reaching) or 'by type'}), "
-                      "which is a different class in each part")
+    reaching = sorted((free & _CLASS_REACHING) | ({shape.name} & free))
+    spelled = _reaches_own_class(member.node)
+    if reaching or spelled:
+        raise Refusal(f"{where}: reaches its own class ({reaching or [spelled]}), which is a "
+                      "different class in each part")
     if _reads_own_split_class(member.node):
         raise Refusal(f"{where}: reads its class's docstring, name, namespace or bases, which "
                       "each slice states anew and the mixin keeps")
