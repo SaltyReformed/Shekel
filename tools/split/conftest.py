@@ -20,7 +20,7 @@ from tools.ci import scratch
 from tools.split import _dynamic as dynamic
 from tools.split import _run as run
 from tools.split._layout import Layout, resolve
-from tools.split._model import parse_plan
+from tools.split._model import Plan, parse_plan
 from tools.split._observe import LONE, setups_path
 from tools.split._render import Rewrite, line_limit, render_all, write
 from tools.split._source import Refusal, collect_rules, read_module
@@ -201,6 +201,18 @@ def plan_dict() -> dict:
     return copy.deepcopy(PLAN)
 
 
+def plan_bytes(plan: dict | None = None) -> bytes:
+    """The bytes of a plan file holding ``plan`` (the sample plan when None), as
+    :func:`write_plan` and the ``split`` fixture write one."""
+    return json.dumps(plan or plan_dict()).encode("utf-8")
+
+
+def plan_of(plan: dict | None = None) -> Plan:
+    """``plan`` (the sample plan when None) as the tool reads a file holding it
+    (:func:`plan_bytes`), its sha256 that file's."""
+    return parse_plan(plan_bytes(plan), "the sample plan")
+
+
 def build(root: Path, source: str = SAMPLE) -> Path:
     """Lay the sample repository out under ``root`` with ``source`` as the module, ``root`` a
     git repository (made one through :mod:`tools.ci.scratch` when it is not already), because
@@ -224,7 +236,7 @@ def build(root: Path, source: str = SAMPLE) -> Path:
 def layout_of(root: Path, plan: dict | None = None) -> Layout:
     """The sample's layout under ``plan`` (the sample plan when None)."""
     rules = collect_rules(root)
-    return resolve(read_module(root / SOURCE, rules), parse_plan(plan or plan_dict()), rules)
+    return resolve(read_module(root / SOURCE, rules), plan_of(plan), rules)
 
 
 def refusal(tmp_path: Path, source: str = SAMPLE, plan: dict | None = None) -> str:
@@ -265,7 +277,7 @@ def tree(root: Path) -> dict[str, bytes]:
 def write_plan(root: Path, plan: dict | None = None) -> Path:
     """Write ``plan`` (the sample plan when None) to a file and return its path."""
     path = root / "sample.plan.json"
-    path.write_text(json.dumps(plan or plan_dict()), encoding="utf-8")
+    path.write_bytes(plan_bytes(plan))
     return path
 
 
@@ -339,14 +351,14 @@ def _split(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "pylint_messages", stubs.pylint)
     monkeypatch.setattr(run, "plan_gate", lambda _root: stubs.gate)
     plan = tmp_path / "test_sample.plan.json"
-    plan.write_text(json.dumps(plan_dict()), encoding="utf-8")
+    plan.write_bytes(plan_bytes())
 
     def command(name: str) -> int:
         args = [name, str(plan), "--into", str(command.into)]
         if name != "record":
             args += ["--idmap", str(command.idmap)]
         return main(args, root=root)
-    command.stubs, command.root = stubs, root
+    command.stubs, command.root, command.plan = stubs, root, plan
     command.into, command.idmap = tmp_path / "record", tmp_path / "test_sample.idmap.json"
     return command
 
@@ -368,8 +380,7 @@ def held(split, name: str) -> Path:
     """Where the complete record in ``split.into`` holds the file ``name``, as the tool finds
     it (:meth:`tools.split.split.Context.held`): in the directory of the run its token
     names."""
-    return Context(plan=parse_plan(plan_dict()), root=split.root,
-                   into=split.into).bound().held(name)
+    return Context(plan=plan_of(), root=split.root, into=split.into).bound().held(name)
 
 
 def only_on_path(tmp_path: Path, monkeypatch, *programs: str) -> None:

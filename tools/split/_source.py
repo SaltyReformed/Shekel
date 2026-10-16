@@ -74,10 +74,16 @@ def _universal(text: str) -> io.StringIO:
     return io.StringIO(text, newline=None)
 
 
+def text_from(data: bytes, where: str) -> str:
+    """Bytes read from ``where`` as text, as :meth:`pathlib.Path.read_text` reads a file's:
+    decoded by :func:`decode`, newlines translated (:func:`_universal`).  For a reader that
+    keeps the bytes it parsed (:func:`tools.split._model.parse_plan` hashes them)."""
+    return _universal(decode(data, where)).read()
+
+
 def read_text(path: Path) -> str:
-    """A file's text as :meth:`pathlib.Path.read_text` reads it, newlines translated
-    (:func:`_universal`), decoded by :func:`decode`."""
-    return _universal(decode(path.read_bytes(), str(path))).read()
+    """A file's text, by :func:`text_from`."""
+    return text_from(path.read_bytes(), str(path))
 
 
 def lines_of(text: str, keepends: bool = False) -> list[str]:

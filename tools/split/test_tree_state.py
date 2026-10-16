@@ -1,9 +1,10 @@
 """Where a record is judged (the coordinator's ruling on delta review 2, REVISED (B)): record
 and apply refuse a working tree that is not ``HEAD``'s, judged by its files whatever the
 index or a machine's own rules say (delta review 3's H-1), and record a source ``HEAD`` does
-not track; apply and prove refuse another ``HEAD`` or environment than the record's; prove
-refuses a tree that differs from ``HEAD`` anywhere but at exactly the paths apply writes;
-and record and prove refuse a change made while their runs ran (delta review 3's M-1)."""
+not track; apply and prove refuse another ``HEAD``, environment or plan than the record's
+(the plan: the fourteenth unit correction); prove refuses a tree that differs from ``HEAD``
+anywhere but at exactly the paths apply writes; and record and prove refuse a change made
+while their runs ran (delta review 3's M-1)."""
 from __future__ import annotations
 
 import json
@@ -13,7 +14,18 @@ import pytest
 
 from tools.ci import scratch
 from tools.split import _run as run
-from tools.split.conftest import IMPORTER, PACKAGE, SOURCE, applied, committed, everything
+from tools.split._render import importer_rewrites, line_limit, render_all
+from tools.split.conftest import (
+    IMPORTER,
+    PACKAGE,
+    SOURCE,
+    applied,
+    committed,
+    everything,
+    layout_of,
+    plan_bytes,
+    plan_dict,
+)
 from tools.split.split import _META
 
 #: The tracked file most of the cases below change.
@@ -122,17 +134,57 @@ def _another_environment(_split, monkeypatch) -> None:
     monkeypatch.setattr(run, "environment", lambda _root: "0" * 64)
 
 
-def _no_environment(split, _monkeypatch) -> None:
-    """A record an earlier version of the tool wrote, holding no environment."""
-    path = split.into / _META
-    meta = json.loads(path.read_text(encoding="utf-8"))
-    del meta["environment"]
-    path.write_text(json.dumps(meta), encoding="utf-8")
+def _without(key: str):
+    """A record an earlier version of the tool wrote, holding no ``key``."""
+    def change(split, _monkeypatch) -> None:
+        path = split.into / _META
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        del meta[key]
+        path.write_text(json.dumps(meta), encoding="utf-8")
+    return change
 
 
-#: Each state a record is not judged in, as a change made after it.
-ELSEWHERE = {"HEAD moved": _moved, "another environment": _another_environment,
-             "no environment kept": _no_environment}
+#: The module the other plan names the sample plan's first part.
+RENAMED = "test_opening"
+
+
+def other_plan() -> dict:
+    """The sample plan with its first part named otherwise, which re-points every importer
+    as the sample plan does (the premise, tested below)."""
+    plan = plan_dict()
+    plan["parts"][0]["module"] = RENAMED
+    return plan
+
+
+def _another_plan(split, _monkeypatch) -> None:
+    """The plan file holds another plan."""
+    split.plan.write_bytes(plan_bytes(other_plan()))
+
+
+def _reindented_plan(split, _monkeypatch) -> None:
+    """The plan file holds the same plan in other bytes: a record keeps the sha256 of the
+    plan's BYTES, never of a parsed form, so even this is another plan (the coordinator's
+    ruling on 3C-2's report, which rejected a canonical form's hash)."""
+    split.plan.write_bytes(json.dumps(plan_dict(), indent=1).encode("utf-8"))
+
+
+#: How a refusal names a record taken with another environment, and under another plan.
+ANOTHER_ENVIRONMENT = ("the record was taken with another interpreter, other installed "
+                       "distributions or another git, or by a version of this tool that did "
+                       "not record them")
+ANOTHER_PLAN = ("the record was taken under another plan, or by a version of this tool that "
+                "did not record its plan")
+
+#: Each state a record is not judged in, as a change made after it, and how the refusal
+#: names it (None: the two commits, which the case reads).
+ELSEWHERE = {
+    "HEAD moved": (_moved, None),
+    "another environment": (_another_environment, ANOTHER_ENVIRONMENT),
+    "no environment kept": (_without("environment"), ANOTHER_ENVIRONMENT),
+    "another plan": (_another_plan, ANOTHER_PLAN),
+    "the same plan in other bytes": (_reindented_plan, ANOTHER_PLAN),
+    "no plan kept": (_without("plan"), ANOTHER_PLAN),
+}
 
 #: What each command's refusal ends with.
 TAILS = {"apply": "record again; nothing is applied",
@@ -143,23 +195,37 @@ TAILS = {"apply": "record again; nothing is applied",
 @pytest.mark.parametrize("command", ["apply", "prove"])
 def test_a_record_is_judged_only_where_it_was_taken(split, capsys, monkeypatch, command,
                                                     state):
-    """apply and prove each refuse unless HEAD and the environment are the record's; a record
-    holding no environment is another version's (REVISED (B) (1) and (2)).  For prove, HEAD
-    moved by committing the split itself, the tree then HEAD's."""
+    """apply and prove each refuse unless HEAD, the environment and the plan are the
+    record's, and the tree, the record and the id maps are byte-identical after; a record
+    holding no environment, or no plan, is another version's (REVISED (B) (1) and (2); the
+    plan, the fourteenth unit correction).  For prove, HEAD moved by committing the split
+    itself, the tree then HEAD's.  Before the plan was kept, another plan was refused by
+    name nowhere: apply wrote the other plan's split, and prove refused the tree as other
+    than the plan's writes."""
     assert split("record") == 0
     if command == "prove":
         assert split("apply") == 0
     taken = scratch.run(split.root, "rev-parse", "HEAD")
-    ELSEWHERE[state](split, monkeypatch)
+    change, said = ELSEWHERE[state]
+    change(split, monkeypatch)
     before = everything(split)
     capsys.readouterr()
     assert split(command) == 1
-    said = (f"HEAD is {scratch.run(split.root, 'rev-parse', 'HEAD')[:9]}, and the record was "
-            f"taken at {taken[:9]}") if state == "HEAD moved" else (
-        "the record was taken with another interpreter, other installed distributions or "
-        "another git, or by a version of this tool that did not record them")
+    if said is None:
+        said = (f"HEAD is {scratch.run(split.root, 'rev-parse', 'HEAD')[:9]}, and the record "
+                f"was taken at {taken[:9]}")
     assert f"REFUSED: {said}; {TAILS[command]}" in capsys.readouterr().err
     assert everything(split) == before
+
+
+def test_the_other_plan_differs_from_the_sample_in_its_parts_alone(repo):
+    """The premise of the other plan's case: it writes another package and re-points every
+    importer exactly as the sample plan does, so only the plan's identity tells a record
+    taken under one from the other (the coordinator's ruling on 3C-2's report)."""
+    sample, other = layout_of(repo), layout_of(repo, other_plan())
+    assert importer_rewrites(other, repo) == importer_rewrites(sample, repo)
+    assert render_all(other, line_limit(repo)).keys() != render_all(sample,
+                                                                     line_limit(repo)).keys()
 
 
 def _package_only(split) -> None:

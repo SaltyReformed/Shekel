@@ -19,11 +19,13 @@ reports leaves an unproved split in the tree (:func:`tools.split._render.write`)
 quotes when every arm passed.
 
 A record is judged only in the repository state and the environment its observations were
-made in (the coordinator's ruling on delta review 2, REVISED (B), 2026-10-15): ``record``
-refuses unless the working tree is ``HEAD``'s and ``HEAD`` tracks the source, and keeps
-``HEAD`` and the environment (:func:`tools.split._run.environment`); ``apply`` refuses
-unless both are the same and the tree is still ``HEAD``'s; ``prove`` refuses unless both
-are the same and the tree differs from ``HEAD`` at exactly the paths ``apply`` writes.
+made in (the coordinator's ruling on delta review 2, REVISED (B), 2026-10-15), and under the
+plan it was taken under (the fourteenth unit correction, 2026-10-16): ``record`` refuses
+unless the working tree is ``HEAD``'s and ``HEAD`` tracks the source, and keeps ``HEAD``,
+the environment (:func:`tools.split._run.environment`) and the plan's sha256
+(:attr:`tools.split._model.Plan.sha256`); ``apply`` refuses unless all three are the same
+and the tree is still ``HEAD``'s; ``prove`` refuses unless all three are the same and the
+tree differs from ``HEAD`` at exactly the paths ``apply`` writes.
 The tree is judged by its files' bytes, whatever the index's flags or a machine's own
 ignore rules say (:func:`tools.split._run.differences`), so one ``HEAD`` covers every file
 of the tree that a record's meaning rests on but those the COMMITTED ignore rules hide:
@@ -213,10 +215,21 @@ def _clean(root: Path, then: str) -> None:
 
 
 def _held_to(ctx: Context, nothing: str) -> None:
-    """Refuse unless this process runs where the bound record was taken: ``HEAD`` the commit
-    it names, and the environment the one it holds (:func:`tools.split._run.environment`).
-    A record holding no environment was written by another version of this tool, and is
-    refused alike.  ``nothing`` ends the refusal."""
+    """Refuse unless this process runs where, and under what, the bound record was taken:
+    ``HEAD`` the commit it names, the environment the one it holds
+    (:func:`tools.split._run.environment`), and the plan the one whose bytes it hashed
+    (:attr:`tools.split._model.Plan.sha256`).  A record holding no environment, or no plan,
+    was written by another version of this tool, and is refused alike.  ``nothing`` ends the
+    refusal.
+
+    The plan is the record's as much as ``HEAD`` is: ``record`` lays the source out by it,
+    computes each importer's rewrites from it, and lints the importers those rewrites
+    re-point.  Before the token held it, a record taken under one plan was applied and
+    proved under another: refused only where a check with another subject saw the
+    difference, naming the wrong cause, and otherwise proved, as a plan that names a part
+    otherwise and keeps every importer's rewrites was (measured on the sample with this
+    check removed, 2026-10-16; the lane's report at 3C-2, ruled the fourteenth unit
+    correction)."""
     head = _head(ctx.root)
     if head != ctx.meta["head"]:
         raise Refusal(f"HEAD is {head[:9]}, and the record was taken at "
@@ -225,6 +238,9 @@ def _held_to(ctx: Context, nothing: str) -> None:
         raise Refusal("the record was taken with another interpreter, other installed "
                       "distributions or another git, or by a version of this tool that did "
                       f"not record them; {nothing}")
+    if ctx.meta.get("plan") != ctx.plan.sha256:
+        raise Refusal("the record was taken under another plan, or by a version of this tool "
+                      f"that did not record its plan; {nothing}")
 
 
 def _tracked(root: Path, path: Path) -> bool:
@@ -265,9 +281,11 @@ def _write_set(ctx: Context, layout: Layout) -> set[str]:
 def _importer_record(rewrites: list[Rewrite], root: Path) -> dict[str, dict]:
     """Each importer the split re-points, by repository-relative path: its fingerprint and
     its rewrites, ``[line, last, old, new]``, which ``record`` keeps and ``prove`` judges the
-    importers' lines by.  ``apply`` re-points exactly these: it runs at ``record``'s ``HEAD``
-    on a tree that is ``HEAD``'s, so the walk finds the same importers holding the same text
-    (the branch's neutral review of this leaf, M1, which ``apply`` once re-checked)."""
+    importers' lines by.  ``apply`` re-points exactly these: it runs at ``record``'s ``HEAD``,
+    under its plan, on a tree that is ``HEAD``'s, so the walk finds the same importers holding
+    the same text, and the plan gives them the same rewrites (the branch's neutral review of
+    this leaf, M1, which ``apply`` once re-checked; the plan, since the fourteenth unit
+    correction)."""
     importers: dict[str, dict] = {}
     for rewrite in rewrites:
         entry = importers.setdefault(str(rewrite.path.relative_to(root)), {
@@ -323,9 +341,11 @@ def record(ctx: Context) -> list[str]:
     2026-10-15, and on 3C-2's question, 2026-10-16).
 
     Refused unless the working tree is ``HEAD``'s and ``HEAD`` tracks the source, so
-    ``HEAD``, which the token keeps with the environment, names every file the observations
-    rest on (REVISED (B), the module docstring).  The same is judged again after the runs,
-    before the token is written."""
+    ``HEAD``, which the token keeps with the environment and the plan's sha256, names every
+    file the observations rest on (REVISED (B), the module docstring).  The same is judged
+    again after the runs, before the token is written.  The token holds no copy of what the
+    plan says (the source's path): the plan it binds says it (the coordinator's ruling on
+    3C-2b, 2026-10-16, rule 14)."""
     if ctx.applied():
         raise Refusal(f"{ctx.into} holds a record whose split is applied; record into a new "
                       "--into")
@@ -340,7 +360,7 @@ def record(ctx: Context) -> list[str]:
     importers = _importer_record(importer_rewrites(layout, ctx.root), ctx.root)
     ctx.into.mkdir(parents=True, exist_ok=True)
     ctx = replace(ctx, meta={
-        "source": str(ctx.plan.source), "sha256": run.sha256(source), "head": head,
+        "plan": ctx.plan.sha256, "sha256": run.sha256(source), "head": head,
         "environment": run.environment(ctx.root), "importers": importers,
         "run": _run_directory(ctx, "record").name})
     shutil.copyfile(source, ctx.held(_SOURCE))
@@ -358,9 +378,10 @@ def record(ctx: Context) -> list[str]:
 def apply(ctx: Context, idmap: Path) -> None:
     """Write the package, delete the source, re-point importers, run the static proof and
     write the id maps; refused, with nothing written, unless a complete record passed, is
-    not applied already, and ``HEAD`` and the environment are the record's and the working
-    tree is ``HEAD``'s: so the source and every importer are as ``record`` found them, which
-    ``record`` made sure of by refusing a source ``HEAD`` does not track.  The writes and
+    not applied already, and ``HEAD``, the environment and the plan are the record's
+    (:func:`_held_to`) and the working tree is ``HEAD``'s: so the source and every importer
+    are as ``record`` found them, which ``record`` made sure of by refusing a source
+    ``HEAD`` does not track, and are laid out as it laid them out.  The writes and
     the proof are ONE unit (:func:`tools.split._render.write`): a failed write, a static
     proof that fails on what was written, or an interrupt undoes every file the apply wrote,
     the id maps beside the tree included, and the refusal names the failure."""
@@ -438,8 +459,9 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     """Every arm of the proof; print the block a commit body quotes only when every arm
     passed.  The block's fixed sentences claim that each arm held, so printed beside a
     failure they would state what the run refuted (the branch's neutral review, F7).
-    Refused without a complete record, unless ``HEAD`` and the environment are the record's,
-    and unless the working tree differs from ``HEAD`` at EXACTLY the paths ``apply`` writes
+    Refused without a complete record, unless ``HEAD``, the environment and the plan are the
+    record's (:func:`_held_to`), and unless the working tree differs from ``HEAD`` at
+    EXACTLY the paths ``apply`` writes
     (:func:`_write_set`): fewer is an apply killed part-way (``SIGKILL``; the coordinator's
     ruling on 3B-2's signal fork, (d)), so it is never proved, and more is a change beside
     the split, which no arm is judging (REVISED (B)).  The same is judged again after every
@@ -540,7 +562,7 @@ def _report_moves(ctx: Context, layout: Layout, idmap: Path, runs: Path, seen: d
     counts = describe(layout)
     return [
         f"Proof (python -m tools.split.split prove, plan {ctx.plan.stem}.plan.json):",
-        f"- source {meta['source']} at {meta['head'][:9]}, sha256 {meta['sha256'][:16]}",
+        f"- source {ctx.plan.source} at {meta['head'][:9]}, sha256 {meta['sha256'][:16]}",
         f"- evidence, in --into: the record's run {meta['run']}, this prove's {runs.name}",
         f"- files (lines): {sizes}; every one under the line budget",
         f"- identity: {counts['whole_nodes']} whole nodes and {counts['split_members']} "

@@ -9,10 +9,11 @@ names an unknown key, or a node twice, is refused rather than read generously.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from tools.split._source import read_json
+from tools.split._source import load_json, text_from
 
 #: The package modules the tool writes itself, which no part may be named.
 HELPERS = "_helpers"
@@ -51,11 +52,16 @@ class Part:
 
 @dataclass(frozen=True)
 class Plan:
-    """The whole plan for one source module."""
+    """The whole plan for one source module, and the sha256 of the bytes it was parsed from,
+    which a record keeps: a record rests on its plan as on ``HEAD`` and the environment, so
+    it is judged only under the plan it was taken under (:func:`tools.split.split._held_to`;
+    the coordinator's ruling on the lane's report at 3C-2, the fourteenth unit correction,
+    2026-10-16)."""
 
     source: PurePosixPath
     parts: tuple[Part, ...]
     unused_imports: dict[str, str]
+    sha256: str
 
     @property
     def package(self) -> PurePosixPath:
@@ -125,8 +131,13 @@ def _part(where: str, raw: object) -> Part:
     )
 
 
-def parse_plan(raw: object) -> Plan:
-    """Build a :class:`Plan` from its decoded JSON, refusing any shape it does not expect."""
+def parse_plan(data: bytes, where: str) -> Plan:
+    """Build a :class:`Plan` from a plan file's bytes, read from ``where``: refused, naming
+    ``where``, when they are not UTF-8 JSON (:func:`tools.split._source.text_from`,
+    :func:`tools.split._source.load_json`), and refusing any shape it does not expect.  One
+    bytes object is decoded, parsed and hashed, so every field of the plan and its sha256
+    are of the same bytes."""
+    raw = load_json(text_from(data, where), where)
     _keys("plan", raw, {"source", "parts"}, frozenset({"unused_imports"}))
     source = PurePosixPath(_text("plan.source", raw["source"]))
     if source.suffix != ".py" or source.is_absolute() or ".." in source.parts:
@@ -142,10 +153,10 @@ def parse_plan(raw: object) -> Plan:
     modules = [p.module for p in built]
     if len(set(modules)) != len(modules):
         raise PlanError(f"plan.parts: a module name is used twice in {modules}")
-    return Plan(source=source, parts=built, unused_imports=dict(unused))
+    return Plan(source=source, parts=built, unused_imports=dict(unused),
+                sha256=hashlib.sha256(data).hexdigest())
 
 
 def load_plan(path: Path) -> Plan:
-    """Read the plan file at ``path`` (refused, naming it, when it is not UTF-8 JSON:
-    :func:`tools.split._source.read_json`) and parse it."""
-    return parse_plan(read_json(path))
+    """The plan file at ``path``, read once and parsed (:func:`parse_plan`)."""
+    return parse_plan(path.read_bytes(), str(path))

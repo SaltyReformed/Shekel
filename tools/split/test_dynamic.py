@@ -18,7 +18,6 @@ import pytest
 from tools.ci import gitcmd, scratch
 from tools.ci.arcs import REPO
 from tools.split import _dynamic as dynamic
-from tools.split._model import parse_plan
 from tools.split._observe import OBSERVE_ENV, verdict
 from tools.split._prove import line_origins
 from tools.split._render import Origin
@@ -32,6 +31,7 @@ from tools.split.conftest import (
     build,
     layout_of,
     plan_dict,
+    plan_of,
 )
 from tools.split.test_apply import applied
 
@@ -316,7 +316,7 @@ class TestTheCensus:
 
     def test_the_pattern(self):
         """The file name, its directories, its dotted path; not a sibling or the package."""
-        mention = mentions(parse_plan(plan_dict()))
+        mention = mentions(plan_of())
         assert sum(bool(mention.search(line)) for line in [
             "see tests/test_area/test_sample.py::TestBig",
             "``test_sample.py``",
@@ -345,7 +345,7 @@ class TestTheCensus:
         as a mere PREFIX and a sentence's full stop are all mentions; only a continuation
         into the package (``m/``, ``m.<part>``, ``m.conftest``) is not, and a line holding
         both is listed."""
-        assert bool(mentions(parse_plan(plan_dict())).search(line)) is listed
+        assert bool(mentions(plan_of()).search(line)) is listed
 
     #: The lines of :meth:`tracked_notes` the census lists.
     NOTES_HIT = [("docs/notes.md", 1, "see ``test_sample.TestBig``"),
@@ -375,7 +375,7 @@ class TestTheCensus:
         only hold the name as a substring or continue into the package, and the mention
         tracked under an ignored directory, which git does not ignore because it tracks it
         (``git grep --untracked``, the census's reader until this was measured, skipped it)."""
-        assert census(self.tracked_notes(tmp_path), parse_plan(plan_dict())) == self.NOTES_HIT
+        assert census(self.tracked_notes(tmp_path), plan_of()) == self.NOTES_HIT
 
     def test_the_census_reads_the_whole_tree(self, tmp_path):
         """No directory list: a top-level README and a migration's docstring are lines a
@@ -387,7 +387,7 @@ class TestTheCensus:
             (root / path).write_text("first\n``test_sample.TestFirst`` holds it\n",
                                      encoding="utf-8")
         scratch.run(root, "add", "-A")
-        found = census(root, parse_plan(plan_dict()))
+        found = census(root, plan_of())
         assert [(path, line) for path, line, _ in found] == [
             ("README.md", 2), ("docs/notes.md", 1), ("migrations/versions/a1_rename.py", 2),
             ("vendor/notes.md", 1)]
@@ -400,7 +400,7 @@ class TestTheCensus:
         for path in ("docs/draft.md", "build/out.md"):
             (root / path).parent.mkdir(parents=True, exist_ok=True)
             (root / path).write_text("``test_sample.TestBig``\n", encoding="utf-8")
-        found = census(root, parse_plan(plan_dict()))
+        found = census(root, plan_of())
         assert [(path, line) for path, line, _ in found] == [
             ("docs/draft.md", 1), ("docs/notes.md", 1), ("vendor/notes.md", 1)]
 
@@ -411,7 +411,7 @@ class TestTheCensus:
         (root / ".git" / "info" / "exclude").write_text("*\n", encoding="utf-8")
         (root / "build").mkdir()
         (root / "build" / "out.md").write_text("``test_sample.TestBig``\n", encoding="utf-8")
-        assert census(root, parse_plan(plan_dict())) == []
+        assert census(root, plan_of()) == []
 
     def test_a_path_is_read_as_the_characters_it_holds(self, tmp_path):
         """A ``*`` in a listed path is that character, never a pattern that reaches a file
@@ -420,7 +420,7 @@ class TestTheCensus:
         (root / ".gitignore").write_text("vendor/\ndocs/ab.md\n", encoding="utf-8")
         for name in ("a*.md", "ab.md"):
             (root / "docs" / name).write_text("``test_sample.TestBig``\n", encoding="utf-8")
-        found = census(root, parse_plan(plan_dict()))
+        found = census(root, plan_of())
         assert [path for path, _, _ in found] == ["docs/a*.md", "docs/notes.md",
                                                   "vendor/notes.md"]
 
@@ -437,7 +437,7 @@ class TestTheCensus:
             return real(where, *args)
         monkeypatch.setattr(gitcmd, "run", no_grep)
         with pytest.raises(RunError, match="could not start over the tree's 3 files"):
-            census(root, parse_plan(plan_dict()))
+            census(root, plan_of())
 
     def test_a_grep_column_setting_is_kept_out_of_the_record(self, tmp_path):
         """``grep.column`` set in the repository's config (or a user's) would put a column
@@ -445,7 +445,7 @@ class TestTheCensus:
         line and text (the delta review's M-C, census L2)."""
         root = self.tracked_notes(tmp_path)
         scratch.run(root, "config", "grep.column", "true")
-        assert census(root, parse_plan(plan_dict())) == self.NOTES_HIT
+        assert census(root, plan_of()) == self.NOTES_HIT
 
     def test_each_record_is_read_whole(self, tmp_path):
         """A path git would quote (a non-ASCII name) or that holds a colon, and a line holding
@@ -456,7 +456,7 @@ class TestTheCensus:
             "x\fsee ``test_sample.TestBig``\n", encoding="utf-8")
         (root / "docs" / "blob.bin").write_bytes(b"\0test_sample.TestBig\n")
         scratch.run(root, "add", "-A")
-        found = census(root, parse_plan(plan_dict()))
+        found = census(root, plan_of())
         assert found == [("docs/café:notes.md", 1, "x\fsee ``test_sample.TestBig``"),
                          *self.NOTES_HIT]
 
@@ -467,14 +467,14 @@ class TestTheCensus:
         root = self.tracked_notes(tmp_path)
         (root / "docs" / "cr.md").write_bytes(b"see ``test_sample.TestBig``\rand more\n")
         with pytest.raises(RunError, match="a carriage return in a matched line ends a record"):
-            census(root, parse_plan(plan_dict()))
+            census(root, plan_of())
 
     def test_a_crlf_line_end_is_read_as_the_lines_end(self, tmp_path):
         """A carriage return that ends a line is read as its end: the line comes back whole,
         without it, and nothing stops."""
         root = self.tracked_notes(tmp_path)
         (root / "docs" / "crlf.md").write_bytes(b"see ``test_sample.TestBig``\r\n")
-        assert census(root, parse_plan(plan_dict())) == [
+        assert census(root, plan_of()) == [
             ("docs/crlf.md", 1, "see ``test_sample.TestBig``"), *self.NOTES_HIT]
 
     def test_a_matched_line_not_in_utf8_is_refused_naming_its_file(self, tmp_path):
@@ -487,7 +487,7 @@ class TestTheCensus:
         with pytest.raises(Refusal, match=re.escape(
                 "git grep's output: not UTF-8 text (invalid continuation byte at byte 44, in "
                 "b'docs/latin.md\\x001\\x00see ``test_sample.TestBig`` \\xe9')")):
-            census(root, parse_plan(plan_dict()))
+            census(root, plan_of())
 
     @pytest.mark.parametrize("binding", scratch.BINDINGS)
     def test_a_bound_environment_reaches_no_repository_but_the_one_named(
@@ -505,7 +505,7 @@ class TestTheCensus:
         the same answer here).  The trailer rules and the tracker tool are held the same way
         (``tools/ci/test_trailers.py``, ``tools/quill/test__git.py``)."""
         sentinel, before = scratch.bound_sentinel(tmp_path, binding, monkeypatch.setenv)
-        assert census(self.tracked_notes(tmp_path), parse_plan(plan_dict())) == self.NOTES_HIT
+        assert census(self.tracked_notes(tmp_path), plan_of()) == self.NOTES_HIT
         assert scratch.sentinel_state(sentinel) == before
 
     def test_archived_documents_are_classified(self, tmp_path):

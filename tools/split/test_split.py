@@ -34,9 +34,10 @@ from tools.split.conftest import (
     held,
     only_on_path,
     plan_dict,
+    plan_of,
     tree,
 )
-from tools.split.split import _BEFORE_RUN, _META, main
+from tools.split.split import _BEFORE_RUN, _META, _SOURCE, main
 
 
 def test_a_proved_split_prints_its_block(split, capsys):
@@ -48,6 +49,20 @@ def test_a_proved_split_prints_its_block(split, capsys):
     assert out.startswith("Proof (python -m tools.split.split prove, plan test_sample.plan.json)")
     assert f"- importers re-pointed: ['{IMPORTER}']" in out
     assert out.rstrip().endswith("prove: OK")
+
+
+def test_the_block_names_the_source_the_bound_plan_names(split, capsys):
+    """The block's source line reads the plan the record binds, beside the record's HEAD and
+    the source's sha256; the token keeps no copy of the source's path, which the plan it
+    binds says (the coordinator's ruling on 3C-2b, 2026-10-16, rule 14)."""
+    applied(split)
+    head = scratch.run(split.root, "rev-parse", "HEAD")
+    token = json.loads((split.into / _META).read_text(encoding="utf-8"))
+    assert sorted(token) == ["environment", "head", "importers", "plan", "run", "sha256"]
+    capsys.readouterr()
+    assert split("prove") == 0
+    assert (f"- source {plan_of().source} at {head[:9]}, sha256 "
+            f"{run.sha256(held(split, _SOURCE))[:16]}") in capsys.readouterr().out.splitlines()
 
 
 def test_a_failed_arm_prints_no_block(split, capsys):

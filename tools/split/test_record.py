@@ -15,7 +15,6 @@ import pytest
 
 from tools.ci import scratch
 from tools.split import _run as run
-from tools.split._model import parse_plan
 from tools.split._observe import OBSERVE_ENV, setups_path
 from tools.split._run import observe, pylint_messages
 from tools.split._source import Refusal
@@ -29,7 +28,7 @@ from tools.split.conftest import (
     cut_fixture,
     held,
     only_on_path,
-    plan_dict,
+    plan_of,
     tree,
 )
 from tools.split.split import _AFTER_RUN, _BEFORE_RUN, _META, _SOURCE, Context, _save
@@ -202,8 +201,8 @@ def test_a_token_stopped_mid_write_leaves_the_last_one(tmp_path, monkeypatch, la
     writing it (here, a full disk half way through) leaves the last record's token byte for
     byte, or none where there was none: never a part of a new one that ``apply`` would read
     as the record's."""
-    ctx = Context(plan=parse_plan(plan_dict()), root=tmp_path, into=tmp_path)
-    token, kept = tmp_path / _META, {"source": SOURCE, "run": "record-last"}
+    ctx = Context(plan=plan_of(), root=tmp_path, into=tmp_path)
+    token, kept = tmp_path / _META, {"plan": ctx.plan.sha256, "run": "record-last"}
     if last:
         _save(token, kept)
     before = token.read_bytes() if last else None
@@ -216,7 +215,7 @@ def test_a_token_stopped_mid_write_leaves_the_last_one(tmp_path, monkeypatch, la
         return real(self, data, *args, **kwargs)
     monkeypatch.setattr(Path, "write_text", stopped)
     with pytest.raises(OSError):
-        _save(token, {"source": SOURCE, "run": "record-next"})
+        _save(token, {"plan": ctx.plan.sha256, "run": "record-next"})
     monkeypatch.undo()
     if last:
         assert token.read_bytes() == before

@@ -2,15 +2,19 @@
 the tool never guesses, so a split it cannot prove is not made."""
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
-from tools.split._model import PlanError, parse_plan
+from tools.split._model import PlanError, load_plan
 from tools.split._render import line_limit, render_all
 from tools.split.conftest import (
     SAMPLE,
     build,
     layout_of,
     plan_dict,
+    plan_of,
     refusal,
     sample_with,
 )
@@ -409,7 +413,8 @@ class TestASplitClassIsRefused:
 
 
 class TestThePlanIsRead:
-    """A malformed plan is refused before any source is read."""
+    """A malformed plan is refused before any source is read, and a plan read keeps the
+    sha256 of the bytes it parsed."""
 
     @pytest.mark.parametrize("change, why", [
         (lambda p: p.update(extra=1), "unknown ['extra']"),
@@ -426,4 +431,15 @@ class TestThePlanIsRead:
             plan["parts"] = plan["parts"][:1]
             why = "at least two parts"
         with pytest.raises(PlanError, match=why.replace("[", r"\[").replace("]", r"\]")):
-            parse_plan(plan)
+            plan_of(plan)
+
+    def test_a_plan_keeps_the_sha256_of_the_bytes_it_parsed(self, tmp_path):
+        """One bytes object is decoded, parsed and hashed (the coordinator's ruling on 3C-2's
+        report): with CRLF line endings, which the decoded text reads as LF, the plan's
+        sha256 is the file's bytes', not its text's."""
+        data = json.dumps(plan_dict(), indent=1).replace("\n", "\r\n").encode("utf-8")
+        path = tmp_path / "x.plan.json"
+        path.write_bytes(data)
+        text = data.decode("utf-8").replace("\r\n", "\n").encode("utf-8")
+        assert load_plan(path).sha256 == hashlib.sha256(data).hexdigest()
+        assert load_plan(path).sha256 != hashlib.sha256(text).hexdigest()
