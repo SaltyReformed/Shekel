@@ -37,9 +37,10 @@
 # (`report_installed_copy`) and says so in its own output, because a comment
 # claiming "these are the same file" is exactly the claim that goes stale.
 # Since plan step balance:X-dm a working copy also needs
-# scripts/_container_lib.sh at ../scripts/ beside it (ruling R-BAL254), which
-# the symlink has by construction: a bare hand-copy refuses to start, naming
-# itself and the file it lacks, before this measurement could run.
+# scripts/_docker_lib.sh at ../scripts/ beside it, from the same revision
+# (ruling R-BAL254), which the symlink has by construction: a bare hand-copy,
+# or one beside a helper lacking a function it reads, refuses to start,
+# naming itself and the file, before this measurement could run.
 #
 # Accepted cost of the symlink, ruled: the CHECKED-OUT WORKING TREE becomes
 # the live deploy path.  A half-finished edit or a feature branch is live the
@@ -101,19 +102,25 @@ set -euo pipefail
 # `report_installed_copy` reports it.
 _self=$(readlink -f "${BASH_SOURCE[0]}")
 
-# "Is this container running?" has one home in the shell scripts, shared
-# with the backup scripts (plan step balance:X-dm, ruling R-BAL254), loaded
-# from THIS script's checkout, where scripts/_container_lib.sh sits beside
-# deploy/.  First, so a copy without it refuses to start, before it touches
-# anything (the ruling's words) -- and names itself, since the startup report
-# below does not run.
-_container_lib="${_self%/*}/../scripts/_container_lib.sh"
-# shellcheck source=../scripts/_container_lib.sh
-source "$_container_lib" || {
-    printf '[shekel-deploy] ERROR: %s cannot load %s,\n   the running-check it reads from its own checkout.  Run the repository copy\n   (see its header): a copy needs scripts/_container_lib.sh at ../scripts/.\n' \
-        "$_self" "$_container_lib" >&2
+# The docker facts this script shares with the other shell scripts -- is a
+# container running, an image digest's shape, the production containers'
+# names -- have one home (plan steps balance:X-dm and balance:X-do, ruling
+# R-BAL254), loaded from THIS script's checkout, where scripts/_docker_lib.sh
+# sits beside deploy/.  First, so a copy without it, or beside one lacking a
+# function this script reads, refuses to start, before it touches anything
+# (the ruling's words) -- and names itself, since the startup report below
+# does not run.
+_docker_lib="${_self%/*}/../scripts/_docker_lib.sh"
+# shellcheck source=../scripts/_docker_lib.sh
+if ! {
+    source "$_docker_lib" \
+        && declare -F container_running image_digest_or_empty first_image_digest \
+            shekel_prod_app_container shekel_prod_db_container >/dev/null
+}; then
+    printf '[shekel-deploy] ERROR: %s cannot load %s,\n   or it lacks a function this script reads from its own checkout\n   (container_running, image_digest_or_empty, first_image_digest,\n   shekel_prod_app_container, shekel_prod_db_container).  Run the repository\n   copy (see its header): a copy needs scripts/_docker_lib.sh at ../scripts/,\n   from the same revision.\n' \
+        "$_self" "$_docker_lib" >&2
     exit 1
-}
+fi
 
 # ── Configuration ──────────────────────────────────────────────────
 # Every value is overridable from the environment, defaulting to production.
@@ -125,7 +132,7 @@ source "$_container_lib" || {
 SHEKEL_DIR="${SHEKEL_DIR:-/opt/docker/shekel}"
 ENV_FILE="${SHEKEL_ENV_FILE:-${SHEKEL_DIR}/.env}"
 COMPOSE_SERVICE="${SHEKEL_COMPOSE_SERVICE:-app}"
-CONTAINER_NAME="${SHEKEL_CONTAINER_NAME:-shekel-prod-app}"
+CONTAINER_NAME="${SHEKEL_CONTAINER_NAME:-$(shekel_prod_app_container)}"
 IMAGE_REPO="${SHEKEL_IMAGE_REPO:-ghcr.io/saltyreformed/shekel}"
 MOVING_TAG="${SHEKEL_MOVING_TAG:-latest}"
 
@@ -136,7 +143,7 @@ MOVING_TAG="${SHEKEL_MOVING_TAG:-latest}"
 # --dump-only dump keeps the directory and changes the label, as
 # shekel_prod_dump_<current pin>_<ts>.dump, so it is never mistaken for the
 # restore point a deploy took.
-DB_CONTAINER="${SHEKEL_DB_CONTAINER:-shekel-prod-db}"
+DB_CONTAINER="${SHEKEL_DB_CONTAINER:-$(shekel_prod_db_container)}"
 DB_USER="${SHEKEL_DB_USER:-shekel_user}"
 DB_NAME="${SHEKEL_DB_NAME:-shekel}"
 BACKUP_DIR="${SHEKEL_BACKUP_DIR:-${HOME}/shekel-backups}"
@@ -175,16 +182,20 @@ for a in "$@"; do
         --no-verify) verify=false ;;
         --dry-run) dryrun=true ;;
         --dump-only) dumponly=true ;;
-        sha256:*)
+        *)
+            # Not an option, so a digest -- the WHOLE argument, as the
+            # current pin is checked below (finding BAL-623), where a prefix
+            # match once let a malformed one through to `docker pull`.
+            digest_arg=$(image_digest_or_empty "$a")
+            if [ -z "$digest_arg" ]; then
+                echo "ERROR: unknown argument, and not an image digest: $a" >&2
+                usage 2
+            fi
             if [ -n "$explicit_digest" ]; then
                 echo "ERROR: more than one digest argument given." >&2
                 exit 2
             fi
-            explicit_digest="$a"
-            ;;
-        *)
-            echo "ERROR: unknown argument: $a" >&2
-            usage 2
+            explicit_digest="$digest_arg"
             ;;
     esac
 done
@@ -804,7 +815,8 @@ old_digest=$(read_env_digest)
 [ -n "$old_digest" ] || die "no SHEKEL_IMAGE_DIGEST in $ENV_FILE."
 # The whole digest, not its prefix: a dump-only run names its file for it
 # and makes no later call that would refuse a malformed one.
-[[ "$old_digest" =~ ^sha256:[0-9a-f]{64}$ ]] \
+old_digest_whole=$(image_digest_or_empty "$old_digest")
+[ -n "$old_digest_whole" ] \
     || die "current SHEKEL_IMAGE_DIGEST is not sha256:<64 hex digits> (got '$old_digest')."
 # Captured once rather than substituted inside each message, for the same
 # reason as ``whoami_name`` above.
@@ -842,9 +854,9 @@ else
         --format '{{range .RepoDigests}}{{println .}}{{end}}'); then
         die "docker image inspect ${IMAGE_REPO}:${MOVING_TAG} failed."
     fi
-    [[ "$repo_digests" =~ sha256:[a-f0-9]{64} ]] \
+    new_digest=$(first_image_digest "$repo_digests")
+    [ -n "$new_digest" ] \
         || die "could not resolve digest for ${IMAGE_REPO}:${MOVING_TAG}."
-    new_digest=${BASH_REMATCH[0]}
 fi
 
 # Captured once, as ``old_short`` is above.

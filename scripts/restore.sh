@@ -41,8 +41,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"
 
 # ── Configuration ────────────────────────────────────────────────
 
-DB_CONTAINER="${DB_CONTAINER:-shekel-prod-db}"
-APP_CONTAINER="${APP_CONTAINER:-shekel-prod-app}"
+DB_CONTAINER="${DB_CONTAINER:-$(shekel_prod_db_container)}"
+APP_CONTAINER="${APP_CONTAINER:-$(shekel_prod_app_container)}"
 PGUSER="${PGUSER:-shekel_user}"
 PGDATABASE="${PGDATABASE:-shekel}"
 BACKUP_ENCRYPTION_PASSPHRASE="${BACKUP_ENCRYPTION_PASSPHRASE:-}"

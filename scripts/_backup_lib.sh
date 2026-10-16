@@ -53,11 +53,25 @@ log() {
 }
 
 # ── Prerequisites ────────────────────────────────────────────────
-# "Is this container running?" has one home in the shell scripts, shared
-# with deploy/shekel-deploy.sh and scripts/restore.sh (plan step
-# balance:X-dm, ruling R-BAL254).
-# shellcheck source=_container_lib.sh
-source "$(dirname "${BASH_SOURCE[0]}")/_container_lib.sh"
+# The docker facts the shell scripts share -- is a container running, the
+# production containers' names -- have one home, shared with
+# deploy/shekel-deploy.sh (plan steps balance:X-dm and balance:X-do, ruling
+# R-BAL254).  A copy of it lacking a function the backup family reads is
+# refused here, before any of them touches anything: a missing
+# container_running would otherwise fail as "command not found" and read as
+# "the database container is not running" (finding BAL-625).
+_docker_lib="$(dirname "${BASH_SOURCE[0]}")/_docker_lib.sh"
+# shellcheck source=_docker_lib.sh
+if ! {
+    source "${_docker_lib}" \
+        && declare -F container_running shekel_prod_app_container \
+            shekel_prod_db_container >/dev/null
+}; then
+    log "ERROR" "Cannot load ${_docker_lib}, or it lacks a function the backup"
+    log "ERROR" "scripts read (container_running, shekel_prod_app_container,"
+    log "ERROR" "shekel_prod_db_container).  It must come from this file's revision."
+    exit 1
+fi
 
 # Verify docker exists and the named DB container is running.
 # Usage: require_db_container "$DB_CONTAINER" || exit 1

@@ -32,7 +32,8 @@
 # Options:
 #     --output-dir DIR    Output directory (default: deploy/postgres)
 #     --days N            Certificate validity in days (default: 825)
-#     --cn HOSTNAME       Certificate Common Name (default: shekel-prod-db)
+#     --cn HOSTNAME       Certificate Common Name (default: the production db
+#                         container's name, scripts/_docker_lib.sh)
 #     --postgres-uid UID  uid to own the key file (default: 70)
 #     --postgres-gid GID  gid to own the key file (default: 70)
 #     --force             Overwrite existing cert/key without prompting
@@ -62,9 +63,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# The production db container's name has one home in the shell scripts
+# (plan step balance:X-do), beside this script: it is the certificate's
+# default CN and always one of its SANs.  A copy of the helper lacking it is
+# refused here, before anything is written.
+_docker_lib="${SCRIPT_DIR}/_docker_lib.sh"
+# shellcheck source=_docker_lib.sh
+if ! { source "${_docker_lib}" && declare -F shekel_prod_db_container >/dev/null; }; then
+    echo "ERROR: cannot load ${_docker_lib}, or it lacks shekel_prod_db_container;" \
+        "it must come from this script's revision." >&2
+    exit 1
+fi
+PROD_DB_CONTAINER="$(shekel_prod_db_container)"
+
 OUTPUT_DIR="${REPO_ROOT}/deploy/postgres"
 DAYS="825"
-CN="shekel-prod-db"
+CN="${PROD_DB_CONTAINER}"
 # postgres:16-alpine ships the postgres user at uid 70 (musl
 # convention).  The base docker-compose.yml pins ``user: postgres``
 # on the db service so the postgres process runs as uid 70 even
@@ -96,7 +110,7 @@ deployment (audit finding F-154 / Commit C-37).
 Options:
     --output-dir DIR    Output directory (default: deploy/postgres)
     --days N            Certificate validity in days (default: 825)
-    --cn HOSTNAME       Certificate Common Name (default: shekel-prod-db)
+    --cn HOSTNAME       Certificate Common Name (default: ${PROD_DB_CONTAINER})
     --postgres-uid UID  uid to own the key file (default: 70)
     --postgres-gid GID  gid to own the key file (default: 70)
     --force             Overwrite existing cert/key without prompting
@@ -106,7 +120,7 @@ Output files (under --output-dir):
     server.crt          Self-signed cert, mode 0644 owned by root
     server.key          RSA-2048 private key, mode 0600 owned by uid 70
 
-The output files are bind-mounted read-only into shekel-prod-db at
+The output files are bind-mounted read-only into ${PROD_DB_CONTAINER} at
 /etc/postgresql/certs/.  See deploy/docker-compose.prod.yml for the
 volume declarations and the matching ssl_cert_file / ssl_key_file
 postgres command-line directives.
@@ -301,7 +315,7 @@ generate_cert_and_key() {
         -keyout "${key_path}" \
         -out "${cert_path}" \
         -subj "/CN=${CN}" \
-        -addext "subjectAltName=DNS:${CN},DNS:db,DNS:shekel-prod-db,DNS:localhost" \
+        -addext "subjectAltName=DNS:${CN},DNS:db,DNS:${PROD_DB_CONTAINER},DNS:localhost" \
         -addext "keyUsage=digitalSignature,keyEncipherment" \
         -addext "extendedKeyUsage=serverAuth"
 

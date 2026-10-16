@@ -630,7 +630,7 @@ class TestNoDumpNoDeploy:
         """docker cannot inspect it at all: not running, so no deploy.
 
         Plan step balance:X-dm: the running-check is ``container_running``
-        in ``scripts/_container_lib.sh`` now (ruling R-BAL254), and a failed
+        in ``scripts/_docker_lib.sh`` now (ruling R-BAL254), and a failed
         inspect is its NO, as the replaced ``| grep -q true`` read it.
         """
         result = stack.run(db_inspect_rc="1", **_MIGRATION_BEARING)
@@ -1386,14 +1386,40 @@ class TestTheLatestTagResolvesToItsFirstDigest:
         assert stack.pin == _OLD, _said(result, calls)
         assert stack.dumps == [], _said(result, calls)
 
+    def test_an_over_long_first_digest_is_refused_not_cut(self, stack):
+        """A RepoDigest one hex digit too long is no digest: refused.
+
+        Plan step balance:X-do: the leftmost match once read its first 64
+        digits as the digest, so a malformed answer deployed a digest the
+        registry never named.  A later well-formed line is not searched for.
+        """
+        result = stack.run(
+            pull_latest=True,
+            repo_digests=(
+                f"ghcr.io/saltyreformed/shekel@{_NEW}0\n"
+                f"ghcr.io/saltyreformed/shekel@{_NEW}\n"
+            ),
+            **_NO_MIGRATIONS,
+        )
+        calls = stack.invocations
+        assert result.returncode == 1, _said(result, calls)
+        assert (
+            "could not resolve digest for ghcr.io/saltyreformed/shekel:latest"
+            in result.stdout + result.stderr
+        ), _said(result, calls)
+        assert stack.pin == _OLD, _said(result, calls)
+        assert stack.dumps == [], _said(result, calls)
+
 
 class TestTheRunningCheckIsReadFromTheScriptsCheckout:
     """Ruling R-BAL254: one running-check, found beside the script's checkout.
 
-    ``scripts/_container_lib.sh`` holds it for this script and the backup
-    scripts alike.  Production runs ``/usr/local/bin/shekel-deploy``, a
-    chain of symlinks into the repository, so the script finds the helper
-    through ``readlink -f`` of itself.  Every other test here runs the
+    ``scripts/_docker_lib.sh`` holds it for this script and the backup
+    scripts alike (named ``_container_lib.sh`` until plan step
+    balance:X-do gave it the digest's shape and the containers' names).
+    Production runs ``/usr/local/bin/shekel-deploy``, a chain of symlinks
+    into the repository, so the script finds the helper through
+    ``readlink -f`` of itself.  Every other test here runs the
     repository's copy in place, which is that path's end; these pin the
     chain that starts it, and what a copy without the helper does.
     """
@@ -1439,7 +1465,7 @@ class TestTheRunningCheckIsReadFromTheScriptsCheckout:
         assert result.stdout == "", _said(result, calls)
         assert (
             f"ERROR: {copy} cannot load "
-            f"{copy.parent}/../scripts/_container_lib.sh" in result.stderr
+            f"{copy.parent}/../scripts/_docker_lib.sh" in result.stderr
         ), _said(result, calls)
         assert calls == [], (
             f"the script ran docker before stopping.  {_said(result, calls)}"
@@ -1451,13 +1477,92 @@ class TestTheRunningCheckIsReadFromTheScriptsCheckout:
         copy = tmp_path / "carried" / "deploy" / "shekel-deploy.sh"
         copy.parent.mkdir(parents=True)
         shutil.copy2(_DEPLOY_SCRIPT, copy)
-        helper = copy.parents[1] / "scripts" / "_container_lib.sh"
+        helper = copy.parents[1] / "scripts" / "_docker_lib.sh"
         helper.parent.mkdir()
-        shutil.copy2(_REPO_ROOT / "scripts" / "_container_lib.sh", helper)
+        shutil.copy2(_REPO_ROOT / "scripts" / "_docker_lib.sh", helper)
         result = stack.run(script=copy, health="healthy", **_NO_MIGRATIONS)
         calls = stack.invocations
         assert result.returncode == 0, _said(result, calls)
         assert stack.pin == _NEW, _said(result, calls)
+
+    def test_a_copy_beside_a_helper_lacking_a_function_stops_before_touching_anything(
+        self, stack, tmp_path,
+    ):
+        """A helper from another revision: refused at load, naming the file.
+
+        Plan step balance:X-do, finding BAL-625.  The helper here is the
+        one plan step balance:X-dm wrote, ``container_running`` alone, so
+        every other function the script reads is missing.  Without the load
+        check the run would reach ``image_digest_or_empty`` (or, for a copy
+        lacking ``container_running``, the dump's running-check, where
+        "command not found" read as "not running"); with it, nothing runs.
+        """
+        copy = tmp_path / "stale" / "deploy" / "shekel-deploy.sh"
+        copy.parent.mkdir(parents=True)
+        shutil.copy2(_DEPLOY_SCRIPT, copy)
+        helper = copy.parents[1] / "scripts" / "_docker_lib.sh"
+        helper.parent.mkdir()
+        helper.write_text(textwrap.dedent("""\
+            container_running() {
+                local container="$1" running
+                running=$(docker inspect --format '{{.State.Running}}' \\
+                    "${container}" 2>/dev/null) || return 1
+                [ "${running}" = true ]
+            }
+            """), encoding="utf-8")
+        result = stack.run(script=copy, health="healthy", **_NO_MIGRATIONS)
+        calls = stack.invocations
+        assert result.returncode == 1, _said(result, calls)
+        assert result.stdout == "", _said(result, calls)
+        assert (
+            f"ERROR: {copy} cannot load "
+            f"{copy.parent}/../scripts/_docker_lib.sh,\n"
+            f"   or it lacks a function this script reads" in result.stderr
+        ), _said(result, calls)
+        assert calls == [], (
+            f"the script ran docker before stopping.  {_said(result, calls)}"
+        )
+        assert stack.pin == _OLD, _said(result, calls)
+
+
+class TestADigestArgumentIsReadWhole:
+    """A digest argument is refused at parse unless the WHOLE of it is one.
+
+    Plan step balance:X-do, finding BAL-623: the argument matched only the
+    prefix ``sha256:*`` while the current pin was checked whole, so a
+    malformed one passed the parse and failed later at ``docker pull``.
+    Both read the shared helper's one shape now.
+    """
+
+    @pytest.mark.parametrize("bad", [
+        "sha256:", f"sha256:{'b' * 63}", f"{_NEW}0", f"sha256:{'B' * 64}",
+        "b" * 64, "latest",
+    ], ids=["bare-prefix", "one-short", "one-long", "upper-case",
+            "no-algorithm", "not-a-digest"])
+    def test_a_malformed_digest_is_refused_before_anything_runs(
+        self, stack, bad,
+    ):
+        """Exit 2, the argument named, no docker call, the pin untouched."""
+        result = stack.run(args=["--no-verify", bad], **_NO_MIGRATIONS)
+        calls = stack.invocations
+        assert result.returncode == 2, _said(result, calls)
+        assert (
+            f"ERROR: unknown argument, and not an image digest: {bad}"
+            in result.stderr
+        ), _said(result, calls)
+        assert calls == [], _said(result, calls)
+        assert stack.pin == _OLD, _said(result, calls)
+        assert stack.dumps == [], _said(result, calls)
+
+    def test_a_second_whole_digest_is_still_refused(self, stack):
+        """Two whole digests: the parse's other refusal, unchanged."""
+        result = stack.run(args=["--no-verify", _NEW, _OLD], **_NO_MIGRATIONS)
+        calls = stack.invocations
+        assert result.returncode == 2, _said(result, calls)
+        assert "more than one digest argument given" in result.stderr, (
+            _said(result, calls)
+        )
+        assert calls == [], _said(result, calls)
 
 
 class TestTheDowngradeCaseTheOldDesignCalledSAFE:

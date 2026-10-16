@@ -40,11 +40,27 @@
 
 set -euo pipefail
 
+# The docker facts the shell scripts share -- an image digest's shape, the
+# production app container's name -- have one home beside this script (plan
+# step balance:X-do).  A copy of it lacking a function read below is refused
+# here, before anything is pulled, built or restarted.
+_docker_lib="$(dirname "${BASH_SOURCE[0]}")/_docker_lib.sh"
+# shellcheck source=_docker_lib.sh
+if ! {
+    source "${_docker_lib}" \
+        && declare -F image_digest_or_empty shekel_prod_app_container >/dev/null
+}; then
+    echo "ERROR: cannot load ${_docker_lib}, or it lacks a function this script" \
+        "reads (image_digest_or_empty, shekel_prod_app_container).  It must" \
+        "come from this script's revision." >&2
+    exit 1
+fi
+
 # ── Configuration ────────────────────────────────────────────────
 # All values can be overridden via environment variables.
 
 DEPLOY_DIR="${DEPLOY_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
-APP_CONTAINER="${APP_CONTAINER:-shekel-prod-app}"
+APP_CONTAINER="${APP_CONTAINER:-$(shekel_prod_app_container)}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
 NGINX_PORT="${NGINX_PORT:-80}"
@@ -95,6 +111,8 @@ log() {
 }
 
 usage() {
+    local app_container_default
+    app_container_default=$(shekel_prod_app_container)
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
@@ -124,7 +142,7 @@ Options:
 
 Environment Variables:
     DEPLOY_DIR          Repository root directory (default: script parent dir)
-    APP_CONTAINER       App container name (default: shekel-prod-app)
+    APP_CONTAINER       App container name (default: ${app_container_default})
     HEALTH_TIMEOUT      Health check timeout in seconds (default: 60)
     HEALTH_INTERVAL     Health check retry interval in seconds (default: 5)
     NGINX_PORT          Nginx host port for health check URL (default: 80)
@@ -271,23 +289,27 @@ cosign_verifier_key_present() {
 }
 
 cosign_resolve_digest() {
-    # Print the local image's digest (sha256:...) to stdout, or
-    # empty on failure.  ``docker inspect`` reads the image's
-    # RepoDigests when present (i.e. after a push); for a freshly
-    # built local image, .Id is the manifest digest the local store
-    # assigned and is what cosign will sign.
+    # Print the local image's ID (sha256:...) to stdout, or empty on
+    # failure.  ``docker inspect`` reads ``{{.Id}}`` only, never the
+    # image's RepoDigests; the sign and verify steps below pass that ID
+    # to cosign as ``${IMAGE_REF}@<ID>``.
     #
     # The first line by parameter expansion, not `| head -n 1` (plan step
     # balance:X-dm): no reader can leave the pipe early, and `|| true`
     # makes a failed inspect EMPTY here by construction, not because the
     # callers' command substitution happens to run without errexit.
-    local digest
-    digest=$(docker inspect --format='{{.Id}}' "${IMAGE_REF}" 2>/dev/null || true)
-    digest=${digest%%$'\n'*}
-    # Normalise to bare ``sha256:...`` (docker may print the digest
-    # under .Id without the algorithm prefix on some versions).
-    if [ -n "$digest" ] && [[ "$digest" != sha256:* ]]; then
-        digest="sha256:${digest}"
+    #
+    # The answer is a WHOLE digest or empty (plan step balance:X-do, finding
+    # BAL-623), as the shared helper spells the shape: docker may print the
+    # ID without its algorithm on some versions, so a bare one is read with
+    # the helper's IMAGE_DIGEST_PREFIX put back, and an ID that is still not
+    # a whole digest answers empty.
+    local id digest
+    id=$(docker inspect --format='{{.Id}}' "${IMAGE_REF}" 2>/dev/null || true)
+    id=${id%%$'\n'*}
+    digest=$(image_digest_or_empty "$id")
+    if [ -z "$digest" ]; then
+        digest=$(image_digest_or_empty "${IMAGE_DIGEST_PREFIX}${id}")
     fi
     echo "$digest"
 }

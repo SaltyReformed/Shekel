@@ -7,15 +7,20 @@ absent because ``grep -q`` left its pipe while ``printf`` was still writing
 (finding BAL-618).  The same shape sat in the scripts graded here, none with
 a test until now:
 
-* ``scripts/_container_lib.sh``'s ``container_running``, the shell scripts'
+* ``scripts/_docker_lib.sh``'s ``container_running``, the shell scripts'
   one home of "is this container running?", sourced by
   ``scripts/_backup_lib.sh`` and by the deploy script (whose own module
-  grades its side);
+  grades its side) -- and, since plan step **balance:X-do**, its one
+  spelling of an image digest's shape (finding **BAL-623**), which the
+  reconcile and self-hosted deploy readers below now read;
 * ``scripts/restore.sh``'s ``start_app``, whose wait for the app container
   asks it through that same check;
 * ``scripts/reconcile_prod_to_canonical.sh``'s ``extract_env_value`` and
   ``compose_image_digest``;
-* ``scripts/deploy.sh``'s ``cosign_resolve_digest``.
+* ``scripts/deploy.sh``'s ``cosign_resolve_digest``;
+* since plan step balance:X-do, every script that reads the lib: each
+  production container default it takes, and its refusal of a lib lacking
+  any function it reads.
 
 **Neither the reconcile script nor the restore script is run here.**  One
 writes production's ``/opt/docker/shekel`` (a hardcoded ``PROD_ROOT``), the
@@ -29,6 +34,7 @@ tests grade the meaning, not a race.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import textwrap
 from pathlib import Path
@@ -36,7 +42,7 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_CONTAINER_LIB = _REPO_ROOT / "scripts" / "_container_lib.sh"
+_DOCKER_LIB = _REPO_ROOT / "scripts" / "_docker_lib.sh"
 _BACKUP_LIB = _REPO_ROOT / "scripts" / "_backup_lib.sh"
 _RECONCILE = _REPO_ROOT / "scripts" / "reconcile_prod_to_canonical.sh"
 _RESTORE = _REPO_ROOT / "scripts" / "restore.sh"
@@ -143,7 +149,7 @@ class TestTheRunningCheckHasOneHome:
         log = _fake_docker(tmp_path / "bin", stdout=answer, status=status)
         result = _bash(
             'source "$1"; container_running "$2" || exit "$?"',
-            str(_CONTAINER_LIB), "probe-db", path_prefix=tmp_path / "bin",
+            str(_DOCKER_LIB), "probe-db", path_prefix=tmp_path / "bin",
         )
         assert result.returncode == expected, result.stderr
         assert log.read_text(encoding="utf-8").splitlines() == [
@@ -398,9 +404,10 @@ def _compose_image_digest(compose_text: str | None, tmp_path: Path,
             compose_text, encoding="utf-8",
         )
     return _bash(
-        'PROD_ROOT="$1"; eval "$2"; digest=$(compose_image_digest); '
-        'printf "%s" "$digest"',
+        'source "$3"; PROD_ROOT="$1"; eval "$2"; '
+        'digest=$(compose_image_digest); printf "%s" "$digest"',
         str(tmp_path), _function_text(_RECONCILE, "compose_image_digest"),
+        str(_DOCKER_LIB),
     )
 
 
@@ -426,14 +433,24 @@ class TestReconcileFindsTheLegacyInlineDigest:
                 _DIGEST_B,
             ),
             ("    image: ghcr.io/saltyreformed/shekel:latest\n", ""),
+            (
+                f"    image: ghcr.io/saltyreformed/shekel@{_DIGEST_B}0\n"
+                f"    image: ghcr.io/saltyreformed/shekel@{_DIGEST_C}\n",
+                "",
+            ),
         ],
         ids=[
             "not-the-postgres-pin", "first-shekel-line-with-a-digest",
-            "leftmost-on-its-line", "none",
+            "leftmost-on-its-line", "none", "an-over-long-pin-is-not-cut",
         ],
     )
     def test_it_prints_the_digest(self, tmp_path, compose, digest):
-        """Postgres's pin is never it; the first shekel digest is."""
+        """Postgres's pin is never it; the first shekel digest is.
+
+        A pin one hex digit too long is no digest, and is not cut to 64 into
+        one: the answer is empty, so the caller's die runs.  The search does
+        not go past it to a later line (plan step balance:X-do).
+        """
         result = _compose_image_digest(compose, tmp_path)
         assert result.returncode == 0, result.stderr
         assert result.stdout == digest, result.stdout
@@ -469,10 +486,475 @@ class TestTheSelfHostedDeployResolvesItsDigest:
         """A failed inspect is EMPTY with status 0, which the callers refuse."""
         _fake_docker(tmp_path / "bin", stdout=answer, status=status)
         result = _bash(
-            'IMAGE_REF=probe:latest; eval "$1"; '
+            'source "$2"; IMAGE_REF=probe:latest; eval "$1"; '
             'digest=$(cosign_resolve_digest); printf "%s" "$digest"',
             _function_text(_SELF_HOSTED_DEPLOY, "cosign_resolve_digest"),
-            path_prefix=tmp_path / "bin",
+            str(_DOCKER_LIB), path_prefix=tmp_path / "bin",
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout == digest, result.stdout
+
+    def test_an_id_that_is_no_digest_resolves_to_nothing(self, tmp_path):
+        """Not a whole digest, with or without its algorithm: EMPTY, which both callers refuse.
+
+        Plan step balance:X-do, finding BAL-623: the bare-hex normaliser
+        tested only the ``sha256:`` prefix, so a short or padded ID went to
+        cosign as a digest.  The shared helper's shape now decides.
+        """
+        for answer in (f"sha256:{'a' * 63}\n", f"{'a' * 63}\n",
+                       f"{_DIGEST_A}0\n", f"sha256:{'A' * 64}\n"):
+            _fake_docker(tmp_path / "bin", stdout=answer, status=0)
+            result = _bash(
+                'source "$2"; IMAGE_REF=probe:latest; eval "$1"; '
+                'digest=$(cosign_resolve_digest); printf "%s" "$digest"',
+                _function_text(_SELF_HOSTED_DEPLOY, "cosign_resolve_digest"),
+                str(_DOCKER_LIB), path_prefix=tmp_path / "bin",
+            )
+            assert result.returncode == 0, result.stderr
+            assert result.stdout == "", (answer, result.stdout)
+
+
+class TestTheDigestShapeHasOneHome:
+    """``scripts/_docker_lib.sh``: the one spelling of an image digest's shape.
+
+    Plan step balance:X-do, finding BAL-623: five spellings in three
+    scripts, two of them prefix-only.  Both readers PRINT their answer or
+    nothing and return 0, so a caller assigns it and refuses an empty one;
+    every run here is under ``set -euo pipefail``, so a non-zero status would
+    fail the run.
+    """
+
+    @pytest.mark.parametrize(
+        ("value", "digest"),
+        [
+            (_DIGEST_A, _DIGEST_A),
+            ("sha256:", ""),
+            (f"sha256:{'a' * 63}", ""),
+            (f"{_DIGEST_A}0", ""),
+            (f"sha256:{'A' * 64}", ""),
+            ("a" * 64, ""),
+            (f"{_DIGEST_A} x", ""),
+            (f"x{_DIGEST_A}", ""),
+            ("", ""),
+        ],
+        ids=["whole", "bare-prefix", "one-short", "one-long", "upper-case",
+             "no-algorithm", "text-after", "text-before", "empty"],
+    )
+    def test_image_digest_or_empty_reads_only_a_whole_digest(
+        self, value, digest,
+    ):
+        """The whole value is a digest, or the answer is empty."""
+        result = _bash(
+            'source "$1"; out=$(image_digest_or_empty "$2"); printf "%s" "$out"',
+            str(_DOCKER_LIB), value,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == digest, result.stdout
+
+    @pytest.mark.parametrize(
+        ("text", "digest"),
+        [
+            (f"r@{_DIGEST_A}\nr@{_DIGEST_B}\n", _DIGEST_A),
+            (f"image@{_DIGEST_B} # was {_DIGEST_C}", _DIGEST_B),
+            (f"r:latest\nr@sha256:{'a' * 12}\nr@{_DIGEST_C}\n", ""),
+            ("r:latest\n", ""),
+            ("", ""),
+            (f"r@{_DIGEST_A}0\nr@{_DIGEST_B}\n", ""),
+            (f"r@{_DIGEST_A}{'0' * 40} r@{_DIGEST_B}", ""),
+            (f"r@{_DIGEST_A}F r@{_DIGEST_B}", ""),
+            (f"r@{_DIGEST_A}_x r@{_DIGEST_B}", ""),
+            (f"r@{_DIGEST_A}-x r@{_DIGEST_B}", ""),
+            (f"r@{_DIGEST_A}.0 r@{_DIGEST_B}", ""),
+            (f'image: "r@{_DIGEST_A}"\n', _DIGEST_A),
+            (f"image: 'r@{_DIGEST_A}' # pinned\n", _DIGEST_A),
+        ],
+        ids=["first-line", "leftmost-on-its-line", "a-short-first-one-is-empty",
+             "none", "empty", "one-long-is-empty-not-cut",
+             "a-long-run-is-empty-not-cut", "an-upper-case-run-on-is-empty",
+             "an-underscore-run-on-is-empty", "a-hyphen-run-on-is-empty",
+             "a-dot-run-on-is-empty", "a-double-quoted-one-is-read",
+             "a-single-quoted-one-is-read"],
+    )
+    def test_first_image_digest_reads_the_leftmost_whole_one(
+        self, text, digest,
+    ):
+        """The first ``sha256:`` token decides: its digest, or nothing.
+
+        The token runs on through every image-reference character, so one
+        too short, too long, or run on by ``_``, ``-`` or ``.`` answers EMPTY
+        rather than being cut to 64 digits or replaced by a later digest.  A
+        digest ended by a quote, a space or the line's end is read whole.
+        """
+        result = _bash(
+            'source "$1"; out=$(first_image_digest "$2"); printf "%s" "$out"',
+            str(_DOCKER_LIB), text,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == digest, result.stdout
+
+
+def _carried_image_digest(env_text: str | None, compose_text: str | None,
+                          tmp_path: Path) -> subprocess.CompletedProcess:
+    """Run reconcile's ``carried_image_digest`` against a temporary PROD_ROOT.
+
+    Args:
+        env_text: The ``.env`` to write, or ``None`` for no file.
+        compose_text: The ``docker-compose.yml`` to write, or ``None``.
+        tmp_path: The temporary ``PROD_ROOT``.
+
+    Returns:
+        The completed process.
+    """
+    if env_text is not None:
+        (tmp_path / ".env").write_text(env_text, encoding="utf-8")
+    if compose_text is not None:
+        (tmp_path / "docker-compose.yml").write_text(
+            compose_text, encoding="utf-8",
+        )
+    return _bash(
+        'source "$1"; PROD_ROOT="$2"; eval "$3"; eval "$4"; eval "$5"; '
+        'eval "$6"; digest=$(carried_image_digest); printf "%s" "$digest"',
+        str(_DOCKER_LIB), str(tmp_path),
+        _function_text(_RECONCILE, "die"),
+        _function_text(_RECONCILE, "extract_env_value"),
+        _function_text(_RECONCILE, "compose_image_digest"),
+        _function_text(_RECONCILE, "carried_image_digest"),
+    )
+
+
+class TestReconcileCarriesOnlyAWholeDigest:
+    """``carried_image_digest``: the pin written into the new ``.env``.
+
+    Plan step balance:X-do: the value read from ``.env`` was written back
+    unchecked, though shekel-deploy refuses any pin but a whole digest.  It
+    is refused now, before step 1 writes anything, and the run ends there.
+    """
+
+    def test_it_is_checked_before_step_1_writes_anything(self):
+        """The digest is read before the first step, so a refusal changes nothing.
+
+        Steps 1-3 write the certificate, the secrets directory and four secret
+        files, and none of them writes ``.env`` or the compose file, so the
+        value read first is the value step 4 would have read.  Found after
+        them, a malformed pin left all of that written.
+        """
+        lines = _RECONCILE.read_text(encoding="utf-8").splitlines()
+        checked = lines.index("current_digest=$(carried_image_digest)")
+        first_step = lines.index('log "Step 1: Postgres TLS cert"')
+        assert checked < first_step, (checked, first_step)
+
+    def test_the_env_pin_is_carried_when_it_is_whole(self, tmp_path):
+        """A whole pin in ``.env``: carried, the compose file never needed."""
+        result = _carried_image_digest(
+            f"SHEKEL_IMAGE_DIGEST={_DIGEST_A}\n", None, tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == _DIGEST_A
+
+    def test_the_legacy_inline_digest_is_carried_without_an_env_pin(
+        self, tmp_path,
+    ):
+        """No ``.env`` pin: the shekel image line's digest."""
+        result = _carried_image_digest(
+            "OTHER=1\n",
+            f"    image: ghcr.io/saltyreformed/shekel@{_DIGEST_B}\n", tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == _DIGEST_B
+
+    @pytest.mark.parametrize(
+        "pin", ["sha256:abc", f"{_DIGEST_A}0", "latest", f"sha256:{'A' * 64}"],
+        ids=["short", "too-long", "not-a-digest", "upper-case"],
+    )
+    def test_a_pin_that_is_no_whole_digest_ends_the_run(self, tmp_path, pin):
+        """Refused, naming it -- even with a good inline digest to fall back on."""
+        result = _carried_image_digest(
+            f"SHEKEL_IMAGE_DIGEST={pin}\n",
+            f"    image: ghcr.io/saltyreformed/shekel@{_DIGEST_B}\n", tmp_path,
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.stdout == ""
+        assert (
+            f"the image digest to carry forward is not sha256:<64 hex digits> "
+            f"(got '{pin}')" in result.stderr
+        ), result.stderr
+
+    def test_no_digest_anywhere_ends_the_run(self, tmp_path):
+        """Neither place holds one: the refusal names both."""
+        result = _carried_image_digest(
+            "OTHER=1\n", "    image: ghcr.io/saltyreformed/shekel:latest\n",
+            tmp_path,
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.stdout == ""
+        assert "could not determine the image digest" in result.stderr, (
+            result.stderr
+        )
+
+
+#: The two production container defaults (plan step balance:X-do, the shell
+#: half of finding BAL-644).
+_APP_DEFAULT = "shekel_prod_app_container"
+_DB_DEFAULT = "shekel_prod_db_container"
+
+#: Every assignment of a container name from the lib: the script, its
+#: variable, and which container that variable names.  The pairing is the
+#: specification, not a copy of a name.
+_DEFAULT_SITES = (
+    ("deploy/shekel-deploy.sh", "CONTAINER_NAME", _APP_DEFAULT),
+    ("deploy/shekel-deploy.sh", "DB_CONTAINER", _DB_DEFAULT),
+    ("deploy/verify_prod_deploy.sh", "CONTAINER", _APP_DEFAULT),
+    ("scripts/deploy.sh", "APP_CONTAINER", _APP_DEFAULT),
+    ("scripts/deploy.sh", "app_container_default", _APP_DEFAULT),
+    ("scripts/backup.sh", "DB_CONTAINER", _DB_DEFAULT),
+    ("scripts/restore.sh", "DB_CONTAINER", _DB_DEFAULT),
+    ("scripts/restore.sh", "APP_CONTAINER", _APP_DEFAULT),
+    ("scripts/verify_backup.sh", "DB_CONTAINER", _DB_DEFAULT),
+    ("scripts/verify_backup.sh", "APP_CONTAINER", _APP_DEFAULT),
+    ("scripts/generate_pg_cert.sh", "PROD_DB_CONTAINER", _DB_DEFAULT),
+    ("scripts/reconcile_prod_to_canonical.sh", "app_container", _APP_DEFAULT),
+)
+
+#: Every override a default stands behind, unset before each default is read.
+_OVERRIDES = "SHEKEL_CONTAINER_NAME SHEKEL_DB_CONTAINER APP_CONTAINER DB_CONTAINER"
+
+
+def _shell_scripts() -> list[Path]:
+    """Return every shell script under ``deploy/`` and ``scripts/`` but the lib."""
+    return sorted(
+        path for folder in ("deploy", "scripts")
+        for path in (_REPO_ROOT / folder).glob("*.sh") if path != _DOCKER_LIB
+    )
+
+
+def _lib_functions() -> list[str]:
+    """Return the names of the functions ``scripts/_docker_lib.sh`` defines."""
+    return re.findall(
+        r"^(\w+)\(\) \{", _DOCKER_LIB.read_text(encoding="utf-8"), flags=re.M,
+    )
+
+
+def _load_block(lines: list[str]) -> tuple[int, int] | None:
+    """Return the first and last line index of a script's lib-load block.
+
+    The block opens at the top-level ``_docker_lib=`` assignment and closes
+    at the first ``fi`` alone on a line after it, which is how every loader
+    writes it (shfmt holds the layout).
+
+    Args:
+        lines: The script's lines.
+
+    Returns:
+        The block's span, or ``None`` when the script loads no lib.
+    """
+    starts = [i for i, line in enumerate(lines) if line.startswith("_docker_lib=")]
+    if not starts:
+        return None
+    assert len(starts) == 1, f"two lib loads: lines {starts}"
+    return starts[0], lines.index("fi", starts[0])
+
+
+def _lib_calls(script: Path) -> set[str]:
+    """Return the lib functions *script* names outside comments and its load.
+
+    Args:
+        script: The script to read.
+
+    Returns:
+        The names, each a whole word on some line that is not a comment and
+        not inside the script's own load block (whose refusal lists them).
+    """
+    lines = script.read_text(encoding="utf-8").splitlines()
+    span = _load_block(lines) or (-1, -1)
+    body = [
+        line for i, line in enumerate(lines)
+        if not span[0] <= i <= span[1] and not line.lstrip().startswith("#")
+    ]
+    return {
+        name for name in _lib_functions()
+        if any(re.search(rf"\b{name}\b", line) for line in body)
+    }
+
+
+def _loaders() -> list[Path]:
+    """Return every script that loads the lib itself."""
+    return [
+        script for script in _shell_scripts()
+        if _load_block(script.read_text(encoding="utf-8").splitlines())
+    ]
+
+
+def _backup_family() -> list[Path]:
+    """Return the scripts that reach the lib through ``scripts/_backup_lib.sh``."""
+    return [
+        script for script in _shell_scripts()
+        if re.search(r"^\s*source .*_backup_lib\.sh",
+                     script.read_text(encoding="utf-8"), flags=re.M)
+    ]
+
+
+def _reads(loader: Path) -> list[str]:
+    """Return the lib functions *loader*'s load must find, sorted.
+
+    The backup lib loads for its whole family, so it must find what any of
+    them calls as well as what it calls itself.
+
+    Args:
+        loader: A script that loads the lib.
+
+    Returns:
+        The names.
+    """
+    names = _lib_calls(loader)
+    if loader == _BACKUP_LIB:
+        for member in _backup_family():
+            names |= _lib_calls(member)
+    return sorted(names)
+
+
+def _run_load_block(loader: Path, lib: Path) -> subprocess.CompletedProcess:
+    """Run *loader*'s lib-load block alone, aimed at *lib*, then ``echo loaded``.
+
+    The block's first line is re-aimed at *lib*, and every function the
+    script defines ABOVE the block is defined first, verbatim, so a refusal
+    calling one the script has not yet defined fails as it would for real.
+    Only ``_self``, which two refusals print and which the scripts set from
+    ``readlink -f`` of themselves, is a stub.
+
+    Args:
+        loader: The script whose block runs.
+        lib: The lib it loads.
+
+    Returns:
+        The completed process.
+    """
+    lines = loader.read_text(encoding="utf-8").splitlines()
+    start, end = _load_block(lines)
+    defined_above = re.findall(
+        r"^\w+\(\) \{(?:.*\}$|(?s:\n.*?^\}$))",
+        "\n".join(lines[:start]), flags=re.M,
+    )
+    return _bash(
+        "\n".join(defined_above) + "\n_self=probe\n"
+        + "\n".join(['_docker_lib="$1"', *lines[start + 1:end + 1]])
+        + "\necho loaded",
+        str(lib),
+    )
+
+
+class TestEachDefaultIsTheLibsOwnName:
+    """With its override unset, every script names the container the lib names.
+
+    Plan step balance:X-do, the shell half of finding BAL-644, and its
+    review's M3: the deploy behaviour tests always set both overrides, so no
+    test read a default, and a db default reading the APP's function would
+    have aimed every nightly backup at the app.  Each site's assignment is
+    run alone with the lib loaded, as ``_function_text`` runs a function:
+    the scripts that drop or write production are never run here.
+
+    **The known limit:** the expected name is the lib's own answer, so a
+    wrong NAME in the lib itself passes here.  No test can see that without
+    a second spelling of the name to compare against, which is what plan
+    step balance:X-ec removes.  Until then a wrong db name that names NO
+    container stops a deploy, its dry run included, at the migration
+    pre-flight, which reads the stamp through it before anything is written;
+    one that names ANOTHER postgres on the host holding the same user and
+    database (``shekel-dev-db`` does) passes the pre-flight, and the deploy's
+    dump and the nightly backup then read that database.  A wrong app name
+    is NOT caught before the write: the deploy rewrites the pin and
+    recreates, finds no container by that name to stop or to report
+    healthy, and takes its failure path with the stamp read no longer
+    guaranteed final (ruling R-BAL115).
+    """
+
+    def test_every_default_site_is_graded(self):
+        """A new default read from the lib must join the table.
+
+        The census reads in ONE direction: it finds an ``X=...`` assignment,
+        top-level or indented, that calls a name function.  A default spelled
+        any other way (``local X=...``, through ``declare``, or as a literal
+        name) is invisible to it.  The ledger's census markers on BAL-644 count a
+        re-spelled literal in ``scripts/*.sh`` and a ``:-`` default of one in
+        ``deploy/*.sh``, not a bare literal there; a site reaching the lib in
+        another form is wiring no test here checks.
+        """
+        found = {
+            (str(script.relative_to(_REPO_ROOT)), match)
+            for script in _shell_scripts()
+            for match in re.findall(
+                r"^\s*(\w+)=.*\bshekel_prod_(?:app|db)_container\b",
+                script.read_text(encoding="utf-8"), flags=re.M,
+            )
+        }
+        assert found == {(script, variable) for script, variable, _ in _DEFAULT_SITES}
+
+    @pytest.mark.parametrize(
+        ("script", "variable", "function"), _DEFAULT_SITES,
+        ids=[f"{script.split('/')[-1]}-{variable}" for script, variable, _ in _DEFAULT_SITES],
+    )
+    def test_with_no_override_it_is_the_lib_s_name(self, script, variable, function):
+        """The assignment, run alone, holds what the lib's function prints."""
+        lines = re.findall(
+            rf"^\s*{variable}=.*$",
+            (_REPO_ROOT / script).read_text(encoding="utf-8"), flags=re.M,
+        )
+        assert len(lines) == 1, lines
+        expected = _bash('source "$1"; "$2"', str(_DOCKER_LIB), function)
+        assert expected.returncode == 0 and expected.stdout.strip(), expected
+        result = _bash(
+            f'unset {_OVERRIDES}; source "$1"; eval "$2"; printf "%s" "${{!3}}"',
+            str(_DOCKER_LIB), lines[0], variable,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == expected.stdout.rstrip("\n"), result.stdout
+
+
+class TestEachLoaderRefusesALibLackingWhatItReads:
+    """Every script that loads the lib refuses one lacking any function it reads.
+
+    Plan step balance:X-do, finding BAL-625: a lib without
+    ``container_running`` reached the dump, where "command not found" read
+    as "the database container is not running".  Each loader names the
+    functions it reads with ``declare -F``; this grades those lists name by
+    name against what each script (and, for the backup lib, its family)
+    actually calls, by running each load block alone against a copy of the
+    lib with exactly one function removed.
+    """
+
+    def test_every_script_that_calls_the_lib_loads_it(self):
+        """No script calls a lib function without a load that checks for it."""
+        loaded = set(_loaders()) | set(_backup_family())
+        unchecked = [
+            str(script) for script in _shell_scripts()
+            if _lib_calls(script) and script not in loaded
+        ]
+        assert unchecked == []
+
+    @pytest.mark.parametrize(
+        ("loader", "name"),
+        [(loader, name) for loader in _loaders() for name in _reads(loader)],
+        ids=[
+            f"{loader.name}-{name}"
+            for loader in _loaders() for name in _reads(loader)
+        ],
+    )
+    def test_a_lib_lacking_one_function_is_refused(self, tmp_path, loader, name):
+        """Exit 1 at the load, the lib's path named, nothing after it run."""
+        stale = tmp_path / "_docker_lib.sh"
+        stale.write_text(
+            _DOCKER_LIB.read_text(encoding="utf-8") + f"\nunset -f {name}\n",
+            encoding="utf-8",
+        )
+        result = _run_load_block(loader, stale)
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "loaded" not in result.stdout, result.stdout
+        assert str(stale) in result.stdout + result.stderr, (
+            result.stdout + result.stderr
+        )
+
+    @pytest.mark.parametrize("loader", _loaders(), ids=lambda path: path.name)
+    def test_the_repository_s_lib_loads(self, loader):
+        """The control: the real lib passes every load block."""
+        result = _run_load_block(loader, _DOCKER_LIB)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.stdout.endswith("loaded\n"), result.stdout

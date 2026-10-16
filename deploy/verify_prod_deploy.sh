@@ -28,7 +28,22 @@
 # reviewed and linted like the script whose work it grades.
 set -u
 
-CONTAINER="${SHEKEL_CONTAINER_NAME:-shekel-prod-app}"
+# The production app container's name has one home in the shell scripts,
+# scripts/_docker_lib.sh, read from THIS script's checkout as
+# shekel-deploy.sh reads it (plan step balance:X-do).  A checkout without
+# it, or with one lacking the function, is refused even when
+# SHEKEL_CONTAINER_NAME is set: a broken checkout is reported as one, rather
+# than graded on whichever run happens to name the container.
+_self=$(readlink -f "${BASH_SOURCE[0]}")
+_docker_lib="${_self%/*}/../scripts/_docker_lib.sh"
+# shellcheck source=../scripts/_docker_lib.sh
+if ! { source "$_docker_lib" && declare -F shekel_prod_app_container >/dev/null; }; then
+    echo "FAIL: cannot load ${_docker_lib}, or it lacks shekel_prod_app_container"
+    echo "VERIFY FAILED"
+    exit 1
+fi
+
+CONTAINER="${SHEKEL_CONTAINER_NAME:-$(shekel_prod_app_container)}"
 since="${1:-10m}"
 ok=0
 

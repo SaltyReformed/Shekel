@@ -43,10 +43,88 @@ die() {
     exit 1
 }
 
+# An image digest's shape and the app container's name have one home in the
+# shell scripts (plan step balance:X-do; findings BAL-623 and BAL-644),
+# beside this script.  Loaded before step 1, so a copy lacking a function
+# this script reads is refused before anything in production is written.
+_docker_lib="$(dirname "${BASH_SOURCE[0]}")/_docker_lib.sh"
+# shellcheck source=_docker_lib.sh
+if ! {
+    source "$_docker_lib" \
+        && declare -F image_digest_or_empty first_image_digest \
+            shekel_prod_app_container >/dev/null
+}; then
+    die "cannot load $_docker_lib, or it lacks a function this script reads (image_digest_or_empty, first_image_digest, shekel_prod_app_container); it must come from this script's revision"
+fi
+
 # Sanity: run from repo root.
 [[ -f "$REPO_ROOT/docker-compose.yml" ]] || die "must be invoked from the Shekel repo (cwd=$REPO_ROOT)"
 [[ -f "$REPO_ROOT/deploy/docker-compose.prod.yml" ]] || die "deploy/docker-compose.prod.yml missing"
 [[ -d "$PROD_ROOT" ]] || die "$PROD_ROOT does not exist; production not laid out as expected"
+
+# ── Before step 1: the image digest step 4 carries ────────────────
+# Read and checked here, before anything is written, so a malformed pin
+# ends the run with nothing changed (the exit-1 contract above).  Steps
+# 1-3 write only under $PROD_ROOT/deploy/postgres and $PROD_ROOT/secrets,
+# never .env or docker-compose.yml, so the value read here is the one
+# step 4 would have read (plan step balance:X-do).
+extract_env_value() {
+    # Echo the key's value, or EMPTY when the line is absent -- never a
+    # non-zero status. Under set -e + pipefail a bare grep-miss here used
+    # to kill the whole script mid-run with no diagnostic, AFTER step 3
+    # had already migrated secrets (OPS/SH-12); required keys get their
+    # explicit die at the call sites instead.
+    #
+    # `sed -n '1p'`, not `head -1` (plan step balance:X-dm): sed reads to
+    # the end, so no stage can be killed writing to a reader that left,
+    # which pipefail would report as a failure.  The `|| true` answers
+    # grep's no-match, and also hid that race: cut had printed the value.
+    local key=$1
+    grep -E "^${key}=" "$PROD_ROOT/.env" | sed -n '1p' | cut -d= -f2- || true
+}
+
+# Carry the current image digest forward unchanged -- we are NOT
+# image-bumping as part of this reconciliation. Post-C-36 the digest
+# lives in .env as SHEKEL_IMAGE_DIGEST (the canonical layout this script
+# itself installs); the grep fallback covers only the legacy layout
+# where the digest sat inline on the shekel image line. The original
+# primary pipeline here was dead logic -- grep -oE emits bare digests,
+# so the downstream `grep -A1 saltyreformed` could never match -- and
+# its fallback died under set -e BEFORE the crafted die() could run
+# when nothing matched (OPS/SH-11). NOTE the fallback greps the SHEKEL
+# image line specifically: a bare 'first sha256 in the file' would now
+# match the postgres digest pin.
+compose_image_digest() {
+    # Echo the first digest on a SHEKEL image line of the legacy compose
+    # layout, or EMPTY -- never a non-zero status; the caller's die names
+    # both places it looked.  The lines are read whole (`|| true` answers
+    # grep's no-match and an unreadable file alike), and the digest is the
+    # shared helper's first match in them (plan step balance:X-do), so no
+    # stage is left writing to a reader that already has its line.
+    local image_lines
+    image_lines=$(grep -E 'image:.*saltyreformed/shekel' "$PROD_ROOT/docker-compose.yml" || true)
+    first_image_digest "$image_lines"
+}
+carried_image_digest() {
+    # Echo the digest the new .env carries forward -- .env's
+    # SHEKEL_IMAGE_DIGEST, else the legacy layout's inline one -- or die
+    # naming why there is none.  It must be a WHOLE digest (plan step
+    # balance:X-do): shekel-deploy refuses any other pin, so a malformed one
+    # is refused here, before step 1 writes anything, rather than written
+    # into a .env no deploy will read.  Called in a command substitution, so
+    # its die ends the subshell with the message on stderr, and errexit then
+    # ends the run at the caller's assignment.
+    local digest whole
+    digest=$(extract_env_value SHEKEL_IMAGE_DIGEST)
+    if [[ -z "$digest" ]]; then
+        digest=$(compose_image_digest)
+    fi
+    [[ -n "$digest" ]] || die "could not determine the image digest: no SHEKEL_IMAGE_DIGEST in $PROD_ROOT/.env and no inline digest on the shekel image line of $PROD_ROOT/docker-compose.yml"
+    whole=$(image_digest_or_empty "$digest")
+    [[ -n "$whole" ]] || die "the image digest to carry forward is not sha256:<64 hex digits> (got '$digest'); fix SHEKEL_IMAGE_DIGEST in $PROD_ROOT/.env first"
+    printf '%s\n' "$whole"
+}
+current_digest=$(carried_image_digest)
 
 # ── 1. Generate Postgres TLS cert ─────────────────────────────────
 log "Step 1: Postgres TLS cert"
@@ -71,21 +149,6 @@ chmod 0700 "$PROD_ROOT/secrets"
 
 # ── 3. Migrate four secrets from .env to files ────────────────────
 log "Step 3: migrate secrets to files"
-extract_env_value() {
-    # Echo the key's value, or EMPTY when the line is absent -- never a
-    # non-zero status. Under set -e + pipefail a bare grep-miss here used
-    # to kill the whole script mid-run with no diagnostic, AFTER step 3
-    # had already migrated secrets (OPS/SH-12); required keys get their
-    # explicit die at the call sites instead.
-    #
-    # `sed -n '1p'`, not `head -1` (plan step balance:X-dm): sed reads to
-    # the end, so no stage can be killed writing to a reader that left,
-    # which pipefail would report as a failure.  The `|| true` answers
-    # grep's no-match, and also hid that race: cut had printed the value.
-    local key=$1
-    grep -E "^${key}=" "$PROD_ROOT/.env" | sed -n '1p' | cut -d= -f2- || true
-}
-
 for pair in \
     "SECRET_KEY:secret_key" \
     "POSTGRES_PASSWORD:postgres_password" \
@@ -119,34 +182,10 @@ done
 # ── 4. Rewrite /opt/docker/shekel/.env ────────────────────────────
 log "Step 4: rewrite $PROD_ROOT/.env"
 
-# Carry the current image digest forward unchanged -- we are NOT
-# image-bumping as part of this reconciliation. Post-C-36 the digest
-# lives in .env as SHEKEL_IMAGE_DIGEST (the canonical layout this script
-# itself installs); the grep fallback covers only the legacy layout
-# where the digest sat inline on the shekel image line. The original
-# primary pipeline here was dead logic -- grep -oE emits bare digests,
-# so the downstream `grep -A1 saltyreformed` could never match -- and
-# its fallback died under set -e BEFORE the crafted die() could run
-# when nothing matched (OPS/SH-11). NOTE the fallback greps the SHEKEL
-# image line specifically: a bare 'first sha256 in the file' would now
-# match the postgres digest pin.
-compose_image_digest() {
-    # Echo the first digest on a SHEKEL image line of the legacy compose
-    # layout, or EMPTY -- never a non-zero status; the caller's die names
-    # both places it looked.  Ends in `sed -n '1p'`, not `head -1` (plan
-    # step balance:X-dm), for the reason extract_env_value gives.
-    grep -E 'image:.*saltyreformed/shekel' "$PROD_ROOT/docker-compose.yml" \
-        | grep -oE 'sha256:[0-9a-f]{64}' | sed -n '1p' || true
-}
-current_digest=$(extract_env_value SHEKEL_IMAGE_DIGEST)
-if [[ -z "$current_digest" ]]; then
-    current_digest=$(compose_image_digest)
-fi
-[[ -n "$current_digest" ]] || die "could not determine the image digest: no SHEKEL_IMAGE_DIGEST in $PROD_ROOT/.env and no inline digest on the shekel image line of $PROD_ROOT/docker-compose.yml"
-
 # Carry forward the values that should survive: SHEKEL_REDIS_PASSWORD,
 # SEED_USER_*, GUNICORN_WORKERS, NGINX_PORT, AUDIT_RETENTION_DAYS,
-# LOG_LEVEL, SLOW_REQUEST_THRESHOLD_MS, TOTP_ENCRYPTION_KEY_OLD.
+# LOG_LEVEL, SLOW_REQUEST_THRESHOLD_MS, TOTP_ENCRYPTION_KEY_OLD.  The image
+# digest was read and checked before step 1, as current_digest.
 SHEKEL_REDIS_PASSWORD=$(extract_env_value SHEKEL_REDIS_PASSWORD)
 [[ -n "$SHEKEL_REDIS_PASSWORD" ]] || die "SHEKEL_REDIS_PASSWORD missing in current .env"
 SEED_USER_EMAIL=$(extract_env_value SEED_USER_EMAIL)
@@ -302,6 +341,10 @@ grep -qE '^    read_only: true$' "$snap_dir/merged-config.yml" || die "read_only
 grep -qE '^      shekel-frontend:' "$snap_dir/merged-config.yml" || die "shekel-frontend network not attached in merged config"
 grep -qE '^secrets:$' "$snap_dir/merged-config.yml" || die "secrets block missing in merged config"
 
+# The closing instructions name the app container as the lib spells it,
+# assigned once here and expanded in the heredoc (plan step balance:X-do).
+app_container=$(shekel_prod_app_container)
+
 cat <<EONEXT
 
 ────────────────────────────────────────────────────────────────────
@@ -329,8 +372,8 @@ When ready to recreate the stack:
     # (d) Confirm health.
     docker compose ps
     docker compose logs --tail=80 app
-    docker inspect shekel-prod-app --format '{{.HostConfig.ReadonlyRootfs}}'  # → true
-    docker inspect shekel-prod-app --format '{{.HostConfig.CapDrop}}'         # → [ALL]
+    docker inspect $app_container --format '{{.HostConfig.ReadonlyRootfs}}'  # → true
+    docker inspect $app_container --format '{{.HostConfig.CapDrop}}'         # → [ALL]
     curl -sI https://shekel.saltyreformed.com/login | sed -n '1,5p'            # → 200 + sec headers
 
 Rollback (if anything goes wrong):
