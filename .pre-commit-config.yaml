@@ -191,6 +191,18 @@ repos:
         files: ^(tools/ci/.*\.py|\.github/workflows/.*\.ya?ml)$
         pass_filenames: false
         args: [tools/ci, -c, /dev/null, -q]
+      # The tools packages' hook filters, graded by tools/ci/test_tool_hooks.py
+      # (ci-tests runs it too, beside the rest of tools/ci).  Its verdict moves
+      # with this file, with a module of any tools package a graded package
+      # may import, with .pylintrc and with the shekel_checkers plugins pylint
+      # loads, so an edit to any of them runs it.
+      - id: tool-hooks-tests
+        name: tools packages' hook filters
+        entry: pytest
+        language: system
+        files: ^(\.pre-commit-config\.yaml|\.pylintrc|tools/[^/]+/.*\.py)$
+        pass_filenames: false
+        args: [tools/ci/test_tool_hooks.py, -c, /dev/null, -q]
       # tools/release: what a release carries (step X-cx's L9a).  It reads
       # through tools/ci, tools/quill, tools/plan_gate and the migration
       # parser, so an edit to any of them runs it.  The same 10.00/10 floor and
@@ -219,7 +231,7 @@ repos:
       # each import binds, so an edit there runs both hooks; and pylint reads .pylintrc and loads the
       # shekel_checkers plugins, so an edit to either runs the floor.  `files`
       # is its whole filter: a `types` filter would drop .pylintrc, which is
-      # not a Python file (tools/split/test_hooks.py holds all of it).
+      # not a Python file (tools/ci/test_tool_hooks.py holds all of it).
       - id: pylint-split
         name: pylint tools/split (10.00/10 floor)
         entry: pylint
@@ -237,16 +249,17 @@ repos:
         files: ^tools/(split|ci|testrecord)/.*\.py$
         pass_filenames: false
         args: [tools/split, -c, /dev/null, -q]
-      # tools/testrecord: the per-test recorder's package (ruling
-      # balance:R-BAL303), the one home of the suite wrapper's name, its run
-      # and a test's verdict, which tools/split calls.  The same 10.00/10 floor and the same tests ci.yml
-      # step 4b runs; pylint reads .pylintrc and loads the shekel_checkers
-      # plugins, so an edit to either runs the floor.
+      # tools/testrecord: the per-test recorder (ruling balance:R-BAL303), and
+      # the one home of the suite wrapper's name, its run and a test's
+      # verdict, which tools/split calls.  The same 10.00/10 floor and the same
+      # tests ci.yml step 4b runs.  Its tests import tools/ci, so an edit there
+      # runs both hooks; and pylint reads .pylintrc and loads the
+      # shekel_checkers plugins, so an edit to either runs the floor.
       - id: pylint-testrecord
         name: pylint tools/testrecord (10.00/10 floor)
         entry: pylint
         language: system
-        files: ^(\.pylintrc|tools/(testrecord|pylint/shekel_checkers)/.*\.py)$
+        files: ^(\.pylintrc|tools/(testrecord|ci|pylint/shekel_checkers)/.*\.py)$
         pass_filenames: false
         args:
           - tools/testrecord/
@@ -256,7 +269,7 @@ repos:
         name: tools/testrecord unit tests
         entry: pytest
         language: system
-        files: ^tools/testrecord/.*\.py$
+        files: ^tools/(testrecord|ci)/.*\.py$
         pass_filenames: false
         args: [tools/testrecord, -c, /dev/null, -q]
 

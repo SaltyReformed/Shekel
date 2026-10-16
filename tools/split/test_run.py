@@ -421,6 +421,8 @@ NOT_READERS = {
     "tools/split/test_dynamic.py": "a build/ in a scratch repository",
     "tools/split/test_run.py": "a .env it writes under tmp_path",
     "tools/split/test_split.py": "a build/ in a scratch repository",
+    "tools/testrecord/test_record.py": "a __pycache__ a plain run writes in a sample project "
+                                       "under tmp_path",
 }
 
 #: python-dotenv's readers, by the name a module calls.

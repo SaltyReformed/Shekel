@@ -1,10 +1,15 @@
-"""The commit-time hooks that lint and test ``tools/split`` run on an edit to any module it
-loads from another ``tools`` package (the branch's neutral review of the split-fix leaf, L8).
-``pylint tools/split/`` reads what each of its imports binds, so a commit editing only
-``tools/ci/archive.py`` must run the floor as it runs the tests; and it reads its
-configuration and loads its plugins, so an edit to either must run the floor too (the
-coordinator's ruling on the delta review's nit 1).  CI step 4b runs both in every scope
-either way: what a pattern that misses a module loses is the commit-time signal alone."""
+"""The commit-time hooks that lint and test a ``tools`` package run on an edit to any module it
+loads from another ``tools`` package (the branch's neutral review of the split-fix leaf, L8;
+the recorder's review, L-5).  ``pylint tools/<package>/`` reads what each of its imports
+binds, so a commit editing only ``tools/ci/archive.py`` must run the floor as it runs the
+tests; and it reads its configuration and loads its plugins, so an edit to either must run
+the floor too (the coordinator's ruling on the delta review's nit 1).  CI step 4b runs both
+in every scope either way: what a pattern that misses a module loses is the commit-time
+signal alone.
+
+One test for every package so graded, each package a parameter case: the hooks are one
+fact about ``.pre-commit-config.yaml``, so their grader has one home, beside the tests of
+the CI wiring, in the layer both packages import."""
 from __future__ import annotations
 
 import functools
@@ -19,10 +24,20 @@ import yaml
 
 from tools.ci.arcs import REPO
 
-#: The hooks that hold this package: its pylint floor and its tests.
-HOOKS = ("pylint-split", "split-tests")
+#: Each package graded: the hooks that hold it (its pylint floor first, then its tests),
+#: and modules of other packages its census must find, so a census that found nothing
+#: cannot pass by grading none.
+PACKAGES = {
+    "split": (("pylint-split", "split-tests"),
+              {"tools/ci/archive.py", "tools/ci/gitcmd.py"}),
+    "testrecord": (("pylint-testrecord", "testrecord-tests"),
+                   {"tools/ci/arcs.py"}),
+}
 
-#: Run in a fresh interpreter with the repository root first on the path and this package's
+#: Every (package, hook) pair graded.
+HOOKS = [(package, hook_id) for package, (hooks, _) in PACKAGES.items() for hook_id in hooks]
+
+#: Run in a fresh interpreter with the repository root first on the path and a package's
 #: module names after it: import each, then print the file of every module loaded.
 _LOADED = ("import importlib, json, sys\n"
            "sys.path.insert(0, sys.argv[1])\n"
@@ -31,7 +46,7 @@ _LOADED = ("import importlib, json, sys\n"
            "print(json.dumps([getattr(module, '__file__', None)\n"
            "                  for module in list(sys.modules.values())]))\n")
 
-#: Run in a fresh interpreter in the repository root: lint one module of this package with
+#: Run in a fresh interpreter in the repository root: lint one module of a package with
 #: the arguments after it (pylint finds its configuration and loads its plugins alike
 #: whatever it lints), then print the configuration files pylint finds and the file of every
 #: module loaded, its plugins among them.
@@ -68,63 +83,69 @@ def _hook(hook_id: str) -> dict:
 
 
 @functools.cache
-def _loaded_from_other_packages() -> tuple[str, ...]:
-    """Every module of another ``tools`` package that importing each module of this one
+def _loaded_from_other_packages(package: str) -> tuple[str, ...]:
+    """Every module of another ``tools`` package that importing each module of ``package``
     loads, transitively, as repository-relative paths.
 
     Read off ``sys.modules`` in a fresh interpreter, so the import system answers rather than
     a census of import statements, and nothing this test process already holds is counted.
     ``tools/__init__.py``, the tree's own docstring, is no package's module and no tools
     hook watches it, so it is not counted."""
-    names = sorted(f"tools.split.{path.stem}" for path in (REPO / "tools/split").glob("*.py"))
+    names = sorted(f"tools.{package}.{path.stem}"
+                   for path in (REPO / "tools" / package).glob("*.py"))
     proc = subprocess.run([sys.executable, "-c", _LOADED, str(REPO), *names],
                           capture_output=True, text=True, check=True)
     return tuple(sorted(str(path) for path in _repository_files(json.loads(proc.stdout))
                         if len(path.parts) > 2 and path.parts[0] == "tools"
-                        and path.parts[1] != "split"))
+                        and path.parts[1] != package))
 
 
 @functools.cache
-def _read_by_pylint() -> tuple[str, ...]:
-    """Every file of the repository outside this package that pylint reads besides the code
+def _read_by_pylint(package: str) -> tuple[str, ...]:
+    """Every file of the repository outside ``package`` that pylint reads besides the code
     it lints: the configuration it finds and the plugins it loads, as repository-relative
     paths.
 
     Read off pylint itself in a fresh interpreter in the repository root, so its own
     configuration discovery and its ``load-plugins`` answer rather than a list kept here."""
     proc = subprocess.run([sys.executable, "-c", _PYLINT_READS, "--score=n",
-                           "tools/split/__init__.py"], cwd=REPO, capture_output=True, text=True,
-                          check=True)
+                           f"tools/{package}/__init__.py"], cwd=REPO, capture_output=True,
+                          text=True, check=True)
     return tuple(sorted(str(path) for path in _repository_files(json.loads(proc.stdout))
-                        if path.parts[:2] != ("tools", "split")))
+                        if path.parts[:2] != ("tools", package)))
 
 
-def test_the_census_finds_what_the_package_loads():
+@pytest.mark.parametrize("package", PACKAGES)
+def test_the_census_finds_what_the_package_loads(package):
     """A census that found nothing would pass the case below by grading none."""
-    assert {"tools/ci/archive.py", "tools/ci/gitcmd.py"} <= set(_loaded_from_other_packages())
+    assert PACKAGES[package][1] <= set(_loaded_from_other_packages(package))
 
 
-@pytest.mark.parametrize("hook_id", HOOKS)
-def test_every_module_the_package_loads_runs_its_hooks(hook_id):
+@pytest.mark.parametrize("package, hook_id", HOOKS)
+def test_every_module_the_package_loads_runs_its_hooks(package, hook_id):
     """Editing a module this package loads runs its floor and its tests; and the hook runs
     this package, so a match is worth something."""
     hook = _hook(hook_id)
-    assert any(arg.rstrip("/") == "tools/split" for arg in hook["args"])
-    missed = [m for m in _loaded_from_other_packages() if not re.search(hook["files"], m)]
+    assert any(arg.rstrip("/") == f"tools/{package}" for arg in hook["args"])
+    missed = [m for m in _loaded_from_other_packages(package)
+              if not re.search(hook["files"], m)]
     assert not missed, f"{hook_id}'s files pattern does not match {missed}"
 
 
-def test_the_census_finds_what_pylint_reads():
+@pytest.mark.parametrize("package", PACKAGES)
+def test_the_census_finds_what_pylint_reads(package):
     """A census that found nothing would pass the case below by grading none."""
-    assert {".pylintrc", "tools/pylint/shekel_checkers/__init__.py"} <= set(_read_by_pylint())
+    assert {".pylintrc", "tools/pylint/shekel_checkers/__init__.py"} <= set(
+        _read_by_pylint(package))
 
 
-def test_every_file_pylint_reads_runs_the_floor():
+@pytest.mark.parametrize("package", PACKAGES)
+def test_every_file_pylint_reads_runs_the_floor(package):
     """Editing the configuration pylint reads, or a plugin it loads, runs this package's
-    pylint floor: either changes pylint's verdict on ``tools/split`` with no file of it
+    pylint floor: either changes pylint's verdict on the package with no file of it
     edited.  ``files`` is the hook's whole filter, because a ``types`` filter would drop
     ``.pylintrc``, which is not a Python file."""
-    hook = _hook("pylint-split")
+    hook = _hook(PACKAGES[package][0][0])
     assert not {"types", "types_or", "exclude", "exclude_types"} & set(hook)
-    missed = [path for path in _read_by_pylint() if not re.search(hook["files"], path)]
-    assert not missed, f"pylint-split's files pattern does not match {missed}"
+    missed = [path for path in _read_by_pylint(package) if not re.search(hook["files"], path)]
+    assert not missed, f"{hook['id']}'s files pattern does not match {missed}"
