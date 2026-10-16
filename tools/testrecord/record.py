@@ -59,6 +59,25 @@ LONE = "main"
 #: contexts (:mod:`tools.testrecord.plugin`).
 CORE = "CTracer"
 
+#: The hash seed every process of every recorded run hashes with (``PYTHONHASHSEED``; ``0``
+#: turns hash randomization off), whatever the caller's environment holds.  A string's or a
+#: date's hash is seeded per process, so a set's iteration order differs run to run, and a
+#: record followed it: the R-BAL303 pilot (2026-10-16) measured a set's repr in an assert's
+#: explanation (``{'raises', 'periods', 'today', 'thirds'}`` against ``{'thirds',
+#: 'periods', 'raises', 'today'}``), and app control flow, where
+#: ``escrow_calculator._escrow_unchanged_by_merge`` takes ``all()`` over a set of dates and
+#: stops at the first False, so ``TestEscrow::test_merge_rejects_overlap`` ran a line of
+#: ``app/utils/effective_dated.py`` in one run only.  Two RECORDS of one tree, and of a
+#: split's two layouts, must hash alike (the coordinator's ruling on the pilot's Fork 2).
+#: The split tool's outcome runs (:func:`tools.split._run.observe`) are not pinned: they
+#: compare outcomes and fixture setups, not the values a set's order prints, and a test
+#: whose outcome changes with the seed shows there as a difference, failing closed.  What
+#: no seed fixes: an object hashed by its identity (``object.__hash__`` derives from its
+#: address), and a string holding the layout or the run (a node id, a module path,
+#: ``tmp_path``'s directory), each of which may still iterate differently between layouts;
+#: a proof sees that as a difference, and refuses.
+HASH_SEED = "0"
+
 #: The three phases of a test, in order.
 PHASES = ("setup", "call", "teardown")
 
@@ -191,9 +210,13 @@ def record(root: Path, targets: list[str], out: Path, order: list[str] | None = 
     ``extra`` is passed to pytest after everything else.  Refused as :func:`read` refuses a
     record, when the run wrote no outcomes, and when an order was given and the tests ran in
     another.  The wrapper is started without the run order or the xdist identity this
-    process may hold (:data:`XDIST_IDENTITY`): neither is the run's.  Stopped as
-    :func:`wrapper_run` stops the wrapper, so only on an exception: a caller that must be
-    stopped by ``SIGTERM`` or ``SIGHUP`` turns them into exceptions first."""
+    process may hold (:data:`XDIST_IDENTITY`): neither is the run's.  Its ``PYTHONHASHSEED``
+    is :data:`HASH_SEED`, whatever this process's environment holds, so the wrapper, pytest,
+    each xdist worker and every child that inherits their environment hash alike; a test
+    that builds its child's environment from a list of names (the seed scripts' tests in
+    ``tests/test_scripts``) starts that child unseeded.  Stopped as :func:`wrapper_run` stops
+    the wrapper, so only on an exception: a caller that must be stopped by ``SIGTERM`` or
+    ``SIGHUP`` turns them into exceptions first."""
     if not out.is_dir() or any(out.iterdir()):
         raise RecordError(f"{out} is not an empty directory made for this run")
     if order is not None and any(arg.startswith(("-n", "--numprocesses")) for arg in extra):
@@ -203,6 +226,7 @@ def record(root: Path, targets: list[str], out: Path, order: list[str] | None = 
            if name not in (*XDIST_IDENTITY, ORDER_ENV)}
     env[RECORD_ENV] = str(out)
     env[ROOT_ENV] = str(root.resolve())
+    env["PYTHONHASHSEED"] = HASH_SEED
     env["PYTHONPYCACHEPREFIX"] = str(pycache)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (str(root), env.get("PYTHONPATH")) if p)
     args = [WRAPPER, *targets, "-p", PLUGIN, "-p", "no:cacheprovider", "-q", *SETTINGS]

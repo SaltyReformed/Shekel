@@ -20,6 +20,7 @@ import pytest
 from tools.ci.arcs import WRAPPER
 from tools.testrecord.conftest import SAMPLE_IDS
 from tools.testrecord.record import (
+    HASH_SEED,
     ORDER_ENV,
     RecordError,
     outcomes_path,
@@ -53,6 +54,18 @@ UNINHERITED = textwrap.dedent('''\
                     "PYTEST_XDIST_TESTRUNUID", "SHEKEL_TESTRECORD_ORDER"} & set(os.environ)
     ''')
 UNINHERITED_ID = "tests/test_environment.py::test_no_inherited_session"
+
+#: A sample test module asserting the run's hash seed and its effect, a string's hash (both
+#: filled in by the case); and its one test's id.
+SEEDED = textwrap.dedent('''\
+    import os
+
+
+    def test_the_hash_seed_is_the_runs():
+        assert os.environ["PYTHONHASHSEED"] == {seed!r}
+        assert hash("shekel") == {hashed}
+    ''')
+SEEDED_ID = "tests/test_seed.py::test_the_hash_seed_is_the_runs"
 
 #: A sample conftest reordering the tests after every hook that is not itself trylast.
 REVERSING = textwrap.dedent('''\
@@ -194,6 +207,23 @@ class TestARecordedRun:
         assert {nodeid: t.outcome for nodeid, t in found.tests.items()} == {
             UNINHERITED_ID: "passed", **OUTCOMES}
         assert found.order == (UNINHERITED_ID, *SAMPLE_IDS)
+
+    @pytest.mark.parametrize("processes", ["0", "2"], ids=["lone", "xdist"])
+    def test_every_process_hashes_with_the_pinned_seed(self, project, out, monkeypatch,
+                                                       processes):
+        """A caller holding a seed of its own (``random``) does not pass it on: the run's
+        process, and each xdist worker, hashes with :data:`HASH_SEED`, read in its
+        environment and in a string's hash, which a fresh interpreter under that seed
+        computes."""
+        monkeypatch.setenv("PYTHONHASHSEED", "random")
+        hashed = subprocess.run([sys.executable, "-c", "print(hash('shekel'))"],
+                                env={**os.environ, "PYTHONHASHSEED": HASH_SEED},
+                                capture_output=True, text=True, check=True).stdout.strip()
+        (project / "tests/test_seed.py").write_text(
+            SEEDED.format(seed=HASH_SEED, hashed=hashed), encoding="utf-8")
+        found = record(project, ["tests/test_seed.py"], out, extra=("-n", processes))
+        assert {nodeid: t.outcome for nodeid, t in found.tests.items()} == {
+            SEEDED_ID: "passed"}
 
 
 class TestARefusedRun:
