@@ -9,13 +9,16 @@ Three claims, each graded in the direction it can fail:
 2. The prefixes are DERIVED from ``tools.ci.arcs``: a seventh arc document
    widens them with no edit to ``ci_scope``; this package is not one of them.
 3. The census finds a registry read in each spelling it claims to see and
-   ignores prose about one, and finds every import of the tools package; on
-   this repository it finds nothing unexempted, and an exemption that excuses
-   nothing is itself reported.
+   ignores prose about one, and finds every import of the tools package, in
+   every file under a skipped root and in every conftest and ``__init__.py``
+   above one; on this repository it finds nothing unexempted, and an
+   exemption that excuses nothing is itself reported.
 
 The fourth claim, that ``ci.yml`` is wired to the answer, is
 ``test_ci_workflow.py`` (split out by step X-cx's L4, when this module passed
-pylint's 1,000-line ceiling).
+pylint's 1,000-line ceiling), and so is the census graded against pytest
+itself: each skipped suite run as ``ci.yml`` starts it imports no file the
+census does not read.
 """
 from __future__ import annotations
 
@@ -440,6 +443,151 @@ class TestAnImportOfTheToolsIsARead:
         monkeypatch.setattr(ci_scope, "imports_of_the_tools", lambda: ["tests/test_t.py:2"])
         assert ci_scope.main(["--readers"]) == 0
         assert capsys.readouterr().out == "tests/test_t.py:2\n"
+
+
+#: A conftest body reading a registry path on its second line.
+_LEDGER_READ = 'from pathlib import Path\nLEDGER = Path("docs/plans/ledger.md")\n'
+
+
+class TestTheFilesAboveARootAreCensused:
+    """Claim 3 for what pytest imports ABOVE a root: the ``conftest.py`` and the
+    ``__init__.py`` of every directory from the repository root down to a skipped root's
+    parent, read by every census arm, and nothing above the repository root (the
+    measurement this rests on: ``ci_scope.censused``)."""
+
+    @staticmethod
+    def above(tmp_path: Path, body: str) -> Path:
+        """A scratch repo: a ``tests/`` root holding one plain test, and ``body`` as the
+        repository-root ``conftest.py``; return its root."""
+        repo = _scratch(tmp_path, "test_p.py", "def test_x():\n    assert True\n")
+        (repo / "conftest.py").write_text(textwrap.dedent(body), encoding="utf-8")
+        return repo
+
+    def test_a_registry_read_in_the_root_conftest_is_reported(self, tmp_path):
+        """The path census reads the repository-root conftest, given the root or by default."""
+        repo = self.above(tmp_path, '''
+            from pathlib import Path
+            STEPS = Path(__file__).resolve().parent / "docs" / "plans" / "steps.md"
+        ''')
+        assert _readers(repo) == ["conftest.py:3: docs/plans/steps.md"]
+        assert ci_scope.registry_readers(repo=repo) == ["conftest.py:3: docs/plans/steps.md"]
+
+    @pytest.mark.parametrize("census, body", [
+        (ci_scope.imports_of_the_tools, "from tools.ci import arcs\n"),
+        (ci_scope.imports_of_the_uncensused, "import tests.manual.verify_registry\n"),
+    ], ids=["the-tools", "the-uncensused"])
+    def test_an_import_in_the_root_conftest_is_reported(self, tmp_path, census, body):
+        """Each import census reads the repository-root conftest too."""
+        repo = self.above(tmp_path, body)
+        assert census([repo / "tests"], repo=repo) == ["conftest.py:1"]
+
+    def test_every_directory_down_to_a_nested_root_is_walked_and_no_other(self, tmp_path):
+        """Above ``a/b/tests`` the census reads the conftests of the repository root, of
+        ``a`` and of ``a/b``; a sibling directory's is above no root and is not read."""
+        root = tmp_path / "a" / "b" / "tests"
+        root.mkdir(parents=True)
+        (root / "test_p.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
+        for directory in (tmp_path, tmp_path / "a", tmp_path / "a" / "b", tmp_path / "sibling"):
+            directory.mkdir(exist_ok=True)
+            (directory / "conftest.py").write_text(_LEDGER_READ, encoding="utf-8")
+        assert ci_scope.registry_readers([root], repo=tmp_path) == [
+            "a/b/conftest.py:2: docs/plans/ledger.md",
+            "a/conftest.py:2: docs/plans/ledger.md",
+            "conftest.py:2: docs/plans/ledger.md",
+        ]
+
+    def test_a_conftest_above_two_roots_is_read_once(self, tmp_path):
+        """Both skipped roots lie under the repository root: its conftest is one file, one hit."""
+        repo = self.above(tmp_path, _LEDGER_READ)
+        nested = repo / "tools" / "pylint" / "tests"
+        nested.mkdir(parents=True)
+        (nested / "test_q.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
+        assert ci_scope.registry_readers([repo / "tests", nested], repo=repo) == [
+            "conftest.py:2: docs/plans/ledger.md",
+        ]
+
+    @staticmethod
+    def nested(tmp_path: Path, body: str) -> Path:
+        """A scratch repo whose ``tools/pylint/tests`` root holds one plain test and whose
+        ``tools/__init__.py`` is ``body``; return its root."""
+        root = tmp_path / "tools" / "pylint" / "tests"
+        root.mkdir(parents=True)
+        (root / "test_q.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
+        (tmp_path / "tools" / "__init__.py").write_text(body, encoding="utf-8")
+        return root
+
+    def test_a_registry_read_in_a_package_init_above_a_root_is_reported(self, tmp_path):
+        """pytest sets ``tools`` up for ``tools/pylint/tests`` by importing its
+        ``__init__.py``, so the path census reads it, given the root or by default."""
+        root = self.nested(tmp_path, _LEDGER_READ)
+        assert ci_scope.registry_readers([root], repo=tmp_path) == [
+            "tools/__init__.py:2: docs/plans/ledger.md",
+        ]
+        assert ci_scope.registry_readers(repo=tmp_path) == [
+            "tools/__init__.py:2: docs/plans/ledger.md",
+        ]
+
+    @pytest.mark.parametrize("census, body", [
+        (ci_scope.imports_of_the_tools, "from tools.ci import arcs\n"),
+        (ci_scope.imports_of_the_uncensused, "import tests.manual.verify_registry\n"),
+    ], ids=["the-tools", "the-uncensused"])
+    def test_an_import_in_a_package_init_above_a_root_is_reported(self, tmp_path, census,
+                                                                  body):
+        """Each import census reads the ``__init__.py`` above a root too."""
+        root = self.nested(tmp_path, body)
+        assert census([root], repo=tmp_path) == ["tools/__init__.py:1"]
+
+    @pytest.mark.parametrize("body", [
+        "from . import ci\n",
+        "from .ci import arcs\n",
+        "from .plan_gate import _registry\n",
+        "from .ci.arcs import PLANS\n",
+    ], ids=["dot", "dot-ci", "dot-plan-gate", "dot-ci-arcs"])
+    def test_a_relative_import_in_the_tools_init_is_reported(self, tmp_path, body):
+        """``tools/__init__.py`` is censused now, and a relative import is how a package's own
+        ``__init__.py`` usually reaches its modules: it is made absolute and reported (delta
+        review of L3, M2)."""
+        root = self.nested(tmp_path, body)
+        assert ci_scope.imports_of_the_tools([root], repo=tmp_path) == ["tools/__init__.py:1"]
+
+    def test_a_relative_import_is_resolved_against_the_importing_files_package(self, tmp_path):
+        """``from .manual import x`` in ``tests/test_q.py`` and ``from ..manual import x`` in
+        ``tests/sub/test_r.py`` both name ``tests.manual``; ``from ._helpers import x`` names
+        ``tests._helpers`` and is no import of the harnesses."""
+        repo = _scratch(tmp_path, "test_q.py", "from .manual import verify_registry\n"
+                                               "from ._helpers import x\n")
+        (repo / "tests" / "sub").mkdir()
+        (repo / "tests" / "sub" / "test_r.py").write_text(
+            "from ..manual import verify_registry\nfrom . import manual\n", encoding="utf-8")
+        assert ci_scope.imports_of_the_uncensused([repo / "tests"], repo=repo) == [
+            "tests/sub/test_r.py:1", "tests/test_q.py:1",
+        ]
+
+    def test_a_relative_import_climbing_past_the_top_package_names_nothing(self, tmp_path):
+        """Python refuses ``from .. import tools`` in ``tools/__init__.py`` (``tools`` is a
+        top-level package), so it imports nothing to report."""
+        root = self.nested(tmp_path, "from .. import tools\nfrom ...ci import arcs\n")
+        assert not ci_scope.imports_of_the_tools([root], repo=tmp_path)
+
+    def test_nothing_above_the_repository_root_is_read(self, tmp_path):
+        """Under ``-c /dev/null`` pytest's conftest walk starts above the repository, where no
+        change set reaches: a conftest or an ``__init__.py`` there is not censused."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _scratch(repo, "test_p.py", "def test_x():\n    assert True\n")
+        for name in ci_scope.ABOVE_A_ROOT:
+            (tmp_path / name).write_text(_LEDGER_READ, encoding="utf-8")
+        assert ci_scope.censused(repo=repo) == [repo / "tests" / "test_p.py"]
+        assert not ci_scope.registry_readers(repo=repo)
+
+    def test_the_census_is_sorted(self, tmp_path):
+        """Twelve files under a root come back in path order, whatever order a set holds them
+        in (one in 12! that an unsorted answer passes by chance)."""
+        repo = _scratch(tmp_path, "test_p.py", "def test_x():\n    assert True\n")
+        for index in range(11):
+            (repo / "tests" / f"test_{index:02}.py").write_text("", encoding="utf-8")
+        found = ci_scope.censused([repo / "tests"], repo=repo)
+        assert len(found) == 12 and found == sorted(found)
 
 
 class TestThisRepositoryHasNoUnexemptedReader:

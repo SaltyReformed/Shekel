@@ -57,21 +57,33 @@ nothing.  Measured when this landed: exactly one did --
 ``tests/test_services/test_paycheck_calculator.py``, whose docstring said
 outright that it exists to grade the docs-side commit -- and it moved into
 the plan gate's package as ``test_citations.py``, where it runs in both scopes.
-``test_ci_scope.py`` holds the census at zero.  The census is ``ast``-based
-and LEXICAL: a docstring that DISCUSSES ``docs/plans`` is prose and is
-skipped; a string a statement evaluates is a read, in the spellings a read
-usually takes -- a joined literal, a ``/``-chain whose links are string
-pieces, ``Path(...)`` / ``PurePath(...)`` calls and ``.joinpath(...)`` /
+``test_ci_scope.py`` holds the census at zero.  A module "in" a skipped suite
+is every ``.py`` under the suite's root (but ``tests/manual``, below), and
+the files pytest itself imports from ABOVE the root to run it: the
+``conftest.py`` and ``__init__.py`` of each directory between the repository
+root and the suite's (:func:`censused`; ``test_ci_workflow.py`` grades that
+set against pytest itself, each skipped suite started as ``ci.yml`` starts
+it).  A module named for pytest to import (``pytest_plugins``, ``-p``) is an
+import, which neither census follows (below).  The
+census is ``ast``-based and LEXICAL: a docstring that DISCUSSES
+``docs/plans`` is prose and is skipped; a string a statement evaluates is a
+read, in the spellings a read usually takes -- a joined literal, a
+``/``-chain whose links are string pieces, ``Path(...)`` / ``PurePath(...)``
+calls and ``.joinpath(...)`` /
 ``os.path.join(...)`` calls (nested inside one another or inside a chain),
 an f-string's literal part, each with leading ``..`` segments dropped.  What
 it CANNOT see, and what a reviewer of a new test must: a path assembled by
 ``str.format``, ``%`` or ``+``; a chain or call with a VARIABLE piece in the
 middle (``REPO / "docs" / PLANS / "x.md"``, ``Path("docs", plans)``); a
-walk from a parent directory (``(REPO / "docs").rglob("*.md")``); and a
+walk from a parent directory (``(REPO / "docs").rglob("*.md")``); a
 subprocess running a script that reads the registries itself (the
-session-start hook, whose test is the one exemption).  None of those
-reaches a registry under the censused roots today (grepped when this
-landed).
+session-start hook, whose test is the one exemption); and a read in a module
+OUTSIDE the census that a censused file imports, by a statement or by name
+(``app/``, ``scripts/``; a ``pytest_plugins`` entry or a ``-p``): the census
+grades what a censused file SPELLS, never what its imports read.  None
+of those reaches a registry under the censused roots today (grepped when this
+landed; the last re-measured 2026-10-16, the census run over ``app/``,
+``scripts/``, ``migrations/`` and the checkers' package: no read).
 
 **An import is a read too.**  Since step X-cx's L4 made ``tools/`` one package
 tree, any test under ``tests/`` can ``from tools.ci.arcs import PLANS`` or
@@ -101,7 +113,7 @@ from __future__ import annotations
 import ast
 import posixpath
 import sys
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path, PurePosixPath
 
 from tools.ci import arcs
@@ -123,7 +135,10 @@ SKIPPED_TEST_ROOTS = ("tests", "tools/pylint/tests")
 
 #: EVERY ``.py`` under those roots is censused, not only what pytest collects:
 #: a read in ``tests/_test_helpers.py`` or ``tests/oracles/`` is a read by
-#: every test that imports it.  The one directory left out is ``tests/manual``:
+#: every test that imports it.  So are the ``conftest.py`` and the
+#: ``__init__.py`` of every directory above a root up to the repository root,
+#: which pytest imports to run the root's tests: the repository-root conftest
+#: among them (:func:`censused`).  The one directory left out is ``tests/manual``:
 #: its hand-run proof instruments (``verify_*``, ``measure_*``, ``rehearse_*``
 #: and the like) read the registries BY DESIGN, pytest never collects them
 #: (``pytest.ini`` pins ``python_files = test_*.py`` and the directory holds
@@ -140,6 +155,12 @@ TOOLS = "tools"
 #: What pytest WOULD collect if it appeared under :data:`NOT_CENSUSED`: the
 #: patterns the premise above depends on.
 COLLECTED_BY_PYTEST = ("test_*.py", "conftest.py")
+
+#: The files pytest itself imports from a directory ABOVE a skipped root to run the root's
+#: tests: its conftest, and the ``__init__.py`` that makes it a package (:func:`censused`).
+#: A module a conftest names in ``pytest_plugins``, or ``-p`` names, is an import by name,
+#: which the census does not follow (the module docstring's CANNOT-see lists).
+ABOVE_A_ROOT = ("conftest.py", "__init__.py")
 
 #: Reads the census finds that are NOT reads of this repository's documents,
 #: keyed ``"<file>: <path>"`` (the hit without its line number, so an edit
@@ -339,12 +360,43 @@ def _names_a_registry_path(text: str, prefixes: tuple[PurePosixPath, ...]) -> bo
     return _under_a_prefix(PurePosixPath(*parts), prefixes, strictly=False)
 
 
-def _censused(root: Path, base: Path) -> Iterator[Path]:
-    """Yield every ``.py`` under ``root`` except those under :data:`NOT_CENSUSED`, sorted."""
+def censused(roots: Iterable[Path] = (), *, repo: Path | None = None) -> list[Path]:
+    """Return every file the census reads for ``roots`` under the repository ``repo``, sorted,
+    each once.  ``roots`` / ``repo`` as :func:`registry_readers` takes them.  Every census
+    arm reads its files from here (:func:`_census`), so no arm can walk fewer.
+
+    The set is a superset of the files pytest itself imports to run a skipped suite: every
+    ``.py`` under a root except those under :data:`NOT_CENSUSED`, whether pytest imports it
+    or a test does, and :data:`ABOVE_A_ROOT` in every directory from ``repo`` down to a
+    root's parent.  pytest imports the ``conftest.py`` of every directory above a test down
+    from its confcutdir (``_pytest/config/__init__.py``, ``_loadconftestmodules``), and,
+    when a test below it runs, a directory's ``__init__.py`` to set that package up
+    (``_pytest/python.py``, ``Package.setup``), so a read in either is a read by the tests
+    under the root.  Under ``pytest.ini`` the conftest walk starts at the repository root;
+    under ``-c /dev/null`` it starts above the repository, where no change set reaches and
+    the census does not look.  Measured 2026-10-16, pytest 9.1.1: on this tree, step 5b
+    loads the repository-root ``conftest.py`` and its first test call sets
+    ``tools/__init__.py`` up; in a scratch repository holding this one's ``pytest.ini``, each
+    skipped suite started as ``ci.yml`` starts it (steps 7, 7b and 5b) loads the
+    repository-root ``conftest.py``, and step 5b sets the scratch ``tools/__init__.py`` up by
+    ``Package.setup`` alone.  ``test_ci_workflow.py`` re-measures the scratch half on every
+    run.
+
+    The census's DIRECTION: it grades what a censused file SPELLS, never what a module that
+    file imports reads.  A file above a root is censused because pytest imports it, not
+    because a censused file does; a module a censused file imports is censused only when it
+    lies under a root itself.
+    """
+    base = repo or arcs.REPO
+    roots = tuple(roots) or tuple(base / r for r in SKIPPED_TEST_ROOTS)
     skipped = tuple(base / d for d in NOT_CENSUSED)
-    for path in sorted(root.rglob("*.py")):
-        if not any(path.is_relative_to(d) for d in skipped):
-            yield path
+    found: set[Path] = set()
+    for root in roots:
+        found.update(path for path in root.rglob("*.py")
+                     if not any(path.is_relative_to(d) for d in skipped))
+        found.update(path for directory in root.relative_to(base).parents
+                     for name in ABOVE_A_ROOT if (path := base / directory / name).is_file())
+    return sorted(found)
 
 
 def imports_of_the_uncensused(roots: Iterable[Path] = (), *,
@@ -370,32 +422,38 @@ def imports_of_the_tools(roots: Iterable[Path] = (), *,
     return _imports_of(roots, repo, frozenset({TOOLS}))
 
 
-def _imports_of(roots: Iterable[Path], repo: Path | None,
-                targets: frozenset[str]) -> list[str]:
-    """Return ``"<file>:<line>"`` for every censused import naming one of ``targets``.
+def _census(roots: Iterable[Path], repo: Path | None,
+            hits_in: Callable[[str, ast.Module], Iterable[str]]) -> list[str]:
+    """Return what ``hits_in`` finds in each file :func:`censused` names, in file order.
 
-    A file that will not parse is reported (``SyntaxError``), as the path
-    census reports it: a census that skips what it cannot read passes on
-    nothing.
+    The ONE reader every census arm consumes, so every arm reads the same files the same
+    way: ``hits_in`` is handed each file's path relative to ``repo`` and its parsed tree.
+    A file that will not parse is reported here, for every arm, as ``"<file>:<line>:
+    SyntaxError"``: a census that skips what it cannot read passes on nothing.
     """
     base = repo or arcs.REPO
-    roots = tuple(roots) or tuple(base / r for r in SKIPPED_TEST_ROOTS)
     hits: list[str] = []
-    for root in roots:
-        for path in _censused(root, base):
-            rel = path.relative_to(base).as_posix()
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except SyntaxError as exc:
-                hits.append(f"{rel}:{exc.lineno or 0}: SyntaxError")
-                continue
-            for node in ast.walk(tree):
-                if _imports_one_of(node, targets):
-                    hits.append(f"{rel}:{node.lineno}")
+    for path in censused(roots, repo=base):
+        rel = path.relative_to(base).as_posix()
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError as exc:
+            hits.append(f"{rel}:{exc.lineno or 0}: SyntaxError")
+            continue
+        hits.extend(hits_in(rel, tree))
     return hits
 
 
-def _imports_one_of(node: ast.AST, targets: frozenset[str]) -> bool:
+def _imports_of(roots: Iterable[Path], repo: Path | None,
+                targets: frozenset[str]) -> list[str]:
+    """Return ``"<file>:<line>"`` for every censused import naming one of ``targets``."""
+    return _census(roots, repo, lambda rel, tree: [
+        f"{rel}:{node.lineno}" for node in ast.walk(tree)
+        if _imports_one_of(node, targets, PurePosixPath(rel).parent.parts)
+    ])
+
+
+def _imports_one_of(node: ast.AST, targets: frozenset[str], package: tuple[str, ...]) -> bool:
     """Return whether one import statement names one of ``targets``.
 
     Every dotted name the statement binds is tested on its own: ``import
@@ -403,12 +461,16 @@ def _imports_one_of(node: ast.AST, targets: frozenset[str]) -> bool:
     ``tests.manual``; ``from tests.manual.x import y`` names
     ``tests.manual.x``.  A name matches when it IS a target or starts under
     it; a look-alike (``manual_helpers``, ``mytests.manual``, ``toolsmith``)
-    does not.
+    does not.  A relative import is first made absolute against ``package``
+    (:func:`_absolute`), so ``from .ci import arcs`` in ``tools/__init__.py``
+    names ``tools.ci.arcs``.
     """
     if isinstance(node, ast.Import):
         dotted = [alias.name for alias in node.names]
     elif isinstance(node, ast.ImportFrom):
-        module = node.module or ""
+        module = _absolute(node, package)
+        if module is None:
+            return False
         dotted = [f"{module}.{alias.name}" if module else alias.name
                   for alias in node.names]
         dotted.append(module)
@@ -420,34 +482,44 @@ def _imports_one_of(node: ast.AST, targets: frozenset[str]) -> bool:
     )
 
 
-def registry_readers(roots: Iterable[Path] = (), *, repo: Path | None = None) -> list[str]:
-    """Return ``"<file>:<line>: <path>"`` for every registry-path read under ``roots``.
+def _absolute(node: ast.ImportFrom, package: tuple[str, ...]) -> str | None:
+    """Return the module a ``from`` import names, made absolute against ``package``.
 
-    ``roots`` defaults to :data:`SKIPPED_TEST_ROOTS` under ``repo`` (the
-    repository by default; a control passes a scratch tree).  Paths are
-    reported relative to ``repo``, in file order then line order.  Every
-    ``(file, line, path)`` is reported once.  A file that
-    will not parse is reported as a reader (``SyntaxError``), because a census
-    that skips what it cannot read passes on nothing.
+    ``package`` is the repository-relative directory the importing file lies in, as parts:
+    the package a relative import starts from, for an ``__init__.py`` and a plain module
+    alike.  Each dot past the first climbs one part (``from ..x import y`` in
+    ``tests/sub/m.py`` names ``tests.x``).  ``None`` when the import climbs past the top
+    package, which Python refuses, so the statement names nothing.
+    """
+    if not node.level:
+        return node.module or ""
+    if node.level > len(package):
+        return None
+    head = package[:len(package) - node.level + 1]
+    return ".".join((*head, *(node.module.split(".") if node.module else ())))
+
+
+def registry_readers(roots: Iterable[Path] = (), *, repo: Path | None = None) -> list[str]:
+    """Return ``"<file>:<line>: <path>"`` for every registry-path read in a censused file.
+
+    The files are the ones :func:`censused` names: those under ``roots``, which
+    default to :data:`SKIPPED_TEST_ROOTS` under ``repo`` (the repository by
+    default; a control passes a scratch tree), and those above the roots that
+    pytest imports.  Paths are reported relative to ``repo``, in file order then
+    line order.  Every ``(file, line, path)`` is reported once.  A file that
+    will not parse is reported as a reader (``SyntaxError``, by :func:`_census`),
+    because a census that skips what it cannot read passes on nothing.
     """
     prefixes = registry_only_prefixes()
-    base = repo or arcs.REPO
-    roots = tuple(roots) or tuple(base / r for r in SKIPPED_TEST_ROOTS)
-    hits: list[str] = []
-    for root in roots:
-        for path in _censused(root, base):
-            rel = path.relative_to(base).as_posix()
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except SyntaxError as exc:
-                hits.append(f"{rel}:{exc.lineno or 0}: SyntaxError")
-                continue
-            found = {
-                (line, text) for line, text in _spellings(tree)
-                if _names_a_registry_path(text, prefixes)
-            }
-            hits.extend(f"{rel}:{line}: {text}" for line, text in sorted(found))
-    return hits
+
+    def reads_in(rel: str, tree: ast.Module) -> list[str]:
+        found = {
+            (line, text) for line, text in _spellings(tree)
+            if _names_a_registry_path(text, prefixes)
+        }
+        return [f"{rel}:{line}: {text}" for line, text in sorted(found)]
+
+    return _census(roots, repo, reads_in)
 
 
 def unexempted_readers(roots: Iterable[Path] = (), *, repo: Path | None = None) -> list[str]:
