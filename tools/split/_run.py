@@ -23,16 +23,17 @@ import sys
 from pathlib import Path
 
 from tools.ci import gitcmd
+from tools.ci.arcs import WRAPPER
 from tools.split._model import Plan, mentions
 from tools.split._observe import OBSERVE_ENV, setup_key, setups_path
 from tools.split._source import decode, lines_of, load_json, read_json, shown, undecodable
-from tools.testrecord.record import WRAPPER, wrapper_run
+from tools.testrecord.record import wrapper_run
 
 #: pylint's exit-status bits for a fatal message and a usage error: either means it did
 #: not lint, so its message list is not an observation.
 _PYLINT_BROKEN = 1 | 32
 
-#: The linter ``record`` starts (the suite wrapper is :data:`tools.testrecord.record.WRAPPER`).
+#: The linter ``record`` starts (the suite wrapper is :data:`tools.ci.arcs.WRAPPER`).
 PYLINT = "pylint"
 
 #: A regular file's mode in git's tree, by whether its owner may execute it: the only

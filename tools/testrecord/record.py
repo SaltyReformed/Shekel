@@ -2,9 +2,9 @@
 :func:`record` runs tests through the suite wrapper with :mod:`tools.testrecord.plugin`
 loaded and reads back, for each test, how it ended, the arcs each of its phases executed in
 :data:`MEASURED` and the passing asserts of each phase that pytest rewrote (the plugin names
-which those are), in order.  It also holds what every run of the wrapper shares, whoever
-starts it: the wrapper's name (:data:`WRAPPER`), its run to its end (:func:`wrapper_run`),
-and how a test ended from its phases' reports (:func:`verdict`).
+which those are), in order.  It also holds what every run of the wrapper
+(:data:`tools.ci.arcs.WRAPPER`) shares, whoever starts it: its run to its end
+(:func:`wrapper_run`), and how a test ended from its phases' reports (:func:`verdict`).
 
 A run writes into a directory made for it, which must be empty: each process's files, the
 wrapper's whole output (``wrapper-output.txt``, kept as written, for a refusal to point
@@ -27,9 +27,7 @@ from pathlib import Path
 
 import pytest
 
-#: The suite wrapper every run goes through, from the repository root: it gives each run a
-#: database cluster of its own (never bare pytest).
-WRAPPER = "./scripts/test.sh"
+from tools.ci.arcs import WRAPPER
 
 #: The environment variable naming the directory every process of a run writes into.
 RECORD_ENV = "SHEKEL_TESTRECORD"

@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 import yaml
@@ -67,6 +67,38 @@ STEP_CONDITIONS = {
 #: aggregate itself.
 GRADED_JOBS = ("scope", "commit-trailers", "plan-gate", "tax-law", "lint", "test",
                "lint-and-test")
+
+#: The suite wrapper's file name (:data:`tools.ci.arcs.WRAPPER`'s last part).  The nets
+#: below look for the NAME, so a step starting the wrapper by any path or through any shell
+#: (``cd scripts && ./test.sh``) is caught, and a renamed wrapper renames them.
+WRAPPER_NAME = PurePosixPath(arcs.WRAPPER).name
+
+#: What marks a step's ``run`` as running code: pytest, pylint, a Python script, or the
+#: suite wrapper.
+CODE_MARKERS = ("pytest", "pylint", "python ", WRAPPER_NAME)
+
+#: The suite wrapper as a step may start it, each spelled from :data:`tools.ci.arcs.WRAPPER`:
+#: by its path, through a shell, from its own directory, and behind another command.  Every
+#: net must catch each (the coordinator's ruling on N6's review, L1, 2026-10-16).
+_WRAPPER_PATH = PurePosixPath(arcs.WRAPPER)
+WRAPPER_STARTS = {
+    "by-its-path": f"{arcs.WRAPPER} -q",
+    "through-bash": f"bash {_WRAPPER_PATH}",
+    "from-its-directory": f"cd {_WRAPPER_PATH.parent} && ./{_WRAPPER_PATH.name}",
+    "behind-timeout": f"timeout 900 {arcs.WRAPPER}",
+}
+
+
+def _runs_code(run: str) -> bool:
+    """Whether a step's ``run`` runs code: it holds one of :data:`CODE_MARKERS`.  The job
+    net and the step net both read this."""
+    return any(marker in run for marker in CODE_MARKERS)
+
+
+def _names_a_suite(line: str) -> bool:
+    """Whether a line of a step's ``run`` names pytest or the suite wrapper, however it
+    starts it: the derivation's net (:func:`_skipped_invocations`)."""
+    return "pytest" in line or WRAPPER_NAME in line
 
 
 def _jobs() -> dict[str, dict]:
@@ -177,12 +209,12 @@ class TestTheWorkflowIsWiredToTheAnswer:
         assert "pytest tools/testrecord -c /dev/null -q" in run
 
     def test_no_code_running_job_escapes_the_guard(self):
-        """A job that runs pytest, pylint, a script or ``test.sh`` is guarded or named here."""
+        """A job that runs code (:data:`CODE_MARKERS`) is guarded or named here."""
         for name, job in _jobs().items():
             if name in UNGUARDED_JOBS:
                 continue
             runs = " ".join(step.get("run", "") for step in job["steps"])
-            if any(tool in runs for tool in ("pytest", "pylint", "python ", "scripts/test.sh")):
+            if _runs_code(runs):
                 assert job.get("if") == GUARD, name
 
     def test_no_code_running_step_in_an_unguarded_job_escapes_the_allowlist(self):
@@ -194,8 +226,17 @@ class TestTheWorkflowIsWiredToTheAnswer:
         for name in ("scope", "commit-trailers", "plan-gate", "tax-law", "lint-and-test"):
             for step in _jobs()[name]["steps"]:
                 run = step.get("run", "")
-                if any(tool in run for tool in ("pytest", "pylint", "python ", "scripts/test.sh")):
+                if _runs_code(run):
                     assert (name, step["name"]) in UNGUARDED_CODE_STEPS, (name, step["name"])
+
+    @pytest.mark.parametrize("run", list(WRAPPER_STARTS.values()), ids=list(WRAPPER_STARTS))
+    def test_every_net_catches_the_wrapper_however_a_step_starts_it(self, run):
+        """The job and step nets (:func:`_runs_code`) and the derivation's net
+        (:func:`_names_a_suite`) each catch the suite wrapper by its file name, however a
+        step starts it.  Against the live ``ci.yml`` no net's wrapper arm decides anything
+        (the review of N6, L1), so this is what grades it."""
+        assert _runs_code(run)
+        assert _names_a_suite(run)
 
     def test_no_step_in_a_graded_job_carries_a_condition_of_its_own(self):
         """Every step of a graded job runs, bar the one serial-benchmark leg.
@@ -398,7 +439,7 @@ class TestTheWorkflowIsWiredToTheAnswer:
 #: arguments to pytest behind a ``-m`` of its own (``scripts/test.sh``'s last lines).  That
 #: ``-m`` is not added here: a marker expression only deselects, and a deselected test's
 #: packages are never set up, so leaving it out can only ADD imports to the scratch run.
-LAUNCHERS = ("pytest", "./scripts/test.sh")
+LAUNCHERS = ("pytest", arcs.WRAPPER)
 
 #: The scratch repository CI's skipped suites run in.  Every file records its own path when
 #: it runs and imports nothing, so a path recorded is a file PYTEST imported.  Beside what
@@ -436,7 +477,7 @@ def _skipped_invocations() -> dict[str, list[str]]:
             for line in step.get("run", "").splitlines():
                 words = shlex.split(line)
                 if not words or words[0] not in LAUNCHERS:
-                    assert "pytest" not in line and "test.sh" not in line, (
+                    assert not _names_a_suite(line), (
                         f"{step['name']!r} starts a suite as {line!r}, which this "
                         f"derivation does not read: start it with one of {LAUNCHERS}")
                     continue

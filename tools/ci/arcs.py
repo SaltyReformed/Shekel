@@ -17,6 +17,11 @@ Adding an arc is one row here.  The tracker's labels follow on the next
 ``python -m tools.quill.setup_tracker --apply``; the plan gate's pre-commit
 hook ``files`` pattern in ``.pre-commit-config.yaml`` is checked against this
 map by ``tools/plan_gate/test_gate_coverage.py``.
+
+Beside the table stand the repository's layout facts the tools share: its root
+(:data:`REPO`), the planning registries' directory (:data:`PLANS`) and the
+suite wrapper's path (:data:`WRAPPER`).  The wrapper's path joined them at step
+balance:X-er: the recorder and ``ci.yml``'s controls spelled it apart.
 """
 from __future__ import annotations
 
@@ -28,6 +33,13 @@ REPO = Path(__file__).resolve().parents[2]
 #: The planning registries' directory, which also holds five of the six arc
 #: documents.
 PLANS = REPO / "docs" / "plans"
+
+#: The suite wrapper, as a run starts it from the repository root: it gives each
+#: run a database cluster of its own (never bare pytest).  The recorder
+#: (:func:`tools.testrecord.record.record`) and the split tool's runs start it,
+#: and two of ``ci.yml``'s guarded steps start the application suite with it,
+#: which ``tools/ci/test_ci_workflow.py`` reads.
+WRAPPER = "./scripts/test.sh"
 
 #: One row per arc: the slug its registry rows and its tracker label carry, its
 #: document, the heading prefix of that document's steps section, and how a

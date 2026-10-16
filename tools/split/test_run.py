@@ -27,7 +27,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools.ci import gitcmd, scratch
-from tools.ci.arcs import REPO
+from tools.ci.arcs import REPO, WRAPPER
 from tools.split import _run as run
 
 #: ``scripts/test.sh``'s contract under ``SIGTERM``, standing in for it.  It writes its
@@ -80,7 +80,7 @@ def _alive(pid: int) -> bool:
 
 def _wrapper(root: Path, text: str) -> None:
     """Make ``text`` the repository's executable suite wrapper."""
-    wrapper = root / run.WRAPPER
+    wrapper = root / WRAPPER
     wrapper.parent.mkdir(parents=True)
     wrapper.write_text(text, encoding="utf-8")
     wrapper.chmod(0o755)

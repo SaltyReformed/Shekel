@@ -17,10 +17,10 @@ from pathlib import Path
 
 import pytest
 
+from tools.ci.arcs import WRAPPER
 from tools.testrecord.conftest import SAMPLE_IDS
 from tools.testrecord.record import (
     ORDER_ENV,
-    WRAPPER,
     RecordError,
     outcomes_path,
     read,

@@ -12,8 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.ci.arcs import REPO
-from tools.testrecord.record import WRAPPER
+from tools.ci.arcs import REPO, WRAPPER
 
 #: The sample's one app module: a branch each parametrized case takes one side of.
 CALC = textwrap.dedent('''\

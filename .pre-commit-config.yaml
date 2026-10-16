@@ -250,11 +250,12 @@ repos:
         pass_filenames: false
         args: [tools/split, -c, /dev/null, -q]
       # tools/testrecord: the per-test recorder (ruling balance:R-BAL303), and
-      # the one home of the suite wrapper's name, its run and a test's
-      # verdict, which tools/split calls.  The same 10.00/10 floor and the same
-      # tests ci.yml step 4b runs.  Its tests import tools/ci, so an edit there
-      # runs both hooks; and pylint reads .pylintrc and loads the
-      # shekel_checkers plugins, so an edit to either runs the floor.
+      # the one home of the suite wrapper's run and a test's verdict, which
+      # tools/split calls (the wrapper's path is tools/ci/arcs.py's).  The same
+      # 10.00/10 floor and the same tests ci.yml step 4b runs.  It imports
+      # tools/ci, so an edit there runs both hooks; and pylint reads .pylintrc
+      # and loads the shekel_checkers plugins, so an edit to either runs the
+      # floor.
       - id: pylint-testrecord
         name: pylint tools/testrecord (10.00/10 floor)
         entry: pylint
