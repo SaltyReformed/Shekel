@@ -215,8 +215,8 @@ repos:
         args: [tools/release, -c, /dev/null, -q]
       # tools/split: the proved test-file split (step balance:X-er, ruling
       # R-BAL301).  The same 10.00/10 floor and the same tests ci.yml step 4b
-      # runs.  It imports tools/ci, and pylint reads what each import binds, so
-      # an edit there runs both hooks; and pylint reads .pylintrc and loads the
+      # runs.  It imports tools/ci and tools/testrecord, and pylint reads what
+      # each import binds, so an edit there runs both hooks; and pylint reads .pylintrc and loads the
       # shekel_checkers plugins, so an edit to either runs the floor.  `files`
       # is its whole filter: a `types` filter would drop .pylintrc, which is
       # not a Python file (tools/split/test_hooks.py holds all of it).
@@ -224,7 +224,7 @@ repos:
         name: pylint tools/split (10.00/10 floor)
         entry: pylint
         language: system
-        files: ^(\.pylintrc|tools/(split|ci|pylint/shekel_checkers)/.*\.py)$
+        files: ^(\.pylintrc|tools/(split|ci|testrecord|pylint/shekel_checkers)/.*\.py)$
         pass_filenames: false
         args:
           - tools/split/
@@ -234,9 +234,31 @@ repos:
         name: tools/split unit tests
         entry: pytest
         language: system
-        files: ^tools/(split|ci)/.*\.py$
+        files: ^tools/(split|ci|testrecord)/.*\.py$
         pass_filenames: false
         args: [tools/split, -c, /dev/null, -q]
+      # tools/testrecord: the per-test recorder's package (ruling
+      # balance:R-BAL303), the one home of the suite wrapper's name, its run
+      # and a test's verdict, which tools/split calls.  The same 10.00/10 floor and the same tests ci.yml
+      # step 4b runs; pylint reads .pylintrc and loads the shekel_checkers
+      # plugins, so an edit to either runs the floor.
+      - id: pylint-testrecord
+        name: pylint tools/testrecord (10.00/10 floor)
+        entry: pylint
+        language: system
+        files: ^(\.pylintrc|tools/(testrecord|pylint/shekel_checkers)/.*\.py)$
+        pass_filenames: false
+        args:
+          - tools/testrecord/
+          - --fail-under=10
+          - --fail-on=E,F
+      - id: testrecord-tests
+        name: tools/testrecord unit tests
+        entry: pytest
+        language: system
+        files: ^tools/testrecord/.*\.py$
+        pass_filenames: false
+        args: [tools/testrecord, -c, /dev/null, -q]
 
       # The planning REGISTRIES and the four arc documents.  Every finding
       # names a LIVE owner, the stated row count matches the table, every

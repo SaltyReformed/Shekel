@@ -67,7 +67,7 @@ def _through_the_wrapper(split, monkeypatch, during) -> None:
         during(out)
         return 0, b""
     monkeypatch.setattr(run, "observe", observe)
-    monkeypatch.setattr(run, "_wrapper_run", wrapper)
+    monkeypatch.setattr(run, "wrapper_run", wrapper)
 
 
 @pytest.mark.parametrize("moved", [False, True], ids=["HEAD-unmoved", "the-source-edited"])

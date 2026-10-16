@@ -287,6 +287,11 @@ jobs:
       # packages, at the same floor, so every tools package holds one floor in
       # one step; a change to it is still ``full`` (it is no registry-only
       # prefix), which ``tools/ci/test_ci_scope.py`` holds.
+      #
+      # ``tools/testrecord`` (the per-test recorder's package; ruling
+      # balance:R-BAL303) is the one home of the suite wrapper's name, its run
+      # and a test's verdict, which ``tools/split`` calls; it reads no registry and holds the same
+      # floor in the same step.
       - name: Plan gate (every scope)
         run: |
           pylint tools/plan_gate/ --fail-under=10 --fail-on=E,F --output-format=colorized
@@ -299,6 +304,8 @@ jobs:
           pytest tools/release -c /dev/null -q
           pylint tools/split/ --fail-under=10 --fail-on=E,F --output-format=colorized
           pytest tools/split -c /dev/null -q
+          pylint tools/testrecord/ --fail-under=10 --fail-on=E,F --output-format=colorized
+          pytest tools/testrecord -c /dev/null -q
 
   tax-law:
     runs-on: ubuntu-24.04

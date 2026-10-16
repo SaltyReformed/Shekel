@@ -637,11 +637,11 @@ def main(argv: list[str] | None = None, root: Path = REPO) -> int:
 
     While the command runs, ``SIGTERM`` and ``SIGHUP`` raise :class:`Signalled`, which an
     apply's unit undoes as it does Ctrl-C, and which stops a suite run through the wrapper's
-    own teardown (:func:`tools.split._run._wrapper_run`); like Ctrl-C, nothing swallows it,
-    so it ends the run with its traceback, an apply's carrying the undo's note (the
-    coordinator's ruling on 3B-2's signal fork, 2026-10-15).  The handlers that were there
-    before are put back
-    however the command ends, so a caller in the same process (a test) keeps its own."""
+    own teardown (:func:`tools.testrecord.record.wrapper_run`); like Ctrl-C, nothing
+    swallows it, so it ends the run with its traceback, an apply's carrying the undo's note
+    (the coordinator's ruling on 3B-2's signal fork, 2026-10-15).  The handlers that were
+    there before are put back however the command ends, so a caller in the same process (a
+    test) keeps its own."""
     args = parser().parse_args(argv)
     if args.command != "record" and args.idmap is None:
         parser().error("apply and prove need --idmap")

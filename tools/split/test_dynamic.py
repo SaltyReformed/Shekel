@@ -19,7 +19,7 @@ from tools.ci import gitcmd, scratch
 from tools.ci.arcs import REPO
 from tools.split import _dynamic as dynamic
 from tools.split._model import mentions
-from tools.split._observe import OBSERVE_ENV, verdict
+from tools.split._observe import OBSERVE_ENV
 from tools.split._prove import line_origins
 from tools.split._render import Origin
 from tools.split._run import RunError, census, merged_setups, python_files
@@ -795,22 +795,8 @@ class TestTheFixtureSetups:
 
 
 class TestTheObserver:
-    """The plugin's verdicts, and the plugin run under pytest on the sample."""
-
-    @pytest.mark.parametrize("phases, status", [
-        ({"setup": ("passed", False), "call": ("passed", False)}, "passed"),
-        ({"setup": ("passed", False), "call": ("failed", False)}, "failed"),
-        ({"setup": ("failed", False)}, "error"),
-        ({"setup": ("skipped", False)}, "skipped"),
-        ({"setup": ("skipped", True)}, "xfailed"),
-        ({"setup": ("passed", False), "call": ("skipped", True)}, "xfailed"),
-        ({"setup": ("passed", False), "call": ("passed", True)}, "xpassed"),
-        ({"setup": ("passed", False), "call": ("passed", False),
-          "teardown": ("failed", False)}, "passed+teardown-error"),
-    ])
-    def test_verdict(self, phases, status):
-        """Each phase combination names its outcome."""
-        assert verdict(phases) == status
+    """The plugin run under pytest on the sample (its verdicts are
+    :func:`tools.testrecord.record.verdict`'s, graded in ``tools/testrecord``)."""
 
     @staticmethod
     def observed(root: Path, target: str, collect_only: bool, *extra: str) -> dict:

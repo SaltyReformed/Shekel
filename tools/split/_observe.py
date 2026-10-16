@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from tools.testrecord.record import verdict
+
 #: The environment variable naming the file the observation is written to.
 OBSERVE_ENV = "SHEKEL_SPLIT_OBSERVE"
 
@@ -49,28 +51,6 @@ def defined_in(function: object) -> str | None:
     when it has none to read."""
     code = getattr(inspect.unwrap(function), "__code__", None)
     return str(Path(code.co_filename).resolve()) if code is not None else None
-
-
-def verdict(phases: dict[str, tuple[str, bool]]) -> str:
-    """One test's outcome from its phases' ``(outcome, wasxfail)``: ``passed``, ``failed``,
-    ``error``, ``skipped``, ``xfailed`` or ``xpassed``, with ``+teardown-error`` appended
-    when its teardown failed."""
-    setup, call, teardown = (phases.get(w) for w in ("setup", "call", "teardown"))
-    if setup and setup[0] == "failed":
-        status = "error"
-    elif setup and setup[0] == "skipped":
-        status = "xfailed" if setup[1] else "skipped"
-    elif call is None:
-        status = "not-run"
-    elif call[0] == "passed":
-        status = "xpassed" if call[1] else "passed"
-    elif call[0] == "failed":
-        status = "failed"
-    else:
-        status = "xfailed" if call[1] else "skipped"
-    if teardown and teardown[0] == "failed":
-        status += "+teardown-error"
-    return status
 
 
 class Observer:

@@ -6,7 +6,7 @@ The tool suite starts no docker, so a stopped run is graded against a stand-in w
 wrapper's contract under ``SIGTERM``: a child started in the background (pytest's place),
 and a ``TERM`` trap that stops it, waits for it, runs the teardown (here, a mark) and exits
 143.  The real wrapper under the same signals was measured instead, 2026-10-15
-(:func:`tools.split._run._wrapper_run`), and ``tests/test_scripts/test_test_runner.py``
+(:func:`tools.testrecord.record.wrapper_run`), and ``tests/test_scripts/test_test_runner.py``
 holds that it traps ``TERM``.
 """
 from __future__ import annotations

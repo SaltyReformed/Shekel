@@ -5,37 +5,35 @@ and ``git grep`` for the old module's name.  Each returns what it observed; judg
 tree differs from ``HEAD`` (:func:`differences`) and what the observations are made with
 (:func:`environment`).
 
-A run stopped by an exception does not outlive this process (:func:`_wrapper_run`).  The
-coordinator's condition (c) on 3B-2's signal fork rested on :func:`subprocess.run` killing
-its child on any exception; it sends ``SIGKILL`` only to its DIRECT child, the wrapper,
-whose trap cannot answer it, so the pytest the wrapper started and its database cluster
-outlived the tool, and the pytest wrote its observation after the tool had stopped
-(measured 2026-10-15).
+A run stopped by an exception does not outlive this process
+(:func:`tools.testrecord.record.wrapper_run`).  The coordinator's condition (c) on 3B-2's
+signal fork rested on :func:`subprocess.run` killing its child on any exception; it sends
+``SIGKILL`` only to its DIRECT child, the wrapper, whose trap cannot answer it, so the
+pytest the wrapper started and its database cluster outlived the tool, and the pytest wrote
+its observation after the tool had stopped (measured 2026-10-15).
 """
 from __future__ import annotations
 
 import hashlib
 import importlib.metadata
 import os
-import signal
 import stat
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from tools.ci import gitcmd
 from tools.split._model import Plan, mentions
 from tools.split._observe import OBSERVE_ENV, setup_key, setups_path
 from tools.split._source import decode, lines_of, load_json, read_json, shown, undecodable
+from tools.testrecord.record import WRAPPER, wrapper_run
 
 #: pylint's exit-status bits for a fatal message and a usage error: either means it did
 #: not lint, so its message list is not an observation.
 _PYLINT_BROKEN = 1 | 32
 
-#: The suite wrapper every run goes through, from the repository root, and the linter: the
-#: programs ``record`` starts.
-WRAPPER, PYLINT = "./scripts/test.sh", "pylint"
+#: The linter ``record`` starts (the suite wrapper is :data:`tools.testrecord.record.WRAPPER`).
+PYLINT = "pylint"
 
 #: A regular file's mode in git's tree, by whether its owner may execute it: the only
 #: entries :func:`differences` models.
@@ -79,47 +77,11 @@ def observe(root: Path, targets: list[str], out: Path, collect_only: bool) -> di
             "-p", "no:cacheprovider", "-q"]
     if collect_only:
         args += ["-n", "0", "--collect-only"]
-    returncode, output = _wrapper_run(args, root, env)
+    returncode, output = wrapper_run(args, root, env)
     if not out.exists():
         raise RunError(f"{' '.join(args)} wrote no observation (exit {returncode}):\n"
                        + "\n".join(lines_of(shown(output))[-30:]))
     return read_json(out)
-
-
-def _wrapper_run(args: list[str], root: Path, env: dict[str, str]) -> tuple[int, bytes]:
-    """Run the suite wrapper to its end: its exit status, and what it wrote to its output
-    and its errors, as one stream.
-
-    Any exception while it runs (Ctrl-C, the ``SIGTERM`` or ``SIGHUP`` that
-    :func:`tools.split.split.main` raises, anything) stops it with ``SIGTERM``, which its
-    trap answers by stopping pytest, waiting for it and removing its database cluster
-    (``scripts/test.sh``); then the wrapper is waited for, and the exception goes on.  So no
-    pytest it started outlives this process to write an observation, and no cluster is left
-    running.  The wrapper is never sent ``SIGKILL``, the one signal its trap cannot answer
-    (the coordinator's ruling on condition (c), option 1, 2026-10-15): :func:`subprocess.run`,
-    which this replaced, sends exactly that to its child on any exception, after a 0.25 s
-    grace for Ctrl-C.  Measured that day through this module, against the real wrapper and a
-    test that sleeps: under a ``SIGTERM`` to the tool alone, and under a Ctrl-C to its whole
-    process group, the pytest was re-parented to PID 1, wrote its observation after the tool
-    had stopped, and the cluster was still up 30 s later; stopped as here (this code, under
-    both), pytest was gone within a second, the cluster removed and nothing written.
-
-    The output goes to a file, not a pipe, so the wrapper never waits on a reader: a second
-    exception while the wrapper is waited for abandons the wait and nothing else, and the
-    wrapper, already stopping, finishes its teardown writing to a file still open to it."""
-    with tempfile.TemporaryFile() as output:
-        # Pylint: consider-using-with -- a with statement's exit waits for the wrapper
-        # again, so a second exception could not abandon the wait.
-        proc = subprocess.Popen(  # pylint: disable=consider-using-with
-            args, cwd=root, env=env, stdout=output, stderr=subprocess.STDOUT)
-        try:
-            proc.wait()
-        except BaseException:
-            proc.send_signal(signal.SIGTERM)
-            proc.wait()
-            raise
-        output.seek(0)
-        return proc.returncode, output.read()
 
 
 def merged_setups(out: Path) -> tuple[list[dict], list[str]]:
