@@ -5787,6 +5787,47 @@ def moved_by_the_owner(row, *, into):
     return row
 
 
+def a_deleted_occurrence(db_session, owner, period, **definition):
+    """*owner*'s every-period expense, its row in *period* DELETED the way the delete door does.
+
+    A row the owner deleted, built and deleted as the application does both:
+    :func:`make_expense_template` given *definition* (only the keywords a
+    caller passes, so every other default stays that builder's own), its row
+    from :func:`generate_row_of`, committed, then
+    ``transaction_service.delete_transaction`` and a second commit.  A
+    recurring row's delete HIDES it rather than removing it
+    (``transaction_service._delete._leaves_the_books``: ``soft = txn.recurs``,
+    ``app/services/transaction_service/_delete.py:237``; the soft arm sets
+    ``is_deleted`` at ``:446-447``), so the row stays in the table, deleted and
+    carrying its name: the row a transaction door names only to a requester
+    who may reach it (ruling **R-CC104**).  Added at plan step
+    ``balance:X-bi-6-4d-3`` for the stranger's and the companion's probes of
+    such a row, and the two route cases that built it by hand.
+
+    Args:
+        db_session: The test's SQLAlchemy session; committed twice.
+        owner: The owning user's fixture dict (``seed_user``'s shape).
+        period: The owner's :class:`~app.models.pay_period.PayPeriod` the row
+            is generated in.
+        **definition: Keywords for :func:`make_expense_template` (``name``,
+            ``amount``, ``category_key``, ``companion_visible``, ...).
+
+    Returns:
+        The deleted :class:`~app.models.transaction.Transaction`, committed.
+    """
+    # Pylint: ``import-outside-toplevel`` -- the lazy-app-import convention, as
+    # :func:`settlement_if_settling` imports the transaction service.
+    # pylint: disable=import-outside-toplevel
+    from app.services import transaction_service
+
+    template = make_expense_template(db_session, owner, **definition)
+    row = generate_row_of(template, period)
+    db_session.commit()
+    transaction_service.delete_transaction(row, owner["user"].id)
+    db_session.commit()
+    return row
+
+
 def definition_firing_twice_in_a_paycheck(db_session, seed_user, *, name):
     """Pin a 60-day calendar and author a MONTHLY definition that names ONE
     occurrence in its first paycheck and TWO in its second; return

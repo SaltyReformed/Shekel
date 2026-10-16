@@ -26,6 +26,7 @@ from app.models.transaction import Transaction
 from app.utils.auth_helpers import (
     fresh_login_required,
     get_accessible_transaction,
+    get_accessible_transaction_or_deleted,
     get_or_404,
     get_owned_via_parent,
     require_owner,
@@ -39,6 +40,7 @@ from app.utils.log_events import (
 from app.utils.session_helpers import FRESH_LOGIN_AT_KEY
 from tests._test_helpers import rhythm_of, one_off_row_of
 from tests._test_helpers import record_paydays_across_a_hole
+from tests._test_helpers import a_deleted_occurrence
 
 
 class TestGetOr404:
@@ -857,73 +859,100 @@ class TestAccessDeniedLogging:
         assert record.owner_id == seed_user["user"].id
 
 
-class TestATransferShadowRowAtTheTransactionDoor:
-    """Plan step balance:X-bi-6-1's interval fence, and WHERE in the door it sits.
+# ``TestATransferShadowRowAtTheTransactionDoor`` stood here until plan step
+# balance:X-bi-6-4d-3 (ruling **R-BAL300**, developer 2026-10-15: "Delete all
+# 27").  Its two cases pinned WHERE plan step X-bi-6-1's shadow fence
+# (``is_transfer_shadow``) sits in ``get_accessible_transaction``: after both
+# access branches, so the owner's own shadow logged ``resource_not_found`` at
+# INFO with its transfer named, and a stranger's probe of one logged
+# ``access_denied_cross_user`` at WARNING, first.  No shadow can exist now
+# (the database refuses one, ``ck_transactions_names_no_transfer``, ruling
+# R-BAL258, pinned once by
+# ``TestTheUpgrade::test_the_database_refuses_a_twin`` in
+# ``tests/test_models/test_a_transfer_is_one_row.py``,
+# and no app code builds one), so the fence is reachable by no row and goes
+# with the column at plan step X-bi-6-5.  The order its stranger's case graded
+# is graded below, on the row the shared predicate can still refuse: a DELETED
+# one, probed by a stranger and by a companion.
 
-    A transfer's shadow row is "not found" at ``get_accessible_transaction``
-    (``is_transfer_shadow``), but AFTER the two access branches: a stranger
-    naming another owner's shadow is an access denial first -- WARNING, the
-    F-144 contract -- and "not found" second.  The leaf's first cut fenced
-    before the branches, so an IDOR probe against any of production's 354
-    shadow rows would have logged at INFO under ``resource_not_found``, with
-    the victim's ``transfer_id``; an adversarial review found it.
+
+class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
+    """Another owner's DELETED row, probed by a stranger or a companion: a denial, not "not found".
+
+    ``get_accessible_transaction_or_deleted`` asks the not-found predicate
+    (``is_not_found_to_transaction_doors``) AFTER both access branches, and its
+    comment says why: either probe is an access denial first (``access_denied_cross_user``
+    at WARNING, the F-144 contract) and "not found" second, so the predicate never runs
+    and logs nothing.  Measured at plan step ``balance:X-bi-6-4d-3`` (ruling **R-BAL300**):
+    evaluating the predicate ahead of the access branches, every return unchanged, logged
+    the row as ``resource_not_found`` before the denial and failed no test that captures a
+    log, for either requester (for the companion, at the deletion's parent too).  These two
+    cases are that grade.  Moving the whole block ahead also hands the requester the row's
+    NAME: both cases fail on that too, and ``TestNothingLeaksThroughTheName``
+    (``tests/test_routes/test_cc5_4a4_hidden_row_doors.py``) grades the name at every
+    surface.
     """
 
     @staticmethod
-    def _shadow_of_a_transfer(db, seed_user, period):
-        """A checking -> savings transfer's expense shadow for *seed_user*."""
-        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-            create_savings_account, create_transfer,
-        )
-        savings = create_savings_account(
-            seed_user, db.session, "Savings", Decimal("0.00"),
-        )
-        transfer = create_transfer(
-            seed_user, db.session, seed_user["account"], savings, period,
-            amount=Decimal("250.00"),
-        )
-        db.session.commit()
-        return (
-            db.session.query(Transaction)
-            .filter_by(transfer_id=transfer.id, account_id=seed_user["account"].id)
-            .one()
-        )
+    def _probe(requester, row):
+        """*requester* asks the door for *row*: ``(its answer, the auth_helpers records)``."""
+        login_user(requester)
+        with _AuthHelpersLogCapture() as cap:
+            answer = get_accessible_transaction_or_deleted(row.id)
+        return answer, cap
 
-    def test_the_owner_s_own_shadow_is_not_found_at_info(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The owner asking for their own shadow: 'not found', INFO, the transfer named."""
-        with app.test_request_context("/transactions/1/cell"):
-            shadow = self._shadow_of_a_transfer(db, seed_user, seed_periods[0])
-            login_user(seed_user["user"])
-            with _AuthHelpersLogCapture() as cap:
-                result = get_accessible_transaction(shadow.id)
-        assert result is None
-        record = cap.find(EVT_RESOURCE_NOT_FOUND)
-        assert record is not None and record.levelno == logging.INFO
-        assert record.transfer_id == shadow.transfer_id
-        assert cap.find(EVT_ACCESS_DENIED_CROSS_USER) is None
-
-    def test_a_stranger_s_probe_of_a_shadow_is_a_cross_user_denial_at_warning(
-        self, app, db, seed_user, seed_periods, second_user,
-    ):
-        """Owner B naming owner A's shadow: ``access_denied_cross_user``, WARNING, first."""
-        with app.test_request_context("/transactions/1/mark-done"):
-            shadow = self._shadow_of_a_transfer(db, seed_user, seed_periods[0])
-            login_user(second_user["user"])
-            with _AuthHelpersLogCapture() as cap:
-                result = get_accessible_transaction(shadow.id)
-        assert result is None
-        record = cap.find(EVT_ACCESS_DENIED_CROSS_USER)
-        assert record is not None, (
-            "a stranger's probe of a shadow row must be an access denial; "
-            f"records: {[(r.levelname, getattr(r, 'event', None)) for r in cap.records]}"
+    @staticmethod
+    def _is_the_denial_alone(answer, cap):
+        """Assert the door answered None, logged ONE WARNING denial and no "not found"."""
+        seen = [(r.levelname, getattr(r, "event", None)) for r in cap.records]
+        assert answer is None, (
+            f"The requester was answered {answer!r}, not None; records: {seen}"
         )
-        assert record.levelno == logging.WARNING
-        assert record.owner_id == seed_user["user"].id
+        denials = [
+            r for r in cap.records
+            if getattr(r, "event", None) == EVT_ACCESS_DENIED_CROSS_USER
+        ]
+        assert [r.levelno for r in denials] == [logging.WARNING], (
+            f"Expected exactly one WARNING access denial; records: {seen}"
+        )
         assert cap.find(EVT_RESOURCE_NOT_FOUND) is None, (
-            "the fence must not log the victim's transfer before the denial"
+            f"The requester's probe logged the row as not found; records: {seen}"
         )
+
+    def test_a_strangers_probe(self, app, seed_user, seed_second_user):
+        """seed_user names another user's deleted $45.00 Pool: one WARNING, no "not found"."""
+        with app.test_request_context("/some/path"):
+            theirs = a_deleted_occurrence(
+                db.session, seed_second_user, seed_second_user["bootstrap_period"],
+                amount="45.00", name="Pool",
+            )
+            # Precondition, read back after the builder's commit: a DELETED
+            # row of another user's, so the probe below is a stranger's.
+            assert theirs.is_deleted is True
+            assert theirs.user_id == seed_second_user["user"].id
+            assert theirs.user_id != seed_user["user"].id
+            answer, cap = self._probe(seed_user["user"], theirs)
+
+        self._is_the_denial_alone(answer, cap)
+
+    def test_a_companions_probe(self, app, seed_user, seed_companion):
+        """The owner's deleted $70.00 Massage, never shown to the companion: the same denial."""
+        with app.test_request_context("/some/path"):
+            row = a_deleted_occurrence(
+                db.session, seed_user, seed_user["bootstrap_period"],
+                amount="70.00", name="Massage", companion_visible=False,
+            )
+            companion = seed_companion["user"]
+            # Precondition, read back after the builder's commit: the requester
+            # is the owner's COMPANION (not the owner, yet acting on the owner's
+            # data, ``User.data_owner_id``), and the row is hidden from it and DELETED.
+            assert companion.id != row.user_id
+            assert companion.data_owner_id == row.user_id == seed_user["user"].id
+            assert row.visible_to_companion is False
+            assert row.is_deleted is True
+            answer, cap = self._probe(companion, row)
+
+        self._is_the_denial_alone(answer, cap)
 
 
 class TestRequireOwnerFailsClosed:

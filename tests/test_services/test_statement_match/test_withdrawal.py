@@ -133,7 +133,7 @@ def _a_savings_account(seed_user):
 
 
 def _a_transfer(seed_user):
-    """Create a checking -> savings transfer and its two shadows."""
+    """Create a $500.00 checking -> savings transfer, flushed; returns it."""
     xfer = transfer_service.create_transfer(
         transfer_service.TransferSpec(
             user_id=seed_user["user"].id,
@@ -841,32 +841,29 @@ class TestReleasingAnActDoesNotWithdrawTwice:
 
 
 class TestARowThatIsHalfOfSomethingElseRefusesTheDelete:
-    """Two shapes may not be deleted on their own, and the screen asks first.
+    """A CC payback may not be deleted on its own, and the screen asks first.
 
     ``deletion_refusal`` returns the sentence rather than raising, because the
     action card renders the delete control exactly when it is ``None`` -- the
-    same layering ``entry_service.removal_refusal`` has one table over.
+    same layering ``entry_service.removal_refusal`` has one table over.  It
+    graded a second shape, a transfer's shadow row, until plan step
+    ``balance:X-bi-6-4d-3`` (ruling **R-BAL300**), where no shadow can be
+    stored.
     """
 
-    def test_a_transfer_shadow_is_refused_and_says_where_to_go(
-        self, app, db, seed_user,
-    ):
-        """Both legs move together, so neither leaves alone."""
-        xfer = _a_transfer(seed_user)
-        shadow = (
-            db.session.query(Transaction)
-            .filter_by(transfer_id=xfer.id)
-            .first()
-        )
-
-        refusal = transaction_service.deletion_refusal(shadow)
-
-        assert refusal is not None
-        assert "transfer" in refusal.lower()
-        with pytest.raises(ValidationError, match="transfer"):
-            transaction_service.delete_transaction(
-                shadow, seed_user["user"].id,
-            )
+    # ``test_a_transfer_shadow_is_refused_and_says_where_to_go`` stood here
+    # until plan step balance:X-bi-6-4d-3 (ruling **R-BAL300**, developer
+    # 2026-10-15: "Delete all 27").  It asked ``deletion_refusal`` and the
+    # delete verb about a transfer's SHADOW row and asserted the sentence
+    # pointing at the transfer's own delete.  No shadow can exist now (the
+    # database refuses one, ``ck_transactions_names_no_transfer``, ruling
+    # R-BAL258, pinned once by
+    # ``TestTheUpgrade::test_the_database_refuses_a_twin`` in
+    # ``tests/test_models/test_a_transfer_is_one_row.py``,
+    # and no app code builds one), so that arm is reachable by no row and
+    # goes with the column at plan step X-bi-6-5.  A transfer's own delete
+    # is ``test_deleting_a_transfer_frees_both_shadows_lines`` in
+    # :class:`TestEveryDoorThatRemovesARowWithdrawsItsMatches`.
 
     def test_a_CC_payback_is_refused_and_names_Undo_CC(
         self, app, db, seed_user,

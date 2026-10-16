@@ -89,13 +89,15 @@ def _create_savings_account(seed_user):
     return acct
 
 
-def _create_transfer_with_shadows(seed_user, period, savings):
-    """Create a transfer + 2 shadow transactions via the service.
+def _create_transfer(seed_user, period, savings):
+    """Create a Checking -> Savings transfer via the service.
+
+    Named ``_create_transfer_with_shadows`` until plan step
+    ``balance:X-bi-6-4d-3``, which births no shadow (ruling R-BAL167 class 4,
+    plan step balance:X-bi-6-4d-3).
 
     Returns:
-        The parent Transfer (committed).  Use
-        ``Transaction.query.filter_by(transfer_id=xfer.id)`` to
-        retrieve the shadows.
+        The Transfer (committed).
     """
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     xfer = transfer_service.create_transfer(
@@ -385,6 +387,11 @@ class TestUpdateTransferFromALegFkOwnership:
     the same two references.  The boundary is graded THERE now: consistency
     matters more than micro-optimisation when the difference is "did the
     attacker's probe succeed."
+
+    Each case's leg is the transfer's from-side, read off the transfer.  It
+    was the account of the first live twin the case found until plan step
+    ``balance:X-bi-6-4d-3``, which births none; that twin sat on the
+    from-side (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-3).
     """
 
     def test_cross_user_pay_period_from_a_leg_returns_404(
@@ -398,16 +405,10 @@ class TestUpdateTransferFromALegFkOwnership:
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer_with_shadows(
+            xfer = _create_transfer(
                 seed_user, seed_periods_today[0], savings,
             )
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .first()
-            )
-            assert shadow is not None
-            shadow_id = shadow.id
+            leg_account_id = xfer.from_account_id
 
             original_period_id = xfer.pay_period_id
             original_status_id = xfer.status_id
@@ -419,7 +420,7 @@ class TestUpdateTransferFromALegFkOwnership:
                     "pay_period_id": str(seed_second_periods[0].id),
                     "amount": "200.00",
                     "amount_as_rendered": "123.45",
-                    "leg_account_id": str(shadow.account_id),
+                    "leg_account_id": str(leg_account_id),
                 },
             )
             assert resp.status_code == 404
@@ -449,16 +450,10 @@ class TestUpdateTransferFromALegFkOwnership:
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            xfer = _create_transfer_with_shadows(
+            xfer = _create_transfer(
                 seed_user, seed_periods_today[0], savings,
             )
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .first()
-            )
-            assert shadow is not None
-            shadow_id = shadow.id
+            leg_account_id = xfer.from_account_id
 
             original_category_id = xfer.category_id
 
@@ -468,7 +463,7 @@ class TestUpdateTransferFromALegFkOwnership:
                     "category_id": str(
                         seed_second_user["categories"]["Rent"].id
                     ),
-                    "leg_account_id": str(shadow.account_id),
+                    "leg_account_id": str(leg_account_id),
                 },
             )
             assert resp.status_code == 404

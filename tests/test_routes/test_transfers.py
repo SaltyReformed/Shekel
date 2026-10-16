@@ -17,12 +17,10 @@ from app.enums import (
     MovementFigureSourceEnum,
     SettledDayBasisEnum,
     StatusEnum,
-    TxnTypeEnum,
 )
 from app.extensions import db
 from app.models.account import Account
 from app.models.journal_entry import JournalEntry
-from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
 from app.models.recurrence_rule import RecurrenceRule
@@ -58,7 +56,6 @@ from tests._test_helpers import (
     pay_periods_hydrated,
     record_paydays_across_a_hole,
     rhythm_of,
-    shadow_amount,
     state_template_price,
     transfer_family_journal_filter,
     transfer_repriced_by_the_owner,
@@ -68,7 +65,7 @@ from tests._test_helpers import (
     typed,
 )
 from app.services.row_valuation import leg_settled_contribution
-from app.services.settle_day import SettleDay, record_settle_day
+from app.services.settle_day import SettleDay
 from app.models.amount_ownership import AmountOwnership
 from tests._test_helpers import rendered_transfer_amount
 from tests._test_helpers import transfer_amount
@@ -136,7 +133,7 @@ def _create_transfer(
     seed_user, seed_periods_today, savings_acct,
     template=None, amount=Decimal("200.00"), name="Monthly Savings",
 ):
-    """Helper: create a transfer with shadow transactions, in the first paycheck.
+    """Helper: create a transfer in the first paycheck.
 
     Two arms (plan step balance:X-ch).  With a *template* the transfer is the
     ENGINE's transfer of that definition (:func:`generate_transfer_of`):
@@ -185,18 +182,16 @@ def _received_transfer_of(template, period, seed_user, figure):
     because the one door that settles refuses this status.  The PARENT's
     status is the one status since plan step ``balance:X-bi-6-4d-2``, and
     laid bare it leaves both sides holding no payment record (the shape of a
-    ``$0.00`` close, which the band rule stores).  Both twins are given it
-    too, as Transfer Invariant 3 still words the pair, though no reader or
-    door reads a twin's status since that step (ruling R-BAL167 class 3,
-    plan step balance:X-bi-6-4d-2).
+    ``$0.00`` close, which the band rule stores).  It gave both twins the
+    status too until plan step ``balance:X-bi-6-4d-3``, which births none:
+    that loop ran over nothing (ruling R-BAL167 class 4, plan step
+    balance:X-bi-6-4d-3).
     """
     xfer = transfer_repriced_by_the_owner(
         generate_transfer_of(template, period), figure,
     )
     received = db.session.query(Status).filter_by(name="Received").one()
     xfer.status_id = received.id
-    for shadow in db.session.query(Transaction).filter_by(transfer_id=xfer.id):
-        shadow.status_id = received.id
     db.session.flush()
     return xfer
 
@@ -896,12 +891,18 @@ class TestTemplateUpdate:
                 TransferTemplate, tid,
             ).default_amount == Decimal("200.00")
 
-    def test_transfer_chooser_apply_use_realigns_transfer_and_shadows(
+    def test_transfer_chooser_apply_use_realigns_the_transfer(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Apply 'use' realigns the overridden transfer AND both shadow
-        transactions to the new amount, preserving transfer invariant 3
-        (shadow amounts always equal the parent's)."""
+        """Apply 'use' realigns the overridden transfer to the new amount.
+
+        It also read both shadow transactions' amounts until plan step
+        ``balance:X-bi-6-4d-3``, which births none: each side's figure is
+        derived from the transfer read here, a projection
+        ``test_transfer_legs.py::TestBothSidesShowTheTransfer`` grades
+        field by field (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-3).
+        """
         with app.app_context():
             from app.services import transfer_recurrence, transfer_service
             savings = _create_savings_account(seed_user)
@@ -940,16 +941,6 @@ class TestTemplateUpdate:
             reloaded = db.session.get(Transfer, xfer_id)
             assert transfer_amount(reloaded) == Decimal("250.00")
             assert reloaded.is_override is False
-            # Both shadows mirror the realigned amount (invariant 3).
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer_id)
-                .all()
-            )
-            assert len(shadows) == 2
-            assert all(
-                shadow_amount(s) == Decimal("250.00") for s in shadows
-            )
 
     def test_archive_template(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers/<id>/archive archives the template and soft-deletes transfers."""
@@ -1400,9 +1391,11 @@ class TestTransferInstance:
         on ``category_id=None`` (the assignment sits outside the
         ownership probe's not-None guard), but the schema's pre_load
         used to DROP the empty submit so the None never arrived -- the
-        nullable-field clear defect.  The parent and BOTH shadows must
-        come back NULL (Transfer Invariant 3: shadow fields mirror the
-        parent).
+        nullable-field clear defect.  The transfer must come back NULL,
+        re-read from the database.  Both shadows had to as well until plan
+        step ``balance:X-bi-6-4d-3``, which births none: each side's
+        category is derived from the transfer's (ruling R-BAL167 class 1,
+        plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -1415,20 +1408,18 @@ class TestTransferInstance:
             )
 
             assert response.status_code == 200
-            db.session.refresh(xfer)
-            assert xfer.category_id is None
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            )
-            assert len(shadows) == 2
-            assert all(s.category_id is None for s in shadows)
+            db.session.expire_all()
+            assert db.session.get(Transfer, xfer.id).category_id is None
 
     def test_update_transfer_due_date(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """PATCH /transfers/instance/<id> with due_date updates parent and shadows."""
+        """PATCH /transfers/instance/<id> with due_date updates the transfer.
+
+        Re-read from the database.  It read both shadows' due dates too until
+        plan step ``balance:X-bi-6-4d-3``, which births none (ruling R-BAL167
+        class 1, plan step balance:X-bi-6-4d-3).
+        """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
@@ -1439,15 +1430,8 @@ class TestTransferInstance:
             )
 
             assert response.status_code == 200
-            db.session.refresh(xfer)
-            assert xfer.due_date == date(2026, 4, 22)
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            )
-            assert len(shadows) == 2
-            assert all(s.due_date == date(2026, 4, 22) for s in shadows)
+            db.session.expire_all()
+            assert db.session.get(Transfer, xfer.id).due_date == date(2026, 4, 22)
 
     def test_update_transfer_blank_due_date_clears_it(
         self, app, auth_client, seed_user, seed_periods_today
@@ -1458,12 +1442,15 @@ class TestTransferInstance:
         behavior change): the edit form pre-fills due_date with the
         stored value, so an empty submit is the user's deliberate clear
         -- TransferUpdateSchema now loads it as an explicit None and the
-        service nulls the parent and both shadows.  The old "blank does
+        service nulls the transfer's due date.  The old "blank does
         not clobber" shield this test pinned also blocked legitimate
         clears; the stale-form clobber it guarded against (a form
         rendered before the date was set) is the C-18 ``version_id``
         pin's job -- the real form ships the pin and a stale submit gets
-        a 409 before any field is applied.
+        a 409 before any field is applied.  The transfer is re-read from the
+        database; the shadows' due dates were read too until plan step
+        ``balance:X-bi-6-4d-3``, which births none (ruling R-BAL167 class
+        1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -1479,16 +1466,10 @@ class TestTransferInstance:
             )
 
             assert response.status_code == 200
-            db.session.refresh(xfer)
+            db.session.expire_all()
+            xfer = db.session.get(Transfer, xfer.id)
             assert transfer_amount(xfer) == Decimal("300.00")
             assert xfer.due_date is None
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            )
-            assert len(shadows) == 2
-            assert all(s.due_date is None for s in shadows)
 
     def test_mark_done(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers/instance/<id>/mark-done sets status to done."""
@@ -1677,16 +1658,19 @@ class TestTransferInstance:
         The pair is AD-HOC so the retype is the only thing moving the figure: a
         generated transfer would resolve its definition's series and the case
         could not tell a working door from a silently ignored one.
+
+        The leg is the from-side, where the expense twin this read sat until
+        plan step ``balance:X-bi-6-4d-3``, which births none; the twins'
+        figures it read then are each side's projection of the transfer
+        read here, graded field by field by
+        ``test_transfer_legs.py::TestBothSidesShowTheTransfer`` (ruling
+        R-BAL167 class 1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
             xfer_id = xfer.id
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer_id)
-                .first()
-            )
+            leg_account_id = xfer.from_account_id
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer_id}",
@@ -1695,23 +1679,18 @@ class TestTransferInstance:
                     # What the box was RENDERED with, which is what makes this a
                     # RETYPE rather than an echo (ruling R-JR).
                     "amount_as_rendered": rendered_transfer_amount(xfer),
-                    "leg_account_id": str(shadow.account_id),
+                    "leg_account_id": str(leg_account_id),
                 },
             )
             assert response.status_code == 200, response.data
             html = response.data.decode()
             assert f'data-xfer-id="{xfer_id}"' in html
-            assert f'data-leg-account-id="{shadow.account_id}"' in html
+            assert f'data-leg-account-id="{leg_account_id}"' in html
             assert "377" in html
 
             db.session.expire_all()
             reloaded = db.session.get(Transfer, xfer_id)
             assert transfer_amount(reloaded) == Decimal("377.00")
-            legs = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id, is_deleted=False,
-            ).all()
-            assert len(legs) == 2
-            assert {shadow_amount(leg) for leg in legs} == {Decimal("377.00")}
 
     def test_finalised_transfer_leg_amount_edit_rejected(
         self, app, auth_client, seed_user, seed_periods_today
@@ -1722,17 +1701,17 @@ class TestTransferInstance:
         SHADOW PATCH this graded is gone, and the grid's door is the transfer
         PATCH carrying ``leg_account_id``.  The lock covers that entry point,
         the refusal renders INTO the leg's cell (so the person who clicked
-        sees it), and the parent amount is unchanged (#26).
+        sees it), and the parent amount is unchanged (#26), re-read from the
+        database.  The leg is the from-side, where the twin this read sat
+        until plan step ``balance:X-bi-6-4d-3``, which births none; the twins'
+        figures it also read are each side's projection of that amount
+        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
             auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .first()
-            )
+            leg_account_id = xfer.from_account_id
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
@@ -1741,22 +1720,18 @@ class TestTransferInstance:
                 data={
                     "amount": "999.99",
                     "amount_as_rendered": rendered_transfer_amount(xfer),
-                    "leg_account_id": str(shadow.account_id),
+                    "leg_account_id": str(leg_account_id),
                 },
             )
             assert response.status_code == 400
             html = response.data.decode()
             assert "finalised" in html
-            assert f'data-leg-account-id="{shadow.account_id}"' in html
+            assert f'data-leg-account-id="{leg_account_id}"' in html
 
-            db.session.refresh(xfer)
-            assert transfer_amount(xfer) == Decimal("200.00")
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            )
-            assert all(shadow_amount(s) == Decimal("200.00") for s in shadows)
+            db.session.expire_all()
+            assert transfer_amount(
+                db.session.get(Transfer, xfer.id),
+            ) == Decimal("200.00")
 
     def test_update_transfer_to_credit_rejected(
         self, app, auth_client, seed_user, seed_periods_today
@@ -1791,14 +1766,10 @@ class TestTransferInstance:
             assert "Invalid transfer status transition" in response.data.decode()
 
             # Parent and both sides untouched -- still Projected, no record.
+            # (It also counted two shadows until plan step
+            # balance:X-bi-6-4d-3, which births none.)
             db.session.refresh(xfer)
             assert xfer.status.name == "Projected"
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            )
-            assert len(shadows) == 2
             assert all(
                 transfer_side_record(db.session, xfer.id, account_id) is None
                 for account_id in (xfer.from_account_id, xfer.to_account_id)
@@ -1845,7 +1816,9 @@ class TestTransferInstance:
         transfer's status and its two sides holding no payment record, not
         the twins' statuses, which no door writes since plan step
         ``balance:X-bi-6-4d-2`` (ruling R-BAL167 class 1, plan step
-        balance:X-bi-6-4d-2).
+        balance:X-bi-6-4d-2).  The leg is the from-side, where the twin this
+        read its account off sat until plan step ``balance:X-bi-6-4d-3``,
+        which births none (ruling R-BAL167 class 1).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -1853,24 +1826,20 @@ class TestTransferInstance:
             credit_id = (
                 db.session.query(Status).filter_by(name="Credit").one().id
             )
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .first()
-            )
+            leg_account_id = xfer.from_account_id
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
                     "status_id": str(credit_id),
-                    "leg_account_id": str(shadow.account_id),
+                    "leg_account_id": str(leg_account_id),
                 },
             )
 
             assert response.status_code == 400
             html = response.data.decode()
             assert "Invalid transfer status transition" in html
-            assert f'data-leg-account-id="{shadow.account_id}"' in html
+            assert f'data-leg-account-id="{leg_account_id}"' in html
 
             # Parent and both sides untouched -- still Projected, no record.
             db.session.refresh(xfer)
@@ -1930,7 +1899,7 @@ class TestTransferInstance:
             db.session.refresh(xfer)
             assert xfer.is_override is True
 
-    def test_cancelled_transfer_contributes_nothing_through_its_shadows(
+    def test_cancelled_transfer_contributes_nothing_through_its_legs(
         self, app, auth_client, seed_user, seed_periods_today
     ):
         """A cancelled transfer's two LEGS are each worth ``$0.00``.
@@ -1953,6 +1922,12 @@ class TestTransferInstance:
         leg twin of the same accessor, where it was asked as its shadow
         (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  Cancelling
         the transfer is what makes both legs worth nothing.
+
+        Named ``..._through_its_shadows`` until plan step
+        ``balance:X-bi-6-4d-3``, which births no shadow; its guard that
+        exactly two shadows existed went too.  The loop below runs over the
+        transfer's two endpoints, a fixed pair, so it cannot run over
+        nothing (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -1961,12 +1936,6 @@ class TestTransferInstance:
             auth_client.post(f"/transfers/instance/{xfer.id}/cancel")
 
             db.session.refresh(xfer)
-            shadows = db.session.query(Transaction).filter(
-                Transaction.transfer_id == xfer.id,
-            ).all()
-            # Exactly two, per transfer invariant 1 -- so a regression that
-            # orphaned a leg cannot pass this by leaving nothing to sum.
-            assert len(shadows) == 2
             for account_id in (xfer.from_account_id, xfer.to_account_id):
                 leg = transfer_legs.grid_transfer_leg(xfer, account_id)
                 assert leg_settled_contribution(leg) == Decimal("0")
@@ -2027,7 +1996,12 @@ class TestAdHoc:
     def test_create_ad_hoc_transfer_with_due_date(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST /transfers/ad-hoc with due_date sets it on the parent and both shadows."""
+        """POST /transfers/ad-hoc with due_date sets it on the transfer.
+
+        Re-read from the database.  It read both shadows' due dates too until
+        plan step ``balance:X-bi-6-4d-3``, which births none (ruling R-BAL167
+        class 1, plan step balance:X-bi-6-4d-3).
+        """
         with app.app_context():
             savings = _create_savings_account(seed_user)
 
@@ -2043,19 +2017,13 @@ class TestAdHoc:
             })
 
             assert response.status_code == 201
+            db.session.expire_all()
             xfer = (
                 db.session.query(Transfer)
                 .filter_by(name="Dated Transfer")
                 .one()
             )
             assert xfer.due_date == date(2026, 3, 15)
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            )
-            assert len(shadows) == 2
-            assert all(s.due_date == date(2026, 3, 15) for s in shadows)
 
     def test_create_ad_hoc_validation_error(self, app, auth_client, seed_user):
         """POST /transfers/ad-hoc with missing fields returns 422."""
@@ -2126,8 +2094,11 @@ class TestAdHoc:
         cell HTML so the user sees the transfer they intended to
         create regardless of which request reached the database
         first.  After two identical submissions the period must
-        contain exactly one active ad-hoc transfer (and exactly two
-        active shadow transactions, not four).
+        contain exactly one active ad-hoc transfer.  It also counted two
+        active shadow transactions, not four, until plan step
+        ``balance:X-bi-6-4d-3``, which births none: a second transfer, the
+        only thing that made four, fails the one-transfer count first
+        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -2167,17 +2138,6 @@ class TestAdHoc:
             assert len(transfers) == 1, (
                 f"Expected exactly 1 active ad-hoc transfer after "
                 f"double-submit, found {len(transfers)}"
-            )
-            # Verify exactly 2 active shadow transactions (not 4 --
-            # invariant 1 still holds with the new constraint).
-            shadow_count = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=transfers[0].id, is_deleted=False)
-                .count()
-            )
-            assert shadow_count == 2, (
-                f"Expected exactly 2 active shadows for the deduped "
-                f"transfer, found {shadow_count}"
             )
 
     def test_create_ad_hoc_different_amount_allowed(
@@ -2226,7 +2186,7 @@ class TestAdHoc:
                 f"Expected 2 distinct ad-hoc transfers, found {count}"
             )
 
-    def test_mark_done_transfer_sets_the_settle_day_on_both_shadows(
+    def test_mark_done_transfer_sets_the_settle_day_on_both_sides(
         self, app, auth_client, seed_user, seed_periods_today
     ):
         """POST /transfers/instance/<id>/mark-done dates both sides.
@@ -2241,6 +2201,9 @@ class TestAdHoc:
         which hangs off the transfer since plan step
         ``balance:X-bi-6-4d-2``, and the transfer's status is the one
         status (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+        Named ``..._on_both_shadows`` until plan step
+        ``balance:X-bi-6-4d-3``, which births no shadow; its count of two
+        went too (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -2251,12 +2214,6 @@ class TestAdHoc:
             )
             assert response.status_code == 200
 
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .all()
-            )
-            assert len(shadows) == 2
             db.session.expire_all()
             assert db.session.get(Transfer, xfer.id).status.name == "Paid"
             for account_id in (xfer.from_account_id, xfer.to_account_id):
@@ -2445,24 +2402,15 @@ class TestTransferSettleDayEditDoor:
         return net_posted_by_day(transfer_family_journal_filter(xfer_id))
 
     @staticmethod
-    def _shadow_days(xfer_id):
-        """Return both live shadows' settle days, as a set (Invariant 3)."""
-        return {
-            shadow.settled_on
-            for shadow in db.session.query(Transaction)
-            .filter_by(transfer_id=xfer_id, is_deleted=False)
-            .all()
-        }
-
-    @staticmethod
     def _side_days(xfer_id):
         """Return both sides' recorded settle days, as a set.
 
         Each read off the side's payment RECORD, which hangs off the transfer
-        since plan step ``balance:X-bi-6-4d-2`` -- where ``_shadow_days``
-        reads the twins, which keep no day since that step (ruling R-BAL167
-        class 4, plan step balance:X-bi-6-4d-2).  ``None`` for a side holding
-        no dated record.
+        since plan step ``balance:X-bi-6-4d-2`` -- where a ``_shadow_days``
+        beside it read the twins, which kept no day since that step and are
+        born no more since ``balance:X-bi-6-4d-3`` (ruling R-BAL167 class 4,
+        plan step balance:X-bi-6-4d-3).  ``None`` for a side holding no dated
+        record.
         """
         xfer = db.session.get(Transfer, xfer_id)
         days = (
@@ -2581,7 +2529,10 @@ class TestTransferSettleDayEditDoor:
         surface, and a laundered basis would still be visible here.  The
         leg's side is read off its payment RECORD, which hangs off the
         transfer since plan step ``balance:X-bi-6-4d-2``, not off its twin
-        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  The leg is
+        the from-side, where the first twin this took its account from sat
+        until plan step ``balance:X-bi-6-4d-3``, which births none (ruling
+        R-BAL167 class 1).
         """
         with app.app_context():
             day = display_today() - timedelta(days=6)
@@ -2590,10 +2541,7 @@ class TestTransferSettleDayEditDoor:
             )
             self._state_both(xfer, seed_user["user"].id, an_observed_day(day))
             db.session.commit()
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id, is_deleted=False,
-            ).all()
-            leg_account_id = shadows[0].account_id
+            leg_account_id = xfer.from_account_id
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
@@ -2774,22 +2722,19 @@ class TestTransferSettleDayEditDoor:
 
         A Projected transfer's money has not moved, so there is no day to
         state.  Asserted from BOTH openers -- the transfers page and a grid
-        shadow cell -- because the shadow opener is the one N-181's rows are
-        reached through, and it renders this same partial from a different
-        blueprint.
+        leg's cell -- because the grid opener is the one N-181's rows are
+        reached through.  The leg is Savings', the side whose twin this took
+        its account from until plan step ``balance:X-bi-6-4d-3``, which
+        births none (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, account_id=savings.id)
-                .one()
-            )
 
             for url in (
                 f"/transfers/{xfer.id}/full-edit",
-                f"/transfers/{xfer.id}/full-edit?leg_account_id={shadow.account_id}",
+                f"/transfers/{xfer.id}/full-edit?leg_account_id={savings.id}",
             ):
                 response = auth_client.get(url)
                 assert response.status_code == 200, (
@@ -2818,7 +2763,7 @@ class TestTransferSettleDayEditDoor:
 
             for url in (
                 f"/transfers/{xfer.id}/full-edit",
-                f"/transfers/{xfer.id}/full-edit?leg_account_id={shadow.account_id}",
+                f"/transfers/{xfer.id}/full-edit?leg_account_id={savings.id}",
             ):
                 response = auth_client.get(url)
                 assert response.status_code == 200, f"{url} did not render"
@@ -2846,23 +2791,37 @@ class TestTransferSettleDayEditDoor:
     def test_an_undated_settled_transfer_still_offers_the_repair_box(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """A settled transfer carrying NO day still gets a correction input.
+        """A settled transfer carrying NO day still gets both day boxes, empty.
 
         The shape the template's condition is written for, and the reason it
-        keys on the STATUS rather than on a side's day: an undated
-        settled transfer made the posting writer before plan step
-        ``balance:X-bi-6-3`` raise ``UndatedSettleError`` (a 500 on the grid),
-        and the one movement writer now posts nothing for an undated movement,
-        so it is the row that most needs a way to state the day its money
-        really moved.  Keying
-        the condition on the day instead would hide the box from precisely that
-        row, and a neutral review found nothing grading the difference:
-        ``{% if xfer.settled_on %}`` passed the whole suite.
+        keys on the STATUS rather than on a side's day: a settled transfer
+        with no day is the one that most needs a way to state the day its
+        money really moved.  Keying the condition on the day instead would
+        hide the boxes from precisely that row, and a neutral review found
+        nothing grading the difference: ``{% if xfer.settled_on %}`` passed
+        the whole suite.  ``Transfer`` has no ``settled_on`` since plan step
+        ``balance:X-bi-6-4c-3``, so that spelling now hides the boxes on EVERY
+        settled transfer and ``test_full_edit_offers_the_correction_only_on_a_settled_transfer``
+        fails on it too; what only this case grades is a guard keyed on a
+        side's record or day, which a ``$0.00`` close lacks.
 
-        The row is built by clearing the column directly, which is legal only in
-        a fixture -- ``status_seam`` is the single writer and refuses to leave a
-        settled row undated -- because production's instances of this shape
-        predate the column (finding **N-181**).
+        **Its plant moved at plan step ``balance:X-bi-6-4d-3``** (ruling
+        R-BAL167 class 1, onto ruling **R-BAL141**'s shape; the coordinator's
+        ruling of 2026-10-15 under R-BAL207).  It cleared the day off a
+        settled transfer's twins and their records behind the seam (the
+        legacy shape of finding **N-181**).  That state is unrepresentable
+        since plan step ``balance:X-bi-6-4d-2``: a settled transfer holds a
+        DATED record on each side or none, and the database refuses an
+        un-dated one at commit (``budget.refuse_a_side_record_off_its_band``,
+        pinned by ``test_an_undated_record_under_a_paid_transfer_is_refused``
+        in ``tests/test_models/test_a_transfer_side_s_record_follows_its_status.py``'s
+        ``TestASettledTransferRecordsBothSidesOrNeither``).
+        The one settled-and-dayless state the database admits is a ``$0.00``
+        close, which holds no record and no day (R-BAL141), so the transfer
+        is settled and then closed at ``$0.00`` through the service.  The old
+        body cleared the twins' days while the records it meant to clear hung
+        off the transfer, so it likely graded nothing since 4d-2; that is
+        UNMEASURED.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -2871,51 +2830,40 @@ class TestTransferSettleDayEditDoor:
                 xfer.id, seed_user["user"].id,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
             )
-            db.session.commit()
-
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, account_id=savings.id)
-                .one()
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, figure=typed(Decimal("0")),
             )
-            # The legacy shape, reproduced the only way it can be: straight at
-            # the day pair, behind the seam's back -- a settled row with no
-            # day.  Its record (the covering movement) stands, un-dated with
-            # its row as the seam keeps every movement (each box reads its
-            # side's day off that record since plan step
-            # ``balance:X-bi-6-4c-3``); the day alone is what this case is
-            # about.
-            for row in (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .all()
-            ):
-                record_settle_day(row, None)
-                for movement in row.entries:
-                    if movement.covers_settlement:
-                        record_settle_day(movement, None)
             db.session.commit()
             db.session.expire_all()
-            assert self._shadow_days(xfer.id) == {None}
+
+            # PRECONDITION: settled, no record on either side, so no day.
+            assert db.session.get(Transfer, xfer.id).status.is_settled
+            assert [
+                transfer_side_record(db.session, xfer.id, account_id)
+                for account_id in (xfer.from_account_id, xfer.to_account_id)
+            ] == [None, None]
+            assert self._side_days(xfer.id) == {None}
 
             for url in (
                 f"/transfers/{xfer.id}/full-edit",
-                f"/transfers/{xfer.id}/full-edit?leg_account_id={shadow.account_id}",
+                f"/transfers/{xfer.id}/full-edit?leg_account_id={savings.id}",
             ):
                 response = auth_client.get(url)
                 assert response.status_code == 200, (
-                    f"{url} 500'd on an undated settled transfer -- the row "
-                    "that most needs the repair box"
+                    f"{url} 500'd on a settled transfer with no day -- the "
+                    "row that most needs the repair box"
                 )
                 body = response.get_data(as_text=True)
                 for field in ("settled_on_from", "settled_on_to"):
-                    assert f'name="{field}"' in body, (
-                        f"{url} hid the correction box from an UNDATED settled "
-                        "transfer, leaving it no way to state the real day"
+                    box = re.search(rf'<input[^>]*name="{field}"[^>]*>', body)
+                    assert box is not None, (
+                        f"{url} hid the {field} box from a settled transfer "
+                        "with no day, leaving it no way to state the real day"
                     )
-                assert 'value=""' in body, (
-                    f"{url} pre-filled a day onto a row that carries none"
-                )
+                    assert 'value=""' in box.group(0), (
+                        f"{url} pre-filled a day into {field} on a transfer "
+                        "that carries none: " + box.group(0)
+                    )
 
     def test_the_LEG_door_corrects_the_pair_too(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -2931,7 +2879,10 @@ class TestTransferSettleDayEditDoor:
         form makes: the day, and the leg it was opened from.  The pair and
         the ledger follow, as the transfers page's request makes them.  The
         pair's days are read off both sides' payment records, not the twins
-        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  The leg is
+        the from-side, named off the transfer where it was read off that
+        side's twin until plan step ``balance:X-bi-6-4d-3``, which births
+        none (ruling R-BAL167 class 1).
         """
         with app.app_context():
             original = display_today() - timedelta(days=8)
@@ -2939,17 +2890,12 @@ class TestTransferSettleDayEditDoor:
             xfer = self._settled_transfer(
                 seed_user, seed_periods_today, original,
             )
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, account_id=xfer.from_account_id)
-                .one()
-            )
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
                     **self._both_boxes(corrected),
-                    "leg_account_id": str(shadow.account_id),
+                    "leg_account_id": str(xfer.from_account_id),
                 },
             )
             assert response.status_code == 200, response.get_data(as_text=True)[:300]
@@ -2979,23 +2925,20 @@ class TestTransferSettleDayEditDoor:
         raises.  What is graded here is the drop, and that the
         refusal-free response is the leg's cell.  Both sides' days are read
         off their payment records, not the twins (ruling R-BAL167 class 1,
-        plan step balance:X-bi-6-4d-2).
+        plan step balance:X-bi-6-4d-2).  The leg is the from-side, named off
+        the transfer where it was read off that side's twin until plan step
+        ``balance:X-bi-6-4d-3``, which births none (ruling R-BAL167 class 1).
         """
         with app.app_context():
             settled_day = display_today() - timedelta(days=6)
             xfer = self._settled_transfer(
                 seed_user, seed_periods_today, settled_day,
             )
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, account_id=xfer.from_account_id)
-                .one()
-            )
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
-                    "leg_account_id": str(shadow.account_id),
+                    "leg_account_id": str(xfer.from_account_id),
                     "status_id": str(ref_cache.status_id(StatusEnum.PROJECTED)),
                     **self._both_boxes(settled_day),
                 },
@@ -3579,17 +3522,6 @@ class TestTransferNegativePaths:
 # ── Shadow Context Response Tests (H1 fix) ────────────────────────
 
 
-def _get_expense_shadow(xfer):
-    """Return the expense-side shadow transaction for a transfer."""
-    from app.models.ref import TransactionType  # pylint: disable=import-outside-toplevel
-    expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-    return (
-        db.session.query(Transaction)
-        .filter_by(transfer_id=xfer.id, transaction_type_id=expense_type.id)
-        .one()
-    )
-
-
 class TestLegContextResponse:
     """Verify that transfer route handlers render the LEG's grid cell
     (not _transfer_cell.html) when the request includes ``leg_account_id``,
@@ -3603,6 +3535,12 @@ class TestLegContextResponse:
     ``TransferLeg``, whose opener carries ``data-xfer-id`` and
     ``data-leg-account-id`` and whose wrapper is ``xfer-leg-<id>-<account>``.
 
+    Each case's leg is the transfer's FROM-side, read off the transfer.  A
+    file-local ``_get_expense_shadow`` found it as the expense twin's account
+    until plan step ``balance:X-bi-6-4d-3``, which births no twin; the twin
+    sat on the from-side (ruling R-BAL167 class 4, plan step
+    balance:X-bi-6-4d-3).
+
     Fixes H1, L2, L3 from transfer_rework_verification.md.
     """
 
@@ -3615,18 +3553,25 @@ class TestLegContextResponse:
         the grid, the response must be that leg's cell (the grid's partial,
         keyed by the leg's account) so the cell remains interactive after
         the update -- and NOT the transfers page's cell.
+
+        The amount is read off the transfer, re-read from the database.  The
+        expense twin's amount was read too until plan step
+        ``balance:X-bi-6-4d-3``, which births none: each side's figure is the
+        transfer's, projected (graded field by field by
+        ``test_transfer_legs.py::TestBothSidesShowTheTransfer``; ruling
+        R-BAL167 class 1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
-            shadow = _get_expense_shadow(xfer)
+            leg_account_id = xfer.from_account_id
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
                     "amount": "300.00",
                     "amount_as_rendered": rendered_transfer_amount(xfer),
-                    "leg_account_id": str(shadow.account_id),
+                    "leg_account_id": str(leg_account_id),
                 },
             )
 
@@ -3637,8 +3582,8 @@ class TestLegContextResponse:
             # transfer and the leg's account, and its Mark Paid is the
             # transfer's door.
             assert f'data-xfer-id="{xfer.id}"' in html
-            assert f'data-leg-account-id="{shadow.account_id}"' in html
-            assert f'data-cell="xfer-leg-{xfer.id}-{shadow.account_id}"' in html
+            assert f'data-leg-account-id="{leg_account_id}"' in html
+            assert f'data-cell="xfer-leg-{xfer.id}-{leg_account_id}"' in html
             assert "/transactions/" not in html
             # Must NOT render _transfer_cell.html (has transfer routes).
             assert "xfer-cell-" not in html
@@ -3647,13 +3592,10 @@ class TestLegContextResponse:
             assert resp.headers.get("HX-Trigger") == "balanceChanged"
 
             # Verify the transfer amount was actually updated.
-            db.session.refresh(xfer)
-            assert transfer_amount(xfer) == Decimal("300.00")
-
-            # Verify the shadow FOLLOWS the parent.  It holds no copy since
-            # plan step X-au-g-2c-2; Transfer Invariant 3 is what it READS.
-            db.session.refresh(shadow)
-            assert shadow_amount(shadow) == Decimal("300.00")
+            db.session.expire_all()
+            assert transfer_amount(
+                db.session.get(Transfer, xfer.id),
+            ) == Decimal("300.00")
 
     def test_mark_done_from_leg_renders_the_leg_cell_with_grid_refresh(
         self, app, auth_client, seed_user, seed_periods_today
@@ -3673,18 +3615,18 @@ class TestLegContextResponse:
         with app.app_context():
             savings = _create_savings_account(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
-            shadow = _get_expense_shadow(xfer)
+            leg_account_id = xfer.from_account_id
 
             resp = auth_client.post(
                 f"/transfers/instance/{xfer.id}/mark-done",
-                data={"leg_account_id": str(shadow.account_id)},
+                data={"leg_account_id": str(leg_account_id)},
             )
 
             assert resp.status_code == 200
             html = resp.data.decode()
 
             # The leg's cell, not the transfers page's cell.
-            assert f'data-leg-account-id="{shadow.account_id}"' in html
+            assert f'data-leg-account-id="{leg_account_id}"' in html
             assert "xfer-cell-" not in html
             assert "-- Paid" in html
             assert 'class="paybtn"' not in html
@@ -3710,17 +3652,17 @@ class TestLegContextResponse:
         with app.app_context():
             savings = _create_savings_account(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
-            shadow = _get_expense_shadow(xfer)
+            leg_account_id = xfer.from_account_id
 
             resp = auth_client.post(
                 f"/transfers/instance/{xfer.id}/cancel",
-                data={"leg_account_id": str(shadow.account_id)},
+                data={"leg_account_id": str(leg_account_id)},
             )
 
             assert resp.status_code == 200
             html = resp.data.decode()
 
-            assert f'data-leg-account-id="{shadow.account_id}"' in html
+            assert f'data-leg-account-id="{leg_account_id}"' in html
             assert "xfer-cell-" not in html
             assert resp.headers.get("HX-Trigger") == "gridRefresh"
 
@@ -3849,74 +3791,72 @@ class TestUnarchiveUsesService:
     service layer.
     """
 
-    def test_unarchive_restores_via_service_with_invariant_correction(
-        self, app, auth_client, seed_user, seed_periods_today
+    def test_unarchive_restores_through_the_service(
+        self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
     ):
-        """Verify that the unarchive route uses the transfer service to
-        restore soft-deleted transfers, including the service's invariant
-        correction logic.  An intentionally drifted shadow PERIOD should
-        be corrected on unarchive, proving the service was called.
+        """The unarchive route restores a hidden transfer THROUGH the service.
 
-        **The drift was the shadow's AMOUNT until plan step X-au-g-2c-2.**  A
-        shadow stores no figure now -- it declares ``PARENT_TRANSFER`` and reads
-        its parent -- so ``ck_transactions_amount_ownership`` refuses the write
-        the simulation made, and ``restore_transfer``'s amount corrector is
-        deleted along with the drift it repaired.  The PERIOD corrector
-        (Transfer Invariant 5) is still a hand-written repair and still the
-        proof this route reaches the service rather than flipping ``is_deleted``
-        itself; the amount half is graded as unconstructible in
-        ``test_transfer_service.TestRestoreTransfer``.
+        The subject is the CALL BOUNDARY: every transfer the route brings back
+        is handed to ``transfer_service.restore_transfer``, the one door
+        (Transfer Invariant 4), rather than un-hidden by the route itself.  A
+        spy wraps that door, records each call and PASSES THROUGH, so the
+        state read back below is the real restore's: not hidden, ``$200.00``
+        (the definition's price), Projected, in its own pay period.
+
+        **Was ``test_unarchive_restores_via_service_with_invariant_correction``
+        until plan step ``balance:X-bi-6-4d-3``.**  Its proof was a twin whose
+        period it drifted and the service re-synced; that step births no twin
+        (the database refuses one), and the re-sync is an arm leaf 3b
+        deletes.  What the door does after 3b that the route could not do
+        itself is ``assert_restorable``'s archived-endpoint refusal (F-164),
+        graded at the service, in ``test_transfer_service.py``'s
+        ``TestRestoreTransfer``, not through this route.  Re-expressed by the
+        coordinator's ruling (option A, R-BAL207, ruling R-BAL167 class 1,
+        plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)
+            # An ad-hoc transfer FIRST, which the unarchive does not touch: it
+            # takes id 1, so the restored transfer's id is not its owner's
+            # (also 1), and a swapped (owner, transfer) call cannot pass.
+            _create_transfer(seed_user, seed_periods_today, savings)
             xfer = _create_transfer(seed_user, seed_periods_today, savings, template)
-            xfer_id = xfer.id
+            xfer_id, owner_id = xfer.id, seed_user["user"].id
+            assert xfer_id != owner_id
 
-            # Soft-delete the transfer and shadows via the service.
-            transfer_service.delete_transfer(xfer_id, seed_user["user"].id, soft=True)
-            db.session.commit()
-
-            # Drift one shadow's period while soft-deleted.
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer_id)
-                .first()
-            )
-            drifted_period_id = next(
-                p.id for p in seed_periods_today if p.id != xfer.pay_period_id
-            )
-            shadow.pay_period_id = drifted_period_id
-            db.session.commit()
-
-            # Deactivate the template to match the route's expectations.
+            # Hide the transfer through the service, then archive the
+            # definition, the state the route's restore exists for.
+            transfer_service.delete_transfer(xfer_id, owner_id, soft=True)
             template.is_active = False
             db.session.commit()
 
-            # Unarchive via the route.
-            response = auth_client.post(
+            calls = []
+            restore = transfer_service.restore_transfer
+
+            def _spy(transfer_id, user_id):
+                """Record the call, then restore for real."""
+                calls.append((transfer_id, user_id))
+                return restore(transfer_id, user_id)
+
+            monkeypatch.setattr(transfer_service, "restore_transfer", _spy)
+
+            assert auth_client.post(
                 f"/transfers/{template.id}/unarchive",
                 follow_redirects=True,
+            ).status_code == 200
+            assert calls == [(xfer_id, owner_id)], (
+                "the route brought the transfer back without the service door"
             )
-
-            assert response.status_code == 200
-
-            # Transfer restored.
-            db.session.refresh(xfer)
-            assert xfer.is_deleted is False
-
-            # Both shadows restored AND the drifted period corrected.
-            # This proves the service's invariant correction ran.
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer_id)
-                .all()
+            db.session.expire_all()
+            restored = db.session.get(Transfer, xfer_id)
+            assert restored.is_deleted is False
+            assert transfer_amount(restored) == Decimal("200.00")
+            assert restored.status_id == ref_cache.status_id(
+                StatusEnum.PROJECTED,
             )
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.is_deleted is False
-                assert s.pay_period_id == xfer.pay_period_id
-                assert shadow_amount(s) == Decimal("200.00")
+            # Its own period: ``_create_transfer`` files it in the first paycheck.
+            assert restored.pay_period_id == seed_periods_today[0].id
 
 
 # ── One-Time Transfer Tests ────────────────────────────────────────────
@@ -3930,8 +3870,8 @@ class TestOneTimeTransfer:
     R2e-3 retired the ``Once`` PATTERN that was the second spelling.  It is
     also the create form's DEFAULT selection, so this is the ordinary path,
     not an edge.  Unlike a rule-less TRANSACTION template, which generates
-    nothing, this materialises exactly one Transfer with its two shadow
-    transactions in the chosen pay period.
+    nothing, this materialises exactly one Transfer in the chosen pay
+    period.
 
     **Every case here 500'd before R2e-3** (defect **D13**): the route
     dereferenced ``rule.id`` with no null branch, on a comment claiming the
@@ -3945,11 +3885,18 @@ class TestOneTimeTransfer:
     unit, kept as a present ``None`` by ``_normalize_empty_inputs``.
     """
 
-    def test_non_repeating_creates_one_transfer_and_two_shadows(
+    def test_non_repeating_creates_one_transfer(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """POST /transfers with an EMPTY pattern creates a rule-less template
-        AND a single Transfer with exactly two shadow transactions.
+        AND a single Transfer.
+
+        Named ``..._and_two_shadows`` until plan step
+        ``balance:X-bi-6-4d-3``, which births no shadow: its count of two
+        and their expense / income types went, the sides being the
+        transfer's projection by endpoint (``test_transfer_legs.py``'s
+        ``TestBothSidesShowTheTransfer``; ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -3993,22 +3940,17 @@ class TestOneTimeTransfer:
             # transfers on production.
             assert xfer.due_date == seed_periods_today[1].start_date
 
-            # Exactly two shadow transactions exist.
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .all()
-            )
-            assert len(shadows) == 2
-
-            types = {s.transaction_type.name for s in shadows}
-            assert types == {"Expense", "Income"}
-
-    def test_non_repeating_shadow_accounts(
+    def test_non_repeating_transfer_accounts(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Non-repeating transfer shadows are linked to the correct accounts:
-        expense shadow on from_account, income shadow on to_account.
+        """A non-repeating transfer runs from the form's from-account to its to-account.
+
+        Re-read from the database.  Named ``test_non_repeating_shadow_accounts``
+        until plan step ``balance:X-bi-6-4d-3``, which births no shadow: it
+        read the expense twin's account (the from-account) and the income
+        twin's (the to-account), which are the transfer's two endpoint
+        columns read here (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -4024,6 +3966,7 @@ class TestOneTimeTransfer:
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
 
+            db.session.expire_all()
             tmpl = (
                 db.session.query(TransferTemplate)
                 .filter_by(name="Account Check")
@@ -4034,31 +3977,24 @@ class TestOneTimeTransfer:
                 .filter_by(transfer_template_id=tmpl.id)
                 .one()
             )
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .all()
+
+            # The money leaves checking and lands in savings.
+            assert (xfer.from_account_id, xfer.to_account_id) == (
+                checking_id, savings.id,
             )
-
-            expense_shadow = [
-                s for s in shadows if s.transaction_type.name == "Expense"
-            ][0]
-            income_shadow = [
-                s for s in shadows if s.transaction_type.name == "Income"
-            ][0]
-
-            # Expense drains the from_account (checking).
-            assert expense_shadow.account_id == checking_id
-            # Income fills the to_account (savings).
-            assert income_shadow.account_id == savings.id
 
     def test_non_repeating_balance_impact(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Non-repeating transfer shadows affect balance calculations.
+        """A non-repeating transfer moves both accounts' balances.
 
         The checking balance should decrease and savings balance should
-        increase by the transfer amount.
+        increase by the transfer amount.  Each balance reads the transfer's
+        LEG on its account (Transfer Invariant 5).  The case also asserted a
+        shadow existed on each account until plan step
+        ``balance:X-bi-6-4d-3``, which births none; the transfer the create
+        placed is asserted instead (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-3).  The two balances are unchanged.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -4078,17 +4014,15 @@ class TestOneTimeTransfer:
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
 
-            # Get shadow transactions for checking account.
-            checking_shadows = (
-                db.session.query(Transaction)
-                .filter(
-                    Transaction.account_id == seed_user["account"].id,
-                    Transaction.transfer_id.isnot(None),
-                    Transaction.is_deleted.is_(False),
-                )
-                .all()
+            # The create placed the one transfer the balances below read.
+            placed = (
+                db.session.query(Transfer)
+                .filter_by(user_id=seed_user["user"].id, is_deleted=False)
+                .one()
             )
-            assert checking_shadows
+            assert (placed.pay_period_id, transfer_amount(placed)) == (
+                seed_periods_today[1].id, Decimal("250.00"),
+            )
             # ``as_of`` is pinned inside period 0: the transfer lands in period
             # 1, which is in the PAST relative to this fixture's today, and
             # ruling R-G clamps a still-Projected row forward past a reader's
@@ -4103,17 +4037,6 @@ class TestOneTimeTransfer:
             # Checking decreased by 250 in period 2.
             assert checking_balances[seed_periods_today[1].id] == Decimal("750.00")
 
-            # Get shadow transactions for savings account.
-            savings_shadows = (
-                db.session.query(Transaction)
-                .filter(
-                    Transaction.account_id == savings.id,
-                    Transaction.transfer_id.isnot(None),
-                    Transaction.is_deleted.is_(False),
-                )
-                .all()
-            )
-            assert savings_shadows
             savings_balances = balance_at.cash_balance_map(
                 savings, ctx,
             )
@@ -4262,7 +4185,7 @@ class TestOneTimeTransfer:
     def test_changing_accounts_on_a_non_repeating_transfer_moves_the_pair(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """An account change reaches the Transfer and BOTH of its shadows.
+        """An account change reaches the Transfer's two endpoints.
 
         **RE-RULED at plan step R10-b** (developer decision, 2026-08-20).  This
         case asserted a REFUSAL -- "cannot be moved between accounts" -- and
@@ -4275,10 +4198,14 @@ class TestOneTimeTransfer:
         (``transfer_service._endpoints``), so the edit applies here too and one
         edit stops meaning two different things.
 
-        Asserts all three rows, because moving the parent alone would leave the
-        shadows on the accounts the money no longer moves between -- and each
-        shadow's display NAME is derived from the endpoints, so a moved leg
-        keeping its old name is a row that contradicts itself.
+        It asserted all three rows until plan step ``balance:X-bi-6-4d-3``,
+        which births no shadow: each side is the transfer's projection by
+        endpoint now (``test_transfer_legs.py``'s
+        ``TestBothSidesShowTheTransfer``), and a side's display NAME is
+        composed from the endpoints at read time (its label is pinned by
+        ``TestALegsDisplayProjections`` there), so the transfer's two
+        endpoint columns, re-read, are what this asserts (ruling R-BAL167
+        class 1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -4313,18 +4240,6 @@ class TestOneTimeTransfer:
                 transfer_template_id=tmpl.id).one()
             assert xfer.to_account_id == other.id
             assert xfer.from_account_id == seed_user["account"].id
-            shadows = {
-                shadow.transaction_type_id: shadow
-                for shadow in db.session.query(Transaction).filter_by(
-                    transfer_id=xfer.id, is_deleted=False,
-                )
-            }
-            expense = shadows[ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)]
-            income = shadows[ref_cache.txn_type_id(TxnTypeEnum.INCOME)]
-            assert expense.account_id == seed_user["account"].id
-            assert income.account_id == other.id
-            assert expense.name == f"Transfer to {other.name}"
-            assert income.name == f"Transfer from {seed_user['account'].name}"
 
     def test_a_non_repeating_transfer_holding_a_record_is_retained_too(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -4344,7 +4259,11 @@ class TestOneTimeTransfer:
         re-pointing the pair would re-file against an account nobody asserted it
         on.  Each side's kept record hangs off the transfer since plan step
         ``balance:X-bi-6-4d-2`` and is read there, not off the twins (ruling
-        R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+        R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  It also counted
+        the twins on the old destination until plan step
+        ``balance:X-bi-6-4d-3``, which births none; the transfer's own
+        destination column, re-read, says where the side is (ruling R-BAL167
+        class 1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -4393,10 +4312,6 @@ class TestOneTimeTransfer:
             assert held.to_account_id == savings_id, (
                 "the row carrying a recorded figure was re-filed anyway"
             )
-            legs = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id, is_deleted=False,
-            ).all()
-            assert [leg.account_id for leg in legs].count(savings_id) == 1
             assert all(
                 transfer_side_record(db.session, xfer_id, account_id).amount
                 == Decimal("412.90")
@@ -4482,7 +4397,8 @@ class TestOneTimeTransfer:
         its record before any producer runs.  The record hangs off the
         transfer since plan step ``balance:X-bi-6-4d-2`` and is read there
         rather than off the twins (ruling R-BAL167 class 1, plan step
-        balance:X-bi-6-4d-2).
+        balance:X-bi-6-4d-2); their count of two went at
+        ``balance:X-bi-6-4d-3``, which births none (ruling R-BAL167 class 1).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -4521,10 +4437,6 @@ class TestOneTimeTransfer:
             ) == Decimal("900.00")
             # ... and what MOVED is untouched, which is the immutability this
             # case is named for.
-            legs = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id, is_deleted=False,
-            ).all()
-            assert len(legs) == 2
             held = db.session.get(Transfer, xfer_id)
             assert {
                 transfer_side_figure(db.session, xfer_id, account_id)
@@ -4587,6 +4499,11 @@ class TestOneTimeTransfer:
         bounds the sweep at ``PayPeriod.end_date >= effective_from``, so a
         past-period transfer survives a rename for an unrelated reason and
         would pass this test against the broken code.
+
+        It also counted the transfer's two shadows before and after, and read
+        their amounts, until plan step ``balance:X-bi-6-4d-3``, which births
+        none; the surviving transfer's id, name and price are read instead
+        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -4615,9 +4532,6 @@ class TestOneTimeTransfer:
                 db.session.query(Transfer)
                 .filter_by(transfer_template_id=tmpl.id).one()
             )
-            assert db.session.query(Transaction).filter_by(
-                transfer_id=before.id, is_deleted=False,
-            ).count() == 2
 
             auth_client.post(f"/transfers/{tmpl.id}", data={
                 "name": "Renamed",
@@ -4636,10 +4550,6 @@ class TestOneTimeTransfer:
             )
             assert len(after) == 1, "the rename destroyed the transfer (D16)"
             assert after[0].id == before.id
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=after[0].id, is_deleted=False,
-            ).all()
-            assert len(shadows) == 2
 
             # SURVIVING is only half of it: the edit must also REACH the row.
             # Asserting only that the id still exists passes against a route
@@ -4649,7 +4559,6 @@ class TestOneTimeTransfer:
             # $500.00, under a plain "updated." flash.
             assert after[0].name == "Renamed"
             assert transfer_amount(after[0]) == Decimal("650.00")
-            assert {shadow_amount(s) for s in shadows} == {Decimal("650.00")}
 
     def test_recurring_transfer_idor_period(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -4714,9 +4623,14 @@ class TestOneTimeTransfer:
 class TestTransferTemplateHardDelete:
     """Tests for POST /transfers/<id>/hard-delete (permanent deletion).
 
-    These tests verify transfer invariant compliance: shadow transactions
-    must never be orphaned, and all deletions must flow through the
-    transfer service.
+    These tests verify transfer invariant compliance: all deletions must
+    flow through the transfer service.  They also counted shadow
+    transactions before and after, so none was orphaned, until plan step
+    ``balance:X-bi-6-4d-3``, which births none: the database refuses a
+    transaction naming a transfer (``ck_transactions_names_no_transfer``),
+    so an orphan count is over rows nothing can write, 0 before any act,
+    and those counts are dropped (ruling R-BAL167 class 1, plan step
+    balance:X-bi-6-4d-3).
     """
 
     def test_hard_delete_transfer_template_no_history(
@@ -4731,12 +4645,6 @@ class TestTransferTemplateHardDelete:
             template_id = template.id
             xfer_id = xfer.id
 
-            # Verify shadows exist before deletion.
-            shadow_count_before = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id,
-            ).count()
-            assert shadow_count_before == 2
-
             resp = auth_client.post(
                 f"/transfers/{template_id}/hard-delete",
                 follow_redirects=True,
@@ -4749,12 +4657,6 @@ class TestTransferTemplateHardDelete:
 
             # Transfer is gone.
             assert db.session.get(Transfer, xfer_id) is None
-
-            # Shadow transactions are gone.
-            shadow_count_after = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id,
-            ).count()
-            assert shadow_count_after == 0
 
     def test_hard_delete_transfer_template_no_transfers(
         self, app, auth_client, seed_user,
@@ -4776,7 +4678,14 @@ class TestTransferTemplateHardDelete:
     def test_hard_delete_transfer_template_with_history(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """C-5A.5-18: Template with Paid transfer is blocked and archived instead."""
+        """C-5A.5-18: Template with Paid transfer is blocked and archived instead.
+
+        "The Paid transfer is untouched" read its two shadows, still there and
+        not hidden, until plan step ``balance:X-bi-6-4d-3``, which births
+        none; it reads the transfer, not hidden, and both sides' payment
+        records, still held, which is what the settle left (ruling R-BAL167
+        class 1, plan step balance:X-bi-6-4d-3).
+        """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)
@@ -4802,15 +4711,13 @@ class TestTransferTemplateHardDelete:
             db.session.refresh(template)
             assert template.is_active is False
 
-            # Paid transfer and its shadows are untouched.
+            # Paid transfer and its two sides' records are untouched.
             db.session.refresh(xfer_paid)
             assert xfer_paid.is_deleted is False
-            paid_shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_paid.id,
-            ).all()
-            assert len(paid_shadows) == 2
-            for shadow in paid_shadows:
-                assert shadow.is_deleted is False
+            for account_id in (xfer_paid.from_account_id, xfer_paid.to_account_id):
+                assert transfer_side_record(
+                    db.session, xfer_paid.id, account_id,
+                ) is not None
 
             # Projected transfer is soft-deleted.
             db.session.refresh(xfer_projected)
@@ -4827,7 +4734,12 @@ class TestTransferTemplateHardDelete:
         and the permanent delete is no longer turned into an archive -- the
         outcome Josh's answer 17 was promised a test of.  The ledger the
         transfer's own delete left is the ledger after: the permanent delete
-        removes a plan, which posted nothing.
+        removes a plan, which posted nothing.  Its count of the transfer's
+        shadows after the delete (0) was VACUOUS from plan step
+        ``balance:X-bi-6-4d-3``, which births none and whose CHECK refuses
+        one: a count over rows nothing can write, 0 before the delete too,
+        so it is dropped (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -4856,9 +4768,6 @@ class TestTransferTemplateHardDelete:
             db.session.expire_all()
             assert db.session.get(TransferTemplate, template_id) is None
             assert db.session.get(Transfer, xfer_id) is None
-            assert db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id,
-            ).count() == 0
             assert _ledger_of(
                 seed_user, checking_id, savings_id, scenario_id,
             ) == ledger
@@ -4901,8 +4810,12 @@ class TestTransferTemplateHardDelete:
         ``transfer_template_has_paid_history`` -- now filtering on
         ``Status.is_settled`` -- correctly returns True for a
         RECEIVED transfer and the route archives instead of
-        physically destroying the transfer plus its shadow pair.
-        Verifies the predicate fix end-to-end at the route layer.
+        physically destroying the transfer.
+        Verifies the predicate fix end-to-end at the route layer.  It also
+        counted the transfer's two surviving shadows until plan step
+        ``balance:X-bi-6-4d-3``, which births none; the surviving transfer,
+        its status and figure are what it reads (ruling R-BAL167 class 1,
+        plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -4945,13 +4858,6 @@ class TestTransferTemplateHardDelete:
             assert surviving.is_deleted is False
             assert transfer_amount(surviving) == Decimal("250.00")
 
-            # Both shadows survive untouched (transfer invariant 1: a
-            # transfer always has exactly two linked shadows).
-            shadow_count = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id,
-            ).count()
-            assert shadow_count == 2
-
     def test_hard_delete_transfer_template_bulk_delete_skips_settled_rows(
         self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
     ):
@@ -4963,29 +4869,30 @@ class TestTransferTemplateHardDelete:
         ``Status.is_settled`` so the guard at the route's entry
         catches every settled status.  This commit adds the second
         layer: the bulk-delete loop itself filters on
-        ``Transaction.status_id.notin_(settled_status_ids)`` so a
+        ``Transfer.status_id.notin_(settled_status_ids)`` so a
         future regression of the predicate, a race window between
         the guard and the delete, or a different caller that bypasses
-        the guard cannot physically destroy settled transfers plus
-        their shadow pairs.  This test forces the bypass scenario by
+        the guard cannot physically destroy settled transfers.  This
+        test forces the bypass scenario by
         monkey-patching ``transfer_template_has_paid_history`` to
         return False even when a RECEIVED transfer exists, then
-        asserts the post-conditions: the settled transfer plus its
-        two shadows survive intact while the Projected transfer is
-        deleted as intended.
+        asserts the post-conditions: the settled transfer survives
+        intact while the Projected transfer is deleted as intended.
 
         ``Transfer.transfer_template_id`` is a FK with ``ON DELETE
         SET NULL`` (``app/models/transfer.py``) so the surviving
         Received transfer has its ``transfer_template_id`` cleared
         but its financial data -- amount, status, period -- is
-        intact.  Both linked shadow transactions ride along: they
-        reference ``transfer_id`` (NOT NULL), so the transfer's
-        survival guarantees their survival.  "Untouched" is graded on the
+        intact.  "Untouched" is graded on the
         transfer's status, the one status since plan step
         ``balance:X-bi-6-4d-2``, and on its two sides still holding no
         payment record, as ``_received_transfer_of`` left them -- not on
         the twins' planted statuses, which nothing writes or reads since
-        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  It also
+        counted and read both transfers' shadows until plan step
+        ``balance:X-bi-6-4d-3``, which births none: the deleted transfer's
+        orphan count was over rows nothing can write (ruling R-BAL167 class
+        1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -5004,16 +4911,10 @@ class TestTransferTemplateHardDelete:
             template_id = template.id
             received_id = xfer_received.id
             projected_id = xfer_projected.id
-            received_shadow_ids = [
-                row.id for row in db.session.query(Transaction).filter_by(
-                    transfer_id=received_id,
-                ).all()
-            ]
-            assert len(received_shadow_ids) == 2
 
             # Force the bypass: predicate lies and says "no history."
             # The defense-in-depth filter inside the route is what must
-            # save the Received transfer plus its two shadows.
+            # save the Received transfer.
             monkeypatch.setattr(
                 "app.routes.transfers.lifecycle.archive_helpers.transfer_template_has_paid_history",
                 lambda _template_id: False,
@@ -5035,18 +4936,6 @@ class TestTransferTemplateHardDelete:
             # (Decimal from string per coding standards).
             assert transfer_amount(surviving) == Decimal("250.00")
             assert surviving.transfer_template_id is None
-
-            # Both shadows of the Received transfer survive untouched
-            # (transfer invariant 1: a transfer always has exactly two
-            # linked shadows).
-            surviving_shadows = db.session.query(Transaction).filter_by(
-                transfer_id=received_id,
-            ).all()
-            assert len(surviving_shadows) == 2
-            for shadow in surviving_shadows:
-                assert shadow.is_deleted is False
-                assert shadow_amount(shadow) == Decimal("250.00")
-            assert {s.id for s in surviving_shadows} == set(received_shadow_ids)
             for account_id in (surviving.from_account_id, surviving.to_account_id):
                 assert transfer_side_record(
                     db.session, received_id, account_id,
@@ -5056,18 +4945,23 @@ class TestTransferTemplateHardDelete:
             # bulk loop, as intended -- the defense-in-depth filter is
             # additive, not a wholesale block.
             assert db.session.get(Transfer, projected_id) is None
-            orphaned_projected_shadows = db.session.query(Transaction).filter_by(
-                transfer_id=projected_id,
-            ).count()
-            assert orphaned_projected_shadows == 0
 
             # Template itself was deleted (the bypass path completed).
             assert db.session.get(TransferTemplate, template_id) is None
 
-    def test_hard_delete_preserves_shadow_invariant(
+    def test_hard_delete_removes_every_transfer(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """C-5A.5-19: No orphaned shadows remain after hard-deleting a template's transfers."""
+        """C-5A.5-19: Hard-deleting a template removes ALL of its transfers.
+
+        Named ``test_hard_delete_preserves_shadow_invariant`` until plan step
+        ``balance:X-bi-6-4d-3``, which births no shadow: it counted six
+        shadows (two per transfer) before the delete and none after, so no
+        shadow was orphaned.  A transaction naming a transfer is refused by
+        the database now, so neither count can read anything but 0; the
+        three transfers, present before and gone after, are what this reads
+        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-3).
+        """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)
@@ -5078,19 +4972,9 @@ class TestTransferTemplateHardDelete:
                 for i in range(3)
             ]
             db.session.commit()
-
-            # Verify 3 transfers, 6 shadows (2 per transfer) before deletion.
-            total_shadows_before = 0
-            for xfer_id in xfer_ids:
-                count = db.session.query(Transaction).filter_by(
-                    transfer_id=xfer_id,
-                ).count()
-                assert count == 2, (
-                    f"Transfer {xfer_id} should have exactly 2 shadows, "
-                    f"found {count}"
-                )
-                total_shadows_before += count
-            assert total_shadows_before == 6
+            assert db.session.query(Transfer).filter(
+                Transfer.id.in_(xfer_ids),
+            ).count() == 3
 
             template_id = template.id
 
@@ -5106,16 +4990,6 @@ class TestTransferTemplateHardDelete:
             assert db.session.get(TransferTemplate, template_id) is None
             for xfer_id in xfer_ids:
                 assert db.session.get(Transfer, xfer_id) is None
-
-            # No orphaned shadows: query for any Transaction with a
-            # transfer_id that was just deleted.
-            orphaned_shadows = db.session.query(Transaction).filter(
-                Transaction.transfer_id.in_(xfer_ids),
-            ).count()
-            assert orphaned_shadows == 0, (
-                f"Found {orphaned_shadows} orphaned shadow transactions "
-                f"after hard-deleting template {template_id}"
-            )
 
     def test_hard_delete_transfer_template_idor(
         self, app, auth_client, seed_user,
@@ -5192,7 +5066,15 @@ class TestTransferTemplateHardDelete:
     def test_hard_delete_transfer_template_soft_deleted_transfers_cleaned(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Soft-deleted transfers and their shadows are permanently removed on hard-delete."""
+        """Soft-deleted transfers are permanently removed on hard-delete.
+
+        Its reads of the transfer's shadows -- all hidden before the
+        hard-delete, none left after -- were VACUOUS from plan step
+        ``balance:X-bi-6-4d-3``, which births none and whose CHECK refuses
+        one: an ``all()`` over an empty list and a count 0 before the act,
+        so they are dropped (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-3).
+        """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)
@@ -5205,12 +5087,6 @@ class TestTransferTemplateHardDelete:
 
             db.session.refresh(xfer)
             assert xfer.is_deleted is True
-
-            # Shadows are also soft-deleted.
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id,
-            ).all()
-            assert all(s.is_deleted for s in shadows)
 
             template_id = template.id
 
@@ -5225,10 +5101,6 @@ class TestTransferTemplateHardDelete:
             # Everything is gone -- no ghost data.
             assert db.session.get(TransferTemplate, template_id) is None
             assert db.session.get(Transfer, xfer_id) is None
-            orphans = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id,
-            ).count()
-            assert orphans == 0
 
 
 # ── Period move (transfer-period-move follow-up) ──────────────────
@@ -5237,20 +5109,14 @@ class TestTransferTemplateHardDelete:
 class TestTransferPeriodMove:
     """Moving a transfer's pay period from the full-edit popover.
 
-    The transfer service already relocates the parent transfer and both
-    shadow transactions together (Transfer Invariant 3); these tests
-    cover the UI wiring: the filtered period selector, the override flag
-    on a template move, the gridRefresh trigger, and route-boundary
-    ownership of the submitted period id.
+    The transfer service relocates the transfer, and each side is its
+    projection, so it moves with it; these tests cover the UI wiring: the
+    filtered period selector, the override flag on a template move, the
+    gridRefresh trigger, and route-boundary ownership of the submitted
+    period id.  A file-local ``_shadows`` read the two shadow transactions'
+    periods until plan step ``balance:X-bi-6-4d-3``, which births none
+    (ruling R-BAL167 class 4, plan step balance:X-bi-6-4d-3).
     """
-
-    def _shadows(self, xfer_id):
-        """Return the two shadow transactions for a transfer."""
-        return (
-            db.session.query(Transaction)
-            .filter_by(transfer_id=xfer_id)
-            .all()
-        )
 
     def test_full_edit_renders_filtered_period_selector(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -5287,14 +5153,19 @@ class TestTransferPeriodMove:
                 excluded_past.id,
             ).label not in period_select
 
-    def test_move_relocates_transfer_and_both_shadows(
+    def test_move_relocates_the_transfer(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """A period move relocates the transfer and both shadows; gridRefresh.
+        """A period move relocates the transfer; gridRefresh.
 
-        Verifies Transfer Invariant 3 (shadow periods equal the parent's)
-        is preserved through the move and that the response asks for a
-        full grid refresh so the relocated rows appear under the new period.
+        The response asks for a full grid refresh so the relocated legs
+        appear under the new period.  Named
+        ``test_move_relocates_transfer_and_both_shadows`` until plan step
+        ``balance:X-bi-6-4d-3``, which births no shadow: it read both
+        shadows' periods (Transfer Invariant 3), which are each side's
+        projection of the transfer's period read here
+        (``test_transfer_legs.py``'s ``TestBothSidesShowTheTransfer``;
+        ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -5308,11 +5179,8 @@ class TestTransferPeriodMove:
             assert resp.status_code == 200
             assert resp.headers.get("HX-Trigger") == "gridRefresh"
 
-            db.session.refresh(xfer)
-            assert xfer.pay_period_id == target.id
-            shadows = self._shadows(xfer.id)
-            assert len(shadows) == 2
-            assert all(s.pay_period_id == target.id for s in shadows)
+            db.session.expire_all()
+            assert db.session.get(Transfer, xfer.id).pay_period_id == target.id
 
     def test_template_transfer_move_sets_override(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -5343,7 +5211,13 @@ class TestTransferPeriodMove:
     def test_move_to_cross_user_period_rejected(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Submitting another user's period id returns 404 and moves nothing."""
+        """Submitting another user's period id returns 404 and moves nothing.
+
+        Its read of the shadows' periods was VACUOUS from plan step
+        ``balance:X-bi-6-4d-3``, which births none: an ``all()`` over an
+        empty list.  Dropped; the transfer's own period is the read (ruling
+        R-BAL167 class 1, plan step balance:X-bi-6-4d-3).
+        """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
@@ -5361,10 +5235,6 @@ class TestTransferPeriodMove:
             assert resp.status_code == 404
             db.session.refresh(xfer)
             assert xfer.pay_period_id == original_period_id
-            assert all(
-                s.pay_period_id == original_period_id
-                for s in self._shadows(xfer.id)
-            )
 
     def test_inplace_edit_keeps_balancechanged(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -5443,25 +5313,14 @@ class TestTransferActualBox:
         return xfer
 
     @staticmethod
-    def _legs(xfer_id):
-        """Return both live shadows of *xfer_id*, expense leg first."""
-        rows = (
-            db.session.query(Transaction)
-            .filter_by(transfer_id=xfer_id, is_deleted=False)
-            .order_by(Transaction.id)
-            .all()
-        )
-        assert len(rows) == 2, f"expected a pair, got {len(rows)}"
-        return rows
-
-    @staticmethod
     def _side_records(xfer_id):
         """Return *xfer_id*'s two sides' payment records, the from-side (expense) first.
 
         A side's record hangs off the TRANSFER since plan step
-        ``balance:X-bi-6-4d-2``, where :meth:`_legs`' twins held it until
-        then and keep nothing since (ruling R-BAL167 class 4, plan step
-        balance:X-bi-6-4d-2).  Read by independent SQL
+        ``balance:X-bi-6-4d-2``, where a ``_legs`` helper's twins held it
+        until then; that helper went at ``balance:X-bi-6-4d-3``, which
+        births no twin (ruling R-BAL167 class 4, plan step
+        balance:X-bi-6-4d-3).  Read by independent SQL
         (``transfer_side_record``); ``None`` for a side holding none.
         """
         xfer = db.session.get(Transfer, xfer_id)
@@ -5480,17 +5339,19 @@ class TestTransferActualBox:
         ``is_settled`` status is also ``is_immutable``, so it rendered
         ``disabled`` on 100% of the rows it appeared on and was deleted as
         unreachable.  Being disabled WAS the defect, so the test asserts the
-        box is present AND live, on both doors onto this popover.
+        box is present AND live, on both doors onto this popover.  The leg
+        door's leg is the from-side, named off the transfer where it was read
+        off the expense twin until plan step ``balance:X-bi-6-4d-3``, which
+        births none (ruling R-BAL167 class 1).
         """
         with app.app_context():
             xfer = self._settled_transfer(
                 seed_user, seed_periods_today, _THREE_DAYS_AGO(),
             )
-            expense, _income = self._legs(xfer.id)
 
             for url in (
                 f"/transfers/{xfer.id}/full-edit",
-                f"/transfers/{xfer.id}/full-edit?leg_account_id={expense.account_id}",
+                f"/transfers/{xfer.id}/full-edit?leg_account_id={xfer.from_account_id}",
             ):
                 body = auth_client.get(url).get_data(as_text=True)
                 assert 'name="settled_amount"' in body, (

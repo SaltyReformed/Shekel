@@ -119,19 +119,16 @@ def _hiding_a_paid_transfer(seed_user):
     """BAL-532's state, STAGED and not committed: a paid transfer hidden holding its payments.
 
     Hidden the way ``transfer_service.delete_transfer(..., soft=True)`` left it
-    until plan step ``balance:X-bi-6-4d-2`` -- the transfer and both twins
-    flagged, the payments in place.  The hiding rule is checked at COMMIT, so
+    until plan step ``balance:X-bi-6-4d-2`` -- the transfer flagged, the
+    payments in place.  It flagged both twins too until plan step
+    ``balance:X-bi-6-4d-3``, where no twin is born: that statement reached 0
+    rows (measured) and is gone.  The hiding rule is checked at COMMIT, so
     the state exists only inside this save (the delete door takes the payments
-    off in the same save since that step, ruling **credit_card:R-CC75**); the
+    off in the same save since ``X-bi-6-4d-2``, ruling **credit_card:R-CC75**); the
     caller commits, rolls back, or takes the payments off first.  Returns
     ``(transfer id, its expense side's record id)``.
     """
     transfer = _paid_transfer(seed_user)
-    _db.session.execute(
-        text("UPDATE budget.transactions SET is_deleted = TRUE "
-             "WHERE transfer_id = :t"),
-        {"t": transfer.id},
-    )
     _db.session.execute(
         text("UPDATE budget.transfers SET is_deleted = TRUE WHERE id = :t"),
         {"t": transfer.id},
@@ -351,46 +348,20 @@ class TestARowCannotBeHiddenHoldingMoney:
             db.session.rollback()
             assert _held_by_transfer(transfer_id) == 2
 
-    def test_stripping_a_hidden_leg_of_its_transfer_is_refused(
-        self, app, db, seed_user,
-    ):
-        """A twin holding a movement is a row like any other: hiding it is refused.
-
-        This proved the exception for a transfer's half could not be walked
-        out of by stripping ``transfer_id`` (the row arm watched it).  Plan
-        step ``balance:X-bi-6-4d-2`` retired the exception itself (design D7):
-        the row arm watches ``is_deleted`` alone and excepts no twin, so a
-        twin given a movement and hidden is refused at commit with
-        ``transfer_id`` untouched (ruling **R-BAL167** class 2).  The twin
-        holds the payment the way it did before the step -- both side records
-        re-parented under their twins in one statement, the shape a ``$0.00``
-        close's band allows -- and only the expense twin is hidden.
-        """
-        with app.app_context():
-            transfer = _paid_transfer(seed_user)
-            twin_id = db.session.execute(
-                text("SELECT id FROM budget.transactions "
-                     "WHERE transfer_id = :t AND account_id = :a"),
-                {"t": transfer.id, "a": seed_user["account"].id},
-            ).scalar_one()
-            db.session.execute(
-                text("UPDATE budget.transaction_entries e "
-                     "SET transaction_id = t.id, expense_transfer_id = NULL, "
-                     "income_transfer_id = NULL "
-                     "FROM budget.transactions t "
-                     "WHERE t.transfer_id = :t AND t.account_id = e.account_id "
-                     "AND (e.expense_transfer_id = :t "
-                     "OR e.income_transfer_id = :t)"),
-                {"t": transfer.id},
-            )
-            db.session.commit()
-            assert _held_by(twin_id) == 1
-            _hide(twin_id)
-            with refused_by_database_rule(_HIDING_REFUSED) as caught:
-                db.session.commit()
-            assert f"transaction {twin_id} " in str(caught.value)
-            db.session.rollback()
-            assert (_is_hidden(twin_id), _held_by(twin_id)) == (False, 1)
+    # ``test_stripping_a_hidden_leg_of_its_transfer_is_refused`` stood here
+    # until plan step balance:X-bi-6-4d-3 (ruling **R-BAL300**, developer
+    # 2026-10-15: "Delete all 27").  It re-parented both of a paid transfer's
+    # side records, each under its own side's TWIN, hid the expense twin, and
+    # asserted the row arm's refusal at commit: the arm excepts no twin since
+    # plan step balance:X-bi-6-4d-2 (design D7).  No twin can exist now (the
+    # database refuses one, ``ck_transactions_names_no_transfer``, ruling R-BAL258,
+    # pinned once by
+    # ``TestTheUpgrade::test_the_database_refuses_a_twin`` in
+    # ``tests/test_models/test_a_transfer_is_one_row.py``,
+    # and no app code builds one), so no row can carry the carve-out's
+    # ``transfer_id``; hiding a row that holds money is
+    # :meth:`test_hiding_a_row_holding_a_purchase_is_refused_at_commit`, and a
+    # hidden transfer holding one :meth:`test_a_transfer_leg_is_excepted`.
 
 
 class TestWhatIsNeitherPasses:
