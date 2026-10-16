@@ -9,18 +9,27 @@ collection and every test's outcome through ``./scripts/test.sh``, every fixture
 up (refusing one whose reach the split would change), and pylint's messages for it and for
 each module that imports it, whose text it fingerprints; its ``meta.json``, written last,
 marks the record complete, and ``apply`` and ``prove`` refuse without one.  ``apply`` writes
-the package, deletes the source, re-points the importers, writes the node-id map and runs
-the static proof.  ``prove`` runs the static proof again and every run arm, and prints the
-block a commit body quotes when every arm passed.
+the node-id maps and the package, deletes the source, re-points the importers and runs the
+static proof, as ONE unit: a failure anywhere in it, the proof's included, or Ctrl-C undoes
+every write before it is reported, so no failure it reports leaves an unproved split in the
+tree.  A signal Python does not raise as an exception (by default ``SIGTERM`` and
+``SIGHUP``, and always ``SIGKILL``) ends the process where it stands, and runs no undo; nor
+does a machine that stops (:func:`tools.split._render.write`).  ``prove`` runs the static
+proof again and every run arm, and prints the block a commit body quotes when every arm
+passed.
 Exit status 0 means proved; 1 means refused or failed, with every reason printed; 2 means
 the command line was refused before anything ran (``apply`` or ``prove`` without
 ``--idmap``, or a plan, record or map inside the repository).
+A record is what this tool wrote: a record file edited by hand into another JSON shape is
+outside its model, and fails closed with a traceback (a ``KeyError`` or ``TypeError``), not
+a refusal.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sys
 from dataclasses import dataclass
@@ -52,6 +61,7 @@ from tools.split._source import (
     CollectRules,
     Refusal,
     collect_rules,
+    lines_of,
     read_json,
     read_module,
     read_text,
@@ -65,6 +75,11 @@ _BEFORE_PYLINT, _BEFORE_IMPORTERS = "before_pylint.json", "before_importers_pyli
 #: Every file a record holds, in the order ``record`` deletes them, the token first (each
 #: observation with its processes' fixture-setup files: :func:`tools.split._run.discard`).
 _RECORD = (_META, _SOURCE, _BEFORE_PYLINT, _BEFORE_IMPORTERS, _BEFORE_COLLECT, _BEFORE_RUN)
+
+#: The node-id map ``apply`` keeps in the record: written inside the apply's unit, so it
+#: stays only when the whole apply succeeded, which makes it the mark that the record's
+#: split is applied.
+_APPLIED = "idmap.json"
 
 
 @dataclass(frozen=True)
@@ -94,6 +109,11 @@ class Context:
         if not (self.into / _META).is_file():
             raise Refusal(f"{self.into}: no complete record; record again")
         return self.read(_META)
+
+    def applied(self) -> bool:
+        """Whether the directory holds a complete record whose split is applied
+        (:data:`_APPLIED`)."""
+        return (self.into / _META).is_file() and (self.into / _APPLIED).is_file()
 
     def save(self, name: str, value: object) -> None:
         """Write a JSON file into the record, whole or not at all: written beside its name
@@ -165,17 +185,33 @@ def record(ctx: Context) -> list[str]:
     the tests is a complete record whose verdict fails, which ``apply`` refuses (the
     coordinator's ruling on the delta review's H-A, 2026-10-15: the token
     was written before pylint and the runs, so a record that stopped there reached ``apply``
-    holding the previous source's observations)."""
-    for name in _RECORD:
-        run.discard(ctx.into / name)
+    holding the previous source's observations).
+
+    Every check that writes nothing runs before that discard, so a run that cannot start
+    leaves the last record as it was; and a record whose split is applied is never
+    discarded, because it is what ``prove`` judges that split by (the coordinator's ruling
+    on delta review 2's Medium-1, 2026-10-15: a second ``record`` into the directory of an
+    applied split deleted its token and source, and ``prove`` then asked for a record no one
+    could take, the source being gone)."""
+    if ctx.applied():
+        raise Refusal(f"{ctx.into} holds a record whose split is applied; record into another "
+                      "directory")
     source = ctx.root / ctx.plan.source
     layout = ctx.layout(source)
     render_all(layout, line_limit(ctx.root))
     importers = _importer_record(importer_rewrites(layout, ctx.root), ctx.root)
-    ctx.into.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, ctx.into / _SOURCE)
     meta = {"source": str(ctx.plan.source), "sha256": _sha256(source),
             "head": _head(ctx.root), "importers": importers}
+    unstartable = run.unstartable(ctx.root)
+    if unstartable:
+        raise Refusal(f"record cannot start {unstartable}; nothing is recorded")
+    ctx.into.mkdir(parents=True, exist_ok=True)
+    if not os.access(ctx.into, os.W_OK | os.X_OK):
+        raise Refusal(f"{ctx.into}: not a directory this process can write files in; nothing "
+                      "is recorded")
+    for name in _RECORD:
+        run.discard(ctx.into / name)
+    shutil.copyfile(source, ctx.into / _SOURCE)
     ctx.save(_BEFORE_PYLINT, run.pylint_messages(ctx.root, [str(ctx.plan.source)]))
     ctx.save(_BEFORE_IMPORTERS,
              run.pylint_messages(ctx.root, sorted(importers)) if importers else [])
@@ -186,17 +222,20 @@ def record(ctx: Context) -> list[str]:
     return _record_verdict(ctx, layout)[0]
 
 
-def apply(ctx: Context, idmap: Path) -> list[str]:
+def apply(ctx: Context, idmap: Path) -> None:
     """Write the id maps and the package, delete the source, re-point importers, and run the
-    static proof; refused, with nothing written, unless a complete record passed and the
-    source and every importer are as it found them.  The writes are ONE unit
-    (:func:`tools.split._render.write`): one that fails undoes every file the apply wrote,
-    the id maps beside the tree included."""
+    static proof; refused, with nothing written, unless a complete record passed, is not
+    applied already, and the source and every importer are as it found them.  The writes and
+    the proof are ONE unit (:func:`tools.split._render.write`): a failed write, a static
+    proof that fails on what was written, or an interrupt undoes every file the apply wrote,
+    the id maps beside the tree included, and the refusal names the failure."""
     meta = ctx.meta()
+    if ctx.applied():
+        raise Refusal(f"{ctx.into}: already applied (it holds the id map an apply keeps only "
+                      "when it succeeded); nothing is applied")
     source = ctx.root / ctx.plan.source
     if not source.is_file():
-        raise Refusal(f"{source} is not there to split: apply deletes the source, so this "
-                      "record may be applied already; nothing is applied")
+        raise Refusal(f"{source} is not there to split; nothing is applied")
     if _sha256(source) != meta["sha256"]:
         raise Refusal(f"{source} changed since it was recorded; record again")
     layout = ctx.layout(source)
@@ -211,8 +250,12 @@ def apply(ctx: Context, idmap: Path) -> list[str]:
                       "record; record again")
     mapping = dynamic.id_map(layout, ctx.read(_BEFORE_COLLECT)["collected"])
     payload = json.dumps(mapping, indent=1, sort_keys=True) + "\n"
-    write(layout, ctx.root, texts, rewrites, {idmap: payload, ctx.into / "idmap.json": payload})
-    return prove_static(ctx.layout(ctx.into / _SOURCE), ctx.root, ctx.rules())
+    beside = {idmap: payload, ctx.into / _APPLIED: payload}
+    with write(layout, ctx.root, texts, rewrites, beside):
+        failures = prove_static(ctx.layout(ctx.into / _SOURCE), ctx.root, ctx.rules())
+        if failures:
+            raise Refusal(f"the static proof failed on the split as written "
+                          f"({len(failures)} failure(s): {'; '.join(failures)})")
 
 
 def _run_arms(ctx: Context, layout: Layout, mapping: dict[str, str]) -> tuple[list[str], dict]:
@@ -236,8 +279,7 @@ def _run_arms(ctx: Context, layout: Layout, mapping: dict[str, str]) -> tuple[li
         scope = {old for old, new in mapping.items() if new.startswith(target + "::")}
         failures += [f"alone: {f}" for f in
                      dynamic.compare_outcomes(mapping, before, alone["outcomes"], scope)]
-    return failures, {"collected": len(collected["collected"]), "outcomes": ran["outcomes"],
-                      "summary": ran["summary"]}
+    return failures, {"collected": len(collected["collected"]), "outcomes": ran["outcomes"]}
 
 
 def _static_arms(ctx: Context, layout: Layout) -> tuple[list[str], dict]:
@@ -380,7 +422,7 @@ def _report_pointers(gate_line: str, hits: list[dynamic.Hit]) -> list[str]:
 
 def parser() -> argparse.ArgumentParser:
     """The command line."""
-    top = argparse.ArgumentParser(prog="split", description=__doc__.splitlines()[0])
+    top = argparse.ArgumentParser(prog="split", description=lines_of(__doc__)[0])
     top.add_argument("command", choices=("record", "apply", "prove"))
     top.add_argument("plan", type=Path)
     top.add_argument("--into", type=Path, required=True, help="the record directory")
@@ -413,7 +455,8 @@ def main(argv: list[str] | None = None, root: Path = REPO) -> int:
         if args.command == "record":
             failures = record(ctx)
         elif args.command == "apply":
-            failures = apply(ctx, args.idmap)
+            apply(ctx, args.idmap)
+            failures = []
         else:
             failures = prove(ctx, args.idmap)
     except (PlanError, Refusal, run.RunError, GitError, OSError) as exc:

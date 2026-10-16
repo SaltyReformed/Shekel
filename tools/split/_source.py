@@ -67,11 +67,31 @@ def shown(data: bytes) -> str:
     return data.decode("utf-8", "backslashreplace")
 
 
+def _universal(text: str) -> io.StringIO:
+    """``text`` behind :mod:`io`'s own universal newlines, the ONE translation of line endings
+    the tool reads by: ``\\r\\n`` and a lone ``\\r`` read as ``\\n``, as Python's tokenizer
+    reads them."""
+    return io.StringIO(text, newline=None)
+
+
 def read_text(path: Path) -> str:
     """A file's text as :meth:`pathlib.Path.read_text` reads it, newlines translated
-    (``\\r\\n`` and a lone ``\\r`` read as ``\\n``, by :mod:`io`'s own universal newlines),
-    decoded by :func:`decode`."""
-    return io.StringIO(decode(path.read_bytes(), str(path)), newline=None).read()
+    (:func:`_universal`), decoded by :func:`decode`."""
+    return _universal(decode(path.read_bytes(), str(path))).read()
+
+
+def lines_of(text: str, keepends: bool = False) -> list[str]:
+    """``text``'s lines exactly as Python numbers them, so the line the syntax tree calls
+    ``n`` is item ``n - 1``: line endings translated (:func:`_universal`), then each line
+    ended by ``\\n`` alone, the empty remainder after a final ``\\n`` no line; ``keepends``
+    keeps each line's ``\\n``.
+
+    The ONE splitter of text into lines (the coordinator's ruling on commit 3b-1's first
+    report, 2026-10-15): :meth:`str.splitlines` also ends a line at ``\\x0b``, ``\\x0c``,
+    ``\\x1c``-``\\x1e``, ``\\x85``, ``\\u2028`` and ``\\u2029``, where Python ends none, so a
+    string literal holding one would shift every later line off its number."""
+    kept = _universal(text).readlines()
+    return kept if keepends else [line.removesuffix("\n") for line in kept]
 
 
 def text_holding(path: Path, needle: str) -> str | None:
@@ -443,7 +463,7 @@ def read_module(path: Path, rules: CollectRules, relative: str | None = None) ->
     source, ``_helpers`` for an output the tool wrote.
     """
     text = read_text(path)
-    lines = tuple(text.splitlines())
+    lines = tuple(lines_of(text))
     where = str(path)
     body = list(parse(text, where).body)
     docstring_end = 0

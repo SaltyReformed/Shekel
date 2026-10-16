@@ -15,11 +15,12 @@ import pytest
 from tools.ci import scratch
 from tools.split import _run as run
 from tools.split import _dynamic as dynamic
+from tools.split import split as cli
 from tools.split._model import parse_plan
 from tools.split._observe import LONE, setups_path
 from tools.split._run import pylint_messages
 from tools.split._source import Refusal
-from tools.split.conftest import SOURCE, build, layout_of, plan_dict, tree
+from tools.split.conftest import SAMPLE, SOURCE, build, layout_of, plan_dict, tree
 from tools.split.split import _BEFORE_RUN, _META, Context, main
 from tools.split.test_dynamic import BEFORE_IDS, PACKAGE
 
@@ -77,7 +78,7 @@ class Stubs:
         setups_path(out, LONE).write_text(json.dumps({
             "setups": self.setups if target == SOURCE else [],
             "ran": sorted(observed["outcomes"])}), encoding="utf-8")
-        return {**observed, "returncode": 0, "summary": "ok"}
+        return observed
 
     def pylint(self, _root: Path, paths: list[str]) -> list[dict]:
         """No message anywhere, but the importer's after the split."""
@@ -93,9 +94,15 @@ class Stubs:
 @pytest.fixture(name="split")
 def _split(tmp_path, monkeypatch):
     """The sample committed to a throwaway repository, the process arms stubbed; a function
-    running one command through ``main``, returning its exit status."""
+    running one command through ``main``, returning its exit status.  The repository holds
+    an executable ``scripts/test.sh``, which the stubs never start, because ``record``
+    refuses before it discards anything when the wrapper is not there to start."""
     root = scratch.repository(tmp_path)
     build(root)
+    wrapper = root / run.WRAPPER
+    wrapper.parent.mkdir()
+    wrapper.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
+    wrapper.chmod(0o755)
     scratch.run(root, "add", "-A")
     scratch.run(root, "commit", "--quiet", "-m", "the sample")
     stubs = Stubs(dynamic.id_map(layout_of(root), BEFORE_IDS))
@@ -510,38 +517,53 @@ class TestAnOSErrorIsARefusal:
     ruling on commit 3b's (A))."""
 
     def test_pylint_not_installed(self, split, capsys, monkeypatch, tmp_path):
-        """record reaches pylint with no pylint to start: refused, naming it, no record."""
+        """record checks it can start pylint before it discards anything: refused, naming
+        it, no record (delta review 2's Medium-1 moved this before the discard; it was an
+        OSError from the start)."""
         monkeypatch.setattr(run, "pylint_messages", pylint_messages)
         only_on_path(tmp_path, monkeypatch, "git")
         assert split("record") == 1
-        assert ("REFUSED: [Errno 2] No such file or directory: 'pylint'"
+        assert ("REFUSED: record cannot start ['pylint']; nothing is recorded"
                 in capsys.readouterr().err)
         assert not (split.into / _META).exists()
 
+    def test_pylint_not_installed_at_prove(self, split, capsys, monkeypatch, tmp_path):
+        """prove reaches pylint with no pylint to start: the OSError is refused by main,
+        naming it, never a traceback (the walk that reaches main's catch, now that record
+        checks first)."""
+        applied(split)
+        monkeypatch.setattr(run, "pylint_messages", pylint_messages)
+        only_on_path(tmp_path, monkeypatch, "git")
+        capsys.readouterr()
+        assert split("prove") == 1
+        assert ("REFUSED: [Errno 2] No such file or directory: 'pylint'"
+                in capsys.readouterr().err)
+
     def test_an_unwritable_record_directory(self, split, capsys):
-        """record cannot copy the source into ``--into``: refused, naming the file."""
+        """record checks it can write in ``--into`` before it discards anything: refused,
+        naming the directory (delta review 2's Medium-1; it was the copy's OSError)."""
         split.into.mkdir()
         split.into.chmod(0o500)
         try:
             assert split("record") == 1
         finally:
             split.into.chmod(0o700)
-        assert (f"REFUSED: [Errno 13] Permission denied: '{split.into / 'source.py'}'"
-                in capsys.readouterr().err)
+        assert (f"REFUSED: {split.into}: not a directory this process can write files in; "
+                "nothing is recorded" in capsys.readouterr().err)
         assert not (split.into / _META).exists()
 
 
 def test_apply_twice_is_refused_by_name(split, capsys):
-    """The first apply deleted the source: the second is refused before anything reads it
-    (the delta review's L-B: it raised FileNotFoundError hashing the deleted file)."""
+    """The first apply deleted the source: the second is refused, as already applied, before
+    anything reads it (the delta review's L-B: it raised FileNotFoundError hashing the
+    deleted file; delta review 2's P2: the refusal said only that it MAY be applied)."""
     applied(split)
-    before = tree(split.root)
+    before = everything(split)
     capsys.readouterr()
     assert split("apply") == 1
-    assert (f"REFUSED: {split.root / SOURCE} is not there to split: apply deletes the source, "
-            "so this record may be applied already; nothing is applied"
-            in capsys.readouterr().err)
-    assert tree(split.root) == before
+    assert (f"REFUSED: {split.into}: already applied (it holds the id map an apply keeps only "
+            "when it succeeded); nothing is applied" in capsys.readouterr().err)
+    assert everything(split) == before
 
 
 def test_a_failed_git_command_is_a_refusal(split, capsys):
@@ -595,3 +617,146 @@ def test_an_apply_that_fails_part_way_changes_nothing_anywhere(split, capsys, mo
     assert ("every file it created is removed and every file it changed put back"
             in capsys.readouterr().err)
     assert everything(split) == before
+
+
+#: What a write that undid itself says.
+UNDONE = "every file it created is removed and every file it changed put back"
+
+
+class TestTheApplyIsOneUnit:
+    """The writes and the static proof of what they wrote are ONE unit: a proof that fails, an
+    interrupt, or a check that fails before the first write leaves everything as it was (the
+    coordinator's ruling on commit 3b's (A), gaps closed: the tree never holds an unproved
+    split)."""
+
+    @staticmethod
+    def proof_seeing(seen: list, answer):
+        """A static proof that takes the tree as it finds it into ``seen``, then answers by
+        calling ``answer``."""
+        def proof(_layout, root, _rules):
+            seen.append(tree(root))
+            return answer()
+        return proof
+
+    def test_a_static_proof_that_fails_after_a_complete_write(self, split, capsys,
+                                                              monkeypatch):
+        """The proof runs on the split as written, finds it wrong, and the refusal names
+        every failure; the write is undone (delta review 2's gap 3: apply returned the
+        failures with the split left on disk)."""
+        assert split("record") == 0
+        before, seen = everything(split), []
+        monkeypatch.setattr(cli, "prove_static", self.proof_seeing(
+            seen, lambda: ["a failure the stub reports", "and a second"]))
+        capsys.readouterr()
+        assert split("apply") == 1
+        assert ("REFUSED: the static proof failed on the split as written (2 failure(s): a "
+                f"failure the stub reports; and a second); {UNDONE}") in capsys.readouterr().err
+        assert f"{PACKAGE}/test_first.py" in seen[0] and SOURCE not in seen[0]
+        assert everything(split) == before
+
+    def test_an_interrupt_while_the_proof_runs(self, split, monkeypatch):
+        """Ctrl-C inside the unit, after a complete write: undone, then the interrupt goes on
+        as it was, with a note saying what the undo did."""
+        assert split("record") == 0
+        before, seen = everything(split), []
+
+        def interrupted():
+            raise KeyboardInterrupt
+        monkeypatch.setattr(cli, "prove_static", self.proof_seeing(seen, interrupted))
+        with pytest.raises(KeyboardInterrupt) as caught:
+            split("apply")
+        assert f"{PACKAGE}/test_first.py" in seen[0]
+        assert caught.value.__notes__ == [f"tools.split: the apply was undone: {UNDONE}"]
+        assert everything(split) == before
+
+    def test_an_id_map_with_no_directory_is_refused_before_any_write(self, split, capsys,
+                                                                    tmp_path):
+        """``--idmap`` names a directory that does not exist: refused before anything is
+        written (delta review 2's P1: the package was written and the source deleted before
+        the map failed)."""
+        assert split("record") == 0
+        split.idmap = tmp_path / "missing" / "test_sample.idmap.json"
+        before = everything(split)
+        capsys.readouterr()
+        assert split("apply") == 1
+        assert (f"REFUSED: {split.idmap}: no directory {split.idmap.parent} to write it in; "
+                "nothing is applied") in capsys.readouterr().err
+        assert everything(split) == before
+        assert not split.idmap.parent.exists()
+
+
+@pytest.mark.parametrize("reverted", [False, True], ids=["in-place", "reverted-by-hand"])
+def test_a_record_whose_split_is_applied_is_never_discarded(split, capsys, reverted):
+    """``record`` into the directory of an applied split is refused before it discards
+    anything, whether the split is in the tree or was reverted by hand (delta review 2's
+    Medium-1: a second record deleted the token and the source, and prove then asked for a
+    record no one could take)."""
+    applied(split)
+    if reverted:
+        scratch.run(split.root, "checkout", "--quiet", "--", ".")
+        scratch.run(split.root, "clean", "-fdq")
+        assert (split.root / SOURCE).is_file()
+    before = tree(split.into)
+    capsys.readouterr()
+    assert split("record") == 1
+    assert (f"REFUSED: {split.into} holds a record whose split is applied; record into "
+            "another directory") in capsys.readouterr().err
+    assert tree(split.into) == before
+    if not reverted:
+        assert split("prove") == 0
+
+
+def _uncompilable(split, _monkeypatch, _tmp_path) -> None:
+    """The source no longer compiles."""
+    (split.root / SOURCE).write_text(SAMPLE + "\ndef (\n", encoding="utf-8")
+
+
+def _no_pylint(_split, monkeypatch, tmp_path) -> None:
+    """No pylint on ``PATH``."""
+    only_on_path(tmp_path, monkeypatch, "git")
+
+
+def _wrapper_not_executable(split, _monkeypatch, _tmp_path) -> None:
+    """The suite wrapper is there, and cannot be started."""
+    (split.root / run.WRAPPER).chmod(0o644)
+
+
+def _into_not_writable(split, _monkeypatch, _tmp_path) -> None:
+    """The record directory cannot be written in."""
+    split.into.chmod(0o500)
+
+
+def _no_head(split, _monkeypatch, _tmp_path) -> None:
+    """The branch has no commit for ``record`` to name."""
+    scratch.run(split.root, "update-ref", "-d", "HEAD")
+
+
+#: Each way a second record cannot start, and what its refusal says.
+CANNOT_START = {
+    "the source no longer compiles": (_uncompilable, "Python does not compile it"),
+    "no pylint": (_no_pylint, "record cannot start ['pylint']"),
+    "the wrapper cannot start": (_wrapper_not_executable,
+                                 "record cannot start ['./scripts/test.sh']"),
+    "the record directory is not writable": (
+        _into_not_writable, "not a directory this process can write files in"),
+    "HEAD names no commit": (_no_head, "git rev-parse HEAD: fatal: "),
+}
+
+
+@pytest.mark.parametrize("case", CANNOT_START)
+def test_a_record_that_cannot_start_leaves_the_last_record_as_it_was(split, capsys,
+                                                                     monkeypatch, tmp_path,
+                                                                     case):
+    """Every check that writes nothing runs before the discard (delta review 2's Medium-1):
+    a second record that cannot start refuses, and the first record's files are untouched."""
+    assert split("record") == 0
+    before = tree(split.into)
+    breaks, said = CANNOT_START[case]
+    breaks(split, monkeypatch, tmp_path)
+    capsys.readouterr()
+    try:
+        assert split("record") == 1
+        assert said in capsys.readouterr().err
+        assert tree(split.into) == before
+    finally:
+        split.into.chmod(0o700)

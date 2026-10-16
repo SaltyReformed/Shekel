@@ -7,17 +7,22 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
 from tools.ci import gitcmd
 from tools.split._model import RESERVED, Plan
 from tools.split._observe import OBSERVE_ENV, setup_key, setups_path
-from tools.split._source import decode, load_json, read_json, shown, undecodable
+from tools.split._source import decode, lines_of, load_json, read_json, shown, undecodable
 
 #: pylint's exit-status bits for a fatal message and a usage error: either means it did
 #: not lint, so its message list is not an observation.
 _PYLINT_BROKEN = 1 | 32
+
+#: The suite wrapper every run goes through, from the repository root, and the linter: the
+#: programs ``record`` starts.
+WRAPPER, PYLINT = "./scripts/test.sh", "pylint"
 
 
 class RunError(RuntimeError):
@@ -33,18 +38,15 @@ def observe(root: Path, targets: list[str], out: Path, collect_only: bool) -> di
     env = dict(os.environ)
     env[OBSERVE_ENV] = str(out)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (str(root), env.get("PYTHONPATH")) if p)
-    args = ["./scripts/test.sh", *targets, "-p", "tools.split._observe",
+    args = [WRAPPER, *targets, "-p", "tools.split._observe",
             "-p", "no:cacheprovider", "-q"]
     if collect_only:
         args += ["-n", "0", "--collect-only"]
     proc = subprocess.run(args, cwd=root, env=env, capture_output=True, check=False)
     if not out.exists():
         raise RunError(f"{' '.join(args)} wrote no observation (exit {proc.returncode}):\n"
-                       + "\n".join(shown(proc.stdout + proc.stderr).splitlines()[-30:]))
-    observed = read_json(out)
-    observed["returncode"] = proc.returncode
-    observed["summary"] = (shown(proc.stdout).strip().splitlines() or [""])[-1]
-    return observed
+                       + "\n".join(lines_of(shown(proc.stdout + proc.stderr))[-30:]))
+    return read_json(out)
 
 
 def merged_setups(out: Path) -> tuple[list[dict], list[str]]:
@@ -77,7 +79,7 @@ def _setups_files(out: Path) -> list[Path]:
 def pylint_messages(root: Path, paths: list[str]) -> list[dict]:
     """pylint's messages for ``paths``, linted in ONE run so duplicate-code between them
     is seen."""
-    proc = subprocess.run(["pylint", "--output-format=json", "--score=n", *paths], cwd=root,
+    proc = subprocess.run([PYLINT, "--output-format=json", "--score=n", *paths], cwd=root,
                           capture_output=True, check=False)
     if proc.returncode & _PYLINT_BROKEN:
         raise RunError(f"pylint did not lint {paths} (exit {proc.returncode}): "
@@ -85,11 +87,19 @@ def pylint_messages(root: Path, paths: list[str]) -> list[dict]:
     return load_json(decode(proc.stdout, "pylint's output") or "[]", "pylint's output")
 
 
+def unstartable(root: Path) -> list[str]:
+    """Each program ``record`` starts that cannot be started: the suite wrapper when it is no
+    executable file under ``root``, pylint when no ``PATH`` entry holds it."""
+    wrapper = root / WRAPPER
+    return ([WRAPPER] if not (wrapper.is_file() and os.access(wrapper, os.X_OK)) else []) + (
+        [PYLINT] if shutil.which(PYLINT) is None else [])
+
+
 def plan_gate(root: Path) -> tuple[int, str]:
     """The plan gate's exit status and summary line, run as pre-commit and CI run it."""
     proc = subprocess.run(["pytest", "tools/plan_gate", "-c", "/dev/null", "-q"], cwd=root,
                           capture_output=True, check=False)
-    return proc.returncode, (decode(proc.stdout, "the plan gate's output").strip().splitlines()
+    return proc.returncode, (lines_of(decode(proc.stdout, "the plan gate's output").strip())
                              or [""])[-1]
 
 

@@ -16,7 +16,7 @@ import pytest
 from tools.ci import scratch
 from tools.split._layout import Layout, resolve
 from tools.split._model import parse_plan
-from tools.split._render import line_limit, render_all
+from tools.split._render import Rewrite, line_limit, render_all, write
 from tools.split._source import Refusal, collect_rules, read_module
 
 SOURCE = "tests/test_area/test_sample.py"
@@ -201,6 +201,14 @@ def sample_with(old: str, new: str) -> str:
     """The sample with ``old`` (which must occur once) replaced by ``new``."""
     assert SAMPLE.count(old) == 1, old
     return SAMPLE.replace(old, new)
+
+
+def written(layout: Layout, root: Path, texts: dict[str, str], rewrites: list[Rewrite],
+            beside: dict[Path, str]) -> None:
+    """The apply's writes (:func:`tools.split._render.write`) with nothing run inside their
+    unit: the tree as the writes alone leave it."""
+    with write(layout, root, texts, rewrites, beside):
+        pass
 
 
 def tree(root: Path) -> dict[str, bytes]:

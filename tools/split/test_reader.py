@@ -1,7 +1,9 @@
 """The ONE reader (:mod:`tools.split._source`): every text, process output, JSON value, syntax
 tree, symbol table and ini file the tool reads goes through it, and each refuses, naming what
 it read, where Python would raise (the coordinator's ruling on the delta review's L-B,
-2026-10-15: every path from ``split.main`` to a traceback becomes a refusal naming the file).
+2026-10-15: every path from ``split.main`` to a traceback becomes a refusal naming the file);
+and every text split into lines is split by it, as Python numbers lines (the coordinator's
+ruling on commit 3b-1's first report, 2026-10-15).
 """
 from __future__ import annotations
 
@@ -19,10 +21,13 @@ from tools.split._render import importer_rewrites, line_limit
 from tools.split._similar import checker_defaults
 from tools.split._source import (
     Refusal,
+    collect_rules,
     decode,
+    lines_of,
     load_json,
     parse,
     read_ini,
+    read_module,
     read_text,
     symbols,
     text_holding,
@@ -35,13 +40,14 @@ from tools.split.test_split import only_on_path
 TOOL = sorted(p for p in Path(__file__).parent.glob("*.py")
               if not p.stem.startswith("test_") and p.stem not in {"conftest", "_source"})
 
-#: Calls that read, decode, parse or load text, by the attribute they call on a module name
-#: (``json.loads``) or on any object (``.read_text``, ``.decode``), or by the bare name.
+#: Calls that read, decode, parse, load or split text into lines, by the attribute they call
+#: on a module name (``json.loads``) or on any object (``.read_text``, ``.decode``,
+#: ``.splitlines``), or by the bare name.
 #: ``astroid.parse`` is not one: :mod:`tools.split._similar` gives pylint's own parser text
 #: that :func:`tools.split._source.read_module` has already read and compiled.
 _ON_MODULE = {"json": {"load", "loads"}, "ast": {"parse"}, "symtable": {"symtable"},
               "tokenize": None, "configparser": None, "io": {"open", "TextIOWrapper"}}
-_ON_ANY = {"read_text", "decode", "open", "readlines"}
+_ON_ANY = {"read_text", "decode", "open", "readlines", "splitlines"}
 _BARE = {"open", "compile"}
 #: A subprocess keyword that decodes the process's output.
 _DECODING = {"text", "encoding", "errors", "universal_newlines"}
@@ -76,13 +82,17 @@ def test_no_module_but_the_reader_reads_text_itself():
     assert {str(p.name): readers(p) for p in TOOL if readers(p)} == {}
 
 
-def test_the_census_sees_every_spelling_it_refuses():
+def test_the_census_sees_every_spelling_it_refuses(tmp_path):
     """The control: the scan finds each kind of read in the reader itself, so an empty
-    answer above is the modules' and not the scan's blindness."""
+    answer above is the modules' and not the scan's blindness; and a ``splitlines``, which
+    the reader no longer calls, in a file holding one."""
     found = " ".join(readers(Path(__file__).parent / "_source.py"))
     for call in ("data.decode", "json.loads", "compile", "ast.parse", "symtable.symtable",
-                 "configparser.ConfigParser", "tokenize.generate_tokens"):
+                 "configparser.ConfigParser", "tokenize.generate_tokens", ".readlines"):
         assert call in found, call
+    stray = tmp_path / "stray.py"
+    stray.write_text("lines = text.splitlines()\n", encoding="utf-8")
+    assert readers(stray) == ["1: text.splitlines"]
     assert {"split.py", "_run.py", "_render.py", "_prove.py", "_similar.py"} <= {
         p.name for p in TOOL}
 
@@ -152,6 +162,45 @@ class TestTheReader:
             path.write_bytes(data)
         with pytest.raises(Refusal, match=re.escape(why.format(path=path))):
             read_ini(path)
+
+
+#: Every character :meth:`str.splitlines` ends a line at and Python does not.
+NOT_LINE_ENDS = "\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"
+
+
+class TestLinesAreNumberedAsPythonNumbersThem:
+    """A string literal holding each character :meth:`str.splitlines` ends a line at, and
+    Python does not: the reader's line ``n`` is the syntax tree's line ``n`` (the
+    coordinator's ruling on commit 3b-1's first report, 2026-10-15)."""
+
+    def test_lines_of(self):
+        """Line endings translated, each line ended by ``\\n`` alone, no line after a final
+        one; ``keepends`` keeps each ``\\n``."""
+        text = f"a{NOT_LINE_ENDS}b\r\nc\rd\n"
+        assert lines_of(text) == [f"a{NOT_LINE_ENDS}b", "c", "d"]
+        assert lines_of(text, keepends=True) == [f"a{NOT_LINE_ENDS}b\n", "c\n", "d\n"]
+        assert lines_of("e") == ["e"] and lines_of("") == []
+
+    def test_the_source_reader(self, tmp_path):
+        """Every top-level node's first line in the reader is its first line in the syntax
+        tree, the ones after the literal included."""
+        odd = f'_ODD = "{NOT_LINE_ENDS}"\n\n\n_CASES = ['
+        root = build(tmp_path, sample_with("_CASES = [", odd))
+        text = (root / SOURCE).read_text(encoding="utf-8")
+        lines = read_module(root / SOURCE, collect_rules(root)).lines
+        assert any(NOT_LINE_ENDS in line for line in lines)
+        for node in ast.parse(text).body:
+            assert lines[node.lineno - 1] == ast.get_source_segment(text, node).split("\n")[0]
+
+    def test_the_importer_walk(self, repo):
+        """An importer whose import of the source follows the literal: the rewrite reads the
+        import's own line."""
+        importer = repo / "tests/test_odd.py"
+        importer.write_text(f'"""An importer."""\n_ODD = "{NOT_LINE_ENDS}"\n'
+                            "from tests.test_area.test_sample import _make\n", encoding="utf-8")
+        odd = [r for r in importer_rewrites(layout_of(repo), repo) if r.path == importer]
+        assert [(r.line, r.old) for r in odd] == [
+            (3, "from tests.test_area.test_sample import _make")]
 
 
 class TestEachSiteRefusesNamingTheFile:

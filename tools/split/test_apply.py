@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import errno
 import re
+import stat
 from pathlib import Path
 
 import pytest
@@ -20,11 +21,10 @@ from tools.split._render import (
     line_limit,
     render_all,
     text_of,
-    write,
 )
 from tools.split._run import RunError, pylint_messages
 from tools.split._source import Refusal, collect_rules, read_module
-from tools.split.conftest import SAMPLE, SOURCE, layout_of, tree
+from tools.split.conftest import SAMPLE, SOURCE, layout_of, tree, written
 
 PACKAGE = "tests/test_area/test_sample"
 
@@ -34,7 +34,7 @@ def applied(repo: Path, plan: dict | None = None) -> Layout:
     prover holds it to."""
     layout = layout_of(repo, plan)
     texts = render_all(layout, line_limit(repo))
-    write(layout, repo, texts, importer_rewrites(layout, repo), {})
+    written(layout, repo, texts, importer_rewrites(layout, repo), {})
     return layout
 
 
@@ -152,7 +152,7 @@ def test_a_refused_write_leaves_the_tree_as_it_was(repo):
         "import _make", "import _make  # edited", 1)
     importer.write_text(edited, encoding="utf-8")
     with pytest.raises(Refusal, match="changed since it was read"):
-        write(layout, repo, texts, rewrites, {})
+        written(layout, repo, texts, rewrites, {})
     assert (repo / SOURCE).read_text(encoding="utf-8") == SAMPLE
     assert not (repo / PACKAGE).exists()
     assert importer.read_text(encoding="utf-8") == edited
@@ -195,7 +195,7 @@ class TestAWriteThatFailsPartWay:
         self.failing(monkeypatch, "unlink", repo / SOURCE, seen, repo)
         with pytest.raises(RunError, match="every file it created is removed and every file "
                                            "it changed put back"):
-            write(layout, repo, texts, rewrites, {})
+            written(layout, repo, texts, rewrites, {})
         monkeypatch.undo()
         assert sorted(p for p in seen[0] if p.startswith(f"{PACKAGE}/")) == sorted(
             f"{PACKAGE}/{name}" for name in texts)
@@ -210,7 +210,7 @@ class TestAWriteThatFailsPartWay:
         self.failing(monkeypatch, "write_text", second, seen, repo)
         with pytest.raises(RunError, match="every file it created is removed and every file "
                                            "it changed put back"):
-            write(layout, repo, texts, rewrites, {})
+            written(layout, repo, texts, rewrites, {})
         monkeypatch.undo()
         assert "test_sample._helpers import _make" in seen[0]["tests/test_other.py"].decode()
         assert SOURCE not in seen[0]
@@ -224,7 +224,7 @@ class TestAWriteThatFailsPartWay:
         self.failing(monkeypatch, "write_text", second, [], repo)
         self.failing(monkeypatch, "write_bytes", second, [], repo)
         with pytest.raises(RunError, match="NOT undone: " + re.escape(f"{second}: [Errno 28]")):
-            write(layout, repo, texts, rewrites, {})
+            written(layout, repo, texts, rewrites, {})
         monkeypatch.undo()
         assert second.read_bytes() == b""
         assert (repo / SOURCE).read_text(encoding="utf-8") == SAMPLE
@@ -240,7 +240,7 @@ class TestAWriteThatFailsPartWay:
         self.failing(monkeypatch, "write_bytes", repo / SOURCE, [], repo)
         with pytest.raises(RunError, match="every file it created is removed and every file "
                                            "it changed put back"):
-            write(layout, repo, texts, rewrites, {})
+            written(layout, repo, texts, rewrites, {})
         monkeypatch.undo()
         assert tree(repo) == before
 
@@ -259,8 +259,42 @@ class TestAWriteThatFailsPartWay:
         monkeypatch.setattr(Path, "write_bytes", full)
         with pytest.raises(RunError, match="every file it created is removed and every file "
                                            "it changed put back"):
-            write(layout, repo, texts, rewrites, {})
+            written(layout, repo, texts, rewrites, {})
         monkeypatch.undo()
+        assert tree(repo) == before
+
+
+    def test_a_files_mode_is_put_back(self, repo, monkeypatch):
+        """The source, deleted by the write and re-created by its undo, gets its permission
+        bits from before, not the process's default (delta review 2's Low-2: the undo put
+        back bytes alone)."""
+        layout, texts, rewrites, second = self.prepared(repo)
+        (repo / SOURCE).chmod(0o600)
+        self.failing(monkeypatch, "write_text", second, [], repo)
+        with pytest.raises(RunError, match="every file it created is removed and every file "
+                                           "it changed put back"):
+            written(layout, repo, texts, rewrites, {})
+        monkeypatch.undo()
+        assert stat.S_IMODE((repo / SOURCE).stat().st_mode) == 0o600
+
+    def test_an_interrupt_is_undone_and_goes_on(self, repo, monkeypatch):
+        """Ctrl-C while the second importer is rewritten, the package written and the source
+        deleted (delta review 2's P4, where nothing was undone): the write is undone, then
+        the interrupt propagates as it was, with a note saying what the undo did."""
+        layout, texts, rewrites, second = self.prepared(repo)
+        before, real = tree(repo), Path.write_text
+
+        def interrupted(self, *args, **kwargs):
+            if self == second:
+                raise KeyboardInterrupt
+            return real(self, *args, **kwargs)
+        monkeypatch.setattr(Path, "write_text", interrupted)
+        with pytest.raises(KeyboardInterrupt) as caught:
+            written(layout, repo, texts, rewrites, {})
+        monkeypatch.undo()
+        assert caught.value.__notes__ == [
+            "tools.split: the apply was undone: every file it created is removed and every "
+            "file it changed put back"]
         assert tree(repo) == before
 
 

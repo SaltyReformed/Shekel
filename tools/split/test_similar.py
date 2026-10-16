@@ -6,11 +6,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.split._render import importer_rewrites, line_limit, render_all, write
+from tools.split._render import importer_rewrites, line_limit, render_all
 from tools.split._run import pylint_messages
 from tools.split._similar import pairs, sort_pairs
 from tools.split._source import collect_rules
-from tools.split.conftest import SAMPLE, build, layout_of, plan_dict
+from tools.split.conftest import SAMPLE, build, layout_of, plan_dict, written
 
 PACKAGE = "tests/test_area/test_sample"
 
@@ -33,8 +33,8 @@ def _split(tmp_path: Path, second_floor: int):
     plan["parts"][0]["nodes"].append("test_sum_a")
     plan["parts"][2]["nodes"].append("test_sum_b")
     layout = layout_of(root, plan)
-    write(layout, root, render_all(layout, line_limit(root)), importer_rewrites(layout, root),
-          {})
+    written(layout, root, render_all(layout, line_limit(root)),
+            importer_rewrites(layout, root), {})
     return root, layout
 
 
@@ -168,8 +168,8 @@ def _with(tmp_path: Path, extra: str, placed: dict[int, list]):
     for part, nodes in placed.items():
         plan["parts"][part]["nodes"].extend(nodes)
     layout = layout_of(root, plan)
-    write(layout, root, render_all(layout, line_limit(root)), importer_rewrites(layout, root),
-          {})
+    written(layout, root, render_all(layout, line_limit(root)),
+            importer_rewrites(layout, root), {})
     return root, layout
 
 

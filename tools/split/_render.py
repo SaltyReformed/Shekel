@@ -7,8 +7,9 @@ by shape: module docstrings, import statements filtered from the source's own (i
 source's order and blank-line groups), a split class's ``class`` line and one-line
 docstring, and its mixin's ``class`` line.  Nothing is written until every output has
 rendered under the line budget and every importer's line has been re-read (:func:`write`),
-so a refusal leaves the tree as it was; and a write that fails part-way puts it back, or
-names what it could not.
+so a refusal leaves the tree as it was; and an apply that fails anywhere, its proof of what
+it wrote included, puts it back, or names what it could not (all but a process ended by a
+signal Python does not raise as an exception: :func:`write`).
 
 Every line it renders carries its mark: an :class:`Origin` (the source line it copies, or
 the source statement an import was filtered from), :data:`PROVENANCE` for a composed line
@@ -21,8 +22,11 @@ after checking every claim against the files on disk and the source
 from __future__ import annotations
 
 import ast
+import contextlib
 import hashlib
+import stat
 import textwrap
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -37,6 +41,7 @@ from tools.split._source import (
     bound_name,
     decode,
     imported,
+    lines_of,
     parse,
     read_ini,
     text_holding,
@@ -314,7 +319,7 @@ def importer_rewrites(layout: Layout, root: Path) -> list[Rewrite]:
         text = text_holding(path, layout.plan.stem)
         if text is None:
             continue
-        lines = text.splitlines()
+        lines = lines_of(text)
         its_package = ".".join(path.relative_to(root).parent.parts)
         here = [rewrite for rewrite in (_importer_rewrite(layout, path, node, lines, its_package)
                                         for node in ast.walk(parse(text, str(path))))
@@ -326,55 +331,86 @@ def importer_rewrites(layout: Layout, root: Path) -> list[Rewrite]:
     return found
 
 
+class Held(NamedTuple):
+    """A file as it was before :func:`write`: its bytes and its permission bits."""
+
+    data: bytes
+    mode: int
+
+
+def _hold(path: Path) -> Held:
+    """``path``'s bytes and permission bits, as :func:`_undo` puts them back."""
+    return Held(path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+
+
+@contextlib.contextmanager
 def write(layout: Layout, root: Path, texts: dict[str, str], rewrites: list[Rewrite],
-          beside: dict[Path, str]) -> None:
-    """Write one apply: each file ``beside`` the tree (the id maps, text by path), then the
-    package, the source's deletion, and the importers' rewrites.
+          beside: dict[Path, str]) -> Iterator[None]:
+    """Write one apply as ONE unit: each file ``beside`` the tree (the id maps, text by path),
+    then the package, the source's deletion and the importers' rewrites; the body of the
+    ``with`` statement (the apply's proof of what was written) runs inside the same unit.
 
-    Every check runs before the first write, so a refusal leaves the tree as it was (the
-    branch's neutral review, F8a: the importers' re-check ran after the package was written
-    and the source deleted).  Each importer is read once and rewritten whole, so two
-    rewrites in one file are applied together.
+    Every check that writes nothing runs before the first write, so a refusal leaves the tree
+    as it was (the branch's neutral review, F8a: the importers' re-check ran after the package
+    was written and the source deleted; and delta review 2's P1: an id map whose directory
+    did not exist failed after the package was written).  Each importer is read once and
+    rewritten whole, so two rewrites in one file are applied together.
 
-    A write that fails part-way (any :class:`OSError`: a full disk, a permission) undoes
-    itself before it raises a :class:`tools.split._run.RunError`: the source's, every
-    importer's and every existing file beside the tree's bytes are held from before the
-    first write, so every file it created is removed and every file it changed put back, and
-    the error names any step of that which failed (the coordinator's ruling on the delta
-    review's L-B, 2026-10-15: a failed write left the package written, the source deleted
-    and the importers part rewritten).  The unit undone is THE APPLY, not the tree (the
-    coordinator's ruling on commit 3b's (A), 2026-10-15): lane A maps test ids by the id
-    maps, so a map left for a split that never landed would mislead it.  Each held state is
-    taken before any write, so two spellings of one path beside the tree are undone alike."""
+    Anything that escapes the unit undoes it before it propagates, the static proof's
+    refusal of what was written included (the coordinator's ruling on commit 3b's (A), gaps
+    closed, 2026-10-15: the tree never holds an unproved split): the source's, every
+    importer's and every existing file beside the tree's bytes and permission bits are held
+    from before the first write, so every file it created is removed and every file it
+    changed put back, its mode with it.  An :class:`OSError` (a full disk, a permission)
+    becomes a :class:`tools.split._run.RunError`, and a :class:`Refusal` or ``RunError`` stays
+    one, each saying what was undone or naming what could not be; anything else (Ctrl-C,
+    which Python raises as :class:`KeyboardInterrupt`) propagates as it was, after the undo,
+    with a note saying the same.  A signal Python does not raise as an exception (by default
+    ``SIGTERM`` and ``SIGHUP``, and always ``SIGKILL``) ends the process where it stands, and
+    a machine that stops does too: no undo runs, and the tree is left as far as the write
+    got.  The unit undone is THE APPLY, not the
+    tree (the same ruling): lane A maps test ids by the id maps, so a map left for a split
+    that never landed would mislead it.  Each held state is taken before any write, so two
+    spellings of one path beside the tree are undone alike."""
     package = root / layout.plan.package
     if package.exists():
         raise Refusal(f"{package} already exists")
+    for path in beside:
+        if not path.parent.is_dir():
+            raise Refusal(f"{path}: no directory {path.parent} to write it in; nothing is "
+                          "applied")
     source = root / layout.plan.source
     originals, edited = _rewritten(rewrites)
-    originals[source] = source.read_bytes()
-    held = {path: path.read_bytes() for path in beside if path.exists()}
+    originals[source] = _hold(source)
+    held = {path: _hold(path) for path in beside if path.exists()}
     originals.update(held)
     created: list[Path] = []
     changed: list[Path] = []
     try:
         _write_beside(beside, held, (created, changed))
         _write_steps(package, texts, source, edited, (created, changed))
+        yield
     except OSError as exc:
-        failed = _undo(created, changed, originals)
-        raise RunError(f"the split's write failed ({exc}); " + (
-            f"NOT undone: {'; '.join(failed)}" if failed else
-            "every file it created is removed and every file it changed put back")) from exc
+        raise RunError(f"the apply failed ({exc}); {_undone(created, changed, originals)}"
+                       ) from exc
+    except (Refusal, RunError) as exc:
+        raise type(exc)(f"{exc}; {_undone(created, changed, originals)}") from exc
+    except BaseException as exc:
+        exc.add_note(f"tools.split: the apply was undone: "
+                     f"{_undone(created, changed, originals)}")
+        raise
 
 
-def _rewritten(rewrites: list[Rewrite]) -> tuple[dict[Path, bytes], dict[Path, list[str]]]:
-    """Each importer's bytes as read, and its lines with every rewrite applied; refused if
-    a line to rewrite is not what it was when the rewrite was derived."""
-    originals: dict[Path, bytes] = {}
+def _rewritten(rewrites: list[Rewrite]) -> tuple[dict[Path, Held], dict[Path, list[str]]]:
+    """Each importer as read, and its lines with every rewrite applied; refused if a line to
+    rewrite is not what it was when the rewrite was derived."""
+    originals: dict[Path, Held] = {}
     edited: dict[Path, list[str]] = {}
     for rewrite in rewrites:
         if rewrite.path not in edited:
-            originals[rewrite.path] = rewrite.path.read_bytes()
-            edited[rewrite.path] = decode(originals[rewrite.path], str(rewrite.path)).split("\n")
+            originals[rewrite.path] = _hold(rewrite.path)
+            edited[rewrite.path] = decode(originals[rewrite.path].data,
+                                          str(rewrite.path)).split("\n")
         lines = edited[rewrite.path]
         if lines[rewrite.line - 1] != rewrite.old:
             raise Refusal(f"{rewrite.path}:{rewrite.line} changed since it was read")
@@ -382,10 +418,10 @@ def _rewritten(rewrites: list[Rewrite]) -> tuple[dict[Path, bytes], dict[Path, l
     return originals, edited
 
 
-def _write_beside(beside: dict[Path, str], held: dict[Path, bytes],
+def _write_beside(beside: dict[Path, str], held: dict[Path, Held],
                   progress: tuple[list[Path], list[Path]]) -> None:
     """:func:`write`'s first writes, each file beside the tree; each goes into ``progress``
-    BEFORE it is written: changed when ``held`` holds its bytes from before, else created."""
+    BEFORE it is written: changed when ``held`` holds it from before, else created."""
     created, changed = progress
     for path, text in beside.items():
         (changed if path in held else created).append(path)
@@ -412,13 +448,22 @@ def _write_steps(package: Path, texts: dict[str, str], source: Path,
         path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _undo(created: list[Path], changed: list[Path], originals: dict[Path, bytes]
+def _undone(created: list[Path], changed: list[Path], originals: dict[Path, Held]) -> str:
+    """Undo a failed :func:`write` (:func:`_undo`) and say what it did."""
+    failed = _undo(created, changed, originals)
+    return (f"NOT undone: {'; '.join(failed)}" if failed else
+            "every file it created is removed and every file it changed put back")
+
+
+def _undo(created: list[Path], changed: list[Path], originals: dict[Path, Held]
           ) -> list[str]:
     """Undo a failed :func:`write`: remove what it created, newest first (the package's
     files, then the package, then the files beside the tree), which frees their space before
     anything is put back; then write back, from its bytes before the write, each file it
     began to change that no longer holds them (a step that failed before it touched its file
-    left nothing to put back).  Each step that fails is named, and the rest still run."""
+    left nothing to put back), and give each its permission bits from before (a deleted
+    source is re-created with the process's default mode).  Each step that fails is named,
+    and the rest still run."""
     failed = []
     for path in reversed(created):
         try:
@@ -429,9 +474,12 @@ def _undo(created: list[Path], changed: list[Path], originals: dict[Path, bytes]
         except OSError as exc:
             failed.append(f"{path}: {exc}")
     for path in changed:
+        data, mode = originals[path]
         try:
-            if not (path.is_file() and path.read_bytes() == originals[path]):
-                path.write_bytes(originals[path])
+            if not (path.is_file() and path.read_bytes() == data):
+                path.write_bytes(data)
+            if stat.S_IMODE(path.stat().st_mode) != mode:
+                path.chmod(mode)
         except OSError as exc:
             failed.append(f"{path}: {exc}")
     return failed

@@ -51,6 +51,7 @@ from tools.split._source import (
     CollectRules,
     Refusal,
     blocks,
+    lines_of,
     read_ini,
     read_module,
     read_text,
@@ -122,7 +123,7 @@ def _moved_blocks(layout: Layout, root: Path, rules: CollectRules,
                 moved.append((unit.block, layout.source.unit(unit.name).block))
         text = read_text(root / path)
         kept = frozenset(spec.line_number for spec in stripped_lines(
-            text.splitlines(keepends=True), *flags, tree=astroid.parse(text)))
+            lines_of(text, keepends=True), *flags, tree=astroid.parse(text)))
         found[str(path)] = _Moved(lines=out.lines, kept=kept, blocks=tuple(moved))
     return found
 
@@ -180,7 +181,7 @@ def _reported(source_text: str, first: tuple[int, int], second: tuple[int, int],
               options: dict[str, object]) -> bool:
     """Whether pylint's Symilar, fed the two source ranges, reports ONE couple between them
     that spans every line its own normalization keeps from each range."""
-    lines = source_text.splitlines(keepends=True)
+    lines = lines_of(source_text, keepends=True)
     tree = astroid.parse(source_text)
     flags = _normalization(options)
     symilar = Symilar(options["min-similarity-lines"], *flags)
