@@ -109,7 +109,14 @@ import symtable
 from dataclasses import dataclass, field
 
 from tools.split._model import Plan
-from tools.split._source import Imported, SourceModule, attribute_read, imported, within
+from tools.split._source import (
+    Imported,
+    SourceModule,
+    attribute_read,
+    imported,
+    symbols,
+    within,
+)
 
 #: The identity set: attributes whose value differs between the source module and a part
 #: for an object the move relocates (the module docstring gives each one's reason).
@@ -230,8 +237,7 @@ class _Tables:
 
     def __init__(self, source: SourceModule) -> None:
         """Read the whole source's symbol table once."""
-        self.module = symtable.symtable("\n".join(source.lines) + "\n", str(source.path),
-                                        "exec")
+        self.module = symbols("\n".join(source.lines) + "\n", str(source.path))
         self.by_key: dict[tuple[str, int], list[symtable.SymbolTable]] = {}
         pending = [self.module]
         while pending:

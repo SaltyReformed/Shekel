@@ -32,7 +32,6 @@ lines it compares.  (1) still covers the whole reported range.
 """
 from __future__ import annotations
 
-import configparser
 import contextlib
 import io
 import re
@@ -47,7 +46,15 @@ from tools.split._classes import mixin_name
 from tools.split._dynamic import DUPLICATE_CODE
 from tools.split._layout import Layout
 from tools.split._model import HELPERS
-from tools.split._source import Block, CollectRules, Refusal, blocks, read_module
+from tools.split._source import (
+    Block,
+    CollectRules,
+    Refusal,
+    blocks,
+    read_ini,
+    read_module,
+    read_text,
+)
 
 #: One side of a pylint duplicate-code report: ``==<dotted module>:[<start>:<end>]``,
 #: 0-based and end-exclusive.
@@ -113,7 +120,7 @@ def _moved_blocks(layout: Layout, root: Path, rules: CollectRules,
                     node.body[1:], node.body[0].end_lineno, out.lines, module))
             elif unit.name not in mixins and layout.source.unit(unit.name) is not None:
                 moved.append((unit.block, layout.source.unit(unit.name).block))
-        text = (root / path).read_text(encoding="utf-8")
+        text = read_text(root / path)
         kept = frozenset(spec.line_number for spec in stripped_lines(
             text.splitlines(keepends=True), *flags, tree=astroid.parse(text)))
         found[str(path)] = _Moved(lines=out.lines, kept=kept, blocks=tuple(moved))
@@ -148,9 +155,7 @@ def _to_source(side: Side, moved: dict[str, _Moved],
 def checker_defaults(root: Path) -> dict[str, object]:
     """The similarity checker's own option defaults, refused when ``.pylintrc`` overrides
     them (then the repository's config, not the defaults, would be the measure)."""
-    parser = configparser.ConfigParser(interpolation=None)
-    parser.read(root / ".pylintrc", encoding="utf-8")
-    if parser.has_section("SIMILARITIES"):
+    if read_ini(root / ".pylintrc").has_section("SIMILARITIES"):
         raise Refusal(".pylintrc sets [SIMILARITIES]; read it before trusting the defaults")
     return {name: spec["default"] for name, spec in SimilaritiesChecker.options}
 

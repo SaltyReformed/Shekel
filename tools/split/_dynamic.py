@@ -16,7 +16,7 @@ from pylint.checkers.imports import MSGS as IMPORT_MESSAGES
 from tools.ci.archive import declares_archived, in_archived_dir
 from tools.split._layout import Layout
 from tools.split._render import Mark, Origin, Provenance
-from tools.split._source import Kind, Refusal
+from tools.split._source import Kind, Refusal, read_text
 
 #: pylint's symbol for the cross-file duplicate check, judged pair by pair in
 #: :mod:`tools.split._similar` (the coordinator's correction to Fork 5 item 4).
@@ -327,13 +327,17 @@ def classify(root: Path, raw: list[tuple[str, int, str]],
     origin, never by path; F8d and fork D, only the tool's provenance): a line of the
     package the source held, a plan's own docstring text, a slice's docstring, or a line
     written by hand still counts, and a file whose origins did not verify has none to
-    drop."""
+    drop.
+
+    A matched document is read whole, because the banner's rule skips leading blank lines,
+    so one holding text not in UTF-8 on ANY line is refused, naming it
+    (:func:`tools.split._source.read_text`; the delta review's L-A item 4: it raised)."""
     hits = []
     records: dict[str, bool] = {}
     for path, line, text in raw:
         if path not in records:
             records[path] = in_archived_dir(PurePosixPath(path)) or declares_archived(
-                (root / path).read_text(encoding="utf-8"))
+                read_text(root / path))
         lines = origins.get(path, [])
         provenance = 0 < line <= len(lines) and isinstance(lines[line - 1], Provenance)
         hits.append(Hit(path=path, line=line, text=text.strip(), archived=records[path],

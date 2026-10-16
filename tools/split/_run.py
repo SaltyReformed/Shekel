@@ -5,7 +5,6 @@ and ``git grep`` for the old module's name.  Each returns what it observed; judg
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
@@ -14,6 +13,7 @@ from pathlib import Path
 from tools.ci import gitcmd
 from tools.split._model import RESERVED, Plan
 from tools.split._observe import OBSERVE_ENV, setup_key, setups_path
+from tools.split._source import decode, load_json, read_json, shown, undecodable
 
 #: pylint's exit-status bits for a fatal message and a usage error: either means it did
 #: not lint, so its message list is not an observation.
@@ -37,14 +37,13 @@ def observe(root: Path, targets: list[str], out: Path, collect_only: bool) -> di
             "-p", "no:cacheprovider", "-q"]
     if collect_only:
         args += ["-n", "0", "--collect-only"]
-    proc = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True,
-                          check=False)
+    proc = subprocess.run(args, cwd=root, env=env, capture_output=True, check=False)
     if not out.exists():
         raise RunError(f"{' '.join(args)} wrote no observation (exit {proc.returncode}):\n"
-                       + "\n".join((proc.stdout + proc.stderr).splitlines()[-30:]))
-    observed = json.loads(out.read_text(encoding="utf-8"))
+                       + "\n".join(shown(proc.stdout + proc.stderr).splitlines()[-30:]))
+    observed = read_json(out)
     observed["returncode"] = proc.returncode
-    observed["summary"] = (proc.stdout.strip().splitlines() or [""])[-1]
+    observed["summary"] = (shown(proc.stdout).strip().splitlines() or [""])[-1]
     return observed
 
 
@@ -54,7 +53,7 @@ def merged_setups(out: Path) -> tuple[list[dict], list[str]]:
     setups: dict[tuple, dict] = {}
     ran: set[str] = set()
     for path in _setups_files(out):
-        held = json.loads(path.read_text(encoding="utf-8"))
+        held = read_json(path)
         for setup in held["setups"]:
             setups.setdefault(setup_key(setup), setup)
         ran.update(held["ran"])
@@ -79,18 +78,30 @@ def pylint_messages(root: Path, paths: list[str]) -> list[dict]:
     """pylint's messages for ``paths``, linted in ONE run so duplicate-code between them
     is seen."""
     proc = subprocess.run(["pylint", "--output-format=json", "--score=n", *paths], cwd=root,
-                          capture_output=True, text=True, check=False)
+                          capture_output=True, check=False)
     if proc.returncode & _PYLINT_BROKEN:
         raise RunError(f"pylint did not lint {paths} (exit {proc.returncode}): "
-                       f"{proc.stderr.strip()[-500:]}")
-    return json.loads(proc.stdout or "[]")
+                       f"{shown(proc.stderr).strip()[-500:]}")
+    return load_json(decode(proc.stdout, "pylint's output") or "[]", "pylint's output")
 
 
 def plan_gate(root: Path) -> tuple[int, str]:
     """The plan gate's exit status and summary line, run as pre-commit and CI run it."""
     proc = subprocess.run(["pytest", "tools/plan_gate", "-c", "/dev/null", "-q"], cwd=root,
-                          capture_output=True, text=True, check=False)
-    return proc.returncode, (proc.stdout.strip().splitlines() or [""])[-1]
+                          capture_output=True, check=False)
+    return proc.returncode, (decode(proc.stdout, "the plan gate's output").strip().splitlines()
+                             or [""])[-1]
+
+
+def _git(root: Path, what: str, separator: bytes, *args: str
+         ) -> subprocess.CompletedProcess[str]:
+    """``git <args>`` in ``root`` through :func:`tools.ci.gitcmd.run`, which reads its output
+    as text; refused, naming ``what`` and showing the record that holds the byte (one record
+    of the output ends at ``separator``), when that output is not UTF-8."""
+    try:
+        return gitcmd.run(root, *args)
+    except UnicodeDecodeError as exc:
+        raise undecodable(exc, what, separator) from exc
 
 
 def tree_files(root: Path, *pathspecs: str) -> list[Path]:
@@ -108,8 +119,8 @@ def tree_files(root: Path, *pathspecs: str) -> list[Path]:
     file of this repository was tracked under an ignored path that day), so the two walks
     disagreed.  It starts git through :func:`tools.ci.gitcmd.run`, so ``root`` alone is the
     repository read."""
-    proc = gitcmd.run(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard",
-                      "--", *pathspecs)
+    proc = _git(root, "git ls-files' output", b"\0", "ls-files", "-z", "--cached", "--others",
+                "--exclude-standard", "--", *pathspecs)
     if proc.returncode:
         raise RunError(f"git ls-files failed: {proc.stderr.strip()}")
     return sorted({root / path for path in proc.stdout.split("\0")
@@ -158,10 +169,11 @@ def census(root: Path, plan: Plan) -> list[tuple[str, int, str]]:
     no line to edit.  ``-z`` separates each path and line number with a NUL, so a path is
     never quoted and a colon in it is never read as a separator, and ``--no-column`` keeps a
     ``grep.column`` setting, which ``--no-index`` still reads, out of the record.  git's
-    output is read as text, decoded strictly, so a carriage return inside a matched line, or
-    a matched line not in UTF-8, stops the census with an error rather than a misread line;
-    a carriage return that ends a line (CRLF) is read as its end (no tracked file holds a
-    carriage return or text not in UTF-8, measured 2026-10-15).
+    output is read as text, decoded strictly, so a carriage return inside a matched line
+    stops the census with an error rather than a misread line, and a matched line not in
+    UTF-8 is refused, the refusal showing its record, path first (:func:`_git`); a carriage
+    return that ends a line (CRLF) is read as its end (no tracked file holds a carriage
+    return or text not in UTF-8, measured 2026-10-15).
 
     git finds every line holding the name as a FIXED string, so the one judge of what a
     mention is stays :func:`mentions`.  The walk is the one call that reads a repository,
@@ -172,8 +184,8 @@ def census(root: Path, plan: Plan) -> list[tuple[str, int, str]]:
     if not files:
         return []
     try:
-        proc = gitcmd.run(root, "--literal-pathspecs", "grep", "--no-index", "-n",
-                          "--no-column", "-z", "-I", "-F", plan.stem, "--", *files)
+        proc = _git(root, "git grep's output", b"\n", "--literal-pathspecs", "grep",
+                    "--no-index", "-n", "--no-column", "-z", "-I", "-F", plan.stem, "--", *files)
     except OSError as exc:
         raise RunError(f"git grep could not start over the tree's {len(files)} files "
                        f"({exc}); the census read nothing") from exc

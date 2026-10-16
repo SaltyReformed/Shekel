@@ -53,7 +53,10 @@ from tools.split._source import (
     free_names,
     is_docstring,
     member_free_names,
+    parse,
     read_module,
+    read_text,
+    text_holding,
 )
 
 
@@ -251,12 +254,12 @@ def _check_output(tally: _Tally, layout: Layout, output: Output, path: Path,
     module = output.module
     try:
         mod = read_module(path, rules, relative=HELPERS)
-    except (Refusal, SyntaxError) as exc:
+    except Refusal as exc:
         tally.fail(f"{module}: unreadable ({exc})")
         return
     if len(mod.lines) >= LINE_BUDGET:
         tally.fail(f"{module}: {len(mod.lines)} lines, over the {LINE_BUDGET}-line budget")
-    docstring = ast.get_docstring(ast.parse("\n".join(mod.lines)), clean=False) or ""
+    docstring = ast.get_docstring(parse("\n".join(mod.lines), str(path)), clean=False) or ""
     if docstring.split() != [*output.docstring.split(), *output.provenance.split()]:
         tally.fail(f"{module}: its docstring is not the plan's text and the tool's provenance")
     imported = _check_imports(tally, layout, module, mod.imports, rules)
@@ -282,11 +285,12 @@ def _check_conservation(tally: _Tally, layout: Layout) -> None:
 
 
 def _imports_of(path: Path, target: str) -> list[tuple[int, str]]:
-    """``(line, name)`` for each name ``path`` imports from module ``target``."""
-    text = path.read_text(encoding="utf-8")
-    if target not in text:
+    """``(line, name)`` for each name ``path`` imports from module ``target``; a file whose
+    bytes do not name ``target`` is never decoded (:func:`tools.split._source.text_holding`)."""
+    text = text_holding(path, target)
+    if text is None:
         return []
-    return [(node.lineno, alias.name) for node in ast.walk(ast.parse(text))
+    return [(node.lineno, alias.name) for node in ast.walk(parse(text, str(path)))
             if isinstance(node, ast.ImportFrom) and node.module == target
             for alias in node.names]
 
@@ -303,7 +307,12 @@ def _check_importers(tally: _Tally, layout: Layout, root: Path) -> None:
         tally.fail(f"{rewrite.path}:{rewrite.line}: still imports the source module")
     target = f"{layout.plan.dotted}.{HELPERS}"
     for path in python_files(root):
-        for line, name in _imports_of(path, target):
+        try:
+            found = _imports_of(path, target)
+        except Refusal as exc:
+            tally.fail(f"importers: {exc}")
+            continue
+        for line, name in found:
             if layout.home.get(name) != HELPERS:
                 tally.fail(f"{path}:{line}: imports {name} from _helpers, which does not "
                            "hold it")
@@ -321,7 +330,7 @@ def prove_static(layout: Layout, root: Path, rules: CollectRules) -> list[str]:
         tally.fail(f"{package}: holds {sorted(present)}, expected {sorted(expected)}")
         return tally.failures
     docstring = layout.source.lines[:layout.source.docstring_end]
-    if (package / f"{INIT}.py").read_text(encoding="utf-8") != "\n".join(docstring) + "\n":
+    if read_text(package / f"{INIT}.py") != "\n".join(docstring) + "\n":
         tally.fail(f"{INIT}.py is not the source's module docstring verbatim")
     for output in layout.outputs.values():
         _check_output(tally, layout, output, package / f"{output.module}.py", rules)
@@ -349,7 +358,7 @@ def line_origins(layout: Layout, root: Path
     for name, lines in rendered(layout, line_limit(root)).items():
         path = package / name
         where = str(path.relative_to(root))
-        if not path.is_file() or path.read_text(encoding="utf-8") != text_of(lines):
+        if not path.is_file() or read_text(path) != text_of(lines):
             failures.append(f"{where} is not what the plan renders from the recorded source")
             continue
         for number, (text, origin) in enumerate(lines, start=1):
@@ -361,8 +370,8 @@ def line_origins(layout: Layout, root: Path
             if not origin.copied and (origin.first, origin.last) not in spans:
                 failures.append(f"{where}:{number} is called an import from source lines "
                                 f"{origin.first}-{origin.last}, which hold no import")
-        composed = [not isinstance(lines[node.lineno - 1][1], Origin) for node in ast.parse(
-            text_of(lines)).body if isinstance(node, (ast.Import, ast.ImportFrom))]
+        composed = [not isinstance(lines[node.lineno - 1][1], Origin) for node in parse(
+            text_of(lines), where).body if isinstance(node, (ast.Import, ast.ImportFrom))]
         if True in composed and False in composed[composed.index(True):]:
             failures.append(f"{where}: an import the writer composed sits before a "
                             "source-derived one")
@@ -386,7 +395,7 @@ def importer_lines(root: Path, recorded: dict[str, dict]
     repointed: dict[str, set[int]] = {}
     failures = []
     for path, entry in sorted(recorded.items()):
-        lines = (root / path).read_text(encoding="utf-8").split("\n")
+        lines = read_text(root / path).split("\n")
         spans: set[int] = set()
         for line, last, old, new in entry["rewrites"]:
             if line > len(lines) or lines[line - 1] != new:

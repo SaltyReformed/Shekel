@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import errno
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from tools.split import _run as run
 from tools.split import _dynamic as dynamic
 from tools.split._model import parse_plan
 from tools.split._observe import LONE, setups_path
+from tools.split._run import pylint_messages
 from tools.split._source import Refusal
 from tools.split.conftest import SOURCE, build, layout_of, plan_dict, tree
 from tools.split.split import _BEFORE_RUN, _META, Context, main
@@ -491,3 +493,105 @@ def test_a_token_stopped_mid_write_is_no_token(tmp_path, monkeypatch):
     assert not (tmp_path / _META).exists()
     with pytest.raises(Refusal, match="no complete record; record again"):
         ctx.meta()
+
+
+def only_on_path(tmp_path: Path, monkeypatch, *programs: str) -> None:
+    """Make ``PATH`` reach ``programs`` alone, each linked from where it is now."""
+    reached = tmp_path / "bin"
+    reached.mkdir()
+    for program in programs:
+        (reached / program).symlink_to(shutil.which(program))
+    monkeypatch.setenv("PATH", str(reached))
+
+
+class TestAnOSErrorIsARefusal:
+    """``main`` catches :class:`OSError` once, so a file it cannot write or a program it cannot
+    start is a refusal naming it, exit 1 as documented, never a traceback (the coordinator's
+    ruling on commit 3b's (A))."""
+
+    def test_pylint_not_installed(self, split, capsys, monkeypatch, tmp_path):
+        """record reaches pylint with no pylint to start: refused, naming it, no record."""
+        monkeypatch.setattr(run, "pylint_messages", pylint_messages)
+        only_on_path(tmp_path, monkeypatch, "git")
+        assert split("record") == 1
+        assert ("REFUSED: [Errno 2] No such file or directory: 'pylint'"
+                in capsys.readouterr().err)
+        assert not (split.into / _META).exists()
+
+    def test_an_unwritable_record_directory(self, split, capsys):
+        """record cannot copy the source into ``--into``: refused, naming the file."""
+        split.into.mkdir()
+        split.into.chmod(0o500)
+        try:
+            assert split("record") == 1
+        finally:
+            split.into.chmod(0o700)
+        assert (f"REFUSED: [Errno 13] Permission denied: '{split.into / 'source.py'}'"
+                in capsys.readouterr().err)
+        assert not (split.into / _META).exists()
+
+
+def test_apply_twice_is_refused_by_name(split, capsys):
+    """The first apply deleted the source: the second is refused before anything reads it
+    (the delta review's L-B: it raised FileNotFoundError hashing the deleted file)."""
+    applied(split)
+    before = tree(split.root)
+    capsys.readouterr()
+    assert split("apply") == 1
+    assert (f"REFUSED: {split.root / SOURCE} is not there to split: apply deletes the source, "
+            "so this record may be applied already; nothing is applied"
+            in capsys.readouterr().err)
+    assert tree(split.root) == before
+
+
+def test_a_failed_git_command_is_a_refusal(split, capsys):
+    """A repository whose branch has no commit: record cannot name the commit it is taken at,
+    and git's error is a refusal (the delta review's L-B: GitError was uncaught)."""
+    scratch.run(split.root, "update-ref", "-d", "HEAD")
+    assert split("record") == 1
+    assert "REFUSED: git rev-parse HEAD: fatal: " in capsys.readouterr().err
+    assert not (split.into / _META).exists()
+
+
+#: Each write of an apply a case fails, as ``(file, the Path method that fails on it)``.
+APPLY_WRITES = {
+    "the record's id map": (lambda split: split.into / "idmap.json", "write_text"),
+    "the source's deletion": (lambda split: split.root / SOURCE, "unlink"),
+    "an importer's rewrite": (lambda split: split.root / IMPORTER, "write_text"),
+}
+
+
+def everything(split) -> tuple:
+    """Every file an apply may touch: the tree, the record, and the ``--idmap`` file (None
+    when there is none)."""
+    return (tree(split.root), tree(split.into),
+            split.idmap.read_bytes() if split.idmap.exists() else None)
+
+
+@pytest.mark.parametrize("step", APPLY_WRITES)
+@pytest.mark.parametrize("earlier", [False, True], ids=["no-map-before", "a-map-before"])
+def test_an_apply_that_fails_part_way_changes_nothing_anywhere(split, capsys, monkeypatch,
+                                                              step, earlier):
+    """An OSError at ``step`` undoes THE APPLY, not the tree alone (the coordinator's ruling
+    on commit 3b's (A)): the tree, the record directory and the ``--idmap`` file are as they
+    were, a map an earlier apply left there put back and a new one removed.  The id maps
+    are written first, so the first case fails with ``--idmap`` written and the package
+    not; the others with both maps and the package written."""
+    assert split("record") == 0
+    if earlier:
+        split.idmap.write_bytes(b'{"an": "earlier apply\'s map"}\n')
+    before = everything(split)
+    target, method = APPLY_WRITES[step][0](split), APPLY_WRITES[step][1]
+    real = getattr(Path, method)
+
+    def full(self, *args, **kwargs):
+        if self == target:
+            raise OSError(errno.ENOSPC, "No space left on device", str(self))
+        return real(self, *args, **kwargs)
+    monkeypatch.setattr(Path, method, full)
+    capsys.readouterr()
+    assert split("apply") == 1
+    monkeypatch.undo()
+    assert ("every file it created is removed and every file it changed put back"
+            in capsys.readouterr().err)
+    assert everything(split) == before

@@ -21,7 +21,6 @@ after checking every claim against the files on disk and the source
 from __future__ import annotations
 
 import ast
-import configparser
 import hashlib
 import textwrap
 from dataclasses import dataclass
@@ -32,7 +31,17 @@ from tools.split._classes import mixin_name
 from tools.split._layout import Layout, Output, Piece
 from tools.split._model import HELPERS, INIT
 from tools.split._run import RunError, python_files
-from tools.split._source import ImportStmt, Refusal, bound_name, imported, within
+from tools.split._source import (
+    ImportStmt,
+    Refusal,
+    bound_name,
+    decode,
+    imported,
+    parse,
+    read_ini,
+    text_holding,
+    within,
+)
 
 #: R-BAL301 (Josh, 2026-10-15): "every Python file under 1,000 lines".  A part may hold at
 #: most ``LINE_BUDGET - 1`` lines.
@@ -72,14 +81,15 @@ Line = tuple[str, Mark]
 
 
 def line_limit(root: Path) -> int:
-    """``.pylintrc``'s ``max-line-length``, the width a generated line may not exceed."""
-    parser = configparser.ConfigParser(interpolation=None)
-    if not parser.read(root / ".pylintrc", encoding="utf-8"):
-        raise Refusal(f"no {root / '.pylintrc'} to read max-line-length from")
+    """``.pylintrc``'s ``max-line-length``, the width a generated line may not exceed;
+    refused when it states none, or one that is not a whole number."""
+    parser = read_ini(root / ".pylintrc")
     try:
         return int(parser["FORMAT"]["max-line-length"])
     except KeyError as exc:
         raise Refusal(".pylintrc states no [FORMAT] max-line-length") from exc
+    except ValueError as exc:
+        raise Refusal(f".pylintrc's max-line-length is not a whole number ({exc})") from exc
 
 
 def _checked(lines: list[str], limit: int, what: str) -> list[str]:
@@ -301,13 +311,13 @@ def importer_rewrites(layout: Layout, root: Path) -> list[Rewrite]:
     for path in python_files(root):
         if path.resolve() == source or path.resolve().is_relative_to(package):
             continue
-        text = path.read_bytes().decode("utf-8")
-        if layout.plan.stem not in text:
+        text = text_holding(path, layout.plan.stem)
+        if text is None:
             continue
         lines = text.splitlines()
         its_package = ".".join(path.relative_to(root).parent.parts)
         here = [rewrite for rewrite in (_importer_rewrite(layout, path, node, lines, its_package)
-                                        for node in ast.walk(ast.parse(text, str(path))))
+                                        for node in ast.walk(parse(text, str(path))))
                 if rewrite]
         if here and "\r" in text:
             raise Refusal(f"{path}: a carriage return in its line endings, which the writer, "
@@ -316,8 +326,10 @@ def importer_rewrites(layout: Layout, root: Path) -> list[Rewrite]:
     return found
 
 
-def write(layout: Layout, root: Path, texts: dict[str, str], rewrites: list[Rewrite]) -> None:
-    """Create the package, delete the source, and apply the importers' rewrites.
+def write(layout: Layout, root: Path, texts: dict[str, str], rewrites: list[Rewrite],
+          beside: dict[Path, str]) -> None:
+    """Write one apply: each file ``beside`` the tree (the id maps, text by path), then the
+    package, the source's deletion, and the importers' rewrites.
 
     Every check runs before the first write, so a refusal leaves the tree as it was (the
     branch's neutral review, F8a: the importers' re-check ran after the package was written
@@ -325,20 +337,27 @@ def write(layout: Layout, root: Path, texts: dict[str, str], rewrites: list[Rewr
     rewrites in one file are applied together.
 
     A write that fails part-way (any :class:`OSError`: a full disk, a permission) undoes
-    itself before it raises a :class:`tools.split._run.RunError`: the source's and every
-    importer's bytes are held from before the first write, so every file it created is
-    removed and every file it changed put back, and the error names any step of that which
-    failed (the coordinator's ruling on the delta review's L-B, 2026-10-15: a failed write
-    left the package written, the source deleted and the importers part rewritten)."""
+    itself before it raises a :class:`tools.split._run.RunError`: the source's, every
+    importer's and every existing file beside the tree's bytes are held from before the
+    first write, so every file it created is removed and every file it changed put back, and
+    the error names any step of that which failed (the coordinator's ruling on the delta
+    review's L-B, 2026-10-15: a failed write left the package written, the source deleted
+    and the importers part rewritten).  The unit undone is THE APPLY, not the tree (the
+    coordinator's ruling on commit 3b's (A), 2026-10-15): lane A maps test ids by the id
+    maps, so a map left for a split that never landed would mislead it.  Each held state is
+    taken before any write, so two spellings of one path beside the tree are undone alike."""
     package = root / layout.plan.package
     if package.exists():
         raise Refusal(f"{package} already exists")
     source = root / layout.plan.source
     originals, edited = _rewritten(rewrites)
     originals[source] = source.read_bytes()
+    held = {path: path.read_bytes() for path in beside if path.exists()}
+    originals.update(held)
     created: list[Path] = []
     changed: list[Path] = []
     try:
+        _write_beside(beside, held, (created, changed))
         _write_steps(package, texts, source, edited, (created, changed))
     except OSError as exc:
         failed = _undo(created, changed, originals)
@@ -355,12 +374,22 @@ def _rewritten(rewrites: list[Rewrite]) -> tuple[dict[Path, bytes], dict[Path, l
     for rewrite in rewrites:
         if rewrite.path not in edited:
             originals[rewrite.path] = rewrite.path.read_bytes()
-            edited[rewrite.path] = originals[rewrite.path].decode("utf-8").split("\n")
+            edited[rewrite.path] = decode(originals[rewrite.path], str(rewrite.path)).split("\n")
         lines = edited[rewrite.path]
         if lines[rewrite.line - 1] != rewrite.old:
             raise Refusal(f"{rewrite.path}:{rewrite.line} changed since it was read")
         lines[rewrite.line - 1] = rewrite.new
     return originals, edited
+
+
+def _write_beside(beside: dict[Path, str], held: dict[Path, bytes],
+                  progress: tuple[list[Path], list[Path]]) -> None:
+    """:func:`write`'s first writes, each file beside the tree; each goes into ``progress``
+    BEFORE it is written: changed when ``held`` holds its bytes from before, else created."""
+    created, changed = progress
+    for path, text in beside.items():
+        (changed if path in held else created).append(path)
+        path.write_text(text, encoding="utf-8")
 
 
 def _write_steps(package: Path, texts: dict[str, str], source: Path,
@@ -386,10 +415,10 @@ def _write_steps(package: Path, texts: dict[str, str], source: Path,
 def _undo(created: list[Path], changed: list[Path], originals: dict[Path, bytes]
           ) -> list[str]:
     """Undo a failed :func:`write`: remove what it created, newest first (the package's
-    files, then the package), which frees their space before anything is put back; then
-    write back, from its bytes before the write, each file it began to change that no
-    longer holds them (a step that failed before it touched its file left nothing to put
-    back).  Each step that fails is named, and the rest still run."""
+    files, then the package, then the files beside the tree), which frees their space before
+    anything is put back; then write back, from its bytes before the write, each file it
+    began to change that no longer holds them (a step that failed before it touched its file
+    left nothing to put back).  Each step that fails is named, and the rest still run."""
     failed = []
     for path in reversed(created):
         try:

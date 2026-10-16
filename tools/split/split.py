@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tools.ci.arcs import REPO
-from tools.ci.gitcmd import git
+from tools.ci.gitcmd import GitError, git
 from tools.split import _dynamic as dynamic
 from tools.split import _run as run
 from tools.split import _similar as similar
@@ -48,7 +48,14 @@ from tools.split._render import (
     render_all,
     write,
 )
-from tools.split._source import CollectRules, Refusal, collect_rules, read_module
+from tools.split._source import (
+    CollectRules,
+    Refusal,
+    collect_rules,
+    read_json,
+    read_module,
+    read_text,
+)
 
 #: The record directory's files.  ``meta.json`` is the record's completion token.
 _SOURCE, _META = "source.py", "meta.json"
@@ -79,7 +86,7 @@ class Context:
 
     def read(self, name: str) -> object:
         """A JSON file the record holds."""
-        return json.loads((self.into / name).read_text(encoding="utf-8"))
+        return read_json(self.into / name)
 
     def meta(self) -> dict:
         """The record's completion token, which ``record`` writes last; refused, by name,
@@ -118,7 +125,7 @@ def _importer_record(rewrites: list[Rewrite], root: Path) -> dict[str, dict]:
     importers: dict[str, dict] = {}
     for rewrite in rewrites:
         entry = importers.setdefault(str(rewrite.path.relative_to(root)), {
-            "sha256": fingerprint(rewrite.path.read_text(encoding="utf-8")), "rewrites": []})
+            "sha256": fingerprint(read_text(rewrite.path)), "rewrites": []})
         entry["rewrites"].append([rewrite.line, rewrite.last, rewrite.old, rewrite.new])
     return importers
 
@@ -180,11 +187,16 @@ def record(ctx: Context) -> list[str]:
 
 
 def apply(ctx: Context, idmap: Path) -> list[str]:
-    """Write the package, delete the source, re-point importers, write the id map, and run
-    the static proof; refused, with nothing written, unless a complete record passed and the
-    source and every importer are as it found them."""
+    """Write the id maps and the package, delete the source, re-point importers, and run the
+    static proof; refused, with nothing written, unless a complete record passed and the
+    source and every importer are as it found them.  The writes are ONE unit
+    (:func:`tools.split._render.write`): one that fails undoes every file the apply wrote,
+    the id maps beside the tree included."""
     meta = ctx.meta()
     source = ctx.root / ctx.plan.source
+    if not source.is_file():
+        raise Refusal(f"{source} is not there to split: apply deletes the source, so this "
+                      "record may be applied already; nothing is applied")
     if _sha256(source) != meta["sha256"]:
         raise Refusal(f"{source} changed since it was recorded; record again")
     layout = ctx.layout(source)
@@ -198,10 +210,8 @@ def apply(ctx: Context, idmap: Path) -> list[str]:
         raise Refusal("the modules importing the source, or their text, changed since the "
                       "record; record again")
     mapping = dynamic.id_map(layout, ctx.read(_BEFORE_COLLECT)["collected"])
-    write(layout, ctx.root, texts, rewrites)
     payload = json.dumps(mapping, indent=1, sort_keys=True) + "\n"
-    idmap.write_text(payload, encoding="utf-8")
-    (ctx.into / "idmap.json").write_text(payload, encoding="utf-8")
+    write(layout, ctx.root, texts, rewrites, {idmap: payload, ctx.into / "idmap.json": payload})
     return prove_static(ctx.layout(ctx.into / _SOURCE), ctx.root, ctx.rules())
 
 
@@ -248,7 +258,7 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     recorded = _record_verdict(ctx, layout)
     failures, origins = _static_arms(ctx, layout)
     failures = [f"record: {f}" for f in recorded[0]] + failures
-    mapping = json.loads(idmap.read_text(encoding="utf-8"))
+    mapping = read_json(idmap)
     if mapping != dynamic.id_map(layout, ctx.read(_BEFORE_COLLECT)["collected"]):
         failures.append(f"{idmap} is not the map this plan produces")
     arms, seen = _run_arms(ctx, layout, mapping)
@@ -300,7 +310,7 @@ def _duplicate_arm(ctx: Context, layout: Layout, idmap: Path, after_pylint: list
     """Judge every duplicate-code pair between the parts; list the revealed ones beside the
     id map (``<stem>.r0801.txt``) and return a failure for each created one."""
     duplicates = similar.sort_pairs(layout, ctx.root, ctx.rules(), after_pylint,
-                                    (ctx.into / _SOURCE).read_text(encoding="utf-8"))
+                                    read_text(ctx.into / _SOURCE))
     revealed = idmap.with_name(f"{ctx.plan.stem}.r0801.txt")
     revealed.write_text("".join(
         f"{a} ~ {b}  (source lines {sa[0] + 1}-{sa[1]} ~ {sb[0] + 1}-{sb[1]})\n"
@@ -314,7 +324,7 @@ def _report_moves(ctx: Context, layout: Layout, idmap: Path, seen: dict) -> list
     """The proof block's head: the source, the files, identity, collection and outcomes."""
     meta = ctx.read(_META)
     package = ctx.root / layout.plan.package
-    sizes = ", ".join(f"{p.name} {p.read_text(encoding='utf-8').count(chr(10))}"
+    sizes = ", ".join(f"{p.name} {read_text(p).count(chr(10))}"
                       for p in sorted(package.glob("*.py")))
     counts = describe(layout)
     return [
@@ -380,7 +390,15 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None, root: Path = REPO) -> int:
     """Run one command; 0 when it proved, 1 when it refused or a proof arm failed (the
-    command line's own refusals exit 2, through :meth:`argparse.ArgumentParser.error`)."""
+    command line's own refusals exit 2, through :meth:`argparse.ArgumentParser.error`).
+
+    The one place an :class:`OSError` is caught (the coordinator's ruling on commit 3b's
+    (A), 2026-10-15): a file that cannot be read or written, a process that cannot start
+    (pylint not installed), each names its file itself, so it is reported as a refusal like
+    the rest, never a traceback; a decode, JSON or ini error is refused where it is read
+    (:mod:`tools.split._source`), naming the file.  A failed git command
+    (:class:`tools.ci.gitcmd.GitError`, as a repository with no commit gives ``record``) is
+    caught here too, for every git call at once."""
     args = parser().parse_args(argv)
     if args.command != "record" and args.idmap is None:
         parser().error("apply and prove need --idmap")
@@ -398,7 +416,7 @@ def main(argv: list[str] | None = None, root: Path = REPO) -> int:
             failures = apply(ctx, args.idmap)
         else:
             failures = prove(ctx, args.idmap)
-    except (PlanError, Refusal, run.RunError) as exc:
+    except (PlanError, Refusal, run.RunError, GitError, OSError) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 1
     for failure in failures:

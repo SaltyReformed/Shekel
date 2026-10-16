@@ -19,6 +19,7 @@ import ast
 import configparser
 import fnmatch
 import io
+import json
 import symtable
 import tokenize
 from dataclasses import dataclass
@@ -28,6 +29,110 @@ from pathlib import Path
 
 class Refusal(RuntimeError):
     """The tool cannot PROVE a move of this source under this plan, so it makes none."""
+
+
+# The ONE reader.  Every file's text, every process's output, every JSON value, syntax tree,
+# symbol table and ini file the tool reads goes through the functions below, and each refuses,
+# naming what it read, where Python would raise (the coordinator's ruling on the delta
+# review's L-B, 2026-10-15: every path from ``split.main`` to a traceback becomes a refusal
+# naming the file).  An OSError is not converted here: it names its file itself, and
+# ``split.main`` reports it, the one place it is caught.
+
+
+def undecodable(exc: UnicodeDecodeError, where: str, separator: bytes = b"\n") -> Refusal:
+    """The refusal for bytes read from ``where`` that are not UTF-8: it names the byte and
+    shows the record holding it, the bytes between two ``separator``\\ s (a file's line; one
+    path of ``git ls-files -z``), so the file is found even when ``where`` is a process."""
+    data = exc.object
+    start = data.rfind(separator, 0, exc.start) + 1
+    end = data.find(separator, exc.start)
+    record = data[start:end if end >= 0 else len(data)]
+    return Refusal(f"{where}: not UTF-8 text ({exc.reason} at byte {exc.start}, in "
+                   f"{record[:160]!r})")
+
+
+def decode(data: bytes, where: str, separator: bytes = b"\n") -> str:
+    """``data`` decoded strictly as UTF-8, the ONE decoder of what the tool reads as text;
+    refused (:func:`undecodable`) when it is not UTF-8.  Nothing is translated: a carriage
+    return is kept, for the readers that refuse one."""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise undecodable(exc, where, separator) from exc
+
+
+def shown(data: bytes) -> str:
+    """Bytes a process wrote, made text for a MESSAGE alone (a byte that is not UTF-8 shown
+    escaped), so a refusal's diagnostics never stop it naming why; never read as data."""
+    return data.decode("utf-8", "backslashreplace")
+
+
+def read_text(path: Path) -> str:
+    """A file's text as :meth:`pathlib.Path.read_text` reads it, newlines translated
+    (``\\r\\n`` and a lone ``\\r`` read as ``\\n``, by :mod:`io`'s own universal newlines),
+    decoded by :func:`decode`."""
+    return io.StringIO(decode(path.read_bytes(), str(path)), newline=None).read()
+
+
+def text_holding(path: Path, needle: str) -> str | None:
+    """A file's text, untranslated, when its bytes hold ``needle``; None, and nothing
+    decoded, when they do not.  A walk over every ``.py`` of the tree for an import of one
+    module therefore never refuses a file that does not name it (the delta review's L-B:
+    the importer walk decoded every file before its filter, so a stray non-UTF-8 ``.py``
+    anywhere stopped ``record``).  UTF-8 is self-synchronising, so the bytes hold the
+    needle's bytes exactly when the text holds the needle."""
+    data = path.read_bytes()
+    return decode(data, str(path)) if needle.encode("utf-8") in data else None
+
+
+def load_json(text: str, where: str) -> object:
+    """``text``'s JSON value; refused, naming ``where``, when it is not JSON."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise Refusal(f"{where}: not JSON ({exc})") from exc
+
+
+def read_json(path: Path) -> object:
+    """A JSON file's value, by :func:`read_text` and :func:`load_json`."""
+    return load_json(read_text(path), str(path))
+
+
+def parse(text: str, where: str) -> ast.Module:
+    """``text``'s syntax tree, refused, naming ``where``, unless Python compiles it: a syntax
+    error, a null byte, or an error only the compiler's symbol pass finds (``return`` outside
+    a function, a name both a parameter and ``global``), which :mod:`symtable` would
+    otherwise raise inside the layout."""
+    try:
+        compile(text, where, "exec", dont_inherit=True)
+        return ast.parse(text, filename=where)
+    except SyntaxError as exc:
+        raise Refusal(f"{where}: Python does not compile it ({exc.msg}, line {exc.lineno})"
+                      ) from exc
+
+
+def symbols(text: str, where: str) -> symtable.SymbolTable:
+    """``text``'s symbol table; refused, naming ``where``, when Python does not compile it."""
+    try:
+        return symtable.symtable(text, where, "exec")
+    except SyntaxError as exc:
+        raise Refusal(f"{where}: Python does not compile it ({exc.msg}, line {exc.lineno})"
+                      ) from exc
+
+
+def read_ini(path: Path) -> configparser.ConfigParser:
+    """An ini file the repository configures a tool by (``pytest.ini``, ``.pylintrc``), as
+    :mod:`configparser` reads it; refused, naming the file, when it is absent or unreadable
+    (:mod:`configparser` skips a file it cannot open), not UTF-8, or not one
+    :mod:`configparser` reads."""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        found = parser.read(path, encoding="utf-8")
+    except (configparser.Error, UnicodeDecodeError) as exc:
+        raise Refusal(f"{path}: not an ini file configparser reads ({exc})") from exc
+    if not found:
+        raise Refusal(f"no {path} to read")
+    return parser
 
 
 class Kind(Enum):
@@ -66,8 +171,8 @@ class CollectRules:
 
 def collect_rules(root: Path) -> CollectRules:
     """Read the collection globs from ``<root>/pytest.ini``; refuse when it holds none."""
-    parser = configparser.ConfigParser(interpolation=None)
-    if not parser.read(root / "pytest.ini", encoding="utf-8") or "pytest" not in parser:
+    parser = read_ini(root / "pytest.ini")
+    if "pytest" not in parser:
         raise Refusal(f"no [pytest] section in {root / 'pytest.ini'}")
     section = parser["pytest"]
     try:
@@ -337,10 +442,10 @@ def read_module(path: Path, rules: CollectRules, relative: str | None = None) ->
     ``relative`` names the one sibling module a relative import may read: none for a
     source, ``_helpers`` for an output the tool wrote.
     """
-    text = path.read_text(encoding="utf-8")
+    text = read_text(path)
     lines = tuple(text.splitlines())
     where = str(path)
-    body = list(ast.parse(text, filename=where).body)
+    body = list(parse(text, where).body)
     docstring_end = 0
     if body and is_docstring(body[0]):
         if body[0].lineno != 1:
@@ -373,7 +478,7 @@ def free_names(text: str) -> frozenset[str]:
     Resolved by :mod:`symtable`, so a local, a parameter or a comprehension variable that
     shares a module-level name is NOT counted: the scopes are Python's, not a guess.
     """
-    top = symtable.symtable(text, "<block>", "exec")
+    top = symbols(text, "<block>")
     found = {s.get_name() for s in top.get_symbols()
              if s.is_referenced() and not s.is_assigned() and not s.is_imported()}
     for child in top.get_children():
@@ -385,7 +490,7 @@ def member_free_names(member_lines: tuple[str, ...]) -> frozenset[str]:
     """:func:`free_names` for a class member's lines, read inside a stand-in class so the
     class scope is Python's own (a method does not see a class attribute by bare name)."""
     probe = "class _SplitProbe:\n" + "\n".join(member_lines) + "\n"
-    top = symtable.symtable(probe, "<member>", "exec")
+    top = symbols(probe, "<member>")
     found: set[str] = set()
     for child in top.get_children():
         found |= _table_globals(child)

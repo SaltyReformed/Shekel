@@ -33,7 +33,8 @@ def _split(tmp_path: Path, second_floor: int):
     plan["parts"][0]["nodes"].append("test_sum_a")
     plan["parts"][2]["nodes"].append("test_sum_b")
     layout = layout_of(root, plan)
-    write(layout, root, render_all(layout, line_limit(root)), importer_rewrites(layout, root))
+    write(layout, root, render_all(layout, line_limit(root)), importer_rewrites(layout, root),
+          {})
     return root, layout
 
 
@@ -167,7 +168,8 @@ def _with(tmp_path: Path, extra: str, placed: dict[int, list]):
     for part, nodes in placed.items():
         plan["parts"][part]["nodes"].extend(nodes)
     layout = layout_of(root, plan)
-    write(layout, root, render_all(layout, line_limit(root)), importer_rewrites(layout, root))
+    write(layout, root, render_all(layout, line_limit(root)), importer_rewrites(layout, root),
+          {})
     return root, layout
 
 

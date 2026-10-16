@@ -9,9 +9,10 @@ names an unknown key, or a node twice, is refused rather than read generously.
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+
+from tools.split._source import read_json
 
 #: The package modules the tool writes itself, which no part may be named.
 HELPERS = "_helpers"
@@ -145,9 +146,6 @@ def parse_plan(raw: object) -> Plan:
 
 
 def load_plan(path: Path) -> Plan:
-    """Read and parse the plan file at ``path``."""
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise PlanError(f"{path}: not JSON ({exc})") from exc
-    return parse_plan(raw)
+    """Read the plan file at ``path`` (refused, naming it, when it is not UTF-8 JSON:
+    :func:`tools.split._source.read_json`) and parse it."""
+    return parse_plan(read_json(path))

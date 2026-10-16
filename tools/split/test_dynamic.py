@@ -7,6 +7,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -483,12 +484,16 @@ class TestTheCensus:
         assert census(root, parse_plan(plan_dict())) == [
             ("docs/crlf.md", 1, "see ``test_sample.TestBig``"), *self.NOTES_HIT]
 
-    def test_a_matched_line_not_in_utf8_is_an_error(self, tmp_path):
+    def test_a_matched_line_not_in_utf8_is_refused_naming_its_file(self, tmp_path):
         """git's output is decoded strictly, so a matched line it cannot decode stops the
-        census rather than coming back misread."""
+        census rather than coming back misread: refused, the refusal showing the record that
+        holds the byte, its path first, where it once raised UnicodeDecodeError (the delta
+        review's L-B)."""
         root = self.tracked_notes(tmp_path)
         (root / "docs" / "latin.md").write_bytes(b"see ``test_sample.TestBig`` \xe9\n")
-        with pytest.raises(UnicodeDecodeError):
+        with pytest.raises(Refusal, match=re.escape(
+                "git grep's output: not UTF-8 text (invalid continuation byte at byte 44, in "
+                "b'docs/latin.md\\x001\\x00see ``test_sample.TestBig`` \\xe9')")):
             census(root, parse_plan(plan_dict()))
 
     @pytest.mark.parametrize("binding", scratch.BINDINGS)

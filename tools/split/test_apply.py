@@ -34,7 +34,7 @@ def applied(repo: Path, plan: dict | None = None) -> Layout:
     prover holds it to."""
     layout = layout_of(repo, plan)
     texts = render_all(layout, line_limit(repo))
-    write(layout, repo, texts, importer_rewrites(layout, repo))
+    write(layout, repo, texts, importer_rewrites(layout, repo), {})
     return layout
 
 
@@ -152,7 +152,7 @@ def test_a_refused_write_leaves_the_tree_as_it_was(repo):
         "import _make", "import _make  # edited", 1)
     importer.write_text(edited, encoding="utf-8")
     with pytest.raises(Refusal, match="changed since it was read"):
-        write(layout, repo, texts, rewrites)
+        write(layout, repo, texts, rewrites, {})
     assert (repo / SOURCE).read_text(encoding="utf-8") == SAMPLE
     assert not (repo / PACKAGE).exists()
     assert importer.read_text(encoding="utf-8") == edited
@@ -195,7 +195,7 @@ class TestAWriteThatFailsPartWay:
         self.failing(monkeypatch, "unlink", repo / SOURCE, seen, repo)
         with pytest.raises(RunError, match="every file it created is removed and every file "
                                            "it changed put back"):
-            write(layout, repo, texts, rewrites)
+            write(layout, repo, texts, rewrites, {})
         monkeypatch.undo()
         assert sorted(p for p in seen[0] if p.startswith(f"{PACKAGE}/")) == sorted(
             f"{PACKAGE}/{name}" for name in texts)
@@ -210,7 +210,7 @@ class TestAWriteThatFailsPartWay:
         self.failing(monkeypatch, "write_text", second, seen, repo)
         with pytest.raises(RunError, match="every file it created is removed and every file "
                                            "it changed put back"):
-            write(layout, repo, texts, rewrites)
+            write(layout, repo, texts, rewrites, {})
         monkeypatch.undo()
         assert "test_sample._helpers import _make" in seen[0]["tests/test_other.py"].decode()
         assert SOURCE not in seen[0]
@@ -224,7 +224,7 @@ class TestAWriteThatFailsPartWay:
         self.failing(monkeypatch, "write_text", second, [], repo)
         self.failing(monkeypatch, "write_bytes", second, [], repo)
         with pytest.raises(RunError, match="NOT undone: " + re.escape(f"{second}: [Errno 28]")):
-            write(layout, repo, texts, rewrites)
+            write(layout, repo, texts, rewrites, {})
         monkeypatch.undo()
         assert second.read_bytes() == b""
         assert (repo / SOURCE).read_text(encoding="utf-8") == SAMPLE
@@ -240,7 +240,7 @@ class TestAWriteThatFailsPartWay:
         self.failing(monkeypatch, "write_bytes", repo / SOURCE, [], repo)
         with pytest.raises(RunError, match="every file it created is removed and every file "
                                            "it changed put back"):
-            write(layout, repo, texts, rewrites)
+            write(layout, repo, texts, rewrites, {})
         monkeypatch.undo()
         assert tree(repo) == before
 
@@ -259,7 +259,7 @@ class TestAWriteThatFailsPartWay:
         monkeypatch.setattr(Path, "write_bytes", full)
         with pytest.raises(RunError, match="every file it created is removed and every file "
                                            "it changed put back"):
-            write(layout, repo, texts, rewrites)
+            write(layout, repo, texts, rewrites, {})
         monkeypatch.undo()
         assert tree(repo) == before
 
