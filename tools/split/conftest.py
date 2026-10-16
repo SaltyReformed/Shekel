@@ -1,25 +1,58 @@
-"""The fixture the split tool's tests share: a throwaway repository holding one sample test
-module that exercises every shape the tool moves (an autouse fixture, banner comments, a
-helper, constants, a parametrize list, whole classes, a module-level test, and a class split
-across two parts whose tests pass, skip, xfail and xpass), a module it imports from, an
-importer of one of its helpers, and a plan for it; and the readers of what the tool refuses
-or accepts for a source built from the sample."""
+"""The fixtures and data the split tool's tests share, in ONE home every test module imports:
+a throwaway repository holding one sample test module that exercises every shape the tool
+moves (an autouse fixture, banner comments, a helper, constants, a parametrize list, whole
+classes, a module-level test, and a class split across two parts whose tests pass, skip,
+xfail and xpass), a module it imports from, an importer of one of its helpers, and a plan for
+it; the readers of what the tool refuses or accepts for a source built from the sample; the
+sample's collection and outcomes; and the ``split`` fixture, which runs the command line on
+the sample with the arms that start a process stubbed."""
 from __future__ import annotations
 
 import copy
 import json
+import shutil
 import textwrap
 from pathlib import Path
 
 import pytest
 
 from tools.ci import scratch
+from tools.split import _dynamic as dynamic
+from tools.split import _run as run
 from tools.split._layout import Layout, resolve
 from tools.split._model import parse_plan
+from tools.split._observe import LONE, setups_path
 from tools.split._render import Rewrite, line_limit, render_all, write
 from tools.split._source import Refusal, collect_rules, read_module
+from tools.split.split import main
 
 SOURCE = "tests/test_area/test_sample.py"
+
+#: The package the sample's split writes in the source's place.
+PACKAGE = "tests/test_area/test_sample"
+
+#: The sample's collection, as pytest names it.
+BEFORE_IDS = [
+    f"{SOURCE}::TestFirst::test_one",
+    f"{SOURCE}::TestFirst::test_cases[a-1]",
+    f"{SOURCE}::TestFirst::test_cases[b-2]",
+    f"{SOURCE}::test_top_level",
+    f"{SOURCE}::TestBig::test_a",
+    f"{SOURCE}::TestBig::test_b",
+    f"{SOURCE}::TestBig::test_c",
+    f"{SOURCE}::TestBig::test_d",
+    f"{SOURCE}::TestBig::test_e",
+]
+
+#: The importer the sample's split re-points, and the line it rewrites.
+IMPORTER, REPOINTED = "tests/test_other.py", 2
+
+#: How each of the sample's tests ends.
+OUTCOMES = {**dict.fromkeys(BEFORE_IDS, "passed"), f"{SOURCE}::TestBig::test_c": "skipped",
+            f"{SOURCE}::TestBig::test_d": "xfailed", f"{SOURCE}::TestBig::test_e": "xpassed"}
+
+#: Each step of ``record`` a stub can stop, as a process that did not observe would.
+RECORD_STEPS = ("the source's pylint", "the importers' pylint", "the collect", "the run")
 
 SAMPLE = textwrap.dedent('''\
     """Tests for the sample area.
@@ -122,7 +155,7 @@ SHARED = textwrap.dedent('''\
     unused_thing = 0
     ''')
 
-IMPORTER = textwrap.dedent('''\
+IMPORTER_TEXT = textwrap.dedent('''\
     """A module that imports a helper of the sample."""
     from tests.test_area.test_sample import _make
 
@@ -169,7 +202,7 @@ def build(root: Path, source: str = SAMPLE) -> Path:
         "tests/__init__.py": "",
         "tests/shared.py": SHARED,
         "tests/test_area/__init__.py": "",
-        "tests/test_other.py": IMPORTER,
+        IMPORTER: IMPORTER_TEXT,
         SOURCE: source,
     }.items():
         (root / path).parent.mkdir(parents=True, exist_ok=True)
@@ -229,3 +262,114 @@ def write_plan(root: Path, plan: dict | None = None) -> Path:
 def _repo(tmp_path: Path) -> Path:
     """A fresh sample repository."""
     return build(tmp_path)
+
+
+class Stubs:
+    """The process arms, answering as a faithful run of the sample would, and what a case
+    changes: the importer's pylint messages after the split, the plan gate's verdict, the
+    fixtures the record run set up, the step of a record that stops (``stop_at``, one of
+    :data:`RECORD_STEPS`), and what each kind of run observed instead (``changed``, keyed
+    ``"<source|split|alone> <collect|run>"``)."""
+
+    def __init__(self, mapping: dict[str, str]) -> None:
+        """Answer under ``mapping``, the sample's old -> new id map."""
+        self.mapping = mapping
+        self.importer_after: list[dict] = []
+        self.gate = (0, "3 passed")
+        self.setups: list[dict] = []
+        self.recorded = False
+        self.stop_at: str | None = None
+        self.changed: dict[str, dict] = {}
+
+    def _stop(self, step: str) -> None:
+        """Stop the run at ``step`` when the case says so."""
+        if self.stop_at == step:
+            raise run.RunError(f"stopped at {step}")
+
+    def observe(self, _root: Path, targets: list[str], out: Path, collect_only: bool) -> dict:
+        """The run of ``targets``: the source before, the package or one part after."""
+        target = targets[0]
+        if target == SOURCE:
+            self._stop("the collect" if collect_only else "the run")
+            outcomes, kind = OUTCOMES, "source"
+        else:
+            outcomes = {new: OUTCOMES[old] for old, new in self.mapping.items()
+                        if new.startswith(target if target.endswith(".py") else target + "/")}
+            kind = "alone" if target.endswith(".py") else "split"
+        observed = {"collected": sorted(outcomes) if collect_only else [], "deselected": [],
+                    "outcomes": {} if collect_only else outcomes, "exitstatus": 0,
+                    **self.changed.get(f"{kind} {'collect' if collect_only else 'run'}", {})}
+        out.write_text(json.dumps(observed), encoding="utf-8")
+        setups_path(out, LONE).write_text(json.dumps({
+            "setups": self.setups if target == SOURCE else [],
+            "ran": sorted(observed["outcomes"])}), encoding="utf-8")
+        return observed
+
+    def pylint(self, _root: Path, paths: list[str]) -> list[dict]:
+        """No message anywhere, but the importer's after the split."""
+        if paths == [IMPORTER]:
+            self._stop("the importers' pylint")
+            after, self.recorded = (self.importer_after if self.recorded else []), True
+            return after
+        if paths == [SOURCE]:
+            self._stop("the source's pylint")
+        return []
+
+
+@pytest.fixture(name="split")
+def _split(tmp_path, monkeypatch):
+    """The sample committed to a throwaway repository, the process arms stubbed; a function
+    running one command through ``main``, returning its exit status.  The repository holds
+    an executable ``scripts/test.sh``, which the stubs never start, because ``record``
+    refuses before it discards anything when the wrapper is not there to start."""
+    root = scratch.repository(tmp_path)
+    build(root)
+    wrapper = root / run.WRAPPER
+    wrapper.parent.mkdir()
+    wrapper.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    committed(root, "the sample")
+    stubs = Stubs(dynamic.id_map(layout_of(root), BEFORE_IDS))
+    monkeypatch.setattr(run, "observe", stubs.observe)
+    monkeypatch.setattr(run, "pylint_messages", stubs.pylint)
+    monkeypatch.setattr(run, "plan_gate", lambda _root: stubs.gate)
+    plan = tmp_path / "test_sample.plan.json"
+    plan.write_text(json.dumps(plan_dict()), encoding="utf-8")
+
+    def command(name: str) -> int:
+        args = [name, str(plan), "--into", str(command.into)]
+        if name != "record":
+            args += ["--idmap", str(command.idmap)]
+        return main(args, root=root)
+    command.stubs, command.root = stubs, root
+    command.into, command.idmap = tmp_path / "record", tmp_path / "test_sample.idmap.json"
+    return command
+
+
+def committed(root: Path, message: str) -> None:
+    """Commit every change in ``root``'s working tree, so a case's edit is ``HEAD``'s and the
+    tree is clean, as ``record`` and ``apply`` require (REVISED (B))."""
+    scratch.run(root, "add", "-A")
+    scratch.run(root, "commit", "--quiet", "-m", message)
+
+
+def applied(split) -> None:
+    """Record and apply the sample's split, each proved."""
+    assert split("record") == 0
+    assert split("apply") == 0
+
+
+def only_on_path(tmp_path: Path, monkeypatch, *programs: str) -> None:
+    """Make ``PATH`` reach ``programs`` alone, each linked from where it is now."""
+    reached = tmp_path / "bin"
+    reached.mkdir()
+    for program in programs:
+        (reached / program).symlink_to(shutil.which(program))
+    monkeypatch.setenv("PATH", str(reached))
+
+
+def everything(split) -> tuple:
+    """Every file an apply may touch: the tree, the record, and the ``--idmap`` file (None
+    when there is none)."""
+    return (tree(split.root), tree(split.into),
+            split.idmap.read_bytes() if split.idmap.exists() else None)

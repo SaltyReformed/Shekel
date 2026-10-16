@@ -24,23 +24,16 @@ from tools.split._prove import line_origins
 from tools.split._render import Origin
 from tools.split._run import RunError, census, mentions, merged_setups, python_files
 from tools.split._source import Refusal
-from tools.split.conftest import SAMPLE, SOURCE, build, layout_of, plan_dict
+from tools.split.conftest import (
+    BEFORE_IDS,
+    PACKAGE,
+    SAMPLE,
+    SOURCE,
+    build,
+    layout_of,
+    plan_dict,
+)
 from tools.split.test_apply import applied
-
-PACKAGE = "tests/test_area/test_sample"
-
-#: The sample's collection, as pytest names it.
-BEFORE_IDS = [
-    f"{SOURCE}::TestFirst::test_one",
-    f"{SOURCE}::TestFirst::test_cases[a-1]",
-    f"{SOURCE}::TestFirst::test_cases[b-2]",
-    f"{SOURCE}::test_top_level",
-    f"{SOURCE}::TestBig::test_a",
-    f"{SOURCE}::TestBig::test_b",
-    f"{SOURCE}::TestBig::test_c",
-    f"{SOURCE}::TestBig::test_d",
-    f"{SOURCE}::TestBig::test_e",
-]
 
 
 def mapping(repo: Path) -> dict[str, str]:

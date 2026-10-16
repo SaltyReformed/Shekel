@@ -10,9 +10,7 @@ from tools.split._render import importer_rewrites, line_limit, render_all
 from tools.split._run import pylint_messages
 from tools.split._similar import pairs, sort_pairs
 from tools.split._source import collect_rules
-from tools.split.conftest import SAMPLE, build, layout_of, plan_dict, written
-
-PACKAGE = "tests/test_area/test_sample"
+from tools.split.conftest import PACKAGE, SAMPLE, build, layout_of, plan_dict, written
 
 #: A body long enough for pylint's four-line minimum, written twice in the source.
 BODY = ("    total = 0\n    for value in (1, 2, 3, 4):\n        total += value\n"

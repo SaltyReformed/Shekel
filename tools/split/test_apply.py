@@ -24,9 +24,7 @@ from tools.split._render import (
 )
 from tools.split._run import RunError, pylint_messages
 from tools.split._source import Refusal, collect_rules, read_module
-from tools.split.conftest import SAMPLE, SOURCE, layout_of, tree, written
-
-PACKAGE = "tests/test_area/test_sample"
+from tools.split.conftest import PACKAGE, SAMPLE, SOURCE, layout_of, tree, written
 
 
 def applied(repo: Path, plan: dict | None = None) -> Layout:

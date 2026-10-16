@@ -32,9 +32,8 @@ from tools.split._source import (
     symbols,
     text_holding,
 )
-from tools.split.conftest import SOURCE, build, layout_of, refusal, sample_with
+from tools.split.conftest import SOURCE, build, layout_of, only_on_path, refusal, sample_with
 from tools.split.test_apply import applied, proof
-from tools.split.test_split import only_on_path
 
 #: The tool's modules, every one but the reader itself and the tests.
 TOOL = sorted(p for p in Path(__file__).parent.glob("*.py")

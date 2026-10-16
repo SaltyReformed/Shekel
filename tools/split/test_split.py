@@ -2,13 +2,14 @@
 :func:`tools.split.split.main` on the sample, in a throwaway repository, with only the arms
 that start a process stubbed (the suite runs, pylint and the plan gate; the census runs its
 real ``git grep``).  The branch's neutral review (F7) found no test reaching this module:
-the proof block printed its fixed sentences even beside a failed arm, and nothing showed it."""
+the proof block printed its fixed sentences even beside a failed arm, and nothing showed it.
+The record's own life (:mod:`tools.split.test_record`) and the state a record is judged in
+(:mod:`tools.split.test_tree_state`) have modules of their own."""
 from __future__ import annotations
 
 import errno
 import json
 import os
-import shutil
 import signal
 from pathlib import Path
 
@@ -16,124 +17,27 @@ import pytest
 
 from tools.ci import scratch
 from tools.split import _run as run
-from tools.split import _dynamic as dynamic
 from tools.split import split as cli
-from tools.split._model import parse_plan
 from tools.split._observe import LONE, setups_path
 from tools.split._run import pylint_messages
-from tools.split._source import Refusal
-from tools.split.conftest import SAMPLE, SOURCE, build, layout_of, plan_dict, tree
-from tools.split.split import _BEFORE_RUN, _META, Context, main
-from tools.split.test_dynamic import BEFORE_IDS, PACKAGE
-
-#: The importer the sample's split re-points, and the line it rewrites.
-IMPORTER, REPOINTED = "tests/test_other.py", 2
-
-#: How each of the sample's tests ends.
-OUTCOMES = {**dict.fromkeys(BEFORE_IDS, "passed"), f"{SOURCE}::TestBig::test_c": "skipped",
-            f"{SOURCE}::TestBig::test_d": "xfailed", f"{SOURCE}::TestBig::test_e": "xpassed"}
-
-#: Each step of ``record`` a stub can stop, as a process that did not observe would.
-RECORD_STEPS = ("the source's pylint", "the importers' pylint", "the collect", "the run")
+from tools.split.conftest import (
+    IMPORTER,
+    OUTCOMES,
+    PACKAGE,
+    REPOINTED,
+    SOURCE,
+    applied,
+    committed,
+    everything,
+    only_on_path,
+    plan_dict,
+    tree,
+)
+from tools.split.split import _BEFORE_RUN, _META, main
 
 #: The shape every run had in the delta review's M-A: nothing collected, nothing run, and
 #: pytest interrupted.
 EMPTY = {"collected": [], "outcomes": {}, "exitstatus": 2}
-
-
-class Stubs:
-    """The process arms, answering as a faithful run of the sample would, and what a case
-    changes: the importer's pylint messages after the split, the plan gate's verdict, the
-    fixtures the record run set up, the step of a record that stops (``stop_at``, one of
-    :data:`RECORD_STEPS`), and what each kind of run observed instead (``changed``, keyed
-    ``"<source|split|alone> <collect|run>"``)."""
-
-    def __init__(self, mapping: dict[str, str]) -> None:
-        """Answer under ``mapping``, the sample's old -> new id map."""
-        self.mapping = mapping
-        self.importer_after: list[dict] = []
-        self.gate = (0, "3 passed")
-        self.setups: list[dict] = []
-        self.recorded = False
-        self.stop_at: str | None = None
-        self.changed: dict[str, dict] = {}
-
-    def _stop(self, step: str) -> None:
-        """Stop the run at ``step`` when the case says so."""
-        if self.stop_at == step:
-            raise run.RunError(f"stopped at {step}")
-
-    def observe(self, _root: Path, targets: list[str], out: Path, collect_only: bool) -> dict:
-        """The run of ``targets``: the source before, the package or one part after."""
-        target = targets[0]
-        if target == SOURCE:
-            self._stop("the collect" if collect_only else "the run")
-            outcomes, kind = OUTCOMES, "source"
-        else:
-            outcomes = {new: OUTCOMES[old] for old, new in self.mapping.items()
-                        if new.startswith(target if target.endswith(".py") else target + "/")}
-            kind = "alone" if target.endswith(".py") else "split"
-        observed = {"collected": sorted(outcomes) if collect_only else [], "deselected": [],
-                    "outcomes": {} if collect_only else outcomes, "exitstatus": 0,
-                    **self.changed.get(f"{kind} {'collect' if collect_only else 'run'}", {})}
-        out.write_text(json.dumps(observed), encoding="utf-8")
-        setups_path(out, LONE).write_text(json.dumps({
-            "setups": self.setups if target == SOURCE else [],
-            "ran": sorted(observed["outcomes"])}), encoding="utf-8")
-        return observed
-
-    def pylint(self, _root: Path, paths: list[str]) -> list[dict]:
-        """No message anywhere, but the importer's after the split."""
-        if paths == [IMPORTER]:
-            self._stop("the importers' pylint")
-            after, self.recorded = (self.importer_after if self.recorded else []), True
-            return after
-        if paths == [SOURCE]:
-            self._stop("the source's pylint")
-        return []
-
-
-@pytest.fixture(name="split")
-def _split(tmp_path, monkeypatch):
-    """The sample committed to a throwaway repository, the process arms stubbed; a function
-    running one command through ``main``, returning its exit status.  The repository holds
-    an executable ``scripts/test.sh``, which the stubs never start, because ``record``
-    refuses before it discards anything when the wrapper is not there to start."""
-    root = scratch.repository(tmp_path)
-    build(root)
-    wrapper = root / run.WRAPPER
-    wrapper.parent.mkdir()
-    wrapper.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
-    wrapper.chmod(0o755)
-    committed(root, "the sample")
-    stubs = Stubs(dynamic.id_map(layout_of(root), BEFORE_IDS))
-    monkeypatch.setattr(run, "observe", stubs.observe)
-    monkeypatch.setattr(run, "pylint_messages", stubs.pylint)
-    monkeypatch.setattr(run, "plan_gate", lambda _root: stubs.gate)
-    plan = tmp_path / "test_sample.plan.json"
-    plan.write_text(json.dumps(plan_dict()), encoding="utf-8")
-
-    def command(name: str) -> int:
-        args = [name, str(plan), "--into", str(command.into)]
-        if name != "record":
-            args += ["--idmap", str(command.idmap)]
-        return main(args, root=root)
-    command.stubs, command.root = stubs, root
-    command.into, command.idmap = tmp_path / "record", tmp_path / "test_sample.idmap.json"
-    return command
-
-
-def committed(root: Path, message: str) -> None:
-    """Commit every change in ``root``'s working tree, so a case's edit is ``HEAD``'s and the
-    tree is clean, as ``record`` and ``apply`` require (REVISED (B))."""
-    scratch.run(root, "add", "-A")
-    scratch.run(root, "commit", "--quiet", "-m", message)
-
-
-def applied(split) -> None:
-    """Record and apply the sample's split, each proved."""
-    assert split("record") == 0
-    assert split("apply") == 0
 
 
 def cut_fixture(root: Path) -> dict:
@@ -387,43 +291,6 @@ def test_carriage_returns_in_a_module_the_writer_leaves_alone_are_accepted(split
     assert split("record") == 0
 
 
-@pytest.mark.parametrize("step", RECORD_STEPS)
-def test_a_record_that_stops_part_way_leaves_no_record(split, capsys, step):
-    """A complete record, then the source edited (and committed, as record requires) and
-    recorded again into the same directory, stopped at ``step``: no token, so apply refuses
-    with the tree as it was, and prove refuses (the delta review's H-A: the second record
-    wrote its token first, and apply and prove read the first record's observations as the
-    edited source's)."""
-    assert split("record") == 0
-    source = split.root / SOURCE
-    source.write_text(source.read_text(encoding="utf-8").replace('"""One."""',
-                                                               '"""One, edited."""'),
-                      encoding="utf-8")
-    committed(split.root, "the source edited")
-    split.stubs.stop_at = step
-    capsys.readouterr()
-    assert split("record") == 1
-    assert f"REFUSED: stopped at {step}" in capsys.readouterr().err
-    assert not (split.into / _META).exists()
-    before = tree(split.root)
-    assert split("apply") == 1
-    assert (f"REFUSED: {split.into}: no complete record; record again"
-            in capsys.readouterr().err)
-    assert tree(split.root) == before
-    assert not split.idmap.exists()
-    assert split("prove") == 1
-    assert (f"REFUSED: {split.into}: no complete record; record again"
-            in capsys.readouterr().err)
-
-
-@pytest.mark.parametrize("command", ["apply", "prove"])
-def test_a_directory_holding_no_record_is_refused_by_name(split, capsys, command):
-    """Nothing was ever recorded there: refused, naming the directory, not a traceback."""
-    assert split(command) == 1
-    assert (f"REFUSED: {split.into}: no complete record; record again"
-            in capsys.readouterr().err)
-
-
 def test_a_record_whose_runs_observed_nothing_is_refused_at_record_and_apply(split, capsys):
     """The delta review's M-A shape (every run collected nothing, pytest interrupted):
     record fails it, and apply refuses it with nothing written."""
@@ -499,36 +366,6 @@ def test_prove_refuses_a_run_of_the_split_that_did_not_run_to_its_end(split, cap
     assert f"FAILED: {what}: pytest exit status 3, not a session run to its end" in err
 
 
-def test_a_token_stopped_mid_write_is_no_token(tmp_path, monkeypatch):
-    """The token is written beside its name and renamed onto it, so a record stopped while
-    writing it (here, a full disk half way through) leaves no ``meta.json``, never a part
-    of one that ``apply`` would read as the record's."""
-    ctx = Context(plan=parse_plan(plan_dict()), root=tmp_path, into=tmp_path)
-    real = Path.write_text
-
-    def stopped(self, data, *args, **kwargs):
-        if self.name.startswith(_META):
-            real(self, data[:len(data) // 2], *args, **kwargs)
-            raise OSError(errno.ENOSPC, "No space left on device", str(self))
-        return real(self, data, *args, **kwargs)
-    monkeypatch.setattr(Path, "write_text", stopped)
-    with pytest.raises(OSError):
-        ctx.save(_META, {"source": SOURCE, "sha256": "0" * 64})
-    monkeypatch.undo()
-    assert not (tmp_path / _META).exists()
-    with pytest.raises(Refusal, match="no complete record; record again"):
-        ctx.meta()
-
-
-def only_on_path(tmp_path: Path, monkeypatch, *programs: str) -> None:
-    """Make ``PATH`` reach ``programs`` alone, each linked from where it is now."""
-    reached = tmp_path / "bin"
-    reached.mkdir()
-    for program in programs:
-        (reached / program).symlink_to(shutil.which(program))
-    monkeypatch.setenv("PATH", str(reached))
-
-
 class TestAnOSErrorIsARefusal:
     """``main`` catches :class:`OSError` once, so a file it cannot write or a program it cannot
     start is a refusal naming it, exit 1 as documented, never a traceback (the coordinator's
@@ -599,13 +436,6 @@ APPLY_WRITES = {
     "the source's deletion": (lambda split: split.root / SOURCE, "unlink"),
     "an importer's rewrite": (lambda split: split.root / IMPORTER, "write_text"),
 }
-
-
-def everything(split) -> tuple:
-    """Every file an apply may touch: the tree, the record, and the ``--idmap`` file (None
-    when there is none)."""
-    return (tree(split.root), tree(split.into),
-            split.idmap.read_bytes() if split.idmap.exists() else None)
 
 
 @pytest.mark.parametrize("step", APPLY_WRITES)
@@ -751,86 +581,6 @@ class TestTheApplyIsOneUnit:
         assert not split.idmap.parent.exists()
 
 
-@pytest.mark.parametrize("reverted", [False, True], ids=["in-place", "reverted-by-hand"])
-def test_a_record_whose_split_is_applied_is_never_discarded(split, capsys, reverted):
-    """``record`` into the directory of an applied split is refused before it discards
-    anything, whether the split is in the tree or was reverted by hand (delta review 2's
-    Medium-1: a second record deleted the token and the source, and prove then asked for a
-    record no one could take)."""
-    applied(split)
-    if reverted:
-        scratch.run(split.root, "checkout", "--quiet", "--", ".")
-        scratch.run(split.root, "clean", "-fdq")
-        assert (split.root / SOURCE).is_file()
-    before = tree(split.into)
-    capsys.readouterr()
-    assert split("record") == 1
-    assert (f"REFUSED: {split.into} holds a record whose split is applied; record into "
-            "another directory") in capsys.readouterr().err
-    assert tree(split.into) == before
-    if not reverted:
-        assert split("prove") == 0
-
-
-def _uncompilable(split, _monkeypatch, _tmp_path) -> None:
-    """The source no longer compiles (committed: record refuses a tree that is not HEAD's
-    before it reads the source)."""
-    (split.root / SOURCE).write_text(SAMPLE + "\ndef (\n", encoding="utf-8")
-    committed(split.root, "the source broken")
-
-
-def _no_pylint(_split, monkeypatch, tmp_path) -> None:
-    """No pylint on ``PATH``."""
-    only_on_path(tmp_path, monkeypatch, "git")
-
-
-def _wrapper_not_executable(split, _monkeypatch, _tmp_path) -> None:
-    """The suite wrapper is there, and cannot be started (committed, as above)."""
-    (split.root / run.WRAPPER).chmod(0o644)
-    committed(split.root, "the wrapper not executable")
-
-
-def _into_not_writable(split, _monkeypatch, _tmp_path) -> None:
-    """The record directory cannot be written in."""
-    split.into.chmod(0o500)
-
-
-def _no_head(split, _monkeypatch, _tmp_path) -> None:
-    """The branch has no commit for ``record`` to name."""
-    scratch.run(split.root, "update-ref", "-d", "HEAD")
-
-
-#: Each way a second record cannot start, and what its refusal says.
-CANNOT_START = {
-    "the source no longer compiles": (_uncompilable, "Python does not compile it"),
-    "no pylint": (_no_pylint, "record cannot start ['pylint']"),
-    "the wrapper cannot start": (_wrapper_not_executable,
-                                 "record cannot start ['./scripts/test.sh']"),
-    "the record directory is not writable": (
-        _into_not_writable, "not a directory this process can write files in"),
-    "HEAD names no commit": (_no_head, "git rev-parse HEAD: fatal: "),
-}
-
-
-@pytest.mark.parametrize("case", CANNOT_START)
-def test_a_record_that_cannot_start_leaves_the_last_record_as_it_was(split, capsys,
-                                                                     monkeypatch, tmp_path,
-                                                                     case):
-    """Every check that writes nothing runs before the discard (delta review 2's Medium-1):
-    a second record that cannot start refuses, and the first record's files are untouched."""
-    assert split("record") == 0
-    before = tree(split.into)
-    breaks, said = CANNOT_START[case]
-    breaks(split, monkeypatch, tmp_path)
-    capsys.readouterr()
-    try:
-        assert split("record") == 1
-        assert said in capsys.readouterr().err
-        assert tree(split.into) == before
-    finally:
-        split.into.chmod(0o700)
-
-
 def test_main_puts_back_the_signal_handlers_it_found(split):
     """main raises SIGTERM and SIGHUP as Signalled only while its command runs: after it, the
     handlers there before are there again, so a caller in the same process keeps its own (the
@@ -844,147 +594,3 @@ def test_main_puts_back_the_signal_handlers_it_found(split):
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
-
-
-#: The tracked file most of the cases below change.
-TRACKED = "tests/shared.py"
-
-
-def _edited(root: Path) -> None:
-    """A tracked file edited."""
-    path = root / TRACKED
-    path.write_text(path.read_text(encoding="utf-8") + "# edited\n", encoding="utf-8")
-
-
-def _importer_added(root: Path) -> None:
-    """An untracked module importing the source."""
-    (root / "tests/test_late.py").write_text("from tests.test_area.test_sample import _make\n",
-                                             encoding="utf-8")
-
-
-def _staged(root: Path) -> None:
-    """A new file added to the index and not committed."""
-    (root / "notes.txt").write_text("staged\n", encoding="utf-8")
-    scratch.run(root, "add", "notes.txt")
-
-
-#: Each way the working tree can differ from HEAD: the one path it differs at, and the change.
-DIFFERENCES = {
-    "a tracked file edited": (TRACKED, _edited),
-    "a tracked file deleted": (TRACKED, lambda root: (root / TRACKED).unlink()),
-    "a tracked file's mode changed": (TRACKED, lambda root: (root / TRACKED).chmod(0o755)),
-    "an untracked module importing the source": ("tests/test_late.py", _importer_added),
-    "a new file staged": ("notes.txt", _staged),
-}
-
-
-#: What each command says it did not do.
-DONE = {"record": "recorded", "apply": "applied"}
-
-
-@pytest.mark.parametrize("difference", DIFFERENCES)
-@pytest.mark.parametrize("command", ["record", "apply"])
-def test_a_tree_that_is_not_heads_is_refused(split, capsys, command, difference):
-    """record and apply each refuse a working tree that differs from HEAD, naming where,
-    before anything is written or discarded: the earlier record, the tree and the id maps are
-    as they were (the coordinator's ruling on delta review 2, REVISED (B) (1))."""
-    assert split("record") == 0
-    path, change = DIFFERENCES[difference]
-    change(split.root)
-    before = everything(split)
-    capsys.readouterr()
-    assert split(command) == 1
-    err = capsys.readouterr().err
-    assert f"REFUSED: the working tree differs from HEAD at 1 path(s), e.g. ['{path}']" in err
-    assert err.endswith(f"nothing is {DONE[command]}\n")
-    assert everything(split) == before
-
-
-def _moved(split, _monkeypatch) -> None:
-    """A commit after the record: HEAD moves, and the tree is HEAD's."""
-    (split.root / "README.md").write_text("A commit after the record.\n", encoding="utf-8")
-    committed(split.root, "after the record")
-
-
-def _another_environment(_split, monkeypatch) -> None:
-    """The process runs with another interpreter, distributions or git than record's."""
-    monkeypatch.setattr(run, "environment", lambda _root: "0" * 64)
-
-
-def _no_environment(split, _monkeypatch) -> None:
-    """A record an earlier version of the tool wrote, holding no environment."""
-    path = split.into / _META
-    meta = json.loads(path.read_text(encoding="utf-8"))
-    del meta["environment"]
-    path.write_text(json.dumps(meta), encoding="utf-8")
-
-
-#: Each state a record is not judged in, as a change made after it.
-ELSEWHERE = {"HEAD moved": _moved, "another environment": _another_environment,
-             "no environment kept": _no_environment}
-
-#: What each command's refusal ends with.
-TAILS = {"apply": "record again; nothing is applied",
-         "prove": "a split is proved where it was recorded, before it is committed"}
-
-
-@pytest.mark.parametrize("state", ELSEWHERE)
-@pytest.mark.parametrize("command", ["apply", "prove"])
-def test_a_record_is_judged_only_where_it_was_taken(split, capsys, monkeypatch, command,
-                                                    state):
-    """apply and prove each refuse unless HEAD and the environment are the record's; a record
-    holding no environment is another version's (REVISED (B) (1) and (2)).  For prove, HEAD
-    moved by committing the split itself, the tree then HEAD's."""
-    assert split("record") == 0
-    if command == "prove":
-        assert split("apply") == 0
-    taken = scratch.run(split.root, "rev-parse", "HEAD")
-    ELSEWHERE[state](split, monkeypatch)
-    before = everything(split)
-    capsys.readouterr()
-    assert split(command) == 1
-    said = (f"HEAD is {scratch.run(split.root, 'rev-parse', 'HEAD')[:9]}, and the record was "
-            f"taken at {taken[:9]}") if state == "HEAD moved" else (
-        "the record was taken with another interpreter, other installed distributions or "
-        "another git, or by a version of this tool that did not record them")
-    assert f"REFUSED: {said}; {TAILS[command]}" in capsys.readouterr().err
-    assert everything(split) == before
-
-
-def _package_only(split) -> None:
-    """An apply killed once the package was written: the source and importer as before."""
-    scratch.run(split.root, "checkout", "--quiet", "--", SOURCE, IMPORTER)
-
-
-def _part_of_the_package(split) -> None:
-    """An apply killed while the package was written."""
-    _package_only(split)
-    for name in ("test_first.py", "test_big_late.py"):
-        (split.root / PACKAGE / name).unlink()
-
-
-#: Each tree prove refuses after an apply, and the two lists its refusal names.
-NOT_THE_WRITES = {
-    "killed once the package was written": (_package_only, [SOURCE, IMPORTER], []),
-    "killed while the package was written": (_part_of_the_package, [
-        SOURCE, f"{PACKAGE}/test_big_late.py", f"{PACKAGE}/test_first.py", IMPORTER], []),
-    "a change beside the split": (
-        lambda split: (split.root / "notes.txt").write_text("x\n", encoding="utf-8"),
-        [], ["notes.txt"]),
-}
-
-
-@pytest.mark.parametrize("shape", NOT_THE_WRITES)
-def test_prove_refuses_a_tree_other_than_what_apply_wrote(split, capsys, shape):
-    """prove refuses unless the tree differs from HEAD at EXACTLY the paths apply writes: a
-    partial write set (an apply ``SIGKILL`` ended) is never proved, and a change beside the
-    split is judged by no arm (the coordinator's ruling on 3B-2's signal fork, (d))."""
-    applied(split)
-    change, missing, beside = NOT_THE_WRITES[shape]
-    change(split)
-    capsys.readouterr()
-    assert split("prove") == 1
-    assert ("REFUSED: the working tree must differ from HEAD at exactly the paths apply "
-            f"writes: {len(missing)} written by apply and not different, e.g. {missing}; "
-            f"{len(beside)} different and not written by apply, e.g. {beside}"
-            in capsys.readouterr().err)
