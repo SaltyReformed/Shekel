@@ -5,7 +5,9 @@
 # sanity check queries and the Python integrity check script, then
 # dropping the temporary database.
 #
-# The production database is never touched.
+# The production database is never touched.  An encrypted backup (.gpg) is
+# decrypted with the backup key file (SHEKEL_BACKUP_KEY_FILE in
+# _backup_lib.sh; --help prints its path), checked once, before any step.
 #
 # Usage:
 #     ./scripts/verify_backup.sh <backup_file>
@@ -35,7 +37,6 @@ PGDATABASE="${PGDATABASE:-shekel}"
 # Per-run suffix so two overlapping verification runs cannot drop each
 # other's temp database mid-restore (OPS/SH-27).
 VERIFY_DB="${VERIFY_DB:-shekel_verify_$$}"
-BACKUP_ENCRYPTION_PASSPHRASE="${BACKUP_ENCRYPTION_PASSPHRASE:-}"
 
 # ── Functions ────────────────────────────────────────────────────
 
@@ -53,7 +54,9 @@ This will:
     4. Run the integrity check script
     5. Drop the temporary database
 
-The production database is never touched.
+The production database is never touched.  An encrypted backup (.gpg) needs
+the key file ${SHEKEL_BACKUP_KEY_FILE} (owned by the user running this
+script, no access for the group or others).
 
 Arguments:
     backup_file     Path to a .sql.gz or .sql.gz.gpg backup file
@@ -67,7 +70,6 @@ Environment Variables:
     PGUSER                        PostgreSQL user
     PGDATABASE                    Production database name (for reference)
     VERIFY_DB                     Temporary database name for verification
-    BACKUP_ENCRYPTION_PASSPHRASE  GPG passphrase (required for .gpg files)
 EOF
 }
 
@@ -139,8 +141,7 @@ restore_to_temp() {
     local backup_file="$1"
     log "INFO" "Restoring backup to temporary database..."
 
-    # shellcheck disable=SC2310 # require_passphrase_for is a boolean predicate; the trailing '|| return 1' propagates its failure explicitly, so masked errexit inside it is irrelevant
-    require_passphrase_for "${backup_file}" "${BACKUP_ENCRYPTION_PASSPHRASE}" || return 1
+    # A .gpg backup's key file was checked once, in main.
     backup_stream "${backup_file}" \
         | docker exec -i "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${VERIFY_DB}" \
             --quiet --single-transaction --set ON_ERROR_STOP=1 --output /dev/null
@@ -295,6 +296,8 @@ run_integrity_checks() {
 main() {
     local backup_file=""
 
+    refuse_retired_passphrase_variable
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --help)
@@ -324,10 +327,9 @@ main() {
         exit 1
     fi
 
-    # Validate encryption requirements before starting.
-    if [[ "${backup_file}" == *.gpg && -z "${BACKUP_ENCRYPTION_PASSPHRASE}" ]]; then
-        log "ERROR" "Backup is encrypted but BACKUP_ENCRYPTION_PASSPHRASE is not set"
-        exit 1
+    # The key file, checked once, before any step (R-BAL305).
+    if [[ "${backup_file}" == *.gpg ]]; then
+        require_backup_key "The backup ${backup_file} is encrypted with it."
     fi
 
     check_prerequisites

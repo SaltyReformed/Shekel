@@ -157,7 +157,9 @@ prune_directory() {
     for filepath in "${dir}"/shekel_backup_*.sql.gz*; do
         # Skip if glob matched nothing (no files).
         [[ -f "${filepath}" ]] || continue
-        # Never count or touch in-flight temp files from backup.sh.
+        # Never count or touch a .tmp file an older backup.sh left; today's
+        # partial files are dotfiles this glob cannot match (partial_path_for
+        # in _backup_lib.sh).
         [[ "${filepath}" == *.tmp ]] && continue
         total=$((total + 1))
 

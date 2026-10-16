@@ -1,9 +1,12 @@
 #!/bin/bash
 # Shekel Budget App -- Automated Database Backup
 #
-# Creates a compressed pg_dump of the Shekel database with a timestamped
-# filename, copies to local and NAS destinations, and optionally encrypts
-# the output with GPG.
+# Creates a compressed, GPG-encrypted pg_dump of the Shekel database with a
+# timestamped filename and copies it to local and NAS destinations.  The
+# passphrase is the first line of the backup key file (SHEKEL_BACKUP_KEY_FILE
+# in _backup_lib.sh; --help prints its path).  Without a usable key file the
+# script REFUSES and writes nothing, unless --no-encrypt chooses an
+# unencrypted backup (Josh's rulings R-BAL304 and R-BAL305).
 #
 # Usage:
 #     ./scripts/backup.sh [OPTIONS]
@@ -12,25 +15,22 @@
 #     --local-dir DIR     Local backup directory (default: /var/backups/shekel)
 #     --nas-dir DIR       NAS backup directory (default: /mnt/nas/backups/shekel)
 #     --no-nas            Skip NAS copy (local backup only)
-#     --encrypt           Require encryption: fail fast when
-#                         BACKUP_ENCRYPTION_PASSPHRASE is not set. (Encryption
-#                         itself is keyed on the passphrase being present --
-#                         with it set, backups are encrypted with or without
-#                         this flag; the flag turns "passphrase missing" from
-#                         a silent plaintext backup into a hard error.)
+#     --no-encrypt        Write an UNENCRYPTED backup (.sql.gz)
 #     --help              Show this help message
 #
 # Exit codes:
 #     0   Backup completed successfully (local backup always succeeds for exit 0)
-#     1   Fatal error (database unreachable, pg_dump failure, empty output)
+#     1   Fatal error (no usable key file, database unreachable, pg_dump failure)
 #
 # Partial-file discipline (polyglot audit 2026-06-12, OPS/SH-04): every
-# artifact is written to a .tmp path and renamed into place only after the
-# producing pipeline succeeded, and an EXIT trap removes stragglers -- so a
-# mid-stream pg_dump/gpg/cp failure can never leave a truncated file wearing
-# a valid backup name for retention/verification to mistake for a real one.
+# artifact is written under a partial name (partial_path_for in
+# _backup_lib.sh) and renamed into place only after the producing pipeline
+# succeeded, and an EXIT trap removes stragglers -- so a mid-stream
+# pg_dump/gpg/cp failure can never leave a truncated file wearing a valid
+# backup name for retention/verification to mistake for a real one.  Every
+# file is created 0600 (finding BAL-663).
 #
-# Cron example (daily at 2:00 AM):
+# Cron example (daily at 2:00 AM; the line carries no secret):
 #     0 2 * * * /path/to/shekel/scripts/backup.sh >> /var/log/shekel_backup.log 2>&1
 
 set -euo pipefail
@@ -41,7 +41,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"
 
 BACKUP_LOCAL_DIR="${BACKUP_LOCAL_DIR:-/var/backups/shekel}"
 BACKUP_NAS_DIR="${BACKUP_NAS_DIR:-/mnt/nas/backups/shekel}"
-BACKUP_ENCRYPTION_PASSPHRASE="${BACKUP_ENCRYPTION_PASSPHRASE:-}"
 
 # Docker container names.
 DB_CONTAINER="${DB_CONTAINER:-$(shekel_prod_db_container)}"
@@ -50,7 +49,7 @@ DB_CONTAINER="${DB_CONTAINER:-$(shekel_prod_db_container)}"
 PGUSER="${PGUSER:-shekel_user}"
 PGDATABASE="${PGDATABASE:-shekel}"
 
-# Timestamp format for filenames.
+# Timestamp format for filenames.  main adds .gpg for an encrypted backup.
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 BACKUP_FILENAME="shekel_backup_${TIMESTAMP}.sql.gz"
 
@@ -76,20 +75,23 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Create a compressed PostgreSQL backup of the Shekel database.
+Create a compressed, encrypted PostgreSQL backup of the Shekel database.
+
+The backup is encrypted with the passphrase on the first line of the key file
+${SHEKEL_BACKUP_KEY_FILE} (owned by the user running this script, no access
+for the group or others).  Without a usable key file nothing is written,
+unless --no-encrypt.
 
 Options:
     --local-dir DIR     Local backup directory (default: /var/backups/shekel)
     --nas-dir DIR       NAS backup directory (default: /mnt/nas/backups/shekel)
     --no-nas            Skip NAS copy (local only)
-    --encrypt           Require encryption (fail fast without
-                        BACKUP_ENCRYPTION_PASSPHRASE; see header)
+    --no-encrypt        Write an UNENCRYPTED backup (.sql.gz)
     --help              Show this help message
 
 Environment Variables:
     BACKUP_LOCAL_DIR              Local backup directory
     BACKUP_NAS_DIR                NAS backup directory
-    BACKUP_ENCRYPTION_PASSPHRASE  GPG passphrase for encryption (optional)
     DB_CONTAINER                  Docker container name for PostgreSQL
     PGUSER                        PostgreSQL user
     PGDATABASE                    PostgreSQL database name
@@ -99,86 +101,26 @@ EOF
 check_prerequisites() {
     # shellcheck disable=SC2310 # require_db_container is a boolean predicate (explicit 'return 1' on every failure path, not set -e); the trailing '|| exit 1' aborts the script on its failure
     require_db_container "${DB_CONTAINER}" || exit 1
-    # Create local backup directory if it does not exist.
-    mkdir -p "${BACKUP_LOCAL_DIR}"
 }
 
 create_backup() {
-    # Run pg_dump inside the database container, compress, and write to local
-    # dir via temp-file + rename (see header).
+    # Dump, compress and (for a .gpg name) encrypt in ONE stream into the
+    # local directory, which write_dump_artifact creates 0700 when absent
+    # (see header).  The EXIT trap is the backstop for its partial file when
+    # a signal ends the run.
     local local_path="${BACKUP_LOCAL_DIR}/${BACKUP_FILENAME}"
-    local tmp_path="${local_path}.tmp"
+    local partial
 
     log "INFO" "Starting backup: ${BACKUP_FILENAME}"
     log "INFO" "Database: ${PGDATABASE} | User: ${PGUSER} | Container: ${DB_CONTAINER}"
 
-    _TMP_FILES+=("${tmp_path}")
-
-    # pg_dump flags:
-    #   --clean:          include DROP statements before CREATE
-    #   --if-exists:      add IF EXISTS to DROP statements
-    #   --no-owner:       omit ownership commands (portable across environments)
-    #   --no-privileges:  omit GRANT/REVOKE (portable)
-    #   --schema:         dump only application schemas (not pg_catalog, etc.)
-    #
-    # The schema list is the shared SHEKEL_DUMP_SCHEMAS from _backup_lib.sh --
-    # the single source restore.sh and verify_backup.sh also read, so a new
-    # schema added there is automatically dumped here (OPS/SH-06).
-    #
-    # shellcheck disable=SC2046 # word splitting of the --schema flags is intended
-    # shellcheck disable=SC2310,SC2312 # shekel_pg_dump_schema_flags only printfs a fixed schema array (always succeeds); its status is intentionally not relied on, and the pipeline's real failure (pg_dump/gzip) is caught by the 'if !' guard
-    if ! docker exec "${DB_CONTAINER}" pg_dump \
-        -U "${PGUSER}" \
-        -d "${PGDATABASE}" \
-        --clean \
-        --if-exists \
-        --no-owner \
-        --no-privileges \
-        $(shekel_pg_dump_schema_flags) \
-        | gzip >"${tmp_path}"; then
-        log "ERROR" "pg_dump pipeline failed; partial file removed by trap"
-        exit 1
-    fi
-
-    # Verify the temp file is not empty before promoting it.
-    if [[ ! -s "${tmp_path}" ]]; then
-        log "ERROR" "Backup output is empty: ${tmp_path}"
-        exit 1
-    fi
-    mv "${tmp_path}" "${local_path}"
+    partial_path_for partial "${local_path}"
+    _TMP_FILES+=("${partial}")
+    write_dump_artifact "${local_path}" "No backup was written; fix the cause above and re-run."
 
     local size
     size=$(du -h "${local_path}" | cut -f1)
     log "INFO" "Local backup created: ${local_path} (${size})"
-}
-
-encrypt_backup() {
-    # Optionally encrypt the backup file with GPG symmetric encryption.
-    if [[ -z "${BACKUP_ENCRYPTION_PASSPHRASE}" ]]; then
-        return 0
-    fi
-
-    local local_path="${BACKUP_LOCAL_DIR}/${BACKUP_FILENAME}"
-    local encrypted_path="${local_path}.gpg"
-    local tmp_path="${encrypted_path}.tmp"
-
-    log "INFO" "Encrypting backup with AES-256..."
-    _TMP_FILES+=("${tmp_path}")
-    if ! echo "${BACKUP_ENCRYPTION_PASSPHRASE}" | gpg --batch --yes --passphrase-fd 0 \
-        --symmetric --cipher-algo AES256 \
-        --output "${tmp_path}" \
-        "${local_path}"; then
-        log "ERROR" "GPG encryption failed; unencrypted backup retained at ${local_path}"
-        exit 1
-    fi
-    mv "${tmp_path}" "${encrypted_path}"
-
-    # Remove the unencrypted file only after the encrypted one is in place.
-    rm -f "${local_path}"
-
-    # Update the filename to include .gpg extension.
-    BACKUP_FILENAME="${BACKUP_FILENAME}.gpg"
-    log "INFO" "Encrypted backup: ${encrypted_path}"
 }
 
 copy_to_nas() {
@@ -190,7 +132,8 @@ copy_to_nas() {
     # success log and the script exited 0 with a corrupt NAS copy).
     local local_path="${BACKUP_LOCAL_DIR}/${BACKUP_FILENAME}"
     local nas_path="${BACKUP_NAS_DIR}/${BACKUP_FILENAME}"
-    local nas_tmp="${nas_path}.tmp"
+    local nas_tmp
+    partial_path_for nas_tmp "${nas_path}"
 
     # Check if NAS is mounted and accessible.
     if [[ ! -d "${BACKUP_NAS_DIR}" ]]; then
@@ -206,7 +149,10 @@ copy_to_nas() {
     rm -f "${BACKUP_NAS_DIR}/.backup_test"
 
     _TMP_FILES+=("${nas_tmp}")
-    if ! cp "${local_path}" "${nas_tmp}"; then
+    # Created 0600 (finding BAL-663): cp gives a new file the source's mode
+    # under the umask, and keeps an existing one's, so a straggler goes first.
+    rm -f "${nas_tmp}"
+    if ! (umask 077 && cp "${local_path}" "${nas_tmp}"); then
         log "WARNING" "NAS copy FAILED (disk full / IO error?); partial file removed"
         rm -f "${nas_tmp}"
         return 1
@@ -232,6 +178,9 @@ copy_to_nas() {
 
 main() {
     local skip_nas=false
+    local encrypt=true
+
+    refuse_retired_passphrase_variable
 
     # Parse command-line arguments.
     while [[ $# -gt 0 ]]; do
@@ -248,11 +197,8 @@ main() {
                 skip_nas=true
                 shift
                 ;;
-            --encrypt)
-                if [[ -z "${BACKUP_ENCRYPTION_PASSPHRASE}" ]]; then
-                    log "ERROR" "--encrypt requires BACKUP_ENCRYPTION_PASSPHRASE to be set"
-                    exit 1
-                fi
+            --no-encrypt)
+                encrypt=false
                 shift
                 ;;
             --help)
@@ -267,13 +213,19 @@ main() {
         esac
     done
 
+    # Encrypted with a usable key file, unencrypted by explicit choice, or
+    # refused here, before anything is touched (R-BAL304).
+    if [[ "${encrypt}" == true ]]; then
+        require_backup_key "Or pass --no-encrypt to write an UNENCRYPTED backup."
+        BACKUP_FILENAME="${BACKUP_FILENAME}.gpg"
+    else
+        note_plaintext_choice "--no-encrypt" "the backup"
+    fi
+
     check_prerequisites
 
     # Create the backup.
     create_backup
-
-    # Encrypt if passphrase is set.
-    encrypt_backup
 
     # Copy to NAS (non-fatal on failure).
     local nas_status=0

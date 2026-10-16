@@ -499,7 +499,8 @@ If something goes wrong after step 4 completes:
 If the Proxmox host is lost and must be rebuilt from scratch:
 
 1. **Restore the database** from NAS backups using `scripts/restore.sh` (see backup/restore
-   runbook).
+   runbook); write its backup key file `/etc/shekel/backup-passphrase` first, from your password
+   manager (`docs/backup_runbook.md` §3.3).
 
 2. **Reconstruct the secrets store** for your posture:
 
@@ -549,6 +550,7 @@ Create a secure note in your password manager with:
 - `TOTP_ENCRYPTION_KEY` value
 - `POSTGRES_PASSWORD` value
 - `APP_ROLE_PASSWORD` value
+- The backup key file's passphrase (`/etc/shekel/backup-passphrase`), where the backup scripts run
 - Date each secret was last rotated
 - Posture in use (env-backed vs. file-backed)
 

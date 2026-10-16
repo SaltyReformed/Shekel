@@ -4,7 +4,7 @@
 
 This runbook covers all backup, restore, retention, and verification procedures for the Shekel
 budget application. The backup strategy uses `pg_dump` for PostgreSQL database dumps with gzip
-compression, tiered retention, optional NAS replication, and optional GPG encryption.
+compression and GPG encryption, tiered retention, and optional NAS replication.
 
 ### Script Inventory
 
@@ -21,14 +21,16 @@ compression, tiered retention, optional NAS replication, and optional GPG encryp
 - **Daily automated backups** at 2:00 AM via cron
 - **Tiered retention**: daily (7 days), weekly/Sunday (4 weeks), monthly/1st (6 months)
 - **Local + NAS storage**: backups copied to both `/var/backups/shekel/` and the NAS mount
-- **Optional encryption**: AES-256 via GPG symmetric encryption
+- **Encryption**: AES-256 via GPG symmetric encryption, keyed by one private key file (§3.3); an
+  unencrypted backup is written only when `--no-encrypt` asks for one
 - **Weekly verification**: automated restore to a temp database with sanity and integrity checks
 
 ---
 
 ## 2. Prerequisites
 
-- **Host**: Arch Linux with Docker and Docker Compose installed
+- **Host**: Arch Linux with Docker, Docker Compose and GnuPG (`gpg`) installed
+- **Key file**: `/etc/shekel/backup-passphrase` (§3.3), unless every backup is `--no-encrypt`
 - **Containers**: `shekel-prod-db` (PostgreSQL 16) running via `docker-compose.yml`
 - **App container** (production only): `shekel-prod-app` running via `docker-compose.yml`
 - **Disk space**: sufficient local storage for 7+ days of backups
@@ -45,7 +47,7 @@ Add these entries to the host's crontab (`crontab -e`):
 ```cron
 # ── Shekel Backups ───────────────────────────────────────────────
 
-# Daily backup at 2:00 AM.
+# Daily backup at 2:00 AM.  No secret on this line: backup.sh reads the key file (§3.3).
 0 2 * * * /path/to/shekel/scripts/backup.sh >> /var/log/shekel_backup.log 2>&1
 
 # Daily retention cleanup at 2:30 AM.
@@ -109,24 +111,55 @@ touch /mnt/nas/backups/shekel/.mount_test && rm /mnt/nas/backups/shekel/.mount_t
 echo "CIFS mount verified."
 ```
 
-### 3.3 Encryption Setup (Optional)
+### 3.3 Encryption Setup
 
-GPG symmetric encryption protects backup files at rest. When enabled, backup files are encrypted
-with AES-256 before being written to disk.
+GPG symmetric encryption protects backup files at rest: the dump streams through gzip and gpg
+(AES-256) into the backup file, so no unencrypted copy is ever written to disk. `backup.sh`,
+`restore.sh` and `verify_backup.sh` read the passphrase from ONE file, the key file
+`/etc/shekel/backup-passphrase` (its first line); there is no setting to move it, and no environment
+variable carries it. Each script refuses the key file unless it is a regular file (not a symbolic
+link) owned by the user running the script, with no permission for the group or others (mode `0600`,
+say), and a non-empty first line. Run the three scripts as that user (with `sudo` for a root-owned
+key file).
+
+Without a usable key file, `backup.sh` writes nothing and exits 1, unless `--no-encrypt` asks for an
+unencrypted backup; `restore.sh` stops before touching anything (§6.2). An install that still sets
+the retired `BACKUP_ENCRYPTION_PASSPHRASE` variable is refused by all three scripts until it is
+removed, wherever it is set.
+
+Create the key file as the user whose crontab runs the backup scripts (`root` if root's crontab
+does). Each command below refuses to overwrite an existing key file (`set -C`): replacing the
+passphrase makes every backup encrypted with it unreadable by the scripts.
+
+**Moving from the retired variable** (an install whose backups were encrypted with
+`BACKUP_ENCRYPTION_PASSPHRASE`): write that variable's CURRENT value as the key file's first line,
+so the backups it encrypted still decrypt, and only then remove the variable. Do NOT generate a new
+passphrase while those backups are kept.
 
 ```bash
-# Generate a strong passphrase.
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
-
-# Set the passphrase in the environment of the shell that runs the script.  No backup
-# script reads .env, and a cron line does not read your shell profile: give it the
-# passphrase too.
-export BACKUP_ENCRYPTION_PASSPHRASE="your-generated-passphrase"
+sudo mkdir -p /etc/shekel   # an existing directory keeps its mode
+# Paste the passphrase the variable held, press Enter, then Ctrl-D.  It reaches the file
+# through the terminal, never through a command line or the shell history.
+sudo sh -c 'set -C && umask 077 && cat > /etc/shekel/backup-passphrase'
 ```
 
-**Critical**: Store the passphrase separately from the backups. If you store backups on a NAS, the
-passphrase should be in a password manager or on the host -- not on the NAS. A lost passphrase means
-unrecoverable backups.
+**A new install**: write a strong new passphrase.
+
+```bash
+sudo mkdir -p /etc/shekel   # an existing directory keeps its mode
+sudo sh -c 'set -C && umask 077 \
+    && python3 -c "import secrets; print(secrets.token_urlsafe(32))" > /etc/shekel/backup-passphrase'
+sudo ls -l /etc/shekel/backup-passphrase   # -rw------- root root
+```
+
+For another user, `chown` the file to that user and keep the mode `0600`.
+
+**Critical**: Copy the passphrase into a password manager, separately from the backups. If you store
+backups on a NAS, the passphrase must not be on the NAS. A restore on a fresh machine needs the key
+file written first, from that copy. A lost passphrase means unrecoverable backups. A backup decrypts
+only with the passphrase it was made with: keep each passphrase for as long as its backups are kept,
+and to restore or verify a backup made under an earlier one, put that passphrase in the key file for
+the run, then put the current one back.
 
 ---
 
@@ -142,10 +175,17 @@ unrecoverable backups.
 # Custom local directory.
 ./scripts/backup.sh --local-dir /tmp/my_backup --no-nas
 
-# Verify the backup file.
-ls -lh /var/backups/shekel/shekel_backup_*.sql.gz
-zcat /var/backups/shekel/shekel_backup_LATEST.sql.gz | head -20
+# An UNENCRYPTED backup (.sql.gz), by explicit choice.
+./scripts/backup.sh --no-encrypt
+
+# Look at the backup file (as the key file's owner).
+ls -lh /var/backups/shekel/shekel_backup_*
+sudo gpg --batch --quiet --passphrase-file /etc/shekel/backup-passphrase \
+    -d /var/backups/shekel/shekel_backup_LATEST.sql.gz.gpg | zcat | head -20
 ```
+
+Each backup file is created readable by its owner only (`0600`), and a backup directory the script
+creates is `0700`; an existing directory keeps its mode.
 
 ---
 
@@ -200,18 +240,25 @@ ls /var/backups/shekel/shekel_backup_20260315_*.sql.gz*
 #   Are you sure you want to continue? [y/N]
 # Type "y" and press Enter to proceed.
 
-# For encrypted backups, set the passphrase first.
-export BACKUP_ENCRYPTION_PASSPHRASE="your-passphrase"
+# An encrypted backup decrypts with the key file (§3.3); on a fresh machine, write it first.
 ./scripts/restore.sh /var/backups/shekel/shekel_backup_20260315_020000.sql.gz.gpg
 ```
 
 The restore script will:
 
-1. Stop the application container (if it exists)
-2. Drop and recreate the database
-3. Restore from the backup file
-4. Start the application container (which runs Alembic migrations via the entrypoint)
-5. Run basic verification checks
+1. Validate the backup file end to end (decrypt, gzip integrity, non-empty) before anything else
+2. Save a safety dump of the CURRENT database, encrypted with the key file, as
+   `/var/backups/shekel/pre_restore_safety_<timestamp>.sql.gz.gpg`
+3. Stop the application container (if it exists)
+4. Drop and recreate the database
+5. Restore from the backup file
+6. Start the application container (which runs Alembic migrations via the entrypoint)
+7. Run basic verification checks
+
+Without a usable key file the script stops before step 1, touching nothing: an encrypted backup
+cannot be read, and the safety dump cannot be encrypted. For an unencrypted backup,
+`--plaintext-safety-dump` writes the safety dump unencrypted (`.sql.gz`) instead, and
+`--skip-safety-dump` takes none (the disaster case, where the current database is already lost).
 
 ### 6.3 Verify the Restore
 
@@ -232,9 +279,9 @@ docker exec shekel-prod-app python scripts/integrity_check.py --verbose
 If local backups are unavailable, copy from the NAS first:
 
 ```bash
-cp /mnt/nas/backups/shekel/shekel_backup_20260315_020000.sql.gz /tmp/
-./scripts/restore.sh /tmp/shekel_backup_20260315_020000.sql.gz
-rm /tmp/shekel_backup_20260315_020000.sql.gz
+cp /mnt/nas/backups/shekel/shekel_backup_20260315_020000.sql.gz.gpg /tmp/
+./scripts/restore.sh /tmp/shekel_backup_20260315_020000.sql.gz.gpg
+rm /tmp/shekel_backup_20260315_020000.sql.gz.gpg
 ```
 
 ---
@@ -337,8 +384,9 @@ DATABASE_URL=postgresql://shekel_user:shekel_pass@localhost:5432/shekel \
 |---------|-------|-----|
 | "Database container is not running" | `shekel-prod-db` stopped | `docker start shekel-prod-db` |
 | "NAS directory does not exist" | NAS not mounted | `sudo mount -a` and verify with `mount \| grep nas` |
-| "Backup file is empty" | Disk full or pg_dump failure | Check `df -h` and `docker logs shekel-prod-db` |
-| "Encrypted backup but no passphrase" | `BACKUP_ENCRYPTION_PASSPHRASE` not set | `export BACKUP_ENCRYPTION_PASSPHRASE="..."` |
+| "Could not write ...: pg_dump exited N, gzip N, gpg N" | Disk full, a pg_dump failure, or gpg failing | Check `df -h`, `docker logs shekel-prod-db` and the gpg message above it |
+| "Cannot use the backup key file" | The key file is missing, a link, not yours, readable by others, or its first line is empty | Write it as §3.3 says |
+| "BACKUP_ENCRYPTION_PASSPHRASE is set, but no backup script reads it" | The retired variable is still set (crontab, profile, wrapper) | Write the variable's value into the key file (§3.3, "Moving from the retired variable"), then remove the variable |
 | "Restore failed: permission denied" | `PGUSER` lacks CREATEDB privilege | Run: `docker exec shekel-prod-db psql -U postgres -c "ALTER USER shekel_user CREATEDB;"` |
 | "Integrity CRITICAL failures after restore" | Corrupt or partial backup | Try restoring from an older backup |
 | "verify_backup.sh: shekel_verify not cleaned up" | Previous run crashed before trap | Script auto-cleans on next run; or manually: `docker exec shekel-prod-db psql -U shekel_user -d postgres -c "DROP DATABASE IF EXISTS shekel_verify;"` |
@@ -359,7 +407,6 @@ DATABASE_URL=postgresql://shekel_user:shekel_pass@localhost:5432/shekel \
 |----------|---------|---------|-------------|
 | `BACKUP_LOCAL_DIR` | `/var/backups/shekel` | backup.sh, retention.sh | Local backup storage directory |
 | `BACKUP_NAS_DIR` | `/mnt/nas/backups/shekel` | backup.sh, retention.sh | NAS backup storage directory |
-| `BACKUP_ENCRYPTION_PASSPHRASE` | *(none)* | backup.sh, restore.sh, verify.sh | GPG encryption passphrase (optional) |
 | `DB_CONTAINER` | `shekel-prod-db` | backup.sh, restore.sh, verify_backup.sh | PostgreSQL Docker container name. No other script reads this name: `deploy/shekel-deploy.sh` reads `SHEKEL_DB_CONTAINER` and `scripts/test.sh` reads `TEST_DB_CONTAINER`. Pointing it at a non-production container is still the documented purpose of the override -- what it can no longer do is reach the deploy pipeline or the test runner |
 | `APP_CONTAINER` | `shekel-prod-app` | restore.sh, verify.sh | Application Docker container name |
 | `PGUSER` | `shekel_user` | all scripts | PostgreSQL user |

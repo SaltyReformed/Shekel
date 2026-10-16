@@ -203,7 +203,9 @@ cd /opt/shekel
 1. Asks compose where nginx is published (`docker compose ... port nginx`) and builds the health
    check URL from the answer; refuses, before touching anything, when nginx is not running
 2. Pulls the latest code from GitHub (`git pull --ff-only`)
-3. Runs a pre-deploy database backup (`scripts/backup.sh`)
+3. Runs a pre-deploy database backup (`scripts/backup.sh`); the deploy stops, before touching the
+   app, when the backup refuses (no usable key file, `docs/backup_runbook.md` §3.3) or the script is
+   missing, unless `--skip-backup`
 4. Tags the current Docker image as `:previous` for rollback
 5. Builds the new Docker image (`docker compose build app`)
 6. Restarts the app container (`docker compose up -d --no-deps --force-recreate app`)
@@ -689,9 +691,10 @@ encryption configuration, retention policy mechanics, and verification internals
 ./scripts/backup.sh --local-dir /tmp/my_backup --no-nas
 ```
 
-Backups are written to `/var/backups/shekel/` as `shekel_backup_YYYYMMDD_HHMMSS.sql.gz`. If
-`BACKUP_ENCRYPTION_PASSPHRASE` is set in the environment, the file is encrypted with GPG
-(`.sql.gz.gpg`).
+Backups are written to `/var/backups/shekel/` as `shekel_backup_YYYYMMDD_HHMMSS.sql.gz.gpg`,
+encrypted with GPG using the passphrase in the key file `/etc/shekel/backup-passphrase`. Without a
+usable key file the script writes nothing and exits 1, unless `--no-encrypt` asks for an unencrypted
+backup (`.sql.gz`). Setting up the key file: `docs/backup_runbook.md` §3.3.
 
 ### 3.2 Restoring from a Backup
 
@@ -702,19 +705,24 @@ ls -lht /var/backups/shekel/
 # Restore from a specific backup.
 ./scripts/restore.sh /var/backups/shekel/shekel_backup_20260315_020000.sql.gz
 
-# For encrypted backups, set the passphrase first.
-export BACKUP_ENCRYPTION_PASSPHRASE="your-passphrase"
+# An encrypted backup decrypts with the key file /etc/shekel/backup-passphrase.
 ./scripts/restore.sh /var/backups/shekel/shekel_backup_20260315_020000.sql.gz.gpg
 ```
 
+Before replacing the database the script saves an encrypted safety dump of it; without a usable key
+file it stops before touching anything, unless `--plaintext-safety-dump` (an unencrypted safety
+dump) or `--skip-safety-dump` (none) is passed for an unencrypted backup.
+
 The restore script will:
 
-1. Display a confirmation prompt (skip with `--skip-confirm`)
-2. Stop the application container
-3. Drop and recreate the database with schemas
-4. Restore from the backup file
-5. Restart the application container (entrypoint runs Alembic migrations)
-6. Run basic sanity checks
+1. Validate the backup file end to end (decrypt, gzip integrity, non-empty)
+2. Display a confirmation prompt (skip with `--skip-confirm`)
+3. Save a safety dump of the current database (encrypted with the key file)
+4. Stop the application container
+5. Drop and recreate the database with schemas
+6. Restore from the backup file
+7. Restart the application container (entrypoint runs Alembic migrations)
+8. Run basic sanity checks
 
 **Post-restore verification:**
 
@@ -728,9 +736,9 @@ docker exec shekel-prod-app python scripts/integrity_check.py --verbose
 If local backups are unavailable:
 
 ```bash
-cp /mnt/nas/backups/shekel/shekel_backup_20260315_020000.sql.gz /tmp/
-./scripts/restore.sh /tmp/shekel_backup_20260315_020000.sql.gz
-rm /tmp/shekel_backup_20260315_020000.sql.gz
+cp /mnt/nas/backups/shekel/shekel_backup_20260315_020000.sql.gz.gpg /tmp/
+./scripts/restore.sh /tmp/shekel_backup_20260315_020000.sql.gz.gpg
+rm /tmp/shekel_backup_20260315_020000.sql.gz.gpg
 ```
 
 ### 3.4 Verifying a Backup
@@ -1782,7 +1790,7 @@ curl -s http://localhost/health
 ls -lht /var/backups/shekel/
 
 # 2. Restore (will prompt for confirmation).
-./scripts/restore.sh /var/backups/shekel/shekel_backup_20260315_020000.sql.gz
+./scripts/restore.sh /var/backups/shekel/shekel_backup_20260315_020000.sql.gz.gpg
 
 # 3. Verify the restore.
 curl -s http://localhost/health
@@ -1792,9 +1800,9 @@ docker exec shekel-prod-app python scripts/integrity_check.py --verbose
 If local backups are corrupted, restore from NAS:
 
 ```bash
-cp /mnt/nas/backups/shekel/shekel_backup_20260315_020000.sql.gz /tmp/
-./scripts/restore.sh /tmp/shekel_backup_20260315_020000.sql.gz
-rm /tmp/shekel_backup_20260315_020000.sql.gz
+cp /mnt/nas/backups/shekel/shekel_backup_20260315_020000.sql.gz.gpg /tmp/
+./scripts/restore.sh /tmp/shekel_backup_20260315_020000.sql.gz.gpg
+rm /tmp/shekel_backup_20260315_020000.sql.gz.gpg
 ```
 
 #### Locked out of the app -- MFA device lost
@@ -1830,9 +1838,11 @@ docker exec shekel-prod-app python scripts/reset_mfa.py your-email@example.com
    - `POSTGRES_PASSWORD`: use the password from the backup, or set new
 4. Create the monitoring network: `docker network create monitoring`
 5. Start the stack: `docker compose up -d`
-6. Restore from NAS backup: `./scripts/restore.sh /mnt/nas/backups/shekel/<latest>.sql.gz`
-7. Re-install cloudflared and configure the tunnel (see `cloudflared/config.yml`)
-8. Re-configure cron jobs (see §1 Cron Schedule)
-9. Verify: `curl -s http://localhost/health` and `curl -s https://<domain>/health`
+6. Write the backup key file `/etc/shekel/backup-passphrase` from your password manager (see
+   `docs/backup_runbook.md` §3.3)
+7. Restore from NAS backup: `./scripts/restore.sh /mnt/nas/backups/shekel/<latest>.sql.gz.gpg`
+8. Re-install cloudflared and configure the tunnel (see `cloudflared/config.yml`)
+9. Re-configure cron jobs (see §1 Cron Schedule)
+10. Verify: `curl -s http://localhost/health` and `curl -s https://<domain>/health`
 
 See `docs/runbook_secrets.md` for detailed secret reconstruction procedures.

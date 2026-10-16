@@ -40,6 +40,9 @@
 #       -f docker-compose.build.yml up -d): the health check reaches the app
 #       through nginx, at the address compose published it on
 #     - NAS mounted if using backup before deploy
+#     - The backup key file (docs/backup_runbook.md, section 3.3), unless
+#       --skip-backup: the pre-deploy backup refuses without it, and a
+#       refused or missing backup stops the deploy before the app is touched
 
 set -euo pipefail
 
@@ -273,13 +276,15 @@ pull_latest() {
 }
 
 backup_database() {
-    # Run a pre-deploy database backup.
+    # Run a pre-deploy database backup, or stop the deploy before the app is
+    # touched: a backup script that cannot run is refused like one that
+    # refuses (Josh's ruling R-BAL304; --skip-backup is the explicit choice).
     local backup_script="${DEPLOY_DIR}/scripts/backup.sh"
 
     if [ ! -x "$backup_script" ]; then
-        log "WARNING" "Backup script not found or not executable: ${backup_script}"
-        log "WARNING" "Skipping pre-deploy backup."
-        return 0
+        log "ERROR" "Backup script not found or not executable: ${backup_script}"
+        log "ERROR" "The app was not touched.  Restore the script, or use --skip-backup."
+        exit 1
     fi
 
     log "INFO" "Running pre-deploy database backup..."

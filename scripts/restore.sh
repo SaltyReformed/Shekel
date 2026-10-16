@@ -10,7 +10,11 @@
 #        sequence dropped the production database before reading a single
 #        byte, so a wrong passphrase or truncated file left an empty DB with
 #        no recovery path)
-#     2. Take a pre-restore SAFETY DUMP of the current database
+#     2. Take a pre-restore SAFETY DUMP of the current database, encrypted
+#        with the backup key file (Josh's ruling R-BAL306).  Without a usable
+#        key file the script stops BEFORE step 1: for an encrypted backup
+#        always, for an unencrypted one unless --plaintext-safety-dump
+#        chooses an unencrypted copy or --skip-safety-dump skips it
 #     3. Stop the application container (if running)
 #     4. Terminate existing database connections
 #     5. Drop and recreate the database with schemas
@@ -30,7 +34,13 @@
 #     --skip-safety-dump  Proceed without the pre-restore safety dump (for the
 #                         disaster case where the current database is already
 #                         lost/unreadable and the dump step itself fails)
+#     --plaintext-safety-dump
+#                         Write the safety dump UNENCRYPTED (.sql.gz)
 #     --help              Show this help message
+#
+# An encrypted backup (.gpg) and the encrypted safety dump both use the
+# backup key file (SHEKEL_BACKUP_KEY_FILE in _backup_lib.sh; --help prints
+# its path).
 #
 # Exit codes:
 #     0   Restore completed successfully
@@ -45,12 +55,13 @@ DB_CONTAINER="${DB_CONTAINER:-$(shekel_prod_db_container)}"
 APP_CONTAINER="${APP_CONTAINER:-$(shekel_prod_app_container)}"
 PGUSER="${PGUSER:-shekel_user}"
 PGDATABASE="${PGDATABASE:-shekel}"
-BACKUP_ENCRYPTION_PASSPHRASE="${BACKUP_ENCRYPTION_PASSPHRASE:-}"
 BACKUP_LOCAL_DIR="${BACKUP_LOCAL_DIR:-/var/backups/shekel}"
 
 # Set once the DROP DATABASE has run; drives the recovery-guidance trap.
 DESTRUCTIVE_WINDOW=false
 SAFETY_DUMP_PATH=""
+# The safety dump's partial file while it is written (take_safety_dump).
+SAFETY_DUMP_PARTIAL=""
 
 # ── Functions ────────────────────────────────────────────────────
 
@@ -63,7 +74,8 @@ Restore the Shekel database from a backup file.
 This will:
     1. Validate the backup artifact (decrypt + integrity) BEFORE any
        destructive step
-    2. Take a pre-restore safety dump of the current database
+    2. Take a pre-restore safety dump of the current database, encrypted
+       with the key file ${SHEKEL_BACKUP_KEY_FILE}
     3. Stop the application container (if running)
     4. Drop and recreate the database
     5. Restore from the backup file
@@ -76,14 +88,21 @@ Arguments:
 Options:
     --skip-confirm      Skip the interactive confirmation prompt
     --skip-safety-dump  Proceed without the pre-restore safety dump
+    --plaintext-safety-dump
+                        Write the safety dump UNENCRYPTED (.sql.gz)
     --help              Show this help message
+
+An encrypted backup (.gpg) and the encrypted safety dump need the key file
+${SHEKEL_BACKUP_KEY_FILE} (owned by the user running this script, no access
+for the group or others).  Without it the script stops before touching
+anything, except for an unencrypted backup under --plaintext-safety-dump or
+--skip-safety-dump.
 
 Environment Variables:
     DB_CONTAINER                  Docker container name for PostgreSQL
     APP_CONTAINER                 Docker container name for the app
     PGUSER                        PostgreSQL user
     PGDATABASE                    PostgreSQL database name
-    BACKUP_ENCRYPTION_PASSPHRASE  GPG passphrase (required for .gpg files)
     BACKUP_LOCAL_DIR              Where the safety dump is written
 EOF
 }
@@ -150,34 +169,24 @@ confirm_restore() {
 }
 
 take_safety_dump() {
-    # Dump the CURRENT database before destroying it. Temp-file + rename, same
-    # partial-file discipline as backup.sh.
+    # Dump the CURRENT database before destroying it, through backup.sh's own
+    # writer: encrypted with the key file unless $1 is "plaintext" (main has
+    # checked the key), never on disk unencrypted when encrypted, 0600 in a
+    # directory it creates 0700.  The writer removes its partial file when
+    # the pipeline fails; the EXIT trap set here removes it when an
+    # interrupt (Ctrl-C, SIGTERM) ends the run mid-dump, and finds nothing
+    # once the rename has run.
     local ts
     ts="$(date +%Y%m%d_%H%M%S)"
     local dump_path="${BACKUP_LOCAL_DIR}/pre_restore_safety_${ts}.sql.gz"
-    local tmp_path="${dump_path}.tmp"
+    if [[ "$1" != plaintext ]]; then
+        dump_path="${dump_path}.gpg"
+    fi
 
     log "INFO" "Taking pre-restore safety dump: ${dump_path}"
-    mkdir -p "${BACKUP_LOCAL_DIR}"
-    # shellcheck disable=SC2046 # word splitting of the --schema flags is intended
-    # shellcheck disable=SC2310,SC2312 # shekel_pg_dump_schema_flags only printfs a static schema array, so it cannot meaningfully fail; its return value carries no error to mask in this if-condition
-    if ! docker exec "${DB_CONTAINER}" pg_dump \
-        -U "${PGUSER}" -d "${PGDATABASE}" \
-        --clean --if-exists --no-owner --no-privileges \
-        $(shekel_pg_dump_schema_flags) \
-        | gzip >"${tmp_path}"; then
-        rm -f "${tmp_path}"
-        log "ERROR" "Pre-restore safety dump FAILED. If the current database is"
-        log "ERROR" "already lost (the disaster-recovery case), re-run with"
-        log "ERROR" "--skip-safety-dump. Refusing to drop the database otherwise."
-        exit 1
-    fi
-    if [[ ! -s "${tmp_path}" ]]; then
-        rm -f "${tmp_path}"
-        log "ERROR" "Pre-restore safety dump is empty; refusing to proceed."
-        exit 1
-    fi
-    mv "${tmp_path}" "${dump_path}"
+    partial_path_for SAFETY_DUMP_PARTIAL "${dump_path}"
+    trap 'rm -f -- "${SAFETY_DUMP_PARTIAL}"' EXIT
+    write_dump_artifact "${dump_path}" "Pre-restore safety dump FAILED; nothing was dropped. If the current database is already lost (the disaster-recovery case), re-run with --skip-safety-dump."
     SAFETY_DUMP_PATH="${dump_path}"
     log "INFO" "Safety dump complete: ${dump_path}"
 }
@@ -223,7 +232,7 @@ restore_backup() {
     local backup_file="$1"
 
     log "INFO" "Restoring from: ${backup_file}"
-    # backup_stream handles .gpg decryption (passphrase via fd, never argv)
+    # backup_stream handles .gpg decryption (gpg reads the key file itself)
     # and gzip decompression for both artifact shapes (OPS/SH-06: the
     # pipeline previously existed twice here and once in verify_backup.sh).
     backup_stream "${backup_file}" \
@@ -319,7 +328,10 @@ verify_restore() {
 main() {
     local skip_confirm=false
     local skip_safety_dump=false
+    local plaintext_safety_dump=false
     local backup_file=""
+
+    refuse_retired_passphrase_variable
 
     # Parse command-line arguments.
     while [[ $# -gt 0 ]]; do
@@ -330,6 +342,10 @@ main() {
                 ;;
             --skip-safety-dump)
                 skip_safety_dump=true
+                shift
+                ;;
+            --plaintext-safety-dump)
+                plaintext_safety_dump=true
                 shift
                 ;;
             --help)
@@ -359,11 +375,29 @@ main() {
         exit 1
     fi
 
+    # How the safety dump is taken, and whether the key is needed, decided
+    # before anything is read or touched (R-BAL306).
+    local safety_dump=encrypted
+    if [[ "${skip_safety_dump}" == true && "${plaintext_safety_dump}" == true ]]; then
+        log "ERROR" "--skip-safety-dump and --plaintext-safety-dump contradict each other; pass one."
+        exit 1
+    elif [[ "${skip_safety_dump}" == true ]]; then
+        safety_dump=skip
+    elif [[ "${plaintext_safety_dump}" == true ]]; then
+        safety_dump=plaintext
+    fi
+    if [[ "${backup_file}" == *.gpg ]]; then
+        require_backup_key "The backup ${backup_file} is encrypted with it."
+    elif [[ "${safety_dump}" == encrypted ]]; then
+        require_backup_key "The pre-restore safety dump is encrypted with it.  Or pass --plaintext-safety-dump for an UNENCRYPTED safety dump, or --skip-safety-dump for none."
+    fi
+    if [[ "${safety_dump}" == plaintext ]]; then
+        note_plaintext_choice "--plaintext-safety-dump" "the pre-restore safety dump"
+    fi
+
     BACKUP_FILE="${backup_file}"
 
     check_prerequisites
-    # shellcheck disable=SC2310 # require_passphrase_for is a boolean predicate (explicit return 1, no internal set -e reliance); the trailing || exit 1 is the intended abort on failure
-    require_passphrase_for "${backup_file}" "${BACKUP_ENCRYPTION_PASSPHRASE}" || exit 1
 
     # The OPS/SH-01 gate: prove the artifact decrypts and decompresses
     # end-to-end BEFORE anything destructive runs.
@@ -375,10 +409,10 @@ main() {
         confirm_restore
     fi
 
-    if [[ "${skip_safety_dump}" == false ]]; then
-        take_safety_dump
-    else
+    if [[ "${safety_dump}" == skip ]]; then
         log "WARNING" "Pre-restore safety dump SKIPPED (--skip-safety-dump)"
+    else
+        take_safety_dump "${safety_dump}"
     fi
 
     stop_app
