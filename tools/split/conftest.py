@@ -24,7 +24,7 @@ from tools.split._model import parse_plan
 from tools.split._observe import LONE, setups_path
 from tools.split._render import Rewrite, line_limit, render_all, write
 from tools.split._source import Refusal, collect_rules, read_module
-from tools.split.split import main
+from tools.split.split import Context, main
 
 SOURCE = "tests/test_area/test_sample.py"
 
@@ -53,6 +53,17 @@ OUTCOMES = {**dict.fromkeys(BEFORE_IDS, "passed"), f"{SOURCE}::TestBig::test_c":
 
 #: Each step of ``record`` a stub can stop, as a process that did not observe would.
 RECORD_STEPS = ("the source's pylint", "the importers' pylint", "the collect", "the run")
+
+#: The shape every run had in the delta review's M-A: nothing collected, nothing run, and
+#: pytest interrupted.
+EMPTY = {"collected": [], "outcomes": {}, "exitstatus": 2}
+
+
+def cut_fixture(root: Path) -> dict:
+    """A parent conftest's module-scoped fixture set up for the source's tests: its one
+    instance per module the split would cut into one per part (fork F)."""
+    return {"argname": "area", "scope": "module", "baseid": "tests",
+            "file": str(root / "tests/conftest.py"), "by": SOURCE}
 
 SAMPLE = textwrap.dedent('''\
     """Tests for the sample area.
@@ -319,15 +330,9 @@ class Stubs:
 @pytest.fixture(name="split")
 def _split(tmp_path, monkeypatch):
     """The sample committed to a throwaway repository, the process arms stubbed; a function
-    running one command through ``main``, returning its exit status.  The repository holds
-    an executable ``scripts/test.sh``, which the stubs never start, because ``record``
-    refuses before it discards anything when the wrapper is not there to start."""
+    running one command through ``main``, returning its exit status."""
     root = scratch.repository(tmp_path)
     build(root)
-    wrapper = root / run.WRAPPER
-    wrapper.parent.mkdir()
-    wrapper.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
-    wrapper.chmod(0o755)
     committed(root, "the sample")
     stubs = Stubs(dynamic.id_map(layout_of(root), BEFORE_IDS))
     monkeypatch.setattr(run, "observe", stubs.observe)
@@ -357,6 +362,14 @@ def applied(split) -> None:
     """Record and apply the sample's split, each proved."""
     assert split("record") == 0
     assert split("apply") == 0
+
+
+def held(split, name: str) -> Path:
+    """Where the complete record in ``split.into`` holds the file ``name``, as the tool finds
+    it (:meth:`tools.split.split.Context.held`): in the directory of the run its token
+    names."""
+    return Context(plan=parse_plan(plan_dict()), root=split.root,
+                   into=split.into).bound().held(name)
 
 
 def only_on_path(tmp_path: Path, monkeypatch, *programs: str) -> None:

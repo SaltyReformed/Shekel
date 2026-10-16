@@ -21,6 +21,7 @@ from tools.split import split as cli
 from tools.split._observe import LONE, setups_path
 from tools.split._run import pylint_messages
 from tools.split.conftest import (
+    EMPTY,
     IMPORTER,
     OUTCOMES,
     PACKAGE,
@@ -28,23 +29,14 @@ from tools.split.conftest import (
     SOURCE,
     applied,
     committed,
+    cut_fixture,
     everything,
+    held,
     only_on_path,
     plan_dict,
     tree,
 )
 from tools.split.split import _BEFORE_RUN, _META, main
-
-#: The shape every run had in the delta review's M-A: nothing collected, nothing run, and
-#: pytest interrupted.
-EMPTY = {"collected": [], "outcomes": {}, "exitstatus": 2}
-
-
-def cut_fixture(root: Path) -> dict:
-    """A parent conftest's module-scoped fixture set up for the source's tests: its one
-    instance per module the split would cut into one per part (fork F)."""
-    return {"argname": "area", "scope": "module", "baseid": "tests",
-            "file": str(root / "tests/conftest.py"), "by": SOURCE}
 
 
 def test_a_proved_split_prints_its_block(split, capsys):
@@ -186,10 +178,10 @@ def test_prove_judges_the_record_again(split, capsys):
     """A record whose verdict fails reaches prove (made to fail after apply, here): prove fails
     it as an arm, prefixed ``record:``, and prints no block (the review's H1)."""
     applied(split)
-    held = setups_path(split.into / _BEFORE_RUN, LONE)
-    observed = json.loads(held.read_text(encoding="utf-8"))
+    setups = setups_path(held(split, _BEFORE_RUN), LONE)
+    observed = json.loads(setups.read_text(encoding="utf-8"))
     observed["setups"] = [cut_fixture(split.root)]
-    held.write_text(json.dumps(observed), encoding="utf-8")
+    setups.write_text(json.dumps(observed), encoding="utf-8")
     capsys.readouterr()
     assert split("prove") == 1
     out, err = capsys.readouterr()
@@ -345,23 +337,12 @@ def test_prove_refuses_a_run_of_the_split_that_did_not_run_to_its_end(split, cap
 class TestAnOSErrorIsARefusal:
     """``main`` catches :class:`OSError` once, so a file it cannot write or a program it cannot
     start is a refusal naming it, exit 1 as documented, never a traceback (the coordinator's
-    ruling on commit 3b's (A))."""
-
-    def test_pylint_not_installed(self, split, capsys, monkeypatch, tmp_path):
-        """record checks it can start pylint before it discards anything: refused, naming
-        it, no record (delta review 2's Medium-1 moved this before the discard; it was an
-        OSError from the start)."""
-        monkeypatch.setattr(run, "pylint_messages", pylint_messages)
-        only_on_path(tmp_path, monkeypatch, "git")
-        assert split("record") == 1
-        assert ("REFUSED: record cannot start ['pylint']; nothing is recorded"
-                in capsys.readouterr().err)
-        assert not (split.into / _META).exists()
+    ruling on commit 3b's (A)).  A record directory that cannot be written in is
+    :mod:`tools.split.test_record`'s case."""
 
     def test_pylint_not_installed_at_prove(self, split, capsys, monkeypatch, tmp_path):
         """prove reaches pylint with no pylint to start: the OSError is refused by main,
-        naming it, never a traceback (the walk that reaches main's catch, now that record
-        checks first)."""
+        naming it, never a traceback."""
         applied(split)
         monkeypatch.setattr(run, "pylint_messages", pylint_messages)
         only_on_path(tmp_path, monkeypatch, "git")
@@ -369,19 +350,6 @@ class TestAnOSErrorIsARefusal:
         assert split("prove") == 1
         assert ("REFUSED: [Errno 2] No such file or directory: 'pylint'"
                 in capsys.readouterr().err)
-
-    def test_an_unwritable_record_directory(self, split, capsys):
-        """record checks it can write in ``--into`` before it discards anything: refused,
-        naming the directory (delta review 2's Medium-1; it was the copy's OSError)."""
-        split.into.mkdir()
-        split.into.chmod(0o500)
-        try:
-            assert split("record") == 1
-        finally:
-            split.into.chmod(0o700)
-        assert (f"REFUSED: {split.into}: not a directory this process can write files in; "
-                "nothing is recorded" in capsys.readouterr().err)
-        assert not (split.into / _META).exists()
 
 
 def test_apply_twice_is_refused_by_name(split, capsys):

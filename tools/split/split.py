@@ -7,8 +7,10 @@
 ``record`` refuses the plan or measures the source BEFORE anything moves: a copy of it, its
 collection and every test's outcome through ``./scripts/test.sh``, every fixture its tests set
 up (refusing one whose reach the split would change), and pylint's messages for it and for
-each module that imports it, whose text it fingerprints; its ``meta.json``, written last,
-marks the record complete, and ``apply`` and ``prove`` refuse without one.  ``apply`` writes
+each module that imports it, whose text it fingerprints; each run writes into a directory
+made for it, and its ``meta.json``, which names that directory, is written last, replacing
+the last record's only once the run completed, and ``apply`` and ``prove`` refuse without
+one.  ``apply`` writes
 the package, deletes the source, re-points the importers, runs the static proof and writes
 the node-id maps, as ONE unit: a failure anywhere in it, the proof's included, Ctrl-C, or a
 ``SIGTERM`` or ``SIGHUP`` undoes every write before it is reported, so no failure it
@@ -52,11 +54,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import signal
 import sys
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tools.ci import gitcmd
@@ -92,14 +94,14 @@ from tools.split._source import (
     read_text,
 )
 
-#: The record directory's files.  ``meta.json`` is the record's completion token.
+#: The record's files.  ``meta.json``, in the record directory, is the record's completion
+#: token, and names the directory of its run, which holds the rest.
 _SOURCE, _META = "source.py", "meta.json"
 _BEFORE_COLLECT, _BEFORE_RUN = "before_collect.json", "before_run.json"
 _BEFORE_PYLINT, _BEFORE_IMPORTERS = "before_pylint.json", "before_importers_pylint.json"
 
-#: Every file a record holds, in the order ``record`` deletes them, the token first (each
-#: observation with its processes' fixture-setup files: :func:`tools.split._run.discard`).
-_RECORD = (_META, _SOURCE, _BEFORE_PYLINT, _BEFORE_IMPORTERS, _BEFORE_COLLECT, _BEFORE_RUN)
+#: A prove's observations of the split, in its own directory (with one per part run alone).
+_AFTER_COLLECT, _AFTER_RUN = "after_collect.json", "after_run.json"
 
 #: The node-id map ``apply`` keeps in the record: written inside the apply's unit, LAST,
 #: after its proof passed, so it stays only when the whole apply succeeded and, a process
@@ -131,11 +133,14 @@ def _raise(signum: int, _frame: object) -> None:
 
 @dataclass(frozen=True)
 class Context:
-    """One invocation's inputs: the plan, the repository root, the record directory."""
+    """One invocation's inputs: the plan, the repository root, the record directory, and,
+    once a record is bound to it, that record's token (:meth:`bound`, or ``record``'s
+    own)."""
 
     plan: Plan
     root: Path
     into: Path
+    meta: dict | None = None
 
     def rules(self) -> CollectRules:
         """pytest's collection rules, from the repository's ``pytest.ini``."""
@@ -146,31 +151,49 @@ class Context:
         rules = self.rules()
         return resolve(read_module(source, rules), self.plan, rules)
 
-    def read(self, name: str) -> object:
-        """A JSON file the record holds."""
-        return read_json(self.into / name)
-
-    def meta(self) -> dict:
-        """The record's completion token, which ``record`` writes last; refused, by name,
-        when the directory holds none, as after a record that stopped part-way."""
+    def bound(self) -> Context:
+        """This context bound to the complete record the directory holds, its token read
+        once; refused, by name, when the directory holds none, as before any record
+        completed there."""
         if not (self.into / _META).is_file():
             raise Refusal(f"{self.into}: no complete record; record again")
-        return self.read(_META)
+        return replace(self, meta=read_json(self.into / _META))
+
+    def held(self, name: str) -> Path:
+        """Where the bound record holds the file ``name``: in the directory of its run, which
+        its token names."""
+        return self.into / self.meta["run"] / name
+
+    def read(self, name: str) -> object:
+        """A JSON file the bound record holds."""
+        return read_json(self.held(name))
 
     def applied(self) -> bool:
         """Whether the directory holds a complete record whose split is applied
         (:data:`_APPLIED`)."""
         return (self.into / _META).is_file() and (self.into / _APPLIED).is_file()
 
-    def save(self, name: str, value: object) -> None:
-        """Write a JSON file into the record, whole or not at all: written beside its name
-        and renamed onto it, so a run stopped mid-write leaves no part of a file under the
-        name, which is what lets the token's presence mean the record completed."""
-        path = self.into / name
-        partial = path.with_name(f"{name}.partial")
-        partial.write_text(json.dumps(value, indent=1, sort_keys=True) + "\n",
-                           encoding="utf-8")
-        partial.replace(path)
+
+def _save(path: Path, value: object) -> None:
+    """Write a JSON file of the record, whole or not at all: written beside its name and
+    renamed onto it, so a run stopped mid-write leaves the file that was there, never a part
+    of a new one.  That is what lets the token's presence mean a record completed, and keeps
+    the last record's token whole until a run that completed replaces it."""
+    partial = path.with_name(f"{path.name}.partial")
+    partial.write_text(json.dumps(value, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    partial.replace(path)
+
+
+def _run_directory(ctx: Context, command: str) -> Path:
+    """A directory made for one run of ``command`` under the record directory, its name the
+    command's and :func:`tempfile.mkdtemp`'s suffix, so a reader of ``--into`` sees which
+    command wrote each.  Everything the run writes but the record's token goes there, so no
+    file in it is older than the run, and a pytest that outlived an earlier run writes into
+    that run's directory, never this one's (the coordinator's rulings on 3B-2b's condition
+    (c), 2026-10-15, and on 3C-2's prove fork, 2026-10-16).  Nothing deletes one: no command
+    reads a directory but the run that made it and, for a record's, the commands its token
+    binds."""
+    return Path(tempfile.mkdtemp(prefix=f"{command}-", dir=ctx.into))
 
 
 def _head(root: Path) -> str:
@@ -189,16 +212,16 @@ def _clean(root: Path, then: str) -> None:
                       f"state it was taken in; {then}")
 
 
-def _held_to(ctx: Context, meta: dict, nothing: str) -> None:
-    """Refuse unless this process runs where the record was taken: ``HEAD`` the commit it
-    names, and the environment the one it holds (:func:`tools.split._run.environment`).  A
-    record holding no environment was written by another version of this tool, and is
+def _held_to(ctx: Context, nothing: str) -> None:
+    """Refuse unless this process runs where the bound record was taken: ``HEAD`` the commit
+    it names, and the environment the one it holds (:func:`tools.split._run.environment`).
+    A record holding no environment was written by another version of this tool, and is
     refused alike.  ``nothing`` ends the refusal."""
     head = _head(ctx.root)
-    if head != meta["head"]:
-        raise Refusal(f"HEAD is {head[:9]}, and the record was taken at {meta['head'][:9]}; "
-                      f"{nothing}")
-    if meta.get("environment") != run.environment(ctx.root):
+    if head != ctx.meta["head"]:
+        raise Refusal(f"HEAD is {head[:9]}, and the record was taken at "
+                      f"{ctx.meta['head'][:9]}; {nothing}")
+    if ctx.meta.get("environment") != run.environment(ctx.root):
         raise Refusal("the record was taken with another interpreter, other installed "
                       "distributions or another git, or by a version of this tool that did "
                       f"not record them; {nothing}")
@@ -230,13 +253,13 @@ def _unmoved(ctx: Context, before: tuple[str, str, set[str]], nothing: str) -> N
                       f"the state judged; {nothing}")
 
 
-def _write_set(ctx: Context, layout: Layout, meta: dict) -> set[str]:
+def _write_set(ctx: Context, layout: Layout) -> set[str]:
     """Every path ``apply`` writes in the tree, repository-relative: each file of the package
     (the writer's own set, :func:`tools.split._render.render_all`'s), the source it deletes,
-    and each importer it re-points (the record's)."""
+    and each importer it re-points (the bound record's)."""
     package = layout.plan.package
     return ({str(package / name) for name in render_all(layout, line_limit(ctx.root))}
-            | {str(layout.plan.source)} | set(meta["importers"]))
+            | {str(layout.plan.source)} | set(ctx.meta["importers"]))
 
 
 def _importer_record(rewrites: list[Rewrite], root: Path) -> dict[str, dict]:
@@ -263,7 +286,7 @@ def _record_verdict(ctx: Context, layout: Layout) -> tuple[list[str], int]:
     Each run must be one pytest ran to its end over every test of the source
     (:func:`tools.split._dynamic.run_failures`)."""
     collected, ran = ctx.read(_BEFORE_COLLECT), ctx.read(_BEFORE_RUN)
-    setups, setups_ran = run.merged_setups(ctx.into / _BEFORE_RUN)
+    setups, setups_ran = run.merged_setups(ctx.held(_BEFORE_RUN))
     failures = (dynamic.run_failures(layout, collected, "the source's collection")
                 + dynamic.run_failures(layout, ran, "the source's run"))
     if collected["deselected"]:
@@ -280,30 +303,32 @@ def _record_verdict(ctx: Context, layout: Layout) -> tuple[list[str], int]:
 def record(ctx: Context) -> list[str]:
     """Refuse the plan or measure the source before anything moves.
 
-    A record is the files ONE complete run of this command wrote, and ``meta.json``, written
-    last, is the token that the run completed.  It is deleted first, then every other file
-    a record holds, so a run that stops part-way (a refusal, a process that wrote no
-    observation, an interrupt) leaves no record at all, and never the last record's
-    observations under this run's token.  A run that completes but observed no session of
-    the tests is a complete record whose verdict fails, which ``apply`` refuses (the
-    coordinator's ruling on the delta review's H-A, 2026-10-15: the token
-    was written before pylint and the runs, so a record that stopped there reached ``apply``
-    holding the previous source's observations).
+    A record is the files ONE complete run of this command wrote, into a directory made for
+    that run, and ``meta.json`` is the token that the run completed: it names that directory,
+    and it is written last, replacing the last record's token only then (the coordinator's
+    ruling on delta review 3's N-2, 2026-10-16).  So a run that stops part way (a refusal, a
+    process that wrote no observation, an interrupt, ``SIGKILL``, a wrapper that cannot run)
+    leaves the last record whole, and its own files where no token names them, which nothing
+    reads; and a pytest that outlived a killed run writes into that run's directory, never
+    into a later run's (the orphan race, ruled on 3B-2b's condition (c), 2026-10-15).  Nothing
+    deletes a directory no token names.  A run that completes but observed no session of the
+    tests is a complete record whose verdict fails, which ``apply`` refuses (the
+    coordinator's ruling on the delta review's H-A, 2026-10-15: the token was written before
+    pylint and the runs, so a record that stopped there reached ``apply`` holding the
+    previous source's observations).
 
-    Every check that writes nothing runs before that discard, so a run that cannot start
-    leaves the last record as it was; and a record whose split is applied is never
-    discarded, because it is what ``prove`` judges that split by (the coordinator's ruling
-    on delta review 2's Medium-1, 2026-10-15: a second ``record`` into the directory of an
-    applied split deleted its token and source, and ``prove`` then asked for a record no one
-    could take, the source being gone).
+    A record whose split is applied is never replaced, because it is the evidence that
+    split's commit cites and what ``prove`` judges the split by; a split reverted by hand is
+    recorded into a new ``--into`` (the coordinator's rulings on delta review 2's Medium-1,
+    2026-10-15, and on 3C-2's question, 2026-10-16).
 
-    The first of those checks is the repository's: refused unless the working tree is
-    ``HEAD``'s and ``HEAD`` tracks the source, so ``HEAD``, which the token keeps with the
-    environment, names every file the observations rest on (REVISED (B), the module
-    docstring).  The same is judged again after the runs, before the token is written."""
+    Refused unless the working tree is ``HEAD``'s and ``HEAD`` tracks the source, so
+    ``HEAD``, which the token keeps with the environment, names every file the observations
+    rest on (REVISED (B), the module docstring).  The same is judged again after the runs,
+    before the token is written."""
     if ctx.applied():
-        raise Refusal(f"{ctx.into} holds a record whose split is applied; record into another "
-                      "directory")
+        raise Refusal(f"{ctx.into} holds a record whose split is applied; record into a new "
+                      "--into")
     head = _head(ctx.root)
     _clean(ctx.root, "commit or remove them, then record; nothing is recorded")
     if not _tracked(ctx.root, ctx.plan.source):
@@ -313,26 +338,20 @@ def record(ctx: Context) -> list[str]:
     layout = ctx.layout(source)
     render_all(layout, line_limit(ctx.root))
     importers = _importer_record(importer_rewrites(layout, ctx.root), ctx.root)
-    meta = {"source": str(ctx.plan.source), "sha256": run.sha256(source), "head": head,
-            "environment": run.environment(ctx.root), "importers": importers}
-    unstartable = run.unstartable(ctx.root)
-    if unstartable:
-        raise Refusal(f"record cannot start {unstartable}; nothing is recorded")
     ctx.into.mkdir(parents=True, exist_ok=True)
-    if not os.access(ctx.into, os.W_OK | os.X_OK):
-        raise Refusal(f"{ctx.into}: not a directory this process can write files in; nothing "
-                      "is recorded")
-    for name in _RECORD:
-        run.discard(ctx.into / name)
-    shutil.copyfile(source, ctx.into / _SOURCE)
-    ctx.save(_BEFORE_PYLINT, run.pylint_messages(ctx.root, [str(ctx.plan.source)]))
-    ctx.save(_BEFORE_IMPORTERS,
-             run.pylint_messages(ctx.root, sorted(importers)) if importers else [])
-    run.observe(ctx.root, [str(ctx.plan.source)], ctx.into / _BEFORE_COLLECT,
+    ctx = replace(ctx, meta={
+        "source": str(ctx.plan.source), "sha256": run.sha256(source), "head": head,
+        "environment": run.environment(ctx.root), "importers": importers,
+        "run": _run_directory(ctx, "record").name})
+    shutil.copyfile(source, ctx.held(_SOURCE))
+    _save(ctx.held(_BEFORE_PYLINT), run.pylint_messages(ctx.root, [str(ctx.plan.source)]))
+    _save(ctx.held(_BEFORE_IMPORTERS),
+          run.pylint_messages(ctx.root, sorted(importers)) if importers else [])
+    run.observe(ctx.root, [str(ctx.plan.source)], ctx.held(_BEFORE_COLLECT),
                 collect_only=True)
-    run.observe(ctx.root, [str(ctx.plan.source)], ctx.into / _BEFORE_RUN, collect_only=False)
-    _unmoved(ctx, (head, meta["environment"], set()), "nothing is recorded")
-    ctx.save(_META, meta)
+    run.observe(ctx.root, [str(ctx.plan.source)], ctx.held(_BEFORE_RUN), collect_only=False)
+    _unmoved(ctx, (head, ctx.meta["environment"], set()), "nothing is recorded")
+    _save(ctx.into / _META, ctx.meta)
     return _record_verdict(ctx, layout)[0]
 
 
@@ -345,11 +364,11 @@ def apply(ctx: Context, idmap: Path) -> None:
     the proof are ONE unit (:func:`tools.split._render.write`): a failed write, a static
     proof that fails on what was written, or an interrupt undoes every file the apply wrote,
     the id maps beside the tree included, and the refusal names the failure."""
-    meta = ctx.meta()
+    ctx = ctx.bound()
     if ctx.applied():
         raise Refusal(f"{ctx.into}: already applied (it holds the id map an apply keeps only "
                       "when it succeeded); nothing is applied")
-    _held_to(ctx, meta, "record again; nothing is applied")
+    _held_to(ctx, "record again; nothing is applied")
     _clean(ctx.root, "undo them, or commit them and record again; nothing is applied")
     layout = ctx.layout(ctx.root / ctx.plan.source)
     refused, _ = _record_verdict(ctx, layout)
@@ -362,7 +381,7 @@ def apply(ctx: Context, idmap: Path) -> None:
     payload = json.dumps(mapping, indent=1, sort_keys=True) + "\n"
     beside = {idmap: payload, ctx.into / _APPLIED: payload}
     with write(layout, ctx.root, texts, rewrites, beside):
-        failures = prove_static(ctx.layout(ctx.into / _SOURCE), ctx.root, ctx.rules())
+        failures = prove_static(ctx.layout(ctx.held(_SOURCE)), ctx.root, ctx.rules())
         if failures:
             raise Refusal(f"the static proof failed on the split as written "
                           f"({len(failures)} failure(s): {'; '.join(failures)})")
@@ -381,23 +400,25 @@ def _written_alone(ctx: Context, written: set[str]) -> None:
                       f"{beside[:5]}")
 
 
-def _run_arms(ctx: Context, layout: Layout, mapping: dict[str, str]) -> tuple[list[str], dict]:
-    """The collection, outcome and part-alone arms; their failures and what they saw.  Each
-    run, like the record's, must be one pytest ran to its end over every test it was run on
+def _run_arms(ctx: Context, layout: Layout, mapping: dict[str, str], runs: Path
+              ) -> tuple[list[str], dict]:
+    """The collection, outcome and part-alone arms, observed into ``runs``, this prove's
+    directory; their failures and what they saw.  Each run, like the record's, must be one
+    pytest ran to its end over every test it was run on
     (:func:`tools.split._dynamic.run_failures`)."""
     package = str(layout.plan.package)
     before = ctx.read(_BEFORE_RUN)["outcomes"]
-    collected = run.observe(ctx.root, [package], ctx.into / "after_collect.json", True)
+    collected = run.observe(ctx.root, [package], runs / _AFTER_COLLECT, True)
     failures = dynamic.run_failures(layout, collected, "the split's collection")
     failures += dynamic.compare_collection(mapping, collected["collected"])
     if collected["deselected"]:
         failures.append(f"the split deselects {collected['deselected'][:5]}")
-    ran = run.observe(ctx.root, [package], ctx.into / "after_run.json", False)
+    ran = run.observe(ctx.root, [package], runs / _AFTER_RUN, False)
     failures += dynamic.run_failures(layout, ran, "the split's run")
     failures += dynamic.compare_outcomes(mapping, before, ran["outcomes"])
     for module in (p.module for p in layout.plan.parts):
         target = f"{package}/{module}.py"
-        alone = run.observe(ctx.root, [target], ctx.into / f"alone_{module}.json", False)
+        alone = run.observe(ctx.root, [target], runs / f"alone_{module}.json", False)
         failures += dynamic.run_failures(layout, alone, f"{module} alone", module)
         scope = {old for old, new in mapping.items() if new.startswith(target + "::")}
         failures += [f"alone: {f}" for f in
@@ -422,53 +443,57 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     (:func:`_write_set`): fewer is an apply killed part-way (``SIGKILL``; the coordinator's
     ruling on 3B-2's signal fork, (d)), so it is never proved, and more is a change beside
     the split, which no arm is judging (REVISED (B)).  The same is judged again after every
-    arm ran, before the block is printed."""
-    meta = ctx.meta()
-    _held_to(ctx, meta, "a split is proved where it was recorded, before it is committed")
-    layout = ctx.layout(ctx.into / _SOURCE)
-    written = _write_set(ctx, layout, meta)
+    arm ran, before the block is printed.  Once those refusals pass, every file the prove
+    writes goes into a directory made for it (:func:`_run_directory`), which its block
+    names."""
+    ctx = ctx.bound()
+    _held_to(ctx, "a split is proved where it was recorded, before it is committed")
+    layout = ctx.layout(ctx.held(_SOURCE))
+    written = _write_set(ctx, layout)
     _written_alone(ctx, written)
+    runs = _run_directory(ctx, "prove")
     recorded = _record_verdict(ctx, layout)
     failures, origins = _static_arms(ctx, layout)
     failures = [f"record: {f}" for f in recorded[0]] + failures
     mapping = read_json(idmap)
     if mapping != dynamic.id_map(layout, ctx.read(_BEFORE_COLLECT)["collected"]):
         failures.append(f"{idmap} is not the map this plan produces")
-    arms, seen = _run_arms(ctx, layout, mapping)
+    arms, seen = _run_arms(ctx, layout, mapping, runs)
     failures += arms
     seen["fixtures"] = recorded[1]
-    arms, after_pylint = _pylint_arms(ctx, layout, idmap, origins, seen)
+    arms, after_pylint = _pylint_arms(ctx, layout, runs, origins, seen)
     failures += arms
     arms, named = _importer_arm(ctx)
     failures += arms
     arms, gate_line = _gate_arm(ctx)
     failures += arms
     hits = dynamic.classify(ctx.root, run.census(ctx.root, layout.plan), origins)
-    _unmoved(ctx, (meta["head"], meta["environment"], written), "no block is printed")
+    _unmoved(ctx, (ctx.meta["head"], ctx.meta["environment"], written), "no block is printed")
     if not failures:
-        print("\n".join(_report_moves(ctx, layout, idmap, seen)
+        print("\n".join(_report_moves(ctx, layout, idmap, runs, seen)
                         + _report_lint(ctx, after_pylint, named)
-                        + _report_duplicates(seen)
+                        + _report_duplicates(ctx, seen)
                         + _report_pointers(gate_line, hits)))
     return failures
 
 
-def _pylint_arms(ctx: Context, layout: Layout, idmap: Path, origins: dict, seen: dict
+def _pylint_arms(ctx: Context, layout: Layout, runs: Path, origins: dict, seen: dict
                  ) -> tuple[list[str], list[dict]]:
     """Lint the parts in one run: the origin arm's and the duplicate-code arm's failures, and
-    the parts' messages."""
+    the parts' messages (``runs``, this prove's directory, is where the duplicate-code arm
+    lists what it found)."""
     files = sorted(str(p.relative_to(ctx.root)) for p in (ctx.root / layout.plan.package).glob(
         "*.py"))
     after_pylint = run.pylint_messages(ctx.root, files)
     failures = [f"pylint: {f}" for f in dynamic.compare_pylint(
         ctx.read(_BEFORE_PYLINT), after_pylint, origins, import_block(layout))]
-    return failures + _duplicate_arm(ctx, layout, idmap, after_pylint, seen), after_pylint
+    return failures + _duplicate_arm(ctx, layout, runs, after_pylint, seen), after_pylint
 
 
 def _importer_arm(ctx: Context) -> tuple[list[str], list[str]]:
     """Judge the re-pointed importers' pylint messages by origin: the failures, and the
     messages on their re-pointed imports, named for the proof block."""
-    recorded = ctx.read(_META)["importers"]
+    recorded = ctx.meta["importers"]
     if not recorded:
         return [], []
     repointed, unborne = importer_lines(ctx.root, recorded)
@@ -485,13 +510,14 @@ def _gate_arm(ctx: Context) -> tuple[list[str], str]:
     return ([f"plan gate: {gate_line}"] if gate else []), gate_line
 
 
-def _duplicate_arm(ctx: Context, layout: Layout, idmap: Path, after_pylint: list[dict],
+def _duplicate_arm(ctx: Context, layout: Layout, runs: Path, after_pylint: list[dict],
                    seen: dict) -> list[str]:
-    """Judge every duplicate-code pair between the parts; list the revealed ones beside the
-    id map (``<stem>.r0801.txt``) and return a failure for each created one."""
+    """Judge every duplicate-code pair between the parts; list the revealed ones in ``runs``,
+    this prove's directory (``<stem>.r0801.txt``), and return a failure for each created
+    one."""
     duplicates = similar.sort_pairs(layout, ctx.root, ctx.rules(), after_pylint,
-                                    read_text(ctx.into / _SOURCE))
-    revealed = idmap.with_name(f"{ctx.plan.stem}.r0801.txt")
+                                    read_text(ctx.held(_SOURCE)))
+    revealed = runs / f"{ctx.plan.stem}.r0801.txt"
     revealed.write_text("".join(
         f"{a} ~ {b}  (source lines {sa[0] + 1}-{sa[1]} ~ {sb[0] + 1}-{sb[1]})\n"
         for a, b, sa, sb in duplicates.revealed), encoding="utf-8")
@@ -500,9 +526,14 @@ def _duplicate_arm(ctx: Context, layout: Layout, idmap: Path, after_pylint: list
             for a, b, why in duplicates.created]
 
 
-def _report_moves(ctx: Context, layout: Layout, idmap: Path, seen: dict) -> list[str]:
-    """The proof block's head: the source, the files, identity, collection and outcomes."""
-    meta = ctx.read(_META)
+def _report_moves(ctx: Context, layout: Layout, idmap: Path, runs: Path, seen: dict
+                  ) -> list[str]:
+    """The proof block's head: the source, the evidence, the files, identity, collection and
+    outcomes.  The evidence is the record's run directory, the one its token names, and
+    ``runs``, this prove's, each relative to ``--into``: one record may have several proves
+    beside it, and a commit body quotes the observations of one (the coordinator's ruling on
+    3C-2's prove fork, (b), 2026-10-16)."""
+    meta = ctx.meta
     package = ctx.root / layout.plan.package
     sizes = ", ".join(f"{p.name} {read_text(p).count(chr(10))}"
                       for p in sorted(package.glob("*.py")))
@@ -510,6 +541,7 @@ def _report_moves(ctx: Context, layout: Layout, idmap: Path, seen: dict) -> list
     return [
         f"Proof (python -m tools.split.split prove, plan {ctx.plan.stem}.plan.json):",
         f"- source {meta['source']} at {meta['head'][:9]}, sha256 {meta['sha256'][:16]}",
+        f"- evidence, in --into: the record's run {meta['run']}, this prove's {runs.name}",
         f"- files (lines): {sizes}; every one under the line budget",
         f"- identity: {counts['whole_nodes']} whole nodes and {counts['split_members']} "
         "split-class members, each verbatim line for line (leading comments included) "
@@ -532,17 +564,18 @@ def _report_lint(ctx: Context, after_pylint: list[dict], named: list[str]) -> li
         f"- pylint: source {dict(sorted(dynamic.pylint_counts(before).items()))}; parts "
         f"{dict(sorted(dynamic.pylint_counts(after_pylint).items()))}; every part message "
         "answered by its origin",
-        f"- importers re-pointed: {sorted(ctx.read(_META)['importers'])}; every other line "
+        f"- importers re-pointed: {sorted(ctx.meta['importers'])}; every other line "
         f"unchanged and holding no new message; on the re-pointed imports: {named}",
     ]
 
 
-def _report_duplicates(seen: dict) -> list[str]:
-    """The proof block's duplicate-code line: every pair between parts, pre-existing."""
+def _report_duplicates(ctx: Context, seen: dict) -> list[str]:
+    """The proof block's duplicate-code line: every pair between parts, pre-existing, and
+    where they are listed, relative to ``--into``."""
     count, path = seen["revealed"]
     return [f"- duplicate-code: {count} R0801 pairs, pre-existing, revealed not created "
             f"(each mapped to two distinct source ranges pylint's own Symilar reports as a "
-            f"pair; listed in {path.name})"]
+            f"pair; listed in {path.relative_to(ctx.into)})"]
 
 
 def _report_pointers(gate_line: str, hits: list[dynamic.Hit]) -> list[str]:

@@ -18,7 +18,6 @@ import hashlib
 import importlib.metadata
 import os
 import re
-import shutil
 import signal
 import stat
 import subprocess
@@ -66,8 +65,14 @@ def observe(root: Path, targets: list[str], out: Path, collect_only: bool) -> di
     """Run ``targets`` through the suite wrapper with the observer loaded and return its
     observation (collect-only runs single-process, so the collection is the run's own).
     The fixture setups every process wrote beside it are left for the one reader that
-    judges them (:func:`merged_setups`, called by ``split._record_verdict``)."""
-    discard(out)
+    judges them (:func:`merged_setups`, called by ``split._record_verdict``).
+
+    ``out`` lies in a directory the calling command made for its run
+    (``split._run_directory``), so no file there is older than the run, and a pytest that
+    outlived an earlier run writes into that run's directory, never this one's (the
+    coordinator's rulings on 3B-2b's condition (c), 2026-10-15, and on 3C-2's prove fork,
+    2026-10-16).  Nothing is deleted before the run: a file deleted first could still be
+    written by such a pytest after the deletion."""
     env = dict(os.environ)
     env[OBSERVE_ENV] = str(out)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (str(root), env.get("PYTHONPATH")) if p)
@@ -131,14 +136,6 @@ def merged_setups(out: Path) -> tuple[list[dict], list[str]]:
     return list(setups.values()), sorted(ran)
 
 
-def discard(out: Path) -> None:
-    """Delete the file ``out`` and, when it is an observation, every process's fixture-setup
-    file beside it, so nothing a previous run wrote is read as this run's."""
-    out.unlink(missing_ok=True)
-    for stale in _setups_files(out):
-        stale.unlink()
-
-
 def _setups_files(out: Path) -> list[Path]:
     """Every process's fixture-setup file beside the observation ``out``
     (:func:`tools.split._observe.setups_path`)."""
@@ -154,14 +151,6 @@ def pylint_messages(root: Path, paths: list[str]) -> list[dict]:
         raise RunError(f"pylint did not lint {paths} (exit {proc.returncode}): "
                        f"{shown(proc.stderr).strip()[-500:]}")
     return load_json(decode(proc.stdout, "pylint's output") or "[]", "pylint's output")
-
-
-def unstartable(root: Path) -> list[str]:
-    """Each program ``record`` starts that cannot be started: the suite wrapper when it is no
-    executable file under ``root``, pylint when no ``PATH`` entry holds it."""
-    wrapper = root / WRAPPER
-    return ([WRAPPER] if not (wrapper.is_file() and os.access(wrapper, os.X_OK)) else []) + (
-        [PYLINT] if shutil.which(PYLINT) is None else [])
 
 
 def differences(root: Path) -> set[str]:
