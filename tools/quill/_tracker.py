@@ -83,7 +83,8 @@ CLAIM_PREFIX = "refs/claims/"
 #: the ~20 seconds L1 measured, so a slow read is waited out and a stuck one
 #: is reported rather than waited on forever.
 BOARD_WAIT_SECONDS = 60
-_POLL_SECONDS = 5
+#: How often a board that lags a write is read again.
+POLL_SECONDS = 5
 #: A connection GitHub caps per card (a parent holds at most 100 sub-issues).
 _PAGE = 100
 #: GitHub's issue search serves at most this many results of one query, whatever its
@@ -480,6 +481,23 @@ def board_of(github: GitHub, place: Place) -> str:
     return board_id
 
 
+def read_until(read: Callable[[], list[tuple[int, str]]],
+               holds: Callable[[list[tuple[int, str]]], bool],
+               sleep: Callable[[float], None]) -> tuple[list[tuple[int, str]], bool]:
+    """Read the board (``read``, :meth:`Board.order`) every :data:`POLL_SECONDS` until a read
+    of it ``holds``, for at most :data:`BOARD_WAIT_SECONDS`: the board's lag waited out in
+    one place.  The last read, and whether it holds."""
+    waited = 0
+    while True:
+        order = read()
+        if holds(order):
+            return order, True
+        if waited >= BOARD_WAIT_SECONDS:
+            return order, False
+        sleep(POLL_SECONDS)
+        waited += POLL_SECONDS
+
+
 class Board:
     """``place``'s board: the steps and questions in the developer's drag order (R-BAL177).
 
@@ -532,18 +550,14 @@ class Board:
 
     def shows(self, item: str, after: str | None) -> bool:
         """Read the board until ``item`` sits right after ``after`` (first when None),
-        for at most :data:`BOARD_WAIT_SECONDS`."""
-        waited = 0
-        while True:
-            items = [item_id for _, item_id in self.order()]
-            if item in items:
-                index = items.index(item)
-                if (after is None and index == 0) or (index and items[index - 1] == after):
-                    return True
-            if waited >= BOARD_WAIT_SECONDS:
+        for at most :data:`BOARD_WAIT_SECONDS` (:func:`read_until`)."""
+        def placed(order: list[tuple[int, str]]) -> bool:
+            items = [item_id for _, item_id in order]
+            if item not in items:
                 return False
-            self._sleep(_POLL_SECONDS)
-            waited += _POLL_SECONDS
+            index = items.index(item)
+            return (after is None and index == 0) or bool(index and items[index - 1] == after)
+        return read_until(self.order, placed, self._sleep)[1]
 
 
 class Tracker:  # pylint: disable=too-many-public-methods

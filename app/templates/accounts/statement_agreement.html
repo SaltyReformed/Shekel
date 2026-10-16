@@ -19,6 +19,13 @@
    rows moved, and what a balance correction moved, and the DIFFERENCE column
    is the first two subtracted.
 
+   EACH SIDE SHOWS ONLY WHAT IT KNOWS (plan step balance:X-f3c-2b-2c, rulings
+   R-BAL286 and R-BAL291).  A figure a side does not know arrives as None and
+   reads "--" or a label, never $0.00: the books state a balance from the close
+   of their opening day and hold movement only after it, and the bank's
+   movement is known only inside an imported statement.  A row is counted, and
+   can be highlighted, only where both movements are known (row.compared).
+
    Context (accounts.statement_agreement): account, agreement (BankAgreement or
    None), evidence_copy. #}
 
@@ -192,7 +199,7 @@
     {% if agreement.constant_offset is not none and agreement.constant_offset != 0 %}
     <p class="mb-0 small text-muted">
       <span class="badge text-bg-warning">the offset is constant</span>
-      Every compared day is out by exactly
+      Every day here that your books state a balance for is out by exactly
       <span class="font-mono">{{ money(agreement.constant_offset) }}</span>.
       That is the signature of a wrong starting figure rather than of anything
       in your records: an anchor is one number, so an error in it shifts every
@@ -221,9 +228,13 @@
       </thead>
       <tbody>
         {% for row in agreement.days %}
-        <tr {% if row.in_records and not row.agrees %}class="table-warning"{% endif %}>
+        {# None-safe: an unknown figure is None, and in Jinja `None != 0` is
+           true, so each side is tested for a figure before its value. #}
+        {% set described = (row.bank_lines is not none and row.bank_lines != 0)
+                           or (row.recorded is not none and row.recorded != 0) %}
+        <tr {% if row.compared and not row.agrees %}class="table-warning"{% endif %}>
           <td class="text-nowrap font-mono small">
-            {% if row.bank_lines != 0 or row.recorded != 0 %}
+            {% if described %}
             {# The drill-down, offered on any day either record describes --
                NOT only the disagreeing ones.  Gating it on `not row.agrees`
                made the 83 days of bank movement against no app records
@@ -243,38 +254,48 @@
             {{ row.day }}
             {% endif %}
           </td>
-          {% if row.in_records %}
-          <td class="text-end font-mono small">{{ money(row.bank_lines) }}</td>
+          {# A day no import's window covers: nothing the bank said reaches
+             it, so its movement is unknown rather than $0.00, and the row
+             is shown and never counted (finding BAL-650). #}
+          <td class="text-end font-mono small">
+            {% if row.bank_lines is none %}<span class="text-muted">no statement imported</span>
+            {% else %}{{ money(row.bank_lines) }}{% endif %}
+          </td>
+          {% if row.recorded is none %}
+          {# On or before the day this account's books opened, so whatever the
+             bank moved is already inside the opening balance (ruling R-HG).
+             Shown because hiding a day the bank describes would be the report
+             deciding what may be seen, and excluded from every total because
+             it is finding N-314 and not a disagreement this page can act on.
+             The opening day itself STATES a balance (its close, ruling
+             R-BAL286), so its balance columns are compared; the days before
+             it state none.  Which of the two a row is, is read off the
+             figures the service already decided, never a date compared
+             here. #}
+          <td colspan="3" class="small text-muted">
+            {% if row.app_balance is none %}before your books open{% if loop.first %}
+            (your books open on {{ agreement.books_opened_on }}){% endif %}
+            {% else %}inside your opening balance{% endif %}
+          </td>
+          {% else %}
           <td class="text-end font-mono small">{{ money(row.recorded) }}</td>
-          <td class="text-end font-mono small {% if not row.agrees %}fw-bold{% endif %}">
-            {% if row.agrees %}<span class="text-muted">--</span>
-            {% else %}{{ money(row.residue) }}{% endif %}
+          <td class="text-end font-mono small {% if row.compared and not row.agrees %}fw-bold{% endif %}">
+            {% if row.compared and not row.agrees %}{{ money(row.residue) }}
+            {% else %}<span class="text-muted">--</span>{% endif %}
           </td>
           <td class="text-end font-mono small">
             {% if row.asserted != 0 %}{{ money(row.asserted) }}
             {% else %}<span class="text-muted">--</span>{% endif %}
-          </td>
-          {% else %}
-          {# Before this account's records begin.  Shown because hiding a day
-             the bank describes would be the report deciding what may be seen,
-             and excluded from every total because it is finding N-314 -- owned
-             by the balance arc's cutover -- and not a disagreement this page
-             can act on. #}
-          <td class="text-end font-mono small">{{ money(row.bank_lines) }}</td>
-          <td colspan="3" class="small text-muted">
-            {# Two different facts, and "before your records begin" is false of
-               the second: an account with NO records has no beginning to be
-               before. #}
-            {% if agreement.records_begin is none %}this account has no records at all
-            {% else %}before your records begin{% if loop.first %}
-            ({{ agreement.records_begin }}){% endif %}{% endif %}
           </td>
           {% endif %}
           <td class="text-end font-mono small">
             {% if row.bank_balance is none %}<span class="text-muted">--</span>
             {% else %}{{ money(row.bank_balance) }}{% endif %}
           </td>
-          <td class="text-end font-mono small">{{ money(row.app_balance) }}</td>
+          <td class="text-end font-mono small">
+            {% if row.app_balance is none %}<span class="text-muted">--</span>
+            {% else %}{{ money(row.app_balance) }}{% endif %}
+          </td>
           {# The two balances' difference, GIVEN rather than left to the eye.
              It is not the verdict -- `agrees` is decided on the movement
              residue, because a same-day true-up can cancel a real error to
@@ -288,7 +309,7 @@
         {# The drill-down's landing row, emitted ONLY where a button can fill
            it: an empty <tr> on every one of 232 days is markup nothing can
            ever target. #}
-        {% if row.bank_lines != 0 or row.recorded != 0 %}
+        {% if described %}
         <tr id="agreement-day-{{ loop.index }}"></tr>
         {% endif %}
         {% endfor %}

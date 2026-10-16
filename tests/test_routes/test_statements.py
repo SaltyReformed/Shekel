@@ -1873,7 +1873,7 @@ class TestTheDeletePost:
         # somewhere on the page.  TestConfig sets `WTF_CSRF_ENABLED = False`, so
         # a form that lost its token passes every functional test here while
         # 400ing in production -- which is why the project asserts the markup
-        # (`test_loan.py`, `test_security_event_banner.py`).  A first version of
+        # (`test_loan/`, `test_security_event_banner.py`).  A first version of
         # this assertion looked for the token anywhere in the body and PASSED
         # with the delete form's token deleted, because the upload form on the
         # same page carries one; measured by planting it 2026-08-20.

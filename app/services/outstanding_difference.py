@@ -93,12 +93,19 @@ class SpanAgreement:
         day_count: How many days the span holds -- ``0`` for an inverted span,
             which is what :attr:`~app.services.balance_at.BooksSpan.is_empty`
             describes.
-        compared: How many of those days the comparison could actually take.
-            Fewer than :attr:`day_count` for a day outside the drawn range
-            (``bank_agreement``'s two-year bound, or past the reader's NOW) and
-            for a day before the app's own records begin, where a zero
-            ``recorded`` means *nothing recorded* rather than *nothing
-            happened* (finding **N-314**).
+        compared: How many of those days the comparison could actually take:
+            drawn days BOTH records cover
+            (:attr:`~app.services.bank_agreement.AgreementDay.compared`, plan
+            step ``balance:X-f3c-2b-2c``, ruling **R-BAL291**).  Fewer than
+            :attr:`day_count` for a day outside the drawn range
+            (``bank_agreement`` draws from the account's first recorded line
+            to its last, never past the reader's NOW and at most two years
+            back), for a day on or before the day the books opened, whose bank
+            lines the opening already holds (finding **N-314**) -- which no day
+            of the books span is, since that span starts the day after -- and
+            for a day inside no import's window, which nothing the bank said
+            reaches (finding **BAL-650**).  So every compared day is an
+            :attr:`imported` one.
         disagreeing: How many of the COMPARED days the two records differ on.
 
             *A signed net RESIDUE over those days was published beside this
@@ -112,12 +119,18 @@ class SpanAgreement:
         imported: How many days of the span lie inside the window some import
             DECLARES, merged across overlapping and adjacent imports
             (:func:`app.services.statement_import.covered_runs`, carried on the
-            report as :attr:`~app.services.bank_agreement.BankAgreement.imports`).
+            report as :attr:`~app.services.bank_agreement.BankAgreement.runs`
+            and clipped to the span by
+            :func:`~app.services.bank_agreement.covered_pieces`).
             A day outside every such run is a day the app holds no bank record
             for: the bank may have posted lines there and nothing would show
-            it, so its residue is ``0.00`` and it "agrees" vacuously.  That is
-            the one hole no count over the report's own days can see, because a
-            quiet day inside a run and a quiet day outside one look identical.
+            it.  **It names a REASON, and since plan step
+            balance:X-f3c-2b-2c it guards nothing on its own**: such a day's
+            bank movement is absent rather than ``0.00``, so it is never
+            compared and :attr:`unchecked` refuses it too.  *Until that step it
+            was compared against a ``0.00`` the bank never stated (finding*
+            **BAL-650** *), "agreed" vacuously, and this count was the one term
+            that kept the verdict right.*
 
             **A window is what the import SAYS it read** (ruling **R-BAL71**,
             plan step ``bank_import:X-f6b-1``, which closed finding **N-434**)
@@ -127,9 +140,9 @@ class SpanAgreement:
             either edge of a statement still reads as un-imported, which
             refuses more than it must and never less.  A feed sync will
             declare the window it requested, quiet days included -- and the
-            comparison, which draws only from the first recorded line to the
-            last, would then hold imported days it never compares (finding
-            **bank_import:BI-513**).
+            comparison, which draws only from the account's first recorded
+            line to its last, would then hold imported days it never compares
+            (finding **bank_import:BI-513**).
     """
 
     first_day: date
@@ -158,6 +171,24 @@ class SpanAgreement:
             span lies inside one run of imported days.
         """
         return self.day_count - self.imported
+
+    @property
+    def imported_unchecked(self) -> int:
+        """Return how many days of the span an import covers and nothing compared.
+
+        The other part of :attr:`unchecked`: every compared day is an imported
+        one, so ``unchecked = unimported + imported_unchecked`` and the two
+        never share a day.  What the card states as its own sentence BESIDE
+        :attr:`unimported`, so neither recounts the other's days.
+
+        Returns:
+            ``imported - compared``: imported days the comparison did not take
+            -- days it did not draw (before the account's first recorded line,
+            after its last or after the reader's NOW, or beyond the two-year
+            bound), and days on or before the books opened, whose movement the
+            opening holds (none of which is in the books span).
+        """
+        return self.imported - self.compared
 
     @property
     def shortfall(self) -> "StretchKind | None":
@@ -190,26 +221,38 @@ class SpanAgreement:
     def reconciles(self) -> bool:
         """Return whether the bank's record accounts for EVERY day of the span.
 
-        Four conditions, and each is a distinct way the claim could be empty:
-        the span holds a day at all; the bank's own imports cover every one of
-        them (:attr:`unimported` is zero); the comparison took every one
+        Four conditions, each a distinct way the claim could be empty: the
+        span holds a day at all; the bank's own imports cover every one of them
+        (:attr:`unimported` is zero); the comparison took every one
         (:attr:`unchecked` is zero); and none of the compared days disagreed.
-        The last three are :attr:`shortfall`'s, stated there once.
+        The last three are :attr:`shortfall`'s, stated there once.  The
+        second is implied by the third (below) and is kept for what it
+        SAYS: :attr:`shortfall` names a day no import covers as
+        :attr:`StretchKind.NO_STATEMENT`, the act that day calls for.
 
         **A vacuous truth is not reconciliation.**  An empty span satisfies "no
         day disagrees" for free, and so does a span of days nobody imported --
         which is exactly the shape that would let an owner accept a difference
         over months nothing has ever read.
 
-        **The two zero-counts are independent and neither implies the other,
-        and they OVERLAP rather than partition.**  A day inside an imported run
-        but before the app's own records begin is IMPORTED and not COMPARED
-        (finding **N-314**); a day the report drew, sitting between two
-        imports' windows, is COMPARED and not IMPORTED; a day before every
-        window is NEITHER, and is counted by both.  A surface adding
-        :attr:`unchecked` to :attr:`unimported` would therefore double-count,
-        which is why the card states each as its own sentence about the whole
-        span rather than as parts of a total.
+        **:attr:`unchecked` CONTAINS :attr:`unimported`, so its zero implies
+        the other's.**  Every compared day is an imported one (a day inside no import's
+        window has no bank movement to compare, plan step
+        ``balance:X-f3c-2b-2c``, finding **BAL-650**), so :attr:`unchecked` is
+        :attr:`unimported` plus :attr:`imported_unchecked` and the two parts
+        share no day.  An imported day goes uncompared where the report does
+        not draw it -- before the ACCOUNT's first recorded line across every
+        import (finding **bank_import:BI-513**, for a window declared wider
+        than its lines), after its last line or the reader's NOW, or beyond
+        the two-year bound -- or on or before the day the books opened
+        (finding **N-314**), which no day of the books span is.  So
+        :attr:`unimported` names the REASON a day was not compared and no
+        longer guards the verdict alone: ``unchecked == 0`` already forces it
+        to zero.  The card states the two parts as two sentences for that
+        reason, neither recounting the other.  *Until that step the counts
+        OVERLAPPED: a drawn day between two imports was compared against a
+        bank movement of ``0.00`` nobody imported, and only the imported-days
+        term kept such a span from reading as reconciled.*
         A first draft tested the imports' two END DAYS instead, and that term
         was DEAD: ``bank_agreement`` draws only days between the first and last
         recorded line, so ``unchecked == 0`` already implied it and it could
@@ -269,13 +312,15 @@ class StretchKind(Enum):
     #: Inside no import's declared window, so nothing the bank said reaches
     #: it; importing a statement that covers it is what changes it.
     NO_STATEMENT = "no statement yet"
-    #: Inside an imported window, yet the comparison could not take it.  The
-    #: comparison takes a day only from the account's first cash fact onward
-    #: (finding **N-314**'s guard, and finding **balance:BAL-616** where the
-    #: books open before that fact), and only inside the range
-    #: ``bank_agreement`` draws: from the first recorded LINE to the last
-    #: (finding **bank_import:BI-513**), never past the reader's NOW, and at
-    #: most two years back.
+    #: Inside an imported window, yet the comparison could not take it: the
+    #: day lies outside the range ``bank_agreement`` draws -- from the first
+    #: recorded LINE to the last (finding **bank_import:BI-513**), never past
+    #: the reader's NOW, and at most two years back.  *Until plan step
+    #: balance:X-f3c-2b-2c a books day before the account's first cash fact
+    #: was this kind too (finding **balance:BAL-616**); the comparison now
+    #: takes every day after the books open that an import covers, so a drawn
+    #: day of the books span never is -- an imported one is compared, and an
+    #: un-imported one is* :attr:`NO_STATEMENT`.
     NOT_COMPARED = "not compared"
 
 
@@ -283,11 +328,13 @@ class StretchKind(Enum):
 class DisagreeingDay:
     """One day the comparison counts as disagreeing, and what is on it.
 
-    **On a day no statement covers, only the app's side is evidence.**  The
-    comparison reads the bank's movement there as ``0.00`` because nothing
-    was imported, which is an absence rather than the bank saying nothing
-    moved -- so such a day says what the app recorded and that the bank's
-    side is unknown, never that the two records differ.
+    **Always a day BOTH records cover** (plan step ``balance:X-f3c-2b-2c``,
+    ruling **R-BAL291**): a disagreement needs two movements to differ.
+    *Until that step a day no statement covers could be one, because the
+    comparison read the bank's movement there as ``0.00`` (finding*
+    **BAL-650** *); such a day is now never compared, so it is never listed
+    here, and the app's rows on it are reached through the day-by-day
+    comparison page instead.*
 
     Attributes:
         comparison: The day's :class:`~app.services.bank_agreement.AgreementDay`
@@ -321,11 +368,12 @@ class Stretch:
             disagreeing, ascending -- so there are exactly
             ``verdict.disagreeing`` of them, and across the stretches exactly
             as many as the whole span's verdict counts.  Every day of a
-            :attr:`StretchKind.DISAGREES` stretch; and, inside a
-            :attr:`StretchKind.NO_STATEMENT` stretch, a day between two
-            imports on which the app recorded money (no bank line can be
-            listed there: every recorded line lies inside the window of an
-            import that showed it).  Empty for the other kinds.
+            :attr:`StretchKind.DISAGREES` stretch, and empty for the other
+            kinds: a disagreeing day is a compared one, and a compared day
+            lies inside an import's window.  *Until plan step
+            balance:X-f3c-2b-2c a* :attr:`StretchKind.NO_STATEMENT` *stretch
+            listed a day between two imports on which the app recorded money
+            (finding* **BAL-650** *).*
     """
 
     kind: StretchKind
@@ -350,12 +398,14 @@ class DisagreementList:
             disagreeing"): it also asks that the comparison TOOK every day and
             that the span holds one, so a covered day the comparison cannot
             take keeps it false.  The safe direction for a step that moves
-            money.  Once findings **bank_import:BI-513** and
-            **balance:BAL-616** are closed the two coincide for a span that
-            holds a day and lies within ``bank_agreement``'s two-year drawing
-            bound, since a covered day of such a span is then a compared one;
-            an empty span, and covered days beyond the bound, still keep
-            :attr:`~SpanAgreement.reconciles` false.
+            money.  Since plan step balance:X-f3c-2b-2c (findings
+            **balance:BAL-616** and **BAL-650**, rulings **R-BAL285** and
+            **R-BAL291**) a drawn day of the span is compared exactly when an
+            import's window covers it, so once finding **bank_import:BI-513**
+            makes the draw reach every covered day the two coincide for a span
+            that holds a day and lies within ``bank_agreement``'s two-year
+            drawing bound; an empty span, and covered days beyond the bound,
+            still keep :attr:`~SpanAgreement.reconciles` false.
         stretches: The books span cut into back-to-back :class:`Stretch`
             values, ascending -- the first begins on the span's first day,
             each begins the day after the one before it ends, and the last ends
@@ -368,13 +418,15 @@ class DisagreementList:
             reaches back that far.  The opening absorbed them (ruling
             **R-HG**: the books open at the CLOSE of their opening day), so no
             movement is recorded on any of them and none is counted with the
-            span.  The counts are the comparison's own, and they can say what
-            the reconcile has no act for: the comparison takes a day from the
-            account's first cash fact, which for an account created in one
-            step is the opening day itself, so a bank line ON the opening day
-            is counted here as disagreeing although the opening absorbed it
-            (finding **balance:BAL-616**).  A day between two imports in this
-            range counts as un-imported.
+            span.  The counts are the comparison's own, and NONE of these
+            days is compared: the books hold a movement only after they open
+            (:func:`~app.utils.books_boundary.books_hold`), so these days'
+            bank lines are counted as imported days and never as
+            disagreements.
+            *Until plan step balance:X-f3c-2b-2c a bank line ON the opening
+            day was counted here as disagreeing wherever an assertion fell on
+            that day (finding **balance:BAL-616**).*  A day between two
+            imports in this range counts as un-imported.
         after_books: The days after the account's latest balance assertion
             through the last imported day, graded and set apart, or ``None``
             when no import reaches past it.  Outside the span the completion
@@ -612,20 +664,23 @@ def _cut_at_windows(
     Returns:
         ``[(first, last), ...]`` ascending and back to back, covering the
         range, with each part wholly inside one window or wholly outside all
-        of them.
+        of them: the inside parts are
+        :func:`~app.services.bank_agreement.covered_pieces`, the one
+        statement of window membership, and the outside parts the days
+        between them.
     """
-    if last_day < first_day:
-        return []
-    edges = sorted({
-        edge
-        for run in agreement.runs
-        for edge in (run.first_day, run.last_day + _ONE_DAY)
-        if first_day < edge <= last_day
-    })
-    return list(zip(
-        [first_day, *edges],
-        [edge - _ONE_DAY for edge in edges] + [last_day],
-    ))
+    parts = []
+    outside_from = first_day
+    for inside in bank_agreement.covered_pieces(
+        agreement.runs, first_day, last_day,
+    ):
+        if outside_from < inside[0]:
+            parts.append((outside_from, inside[0] - _ONE_DAY))
+        parts.append(inside)
+        outside_from = inside[1] + _ONE_DAY
+    if outside_from <= last_day:
+        parts.append((outside_from, last_day))
+    return parts
 
 
 def _kind_of(verdict: SpanAgreement) -> StretchKind:
@@ -722,11 +777,15 @@ def span_agreement(
     difference's own.
 
     **Days are counted, never re-derived.**  Membership comes from
-    :attr:`~app.services.bank_agreement.AgreementDay.in_records` and
+    :attr:`~app.services.bank_agreement.AgreementDay.compared` and
     disagreement from
     :attr:`~app.services.bank_agreement.AgreementDay.agrees`, both of which are
     the report's own published rules; nothing here re-tests a residue, re-reads
-    a line or issues a query.  So the verdict and the comparison page's own
+    a line or issues a query.  The two counts NOT taken over the report's
+    days, :attr:`~SpanAgreement.day_count` and
+    :attr:`~SpanAgreement.imported`, are arithmetic over the span's ends,
+    because a day the report never drew is still a day of the span and can
+    still lie inside an import's window.  So the verdict and the comparison page's own
     per-day table are two readings of ONE comparison rather than two
     implementations of "does the bank agree".
 
@@ -755,8 +814,10 @@ def span_agreement(
         compared=len(compared),
         disagreeing=len(_disagreeing_among(compared)),
         imported=sum(
-            _days_between(max(start, span.first_day), min(end, span.last_day))
-            for start, end in agreement.imports
+            _days_between(first_day, last_day)
+            for first_day, last_day in bank_agreement.covered_pieces(
+                agreement.runs, span.first_day, span.last_day,
+            )
         ),
     )
 
@@ -786,7 +847,7 @@ def _compared(
     agreement: "bank_agreement.BankAgreement",
     span: "balance_at.BooksSpan",
 ) -> "list[bank_agreement.AgreementDay]":
-    """Return the days of *span* the comparison drew AND the app's records reach.
+    """Return the days of *span* the comparison drew AND both records cover.
 
     Args:
         agreement: The account's comparison.
@@ -794,9 +855,9 @@ def _compared(
 
     Returns:
         The drawn days whose
-        :attr:`~app.services.bank_agreement.AgreementDay.in_records` holds.
+        :attr:`~app.services.bank_agreement.AgreementDay.compared` holds.
     """
-    return [day for day in _drawn(agreement, span) if day.in_records]
+    return [day for day in _drawn(agreement, span) if day.compared]
 
 
 def _disagreeing_among(
@@ -834,9 +895,11 @@ def _days_between(first_day: date, last_day: date) -> int:
 
     Returns:
         The day count, or ``0`` for an INVERTED range -- which is what an empty
-        :class:`~app.services.balance_at.BooksSpan` is, and what the caller
-        above relies on when it intersects a span with an import's run that
-        does not overlap it at all.
+        :class:`~app.services.balance_at.BooksSpan` is, and what
+        :func:`span_agreement`'s ``day_count`` relies on for one.  Its
+        ``imported`` count never passes an inverted range:
+        :func:`~app.services.bank_agreement.covered_pieces` drops a run that
+        does not overlap the span.
     """
     if last_day < first_day:
         return 0

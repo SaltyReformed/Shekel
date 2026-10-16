@@ -76,6 +76,30 @@ class TestTheClassifier:
         """One path outside, an empty set, a look-alike, an absolute or a ``..``: full."""
         assert ci_scope.scope_of(changed) == FULL
 
+
+class TestTheSplitToolNeedsNoScopeEdit:
+    """``tools/split`` (step balance:X-er) was added with no edit to this module, and these
+    are the three facts that make that sound: a change to it runs everything, it is not a
+    test root the registry-only scope skips (it runs in ci.yml step 4b, every scope), and
+    the import census already names the whole ``tools`` package it lives in."""
+
+    @pytest.mark.parametrize("changed", [
+        ["tools/split/split.py"],
+        ["docs/plans/steps.md", "tools/split/_layout.py"],
+    ])
+    def test_a_change_to_it_is_full(self, changed):
+        """It is no registry-only prefix, alone or beside a registry edit."""
+        assert ci_scope.scope_of(changed) == FULL
+
+    def test_it_is_not_a_skipped_test_root(self):
+        """The registry-reader census covers skipped roots; this one is never skipped."""
+        split = Path("tools/split")
+        assert not any(split.is_relative_to(root) for root in ci_scope.SKIPPED_TEST_ROOTS)
+
+    def test_the_import_census_already_names_its_package(self):
+        """A skipped suite importing it would import ``tools``, which the census refuses."""
+        assert Path("tools/split").parts[0] == ci_scope.TOOLS
+
     def test_the_prefixes_themselves_are_a_pure_directory_set(self):
         """The three directories a registry-only change set may touch, sorted."""
         assert [str(p) for p in ci_scope.registry_only_prefixes()] == [
@@ -435,8 +459,8 @@ class TestThisRepositoryHasNoUnexemptedReader:
         assert not ci_scope.imports_of_the_tools(), (
             "a test the registry-only scope SKIPS imports the tools package, which names "
             "registry-only paths without a string the path census can see: move the test "
-            "into the tool's own tests (tools/ci, tools/quill or tools/plan_gate run in "
-            "every scope)"
+            "into the tool's own tests (tools/ci, tools/quill, tools/plan_gate or "
+            "tools/release run in every scope)"
         )
 
     def test_nothing_censused_imports_the_manual_harnesses(self):

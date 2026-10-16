@@ -475,28 +475,35 @@ class TestItCannotDisagreeWithTheBalanceSeriesBesideIt:
                 assert facts[day].balance == balance
 
 
-class TestWhereTheAccountsRecordsBegin:
-    """The fact a reader needs to tell disagreement from absence."""
+class TestTheDayTheAccountsBooksOpen:
+    """The fact a reader needs to tell disagreement from "inside the opening".
 
-    def test_it_is_the_earliest_cash_fact_the_account_has(
+    The series carries the governing opening's ``opened_on`` (plan step
+    balance:X-f3c-2b-2c, ruling **R-BAL285**).  It carried the account's first
+    CASH FACT until then (finding **BAL-616**), which is a different day
+    wherever the books open before the first row or assertion, or an
+    assertion is back-dated below them (finding **N-400**: under books opening
+    Jan 1, one dated Dec 20 started the comparison on Dec 20).  Where the
+    first assertion falls ON the opening day, as the origination assertion
+    does in production, the two are one day, and the comparison's fault there
+    was its ``>=``, which counted that day itself.  It mis-drew its boundary
+    in all three.
+    """
+
+    def test_it_is_the_day_the_books_open_and_NOT_the_first_cash_fact(
         self, app, seed_user, seed_periods, db,
     ):
-        """A settled row BEFORE the opening assertion moves it earlier.
+        """Books restated back past the first row: the two days part.
 
-        The developer's own account is the case: his records begin 2026-03-26
-        with a settled row, one day before the 03-27 assertion, while his bank
-        statement starts 2026-01-02.  Reporting those 83 days as disagreements
-        would be reporting finding N-314 as this arc's defect.
-
-        **The account is OPENED inside the owner's calendar, and its early row
-        sits inside it too** (plan step X-f3c-2c).  This used to take the
-        seeded account's opening and settle ten days before it, which was ten
-        days before the 2026 calendar once the origination stopped being
-        re-homed onto it -- a row dated 2023 filed under a 2026 pay period, the
-        two-year split ``status_seam.reject_settle_day_before_the_schedule``
-        refuses in production.  The shape under test needs only that a settled
-        row precede the account's own first assertion, which an account opened
-        in period 1 gets from a row settled in period 0.
+        The shape finding **BAL-616** turns on.  The account is opened on
+        period 1's first day and its books are restated backward past a row
+        settled in period 0 on 2026-01-05, so the books open on 2026-01-01 --
+        the day before the earliest day a row could be dated, four days
+        before that row -- and the row, not the opening, is the earliest cash
+        fact.  The series must answer the OPENING's day, since every day after
+        it is a day the books claim whether or not a row has been recorded on
+        it yet.  Pinned to the date itself, not to the walk's own opening
+        read a second time, which would grade one producer against itself.
         """
         with app.app_context():
             opened_on = seed_periods[1].start_date
@@ -518,6 +525,9 @@ class TestWhereTheAccountsRecordsBegin:
             )
             db.session.commit()
 
+            governing = cash_ledger.walk_cash_ledger(
+                account.id, get_baseline_scenario(seed_user["user"].id).id,
+            ).opening
             series = balance_at.cash_daily_facts_series(
                 account,
                 BalanceContext.build(seed_user["user"].id),
@@ -525,22 +535,25 @@ class TestWhereTheAccountsRecordsBegin:
                 opened_on,
             )
 
-            assert earlier < opened_on, (
-                "the case is vacuous unless the row really precedes the "
-                "account's own first assertion"
-            )
-            assert series.first_event_on == earlier
+            # The case is vacuous unless the opening really precedes the
+            # first cash fact.  The helper opens the books the day before the
+            # earliest day a row could be dated, which is before the row.
+            assert earlier == date(2026, 1, 5)
+            assert governing.opened_on < earlier
+            assert series.opened_on == date(2026, 1, 1)
 
-    def test_an_INVERTED_range_still_reports_where_records_begin(
+    def test_an_INVERTED_range_still_reports_the_day_the_books_open(
         self, app, seed_user, seed_periods, db,
     ):
-        """The account HAS a first event whether or not a day was asked about.
+        """The account HAS an opening whether or not a day was asked about.
 
-        A range yielding no days is not a statement that the account holds no
-        records, and answering ``None`` there would let a caller conclude one.
+        A range yielding no days is not a statement that the account has no
+        books, and answering anything else there would let a caller conclude
+        one.  The seeded account's books open 2024-01-04, the day before its
+        origination assertion (``tests/conftest.py``).
         """
         with app.app_context():
             series = _series(seed_user, date(2026, 4, 10), date(2026, 4, 1))
 
             assert series.facts == {}
-            assert series.first_event_on is not None
+            assert series.opened_on == date(2024, 1, 4)

@@ -203,6 +203,35 @@ class StepRow:
         """
         return key_list(self.blocked)
 
+    @property
+    def starts_head(self) -> str:
+        """The ``starts`` cell's HEAD: its first ``/``-separated part.
+
+        ``NOW``, ``after #N`` or ``ticks with #N`` on an open row, which
+        :func:`_order.starts_violations` recomputes from the ranks.  Its end is
+        found by POSITION, never by what follows it, and this is the one
+        spelling of that: the gate's readers of the head and X-cx's migration,
+        which quotes the rest (:attr:`starts_stored`), read it here.
+        """
+        return self._starts_split()[0]
+
+    @property
+    def starts_stored(self) -> str:
+        """The ``starts`` cell after its head, verbatim but for the space around its first
+        `` / ``: ``""`` for none, and ``--`` as the cell holds it.
+
+        Its blockers and their prose, every aside and annotation whole -- the
+        STORED part of a cell whose head is derived.  X-cx's migration quotes
+        it in a step card's As filed block, where a quoted head would be a copy
+        of a derived value.
+        """
+        return self._starts_split()[1]
+
+    def _starts_split(self) -> tuple[str, str]:
+        """The ``starts`` cell split after its head, both parts stripped."""
+        head, _, stored = self.blocked.partition(" / ")
+        return head.strip(), stored.strip()
+
 
 @dataclass(frozen=True)
 class RulingRow:

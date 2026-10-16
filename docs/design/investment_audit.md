@@ -450,8 +450,8 @@ the modeled map's post-anchor values come from, so
 Empower 401(k) balance $31,370.87, anchor $31,070.06 -> delta $300.81 = +$119.22 growth + $181.59
 contributed, to the cent.** Chip hides (`None`) when anchored this period or later (no elapsed
 window). The reconciliation identity is pinned by
-`tests/test_services/test_balance_at.py::TestInvestmentGrowthSinceAnchor` (+ seam-parity and None
-cases) and the render by two route tests.
+`tests/test_services/test_balance_at/test_investment.py::TestInvestmentGrowthSinceAnchor` (+
+seam-parity and None cases) and the render by two route tests.
 
 **Architectural note -- the kernel split this required.** Reconciling to the cent requires the
 decomposition to read the kernel's exact forward projection (the dashboard's own inputs use a

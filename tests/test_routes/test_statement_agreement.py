@@ -33,7 +33,6 @@ from app.models.ref import AccountType
 from app.models.user import User, UserSettings
 from app.services import auth_service, cash_ledger
 from app.services.scenario_resolver import get_baseline_scenario
-from app.services.scenario_resolver import get_baseline_scenario
 from tests._test_helpers import (
     append_balance_assertion,
     create_account_of_type,
@@ -42,6 +41,7 @@ from tests._test_helpers import (
     cover_bare_settled_row,
 )
 from tests.test_services.test_cash_fold import _instant
+from tests.test_services.test_outstanding_difference import _settle
 from tests.test_services.test_statement_import.test_anchor import _seed_import
 
 _FILE_CHAIN = StatementBalanceEvidenceEnum.FILE_CHAIN
@@ -100,6 +100,11 @@ def _row_for(body, day):
     on a ``title`` attribute rather than on the thing it named, so every
     assertion below is scoped to the row it is about.
 
+    **Keyed on the row's FIRST cell, the Day column**, not on the day
+    appearing anywhere in it: a row before the books open names the day they
+    open ("your books open on ..."), so a membership test over the whole row
+    returned THAT row for the opening day's own.
+
     Args:
         body: The decoded response body.
         day: The civil day whose row to return.
@@ -109,7 +114,8 @@ def _row_for(body, day):
     """
     rows = re.findall(r"<tr\b.*?</tr>", body, re.S)
     for row in rows:
-        if str(day) in row:
+        first_cell = re.search(r"<td\b.*?</td>", row, re.S)
+        if first_cell is not None and str(day) in first_cell.group(0):
             return row
     raise AssertionError(f"no table row rendered for {day}")
 
@@ -122,9 +128,10 @@ def _money_cells(row):
 def _bank_balance_cell(row):
     """Return the rendered ``<td>`` of the Bank balance column, by position.
 
-    The third cell from the end in BOTH row shapes: a compared day renders
-    eight cells and a day before the records begin renders six (its middle
-    three are one ``colspan``), and the last three are the bank balance, the
+    The third cell from the end in BOTH row shapes: a day the books hold a
+    movement for renders eight cells, and one on or before the day they open
+    renders six (its middle three are one ``colspan``), and the last three
+    are the bank balance, the
     app's balance and the difference either way.  By position rather than by
     searching the row for a figure, because the difference cell can carry the
     same figure as the bank cell (books 1,000.00 against a bank 500.00 is
@@ -227,7 +234,15 @@ class TestThePageReportsForItsOwner:
     def test_it_names_the_day_the_records_begin(
         self, auth_client, db, seed_user, seed_periods,
     ):
-        """Finding N-314 labelled rather than counted 83 times."""
+        """Finding N-314 labelled rather than counted 83 times.
+
+        The day lies before the books open, so they state neither a movement
+        nor a balance for it (rulings **R-BAL286**, **R-BAL291**): the row is
+        labelled, and its "Your balance" and "Apart" cells read ``--`` rather
+        than the opening level read flat backwards.  *The label read "before
+        your records begin" until plan step balance:X-f3c-2b-2c, which gave
+        the opening day a label of its own.*
+        """
         walk = cash_ledger.walk_cash_ledger(
             seed_user["account"].id,
             get_baseline_scenario(seed_user["user"].id).id,
@@ -242,9 +257,70 @@ class TestThePageReportsForItsOwner:
 
         response = auth_client.get(_url(seed_user["account"].id))
 
-        assert b"before your records begin" in response.data
-        # The bank's own line is SHOWN, never hidden.
-        assert b"-$77.00" in response.data
+        row = _row_for(response.data.decode(), before)
+        assert "before your books open" in row
+        # Named by the day the books open -- the boundary itself (ruling
+        # R-HG) -- rather than by the account's first entry.
+        assert "(your books open on 2024-01-04)" in row
+        # The bank's own line and balance are SHOWN, never hidden; the books
+        # state no balance, so the only money on the row is the bank's two
+        # figures: its -77.00 line and the 1,000.00 it states that day.
+        assert _money_cells(row) == ["-$77.00", "$1,000.00"]
+
+    def test_each_row_says_WHICH_side_does_not_know_the_day(
+        self, auth_client, db, seed_user, seed_periods,
+    ):
+        """Three labels, one per absence (rulings R-BAL286, R-BAL291, finding BAL-650).
+
+        Books open Jan 1 (``create_account_of_type`` restates them back), so
+        Dec 30 lies BEFORE them, Jan 1 is the opening day itself, and Jan 10
+        lies between two imports with a ``30.00`` purchase entered on it:
+
+        * Dec 30: "before your books open", and no books balance.
+        * Jan 1: its movement is "inside your opening balance", while its
+          balance IS the books' -- the ``$500.00`` opening is on the row.
+        * Jan 10: "no statement imported" for the bank's movement, the books'
+          ``-$30.00`` shown beside it, and the row NOT flagged, because a day
+          only one record covers is never counted as disagreeing.
+        """
+        late = create_account_of_type(
+            seed_user, db.session, "Checking", "Late Checking",
+            anchor_balance=Decimal("500.00"),
+        )
+        _seed_import(
+            db, late,
+            lines=[(date(2025, 12, 30), "-20.00"),
+                   (date(2026, 1, 1), "-25.00"),
+                   (date(2026, 1, 2), "-40.00")],
+            file_name="a.csv",
+        )
+        _seed_import(
+            db, late, lines=[(date(2026, 1, 20), "-15.00")],
+            file_name="b.csv",
+        )
+        _settle(seed_user, db, seed_periods[0], "30.00", date(2026, 1, 10),
+                account=late)
+        _settle(seed_user, db, seed_periods[1], "15.00", date(2026, 1, 20),
+                account=late)
+        db.session.commit()
+
+        body = auth_client.get(_url(late.id)).data.decode()
+
+        before = _row_for(body, date(2025, 12, 30))
+        assert "before your books open" in before
+        assert "(your books open on 2026-01-01)" in before
+        # Only the bank's line: the books state no balance before they open.
+        assert _money_cells(before) == ["-$20.00"]
+        opening = _row_for(body, date(2026, 1, 1))
+        assert "inside your opening balance" in opening
+        # The bank's line, then the books' $500.00 opening as Your balance.
+        assert _money_cells(opening) == ["-$25.00", "$500.00"]
+        gap_day = _row_for(body, date(2026, 1, 10))
+        assert "no statement imported" in gap_day
+        assert _money_cells(gap_day) == ["-$30.00", "$470.00"]
+        assert "table-warning" not in gap_day
+        # The day both records cover and disagree on IS flagged.
+        assert "table-warning" in _row_for(body, date(2026, 1, 2))
 
     def test_an_account_whose_files_state_no_balance_still_reports_movement(
         self, auth_client, db, seed_user, seed_periods,
@@ -574,7 +650,8 @@ class TestThePageListsEachRunWithItsAnchorAndCheckpoints:
             r'<span class="font-mono">\$975\.00</span> for that day',
             guessed,
         )
-        agreeing = body[body.index("(agreeing.csv)"):body.index("</p>", body.index("(agreeing.csv)"))]
+        start = body.index("(agreeing.csv)")
+        agreeing = body[start:body.index("</p>", start)]
         assert ">agrees</span>" in agreeing
         assert "off by" not in agreeing
         # The checkpoint moves nothing: 03-03's bank balance is the walk's.

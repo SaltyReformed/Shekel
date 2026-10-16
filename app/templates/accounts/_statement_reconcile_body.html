@@ -212,7 +212,15 @@
   {# FOUR FIGURES, ALL THE SERVICE'S.  The three money figures are
      all-or-nothing and travel with the day they are about: an account with no
      anchored import has a bank side nothing places, and printing two of three
-     would invite a subtraction the app cannot perform. #}
+     would invite a subtraction the app cannot perform.
+
+     "NO DAY YET" IS EVERY SHAPE WITH NO DRAWN DAY CARRYING BOTH BALANCES,
+     and its note must be true of each (ruling R-BAL286).  Among them:
+     nothing imported, no statement placing a balance, or a statement
+     placing one only on days before the books open, or only on days the
+     comparison does not draw (after today, or past its two-year bound).  So
+     the note names what is missing, a day both records state a balance
+     for, rather than claiming the bank's balance is placed nowhere. #}
   <div class="rec-hero">
     {% if page.hero.day %}
     <div class="rec-figure">
@@ -232,9 +240,10 @@
       <div class="rec-caption">BANK AND BOOKS</div>
       <div class="rec-number rec-number-absent">no day yet</div>
       <div class="rec-note small text-body-secondary">
-        Nothing places this account's bank balance on a day, so the two
-        records cannot be compared. Import a statement that carries a running
-        balance, or set this account's anchor.
+        No day has both a bank balance and a balance from your books, so the
+        two records cannot be compared yet. Your books state one from the day
+        they open; import a statement that carries a balance for a day from
+        then on, or set this account's anchor.
       </div>
     </div>
     {% endif %}
@@ -250,8 +259,8 @@
        size of its file, and the two figures beside each other are comparable
        because both count lines of that same import.
 
-       ABSENT for an account nobody has imported into, which is the same state
-       the hero's own "no day yet" arm is drawn for.
+       ABSENT for an account nobody has imported into, which is one of the
+       states the hero's own "no day yet" arm is drawn for.
 
        THE INSTANT IS RENDERED IN THE DISPLAY TIMEZONE HERE, never truncated
        in the service: an import performed at 21:00 Eastern is stored on the
@@ -285,12 +294,15 @@
     Done is $0.00 off and 0 to explain.
     {% if page.hero.unpriced_after %}
     {# NOT IMPLIED BY THE OTHER THREE, and stated because of that: the
-       comparison walks BACK to the last day both records speak for, so an
-       account whose statements stop three weeks before its records do would
-       otherwise report a perfectly balanced comparison three weeks old. #}
+       comparison walks BACK to the last day both records speak for, so drawn
+       days after it that the bank cannot price (a later import placing no
+       balance, or the gap before one) would otherwise sit behind a balanced
+       figure.  Drawn days end at the last statement line, so records AFTER
+       every statement are not counted here: statements stopping three weeks
+       before the records do read as current (finding BAL-651). #}
     This comparison is priced through {{ page.hero.day }};
-    {{ page.hero.unpriced_after }} later day(s) your records reach cannot be
-    priced from your bank's own figures.
+    {{ page.hero.unpriced_after }} later day(s) your books state a balance for
+    cannot be priced from your bank's own figures.
     {% endif %}
     {% endif %}
   </p>

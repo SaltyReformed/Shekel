@@ -78,7 +78,7 @@ from tools.quill._command import (
     _read,
     _shipped,
     _unfinished,
-    _with_closure,
+    with_closure,
 )
 from tools.quill._filing import cmd_file
 from tools.quill._github import GitHubError
@@ -120,6 +120,9 @@ from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, FILING, MOVES_MONEY
 
 #: Branches a claim may never name: nothing is built on them directly.
 _SHARED_BRANCHES = ("dev", "main")
+#: How a command reaches the plan's tracker: quill's App, narrowed to its repository.  The
+#: release tool's command line reaches it the same way (``tools/release/release.py``).
+CONNECT = partial(Tracker.connect, PLAN)
 _CARD_REF = re.compile(r"(?:plan#|#)?([1-9][0-9]*)")
 
 
@@ -154,7 +157,7 @@ def cmd_next(args, tracker: Tracker, root: Path) -> int:
     """The first open step in the board's order that is unclaimed, unshipped and unblocked;
     then what it cannot offer that a person must act on."""
     _, shipped, _ = _shipped(root)
-    cards = _with_closure(tracker, {**tracker.open_cards(), **_unfinished(tracker)})
+    cards = with_closure(tracker, {**tracker.open_cards(), **_unfinished(tracker)})
     claims = tracker.claims()
     order = [number for number, _ in tracker.board.order()]
     answer = next_step(order, cards, shipped, claims, args.arc)
@@ -181,7 +184,7 @@ def cmd_claim(args, tracker: Tracker, root: Path) -> int:
     """Claim a card for the branch that will ship it."""
     card = _one(tracker, args.card)
     _, shipped, _ = _shipped(root)
-    cards = _with_closure(tracker, {card.number: card})
+    cards = with_closure(tracker, {card.number: card})
     if not card.is_open or not is_work(card, cards, shipped):
         raise Refused(f"{_label(card)} is not work a branch ships (open step or finding, "
                       "not a container)")
@@ -479,7 +482,7 @@ def cmd_move(args, tracker: Tracker, root: Path) -> int:
     """Put a step or question at a place in the board's order."""
     card = _one(tracker, args.card)
     _, shipped, _ = _shipped(root)
-    cards = _with_closure(tracker, {card.number: card})
+    cards = with_closure(tracker, {card.number: card})
     if card.kind not in ON_BOARD or not card.is_open or is_container(card, cards, shipped):
         raise Refused(f"the board holds open steps and questions only, and no step split into "
                       f"leaves (R-BAL177, R-BAL179): {_label(card)}")
@@ -533,7 +536,7 @@ def _unsplit(tracker: Tracker, undo: Unsplit, cards: dict[int, Card],
     printed as what would be written and not made: the split step put back on the board,
     and moved into a leaf's place, when it is left a plain step; then each leaf unlinked.
     ``cards`` holds the split step and every card linked under it
-    (:func:`_with_closure`); ``quill drop`` and ``quill sync`` both take a split apart
+    (:func:`with_closure`); ``quill drop`` and ``quill sync`` both take a split apart
     here."""
     split, would = cards[undo.step], "would be " if dry_run else ""
     item = split.board_item
@@ -607,7 +610,7 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
     """
     card = _one(tracker, args.card)
     _, shipped, _ = _shipped(root)
-    cards = _with_closure(tracker, {card.number: card})
+    cards = with_closure(tracker, {card.number: card})
     if not is_container(card, cards, shipped):
         if not card.is_open:
             raise Refused(f"{_label(card)} is already closed")
@@ -689,7 +692,7 @@ def _sync_reads(tracker: Tracker, found: trailers.History) -> tuple[dict[int, Ca
     Every card a trailer names, and every claimed card, is read by its number too --
     the claimed ones so that a claim on a split step is reported whatever that step's
     state (:func:`_state.sync_plan`) -- and then every card a decision over them reads
-    (:func:`_with_closure`).
+    (:func:`with_closure`).
     """
     named = {trailer.card for trailer in found.trailers}
     listed = {**tracker.open_cards(), **tracker.marked()}
@@ -701,7 +704,7 @@ def _sync_reads(tracker: Tracker, found: trailers.History) -> tuple[dict[int, Ca
                            "moved since): run sync again")
     history = [f"a trailer on {trailers.DEV} names plan#{number}, which does not exist"
                for number in sorted(named - set(cards))]
-    return _with_closure(tracker, cards), claims, history
+    return with_closure(tracker, cards), claims, history
 
 
 def cmd_sync(args, tracker: Tracker, root: Path) -> int:
@@ -896,8 +899,7 @@ COMMANDS: dict[str, Callable[..., int]] = {
 }
 
 
-def main(argv: list[str] | None = None,
-         connect: Callable[[], Tracker] = partial(Tracker.connect, PLAN),
+def main(argv: list[str] | None = None, connect: Callable[[], Tracker] = CONNECT,
          root: Path | None = None) -> int:
     """Run one command; its exit status."""
     args = parser().parse_args(argv)

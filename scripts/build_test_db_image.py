@@ -282,8 +282,10 @@ def migration_head() -> str:
     """Return the head revision of the migration chain.
 
     Computed from the files rather than by importing alembic, so it costs no
-    app import and works against a bare checkout.  The head is the revision
-    that no other revision names as its ``down_revision``.
+    app import and works against a bare checkout; each file is read by
+    :mod:`scripts.migration_chain`, the one parser of a revision id, imported
+    here so ``--print-tag`` stays stdlib-only.  The head is the revision that
+    no other revision names as its ``down_revision``.
 
     Returns:
         The head revision id.
@@ -293,18 +295,17 @@ def migration_head() -> str:
             the schema this image would be verified against is not
             well-defined, and guessing would defeat the check.
     """
+    # Pylint: ``import-outside-toplevel`` -- deferred on purpose; see the docstring.
+    from scripts import migration_chain  # pylint: disable=import-outside-toplevel
     revisions: set[str] = set()
     parents: set[str] = set()
-    versions = _REPO_ROOT / "migrations/versions"
+    versions = _REPO_ROOT / migration_chain.VERSIONS
     for path in sorted(versions.glob("*.py")):
         text = path.read_text(encoding="utf-8")
-        found = re.search(r"^revision(?::\s*str)?\s*=\s*['\"]([^'\"]+)", text, re.M)
+        found = migration_chain.revision(text)
         if found:
-            revisions.add(found.group(1))
-        for parent in re.findall(
-            r"^down_revision(?::[^=]+)?\s*=\s*['\"]([^'\"]+)", text, re.M
-        ):
-            parents.add(parent)
+            revisions.add(found)
+        parents.update(migration_chain.down_revisions(text))
     heads = revisions - parents
     if len(heads) != 1:
         raise BuildError(

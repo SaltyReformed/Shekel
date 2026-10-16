@@ -47,10 +47,11 @@ arms by construction, and scoring both would return the same number for reasons
 that have nothing to do with which is right -- a tautology wearing the shape of
 evidence.  The confound is answered by PARTITIONING the level comparison, not by
 swapping it for a metric that cannot see the subject.  (That producer also
-returns nothing for an account with no imported lines, and production holds 0
-statement imports, 0 bank lines and 0 matches -- finding **N-368**.)  This
-script reads the bank's exported daily-balance file directly, which is the only
-outside record that exists for the span today.
+returns nothing for an account with no imported lines, which every account was
+until statement imports began -- finding **N-368** -- and any account no
+statement has been imported for still is.)  This script reads the bank's
+exported daily-balance file directly, so it answers for an account whether or
+not its statements were ever imported.
 
 **Usage** (from the repository root, against a production-shaped clone -- never
 the dev runtime database, which other sessions move)::

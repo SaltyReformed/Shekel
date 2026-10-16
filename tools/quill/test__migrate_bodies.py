@@ -23,7 +23,9 @@ from tools.quill._migrate_bodies import (
     build,
     census,
     differences,
+    filed_commit,
     masked,
+    row_text,
 )
 from tools.quill._migrate_fake import BALANCE, COMMIT, FINDINGS, complete_input
 from tools.quill._migrate_input import grade
@@ -58,7 +60,7 @@ def test_a_steps_card_is_its_sentence_then_its_dedented_spec_with_notes_out(corp
         "",
         "  after a blank inside the sample",
         "  ```", "",
-        _block("steps.md", "id: A-2a", "also: --", "starts: NOW")]), None)
+        _block("steps.md", "id: A-2a", "also: --", "blocked by: --")]), None)
 
 
 def test_a_paragraph_given_to_a_card_follows_its_spec_under_its_own_heading(corpus):
@@ -70,7 +72,7 @@ def test_a_paragraph_given_to_a_card_follows_its_spec_under_its_own_heading(corp
         "**A-3** a plain step.", "", "A-3's own flush-left spec paragraph.", "",
         "## From the arc document's steps section", "", "Every leaf here obeys one rule.", "",
         _block("steps.md", "id: A-3", "also: --",
-               "starts: after #2 / balance:A-2a (its rows) / balance:A-1 (shipped)")])
+               "blocked by: balance:A-2a (its rows) / balance:A-1 (shipped)")])
 
 
 def test_a_finding_a_ruling_and_a_question_say_what_draft_4_says(corpus):
@@ -108,12 +110,13 @@ def test_a_paragraph_left_of_its_checkbox_kept_as_own_is_refused(corpus):
 
 
 def test_a_cell_holding_a_fence_and_a_title_quills_check_refuses_are_refused(corpus):
-    """A ``` in a cell would end the As filed block early; a card is held to quill's own
-    check on its title (here: a name that leaves only the alias, still a title, passes;
-    one over the cap does not)."""
+    """A ``` in a cell is refused, as in every part a row writes (``RowText.fenced``); a
+    card is held to quill's own check on its title (here: a name that leaves only the
+    alias, still a title, passes; one over the cap does not)."""
     fenced = replace(corpus, findings=(replace(FINDINGS[0], status="OPEN ```x```"),
                                        *FINDINGS[1:]))
-    assert ("balance:F-1: a cell holds ```, which would end its As filed block early"
+    assert ("balance:F-1: its row puts ``` in its status cell; no text a row writes may hold "
+            "them, as they can open a fenced block on its card that swallows its As filed block"
             in build(_inputs(fenced))[1])
 
     def too_long(data):
@@ -123,6 +126,24 @@ def test_a_cell_holding_a_fence_and_a_title_quills_check_refuses_are_refused(cor
         **inputs.decisions.names, "balance:F-1": "x" * 95}))
     assert ("balance:F-1: its title is a short name of at most 100 characters; it is 101"
             in build(inputs)[1])
+
+
+@pytest.mark.parametrize("rows, ident, cells", [
+    ("steps", "A-3", {"title": "```sh Do the last part."}),
+    ("findings", "F-1", {"finding": "```The first half reads a stale row."}),
+    ("rulings", "R-A", {"rule": "```text Question: where? Answer: here."}),
+], ids=["a-steps-sentence", "a-findings-cell", "a-rulings-rule"])
+def test_a_row_whose_opening_text_holds_a_fence_is_refused(corpus, rows, ident, cells):
+    """The text a card opens with, its row's lead, holding a fence, which would open a
+    fenced block swallowing the card's As filed block where it renders: refused by the
+    one check of every part its row writes (``RowText.fenced``), as a cell is.  The
+    coordinator, 2026-10-12: the check once read the cells alone."""
+    changed = replace(corpus, **{rows: tuple(
+        replace(row, **cells) if row.ident.split()[0] == ident else row
+        for row in getattr(corpus, rows))})
+    assert (f"balance:{ident}: its row puts ``` in its opening text; no text a row writes may "
+            "hold them, as they can open a fenced block on its card that swallows its As filed "
+            "block" in build(_inputs(changed))[1])
 
 
 def test_the_census_puts_every_line_in_one_place_from_the_built_bodies(corpus):
@@ -238,8 +259,9 @@ def test_a_card_whose_sentence_or_as_filed_block_was_tampered_with_is_refused(co
     """The census reads back the whole step card: text added before the spec or after the
     As filed block's start is refused too (review of B1's fixes, LOW-1)."""
     inputs = _inputs(corpus)
+    blocker = "blocked by: balance:A-2a"
     for old, new in (("Do the last part.", "Do the last part.\n\nEvery leaf here obeys one rule."),
-                     ("starts: after #2", "starts: after #2\nA leaked note.\nstarts: after #2")):
+                     (blocker, f"{blocker}\nA leaked note.\n{blocker}")):
         built = build(inputs)[0]
         built["balance:A-3"] = replace(built["balance:A-3"],
                                        body=built["balance:A-3"].body.replace(old, new))
@@ -296,19 +318,102 @@ def test_a_code_span_starts_at_the_start_of_its_backtick_run():
 def test_a_cards_text_is_compared_with_its_commit_left_out_and_nothing_else(corpus):
     """:func:`masked` leaves out only the As filed block's commit (draft 4 s.5), so the same
     text at another commit is no difference, and every other change is one: the title
-    exactly, the body and a question's comment (review of B2a, M4)."""
+    exactly, the body and a question's comment (review of B2a, M4), the registry its
+    block's first line names included (review 9, LOW-1)."""
     built = build(_inputs(corpus))[0]
     step, question = built["balance:A-3"], built["balance:Q-1"]
     later = step.body.replace(COMMIT, "f" * 40)
     assert later != step.body and masked(later) == masked(step.body)
     assert masked(step.body).count("<commit>") == 1 and COMMIT not in masked(step.body)
-    assert differences(step, step.title, later, None) == []
+    assert not differences(step, step.title, later, None)
     assert differences(step, step.title + " ", step.body.replace("the", "a", 1), None) == [
         "title", "body"]
     assert differences(question, question.title, question.body,
                        question.comment.replace("OPEN", "CLOSED")) == ["comment"]
-    assert differences(question, question.title, question.body, question.comment) == []
-    assert differences(step, step.title, step.body.replace("starts: ", "starts: after ", 1),
-                       None) == ["body"]
-    assert differences(question, question.title, question.body, None) == []
+    assert not differences(question, question.title, question.body, question.comment)
+    edited = step.body.replace("blocked by: ", "blocked by: after ", 1)
+    assert differences(step, step.title, edited, None) == ["body"]
+    assert differences(step, step.title, step.body.replace(
+        "filed from: steps.md at", "filed from: ledger.md at"), None) == ["body"]
+    assert not differences(question, question.title, question.body, None)
     assert differences(step, step.title, step.body, question.comment) == ["comment"]
+
+
+def test_only_the_last_as_filed_blocks_commit_is_left_out(corpus):
+    """An ordinary body line reading like the block's first, ``filed from: X at Y``, is
+    compared whole: a fetched body differing there is a difference, while one differing in
+    the block's own commit is not (B2b-2; the pattern once masked every such line)."""
+    step = build(_inputs(corpus))[0]["balance:A-3"]
+    line = f"filed from: steps.md at {COMMIT}"
+    body = step.body.replace("## Spec\n\n", f"## Spec\n\n{line}\n\n", 1)
+    quoting = replace(step, body=body)
+    assert masked(body).count("<commit>") == 1 and line in masked(body)
+    assert differences(quoting, step.title, body.replace(COMMIT, "f" * 40, 1), None) == ["body"]
+    head, opened, tail = body.rpartition(line)
+    assert not differences(quoting, step.title, f"{head}{opened.replace(COMMIT, 'f' * 40)}{tail}",
+                           None)
+
+
+def test_a_text_built_with_no_block_is_compared_whole(corpus):
+    """A question's body holds no As filed block, so a written question quoting a block's
+    first line is compared whole: a fetched body differing in that line's last token is a
+    difference (review 7, LOW-2)."""
+    question = build(_inputs(corpus))[0]["balance:Q-1"]
+    quoting = replace(question, body=f"{question.body}\n\n{_block('steps.md', 'id: Z-9')}")
+    assert differences(quoting, question.title, quoting.body.replace(COMMIT, "f" * 40),
+                       question.comment) == ["body"]
+
+
+def test_a_line_inside_the_block_that_reads_like_its_first_is_compared_whole(corpus):
+    """A cell inside the As filed block whose value reads ``filed from: X at Y``: only the
+    block's FIRST line has its commit left out, so a fetched body differing in that cell is
+    a difference (review 7, LOW-2: masking from the last ``filed from: `` passed it)."""
+    finding = build(_inputs(corpus))[0]["balance:F-1"]
+    cell = "status: filed from: a at b"
+    body = f"{finding.body.removesuffix(chr(10) + '```')}\n{cell}\n```"
+    assert body.count(cell) == 1 and body.endswith(f"{cell}\n```")
+    assert differences(replace(finding, body=body), finding.title,
+                       body.replace(cell, "status: filed from: a at c"), None) == ["body"]
+
+
+def test_the_commit_read_is_the_last_as_filed_blocks():
+    """:func:`filed_commit` reads the commit of the LAST block opening as one does, the one
+    a card's text ends with, in a text read as :func:`masked` reads it (a web form's CRLF
+    as LF); a text holding none, or whose block's first line names no commit, gives
+    None."""
+    block = _block("steps.md", "id: A-3")
+    earlier = block.replace(COMMIT, "f" * 40)
+    assert filed_commit(f"text\n\n{earlier}\n\nmore\n\n{block}") == COMMIT
+    assert filed_commit(f"As filed in ledger.md\n\n{block}\r\n") == COMMIT
+    assert filed_commit(f"As filed in ledger.md\n\n{block}".replace("\n", "\r\n")) == COMMIT
+    assert filed_commit("a question, and no block") is None
+    assert filed_commit(block.replace(f" at {COMMIT}", " at")) is None
+    assert filed_commit(block.replace(f" at {COMMIT}", f" at {COMMIT} and more")) is None
+
+
+def test_each_card_is_composed_from_what_its_row_writes(corpus):
+    """What each item's row writes (:func:`row_text`) is where :func:`build` puts it: a
+    step's sentence opens its body and its block ends it; a finding's or a ruling's body is
+    its lead and its block and nothing else; a question's As filed comment is its block
+    under the opening line, and its body its lead (its row's note) where the input file
+    writes no question, Q-1, and the written one where it does, Q-2 (review 9,
+    MEDIUM-1: one producer, so no second spelling of a row's text)."""
+    inputs = _inputs(corpus)
+    built = build(inputs)[0]
+    for item in inputs.source.items:
+        made, card = row_text(item), built[item.key]
+        block = made.block(COMMIT)
+        if item.kind == "step":
+            assert card.body.startswith(f"{made.lead}\n\n## Spec\n\n")
+            assert card.body.endswith(f"\n\n{block}") and card.comment is None
+        elif item.kind == "question":
+            assert card.comment == f"As filed in ledger.md\n\n{block}"
+        else:
+            assert (card.body, card.comment) == (f"{made.lead}\n\n{block}", None)
+    leads = {item.key: row_text(item).lead for item in inputs.source.items}
+    assert built["balance:Q-1"].body == leads["balance:Q-1"] == (
+        "is the stub's gross right to the cent?")
+    assert built["balance:Q-2"].body not in (leads["balance:Q-2"], "")
+    assert [leads[key] for key in ("balance:A-3", "balance:F-1", "balance:R-A")] == [
+        "Do the last part.", "The first half reads a stale row.",
+        "Question: where? Answer: here."]

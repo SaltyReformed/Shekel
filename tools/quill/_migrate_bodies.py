@@ -14,10 +14,27 @@ What each card says (the L7 design's draft 4 s.3):
   :data:`AS_FILED`;
 - a **ruling**: its ``rulings.md`` cell.
 
-Every card but a question ends with an **As filed block** (:func:`as_filed`): a fenced
-quotation, word for word, of the row's cells the card does not carry as structure, and
-first the registry and commit it was filed from.  A fence renders nothing and links no
-``#N``; the links and labels govern, and the block is a quotation.
+Every card but a question ends with an **As filed block** (:meth:`RowText.block`), and a
+question's As filed comment holds one: a fenced quotation, word for word, of the row's
+cells the card carries nowhere else (its lead opens the body: a step's sentence, a
+finding's or a ruling's cell; a question's question, its row's note, is quoted inside its
+``owner`` cell too), and first the registry and commit it was filed from.  A step's
+``starts`` cell is quoted by its STORED part alone, as ``blocked by``: its blockers and
+their prose, every aside and annotation whole (``StepRow.starts_stored``), never its head,
+which the ranks derive (the coordinator's rulings on review 10, LOW-1, and review 11,
+MEDIUM-1).  A fence renders nothing and links no ``#N``; the links and labels govern, and
+the block is a quotation.  The TEXT a card's row writes
+-- its lead (a question's where the input file writes none) and the block's cells --
+comes from ONE producer, :func:`row_text`, which :func:`build` composes each card from.
+Besides its structure (its kind, links and milestone, which the plan grades, and its board
+place: the plan grades that it is on the board, ``migrate verify`` its order), two parts
+of a card are made from its row OUTSIDE it, and graded apart, against this checkout only:
+its title's alias (``Item.alias``, the row's id), which is its key, so a
+card is found by it (``_migrate_plan.card_key``, ``_migrate_plan.py:179``) and its title
+is compared exactly (:func:`differences`); and its labels (``Item.labels``: the arc's, and
+for a step ``moves-money`` from its sentence, ``_migrate_source.step_labels``,
+``_migrate_source.py:480``), which the plan holds equal to the item's
+(``_migrate_plan._Grading._unlike``, ``_migrate_plan.py:655``).
 
 Each card is held to quill's one check (:func:`check.violations`) with ``changed`` =
 {title} (draft 4 s.3): its kind, its one arc label and its short title.
@@ -27,9 +44,10 @@ line of each arc's steps section is put in exactly one place -- on a card, a not
 moves nowhere, a shipped step's pointer, the card already filed for X-cx
 (:data:`_migrate_source.MAPPED`, whose text is not rewritten), a heading, or a paragraph
 kept for L8 by its disposition -- and each step card's body is read back
-(:func:`step_regions`): its sentence and its As filed block must be exactly its row's,
-and the NON-BLANK lines of its spec and of each given paragraph must be the lines put on
-it, region by region and in order, none missing, none doubled and nothing else
+(:func:`step_regions`): its sentence and its As filed block must be exactly what its row
+makes (:func:`row_text`), and the NON-BLANK lines of its spec and of each given paragraph
+must be the lines put on it, region by region and in order, none missing, none doubled and
+nothing else
 (:func:`census`).  A non-blank line the assembly lost, misplaced or added is a refusal,
 whatever the spans say.
 
@@ -76,8 +94,9 @@ _FENCE = "```"
 FILED_FROM = "filed from: "
 #: How every As filed block opens, the fence and its first line's start.
 AS_FILED_OPENING = f"{_FENCE}text\n{FILED_FROM}"
-#: An As filed block's first line, its commit apart (:func:`masked`).
-_FILED_LINE = re.compile(rf"^({re.escape(FILED_FROM)}\S+ at )\S+$", re.MULTILINE)
+#: An As filed block's first line after :data:`FILED_FROM`: its registry, then its commit
+#: (:func:`_filed_line`).
+_FILED_LINE = re.compile(r"(\S+ at )(\S+)")
 #: A bare ``#N`` in prose, which GitHub links to the tracker's card N (draft 4 s.3).
 _BARE_NUMBER = re.compile(r"(?<![\w#&/])#\d+\b")
 #: An inline code span: a run of backticks, then text, then a run of as many.
@@ -101,32 +120,131 @@ class Built:
     comment: str | None
 
 
-def as_filed(registry: str, commit: str, cells: Sequence[tuple[str, str]]) -> str:
-    """The As filed block: the registry and commit, then each cell by its column, fenced."""
-    lines = [f"{FILED_FROM}{registry} at {commit}",
-             *(f"{column}: {value}" for column, value in cells)]
-    return "\n".join([_FENCE + "text", *lines, _FENCE])
+@dataclass(frozen=True)
+class RowText:
+    """The text an item's ROW writes on its card (:func:`row_text`): its LEAD -- a step's
+    sentence, a finding's ``finding`` cell, a ruling's ``rule``, a question's question as
+    its row's note asks it -- and its As filed block's registry and cells, by column.  The
+    input file's work is none of it (a name, the notes a step's spec leaves out, a
+    paragraph given to it, a written question), nor is the commit a block names, which is
+    the run's read, nor anything the ranks derive: a step's rank, which places its card,
+    and its ``starts`` cell's head, of which the block quotes the stored part alone as
+    ``blocked by`` (``StepRow.starts_stored``: the blockers and their prose)."""
+
+    lead: str
+    registry: str
+    cells: tuple[tuple[str, str], ...]
+
+    def block(self, commit: str) -> str:
+        """The As filed block naming ``commit``: the registry and commit, then each cell by
+        its column, fenced.  The one maker of a block."""
+        lines = [f"{FILED_FROM}{self.registry} at {commit}",
+                 *(f"{column}: {value}" for column, value in self.cells)]
+        return "\n".join([_FENCE + "text", *lines, _FENCE])
+
+    def fenced(self) -> list[str]:
+        """Each part of it holding ```: its opening text (the lead), then each cell by its
+        column.  No part may: in the lead, which opens a line of its card, they would open
+        a fenced block swallowing the As filed block where the card renders; a cell, which
+        follows its column's name inside that block, is held to the same rule, one for
+        every part.  The one check of every part it makes; :func:`build` refuses a row
+        holding any."""
+        parts = [("its opening text", self.lead),
+                 *((f"its {column} cell", value) for column, value in self.cells)]
+        return [name for name, text in parts if _FENCE in text]
+
+
+def row_text(item: Item) -> RowText:
+    """What ``item``'s row writes on its card (:class:`RowText`), from the row alone: the one
+    producer of it.  :func:`build` composes each card from it, :func:`census` reads a step
+    card back against it, and ``migrate verify`` holds the row a card's As filed block names
+    to it (:func:`row_texts`).  A question's lead is the body :func:`build` gives it where
+    the input file writes no question; the note it is, word for word, sits in the
+    ``owner`` cell too."""
+    row = item.row
+    if item.kind == "step":
+        return RowText(row.title, REGISTRY[item.kind],
+                       (("id", row.ident), ("also", row.aliases),
+                        ("blocked by", row.starts_stored or "--")))
+    if item.kind == "ruling":
+        return RowText(row.rule, REGISTRY[item.kind],
+                       (("id", row.ident), ("also", row.also), ("date", row.date)))
+    if item.kind == "question":
+        lead, finding = question_note(row) or "", (("finding", row.finding),)
+    else:
+        lead, finding = row.finding, ()
+    return RowText(lead, REGISTRY[item.kind],
+                   (("id", row.ident), ("also", row.also), *finding,
+                    ("worst measured", row.worst), ("status", row.status), ("owner", row.owner)))
+
+
+def row_texts(items: Sequence[Item]) -> dict[str, frozenset[RowText]]:
+    """What each item's row writes on its card (:func:`row_text`), by key, ``items`` being
+    one commit's: a set, as a key two rows share there (which the source refuses) makes
+    two, and a card saying what either writes says what a row of that commit writes."""
+    found = defaultdict(set)
+    for item in items:
+        found[item.key].add(row_text(item))
+    return {key: frozenset(made) for key, made in found.items()}
 
 
 def masked(text: str) -> str:
-    """``text`` as two runs compare it: :func:`check.normalized`, each As filed block's commit
-    left out.  The commit is the one the card was written at, which a later run reading the
-    same text at a later commit names otherwise (draft 4 s.5: the commit line is not
-    compared, it must resolve)."""
-    return _FILED_LINE.sub(r"\1<commit>", normalized(text))
+    """``text`` as two runs compare a text whose built form holds an As filed block
+    (:func:`differences`): :func:`check.normalized`, that block's commit left out
+    (:func:`_filed_line`) and nothing else -- its registry is compared.  The commit is the
+    one the card was written at, which a later run reading the same text at a later commit
+    names otherwise (draft 4 s.5: the commit is not compared here; ``migrate verify`` reads
+    it, :func:`filed_commit`, holds it to resolve, and holds the row it names to make what
+    this checkout's row makes, :func:`row_text`).  A line elsewhere that reads like the
+    block's first is compared whole."""
+    text = normalized(text)
+    split = _filed_line(text)
+    return text if split is None else f"{split[0]}{split[1]}<commit>{split[3]}"
+
+
+def filed_commit(text: str) -> str | None:
+    """The commit ``text``'s As filed block names (:func:`_filed_line`), None for a text
+    holding no such block: what ``migrate verify`` holds to resolve."""
+    split = _filed_line(normalized(text))
+    return None if split is None else split[2]
+
+
+def _filed_line(text: str) -> tuple[str, str, str, str] | None:
+    """``text`` split at its As filed block -- what precedes the block; the block up to its
+    commit; the commit; what follows -- the block being the LAST opening with
+    :data:`AS_FILED_OPENING`, as :func:`build` puts it last and :func:`step_regions` reads
+    it; None when there is none, or its first line is not a registry and a commit.
+    :func:`masked` and :func:`filed_commit` read the block here alone."""
+    head, opened, tail = text.rpartition(AS_FILED_OPENING)
+    line, newline, rest = tail.partition("\n")
+    found = _FILED_LINE.fullmatch(line) if opened else None
+    if found is None:
+        return None
+    return head, f"{opened}{found.group(1)}", found.group(2), f"{newline}{rest}"
 
 
 def differences(built: Built, title: str, body: str, comment: str | None) -> list[str]:
     """The parts of a card that differ from ``built``, its text as the registries make it:
-    ``title`` exactly; ``body`` and its As filed ``comment``, each :func:`masked`.  A
+    ``title`` exactly; ``body`` and its As filed ``comment``, the one of them that holds the
+    As filed block :func:`masked` -- a question's comment (the only text :func:`build` gives
+    a comment), any other card's body -- and a question's body :func:`check.normalized`
+    whole, so a written question quoting a block's first line is compared whole.  A
     ``comment`` of None is not compared: whether one is due is the caller's question (the
-    plan writes a missing one; ``migrate verify`` must refuse a question without one).  A
-    comment given where ``built`` has none is a difference."""
+    plan writes a missing one, and refuses one more).  A comment given where ``built`` has
+    none is a difference."""
     found = [] if title == built.title else ["title"]
-    found += [] if masked(body) == masked(built.body) else ["body"]
-    if comment is not None and masked(comment) != masked(built.comment or ""):
+    found += [] if _same(body, built.body, built.comment is None) else ["body"]
+    if comment is not None and not _same(comment, built.comment or "", True):
         found.append("comment")
     return found
+
+
+def _same(text: str, built: str, blocked: bool) -> bool:
+    """Whether ``text`` says what ``built`` does (:func:`differences`): :func:`masked` where
+    it is ``blocked``, the text holding the As filed block, else whole."""
+    if blocked:
+        return masked(text) == masked(built)
+    return normalized(text) == normalized(built)
 
 
 def dedent(line: str, indent: int, opener: bool) -> str:
@@ -141,18 +259,6 @@ def dedent(line: str, indent: int, opener: bool) -> str:
         found = CHECKBOX_RX.match(line)
         line = line[found.start("step") - len("**"):]
     return line
-
-
-def _cells(item: Item) -> list[tuple[str, str]]:
-    """The cells an item's card quotes in its As filed block, by column."""
-    row = item.row
-    if item.kind == "step":
-        return [("id", row.ident), ("also", row.aliases), ("starts", row.blocked)]
-    if item.kind == "ruling":
-        return [("id", row.ident), ("also", row.also), ("date", row.date)]
-    finding = [("finding", row.finding)] if item.kind == "question" else []
-    return [("id", row.ident), ("also", row.also), *finding, ("worst measured", row.worst),
-            ("status", row.status), ("owner", row.owner)]
 
 
 def _note_lines(spec: Spec, decisions: Decisions) -> set[int]:
@@ -202,28 +308,31 @@ def build(inputs: Inputs) -> tuple[dict[str, Built], list[str]]:
 
 def _built(item: Item, inputs: Inputs, bound: Sequence[Paragraph],
            refusals: list[str]) -> Built:
-    """One item's card text (the module docstring), held to quill's check with only its
+    """One item's card text (the module docstring), composed from what its row writes
+    (:func:`row_text`) and the input file's decisions, held to quill's check with only its
     title written; ``bound``: the steps-section paragraphs given to its card."""
-    cells = _cells(item)
-    if any(_FENCE in value for _, value in cells):
-        refusals.append(f"{item.key}: a cell holds {_FENCE}, which would end its As filed "
-                        "block early")
-    block = as_filed(REGISTRY[item.kind], inputs.registries.commit, cells)
+    made = row_text(item)
+    fenced = made.fenced()
+    if fenced:
+        refusals.append(f"{item.key}: its row puts {_FENCE} in {', '.join(fenced)}; no text a "
+                        "row writes may hold them, as they can open a fenced block on its card "
+                        "that swallows its As filed block")
+    block = made.block(inputs.registries.commit)
     comment = None
     if item.kind == "step":
         spec = inputs.source.specs.get(item.key)
         text = "" if spec is None else _spec_text(
             item, spec, inputs.registries.documents[item.arc].splitlines(), inputs.decisions,
             refusals)
-        parts = [item.row.title, SPEC_HEADING, text]
+        parts = [made.lead, SPEC_HEADING, text]
         for paragraph in bound:
             parts += [BOUND_HEADING, paragraph.text]
         body = "\n\n".join([*parts, block])
     elif item.kind == "question":
-        body = inputs.decisions.questions.get(item.key, question_note(item.row) or "")
+        body = inputs.decisions.questions.get(item.key, made.lead)
         comment = f"{AS_FILED}\n\n{block}"
     else:
-        body = f"{item.row.finding if item.kind == 'finding' else item.row.rule}\n\n{block}"
+        body = f"{made.lead}\n\n{block}"
     title = card_title(item.alias, inputs.decisions.names.get(item.key, ""))
     refusals += [f"{item.key}: {problem}" for problem in violations(
         Draft(item.kind, title, body, item.labels), {TITLE})]
@@ -282,10 +391,10 @@ def census(inputs: Inputs,
                 if card not in built]
     for item in inputs.source.items:
         if item.kind == "step" and item.key in built:
+            made = row_text(item)
             refusals += _census_refusal(item, _wanted(item, inputs, expected),
                                         step_regions(built[item.key].body),
-                                        as_filed(REGISTRY["step"], inputs.registries.commit,
-                                                 _cells(item)))
+                                        (made.lead, made.block(inputs.registries.commit)))
     return places, refusals
 
 
@@ -305,14 +414,14 @@ def _wanted(item: Item, inputs: Inputs, expected: Mapping) -> list[list]:
 
 def _census_refusal(item: Item, wanted: Sequence[Sequence[tuple[str, int, str]]],
                     regions: tuple[str, list[str], list[list[str]], str] | None,
-                    block: str) -> list[str]:
-    """The refusal for a step card whose body read back is not its sentence, ``wanted``
-    (its spec's lines, then each given paragraph's) and its As filed ``block``, naming the
-    first line out of place."""
+                    row: tuple[str, str]) -> list[str]:
+    """The refusal for a step card whose body read back is not ``row`` -- its sentence and
+    its As filed block, as its row makes them (:func:`row_text`) -- around ``wanted`` (its
+    spec's lines, then each given paragraph's), naming the first line out of place."""
     if regions is None:
         return [f"census: {item.key}'s card is not in a step card's shape"]
     head, spec, bound, tail = regions
-    if (head, tail) != (item.row.title, block):
+    if (head, tail) != row:
         return [f"census: {item.key}'s card holds text before its spec or after its As filed "
                 "block's start that its sentence and its cells do not"]
     got = [spec, *bound]

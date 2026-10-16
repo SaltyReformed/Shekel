@@ -16,7 +16,10 @@ paths' one spelling) from git and hands the text to the reader's ``text`` (rulin
 ``balance:R-BAL257`` and ``R-BAL259``, which amend R-BAL244 again).
 
 A name is added here only with the coordinator's clearance.  ``outcome_scopes`` is read
-for MEMBERSHIP only: R-BAL243 keeps the outcomes' priority in the board's order.
+for MEMBERSHIP only: R-BAL243 keeps the outcomes' priority in the board's order.  The
+release tool (``tools/release``, step X-cx's L9a) reads ``STEPS``, ``StepRow``,
+``step_rows`` and ``decomposition_leaf_keys`` through this door too, as a commit holds
+``steps.md``, until the cutover deletes its pre-cutover arm with this module.
 """
 from __future__ import annotations
 

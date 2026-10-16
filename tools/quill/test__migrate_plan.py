@@ -1,7 +1,8 @@
 """X-cx's migration plan (:mod:`_migrate_plan`): the writes still to make, and what it refuses,
 on the small corpus (:mod:`_migrate_fake`) and the in-memory tracker (:mod:`_migrate_plan_fake`).
-Which cards the tracker may hold besides the items' cards, and how a card filed already is
-graded, are :mod:`test__migrate_plan_cards`'s.
+Which cards the tracker may hold besides the items' cards, and a card filed already (card #1)
+graded a case per check, are :mod:`test__migrate_plan_cards`'s; five of card #1's tests stay
+here: its links alone, the tracker lacking it, its milestone, its mark, its board place.
 
 Each test builds a tracker state by hand -- empty, wholly filed, or a run cut short at some
 write -- and reads what the plan says of it.  Executing the writes is X-cx's B2b; nothing
@@ -32,6 +33,7 @@ from tools.quill._migrate_plan import (
     Write,
     card_key,
     desired_board,
+    milestone_title,
     moves,
     plan,
 )
@@ -92,6 +94,16 @@ def test_a_wholly_filed_tracker_takes_no_write(corpus):
     found = corpus_plan(corpus, tracker)
     assert (found.history, found.freeze, found.refusals) == ((), (), ())
     assert found.numbers == numbers
+
+
+def test_a_cards_labels_read_in_another_order_are_the_same_labels(corpus):
+    """A-2b's labels read back out of order (the in-memory tracker keeps them sorted; the
+    order GitHub answers in is not the plan's to assume): the same labels, so nothing is
+    refused or written (review 4 of B2b-1, LOW-3: the sort was unpinned)."""
+    tracker, numbers = filed_tracker(corpus)
+    with_change(tracker, numbers["balance:A-2b"], labels=("moves-money", "balance"))
+    found = corpus_plan(corpus, tracker)
+    assert (found.history, found.freeze, found.refusals) == ((), (), ())
 
 
 def test_a_steps_filing_cut_short_after_its_create_resumes_at_its_links(corpus):
@@ -159,6 +171,22 @@ def test_a_card_filed_already_takes_its_links_alone(corpus, monkeypatch):
     assert (found.freeze, found.refusals) == ((Write(BLOCK, "salary:S-1", "balance:A-2a"),), ())
 
 
+def test_a_card_filed_already_writes_exactly_its_missing_links(corpus, monkeypatch):
+    """A-2b mapped onto its card, which holds neither its parent link nor its one blocker
+    link, and is off the board as a container is: exactly those two writes, the parent
+    link first -- no create, board place, comment or unmark (moved here with B2b-2, from
+    ``test_migrate``'s test of ``migrate.writes``, the estimate's second producer, deleted;
+    review of B1's fixes, L2a)."""
+    tracker, numbers = filed_tracker(corpus)
+    monkeypatch.setitem(_migrate_source.MAPPED, "balance:A-2b", numbers["balance:A-2b"])
+    with_change(tracker, numbers["balance:A-2b"], parent=None, blocked_by=())
+    tracker.board.items.remove(numbers["balance:A-2b"])
+    found = corpus_plan(corpus, tracker)
+    assert (found.history, found.freeze, found.refusals) == (
+        (), (Write(LINK, "balance:A-2b", "balance:A-2"),
+             Write(BLOCK, "balance:A-2b", "balance:A-2a")), ())
+
+
 def _blocked(item, key):
     """``item`` blocked by ``key`` too."""
     return _migrate_source.Item(item.arc, item.alias, item.kind, item.row, item.labels,
@@ -168,19 +196,6 @@ def _blocked(item, key):
 
 
 # -- what a run refuses ----------------------------------------------------------
-
-def test_a_key_on_two_cards_is_refused_and_nothing_written_for_it(corpus):
-    """A retry's second create of F-1: refused, and no third card planned for it."""
-    tracker, numbers = filed_tracker(corpus)
-    tracker.add(40, "finding", "dup", on_board=False,
-                title=card_title("F-1", "Stale row"), labels=("balance", FILING))
-    found = corpus_plan(corpus, tracker)
-    assert found.refusals == (
-        f"balance:F-1 is the key of 2 cards (plan#{numbers['balance:F-1']}, plan#40): delete "
-        "the extras on the web (an extra is born of a create whose answer was lost and "
-        "re-sent), then run again",)
-    assert not found.freeze and "balance:F-1" not in found.numbers
-
 
 def test_a_card_filed_already_that_the_tracker_lacks_is_refused_never_filed_again(
         corpus, monkeypatch):
@@ -219,6 +234,15 @@ def test_an_items_card_unlike_it_is_refused_and_left_alone(corpus, key, change, 
     assert not [write for write in (*found.history, *found.freeze) if write.key == key]
 
 
+def test_an_outcome_the_milestones_lack_fails_loud(corpus):
+    """An item whose outcome the input file's milestones lack: :func:`milestone_title`
+    raises, never files its card in no milestone (review 2 of B2b-1, LOW-C).  ``grade``
+    refuses such a file, so only a caller that skips it reaches this."""
+    scoped = next(item for item in corpus_items(corpus) if item.outcome is not None)
+    with pytest.raises(KeyError):
+        milestone_title(scoped, {})
+
+
 def test_a_card_in_another_milestone_or_none_is_refused(corpus):
     """A-3's card out of its outcome's milestone, or in another: a card's milestone is set
     only by its create, so no write repairs it."""
@@ -234,13 +258,16 @@ def test_a_card_in_another_milestone_or_none_is_refused(corpus):
 
 def test_a_finished_filing_lacking_a_write_is_refused(corpus):
     """A-3 unmarked, but off the board and unblocked: a person changed it after its filing
-    finished, so the migration does not redo it over them."""
+    finished, so the migration does not redo it over them -- or a read lags the run's own
+    writes, showing the mark's removal and not the writes before it, which the refusal names
+    too (review 4 of B2b-1, LOW-4: the executor opens that window)."""
     tracker, numbers = filed_tracker(corpus)
     with_change(tracker, numbers["balance:A-3"], blocked_by=())
     tracker.board.items.remove(numbers["balance:A-3"])
     assert corpus_plan(corpus, tracker).refusals == (
         f"balance:A-3 (plan#{numbers['balance:A-3']}): its filing finished, yet it lacks "
-        "block, board-add: a person changed it; settle it by hand",)
+        "block, board-add: a person changed it, or this read lags the migration's own writes; "
+        "run again later, and if it is refused still, settle it by hand",)
 
 
 def test_steps_waiting_in_a_cycle_are_refused(corpus):
@@ -455,7 +482,8 @@ def test_a_stale_card_is_refused_never_finished(corpus, key, part):
     found = corpus_plan(corpus, tracker)
     assert found.refusals == (f"{key} (plan#{number}): it differs in its {part} from what the "
                               "registries make it at this commit: a stale card is never "
-                              "finished; settle it by hand",)
+                              "finished; settle it by hand, giving it that text, its As filed "
+                              f"block naming this commit ({COMMIT})",)
 
 
 def test_a_card_written_at_another_commit_is_not_stale(corpus):
@@ -500,6 +528,16 @@ def test_a_milestone_renamed_on_the_web_is_refused_not_made_again(corpus):
                               "the web?): settle it before the run",) and not found.freeze
 
 
+def _milestone_gone(number):
+    """How the plan refuses A-3's card ``number`` when its outcome's milestone, 'The first',
+    is not on the tracker by its title."""
+    return (f"balance:A-3 (plan#{number}): its milestone 'The first' is not on the tracker, "
+            "though the migration makes a milestone before any card in it: deleted or renamed "
+            "on the web, or this read lags its create? One made again would hold none of its "
+            "cards (a card's milestone is set only by its create); run again later, and if it "
+            "is refused still, settle it by hand")
+
+
 def test_a_milestone_deleted_on_the_web_is_refused_never_made_again(corpus):
     """The outcome's milestone deleted after A-3 was filed in it (GitHub clears it from the
     card): refused, never made again holding none of its cards, which the next run would
@@ -509,10 +547,7 @@ def test_a_milestone_deleted_on_the_web_is_refused_never_made_again(corpus):
     tracker.milestone_of.pop(numbers["balance:A-3"])
     found = corpus_plan(corpus, tracker)
     assert found.refusals == (
-        f"balance:A-3 (plan#{numbers['balance:A-3']}): its milestone 'The first' is not on the "
-        "tracker, though the migration makes a milestone before any card in it: deleted or "
-        "renamed on the web? One made again would hold none of its cards (a card's milestone is "
-        "set only by its create); settle it by hand",)
+        _milestone_gone(numbers["balance:A-3"]),)
     assert (found.history, found.freeze) == ((), ())
 
 
@@ -539,10 +574,7 @@ def test_a_card_in_another_milestone_whose_own_is_gone_is_refused_for_the_one_go
                  {**MILESTONES, "O2 the second": ("The second", "The second outcome.")},
                  tracked(tracker))
     assert found.refusals == (
-        f"balance:A-3 (plan#{numbers['balance:A-3']}): its milestone 'The first' is not on the "
-        "tracker, though the migration makes a milestone before any card in it: deleted or "
-        "renamed on the web? One made again would hold none of its cards (a card's milestone is "
-        "set only by its create); settle it by hand",)
+        _milestone_gone(numbers["balance:A-3"]),)
 
 
 @pytest.mark.parametrize("moved, held", [(True, 2), (False, None)],
@@ -670,7 +702,8 @@ def test_a_finished_card_gone_stale_is_refused_whatever_its_kind(corpus, key):
     tracker.bodies[number] = tracker.bodies[number] + " (amended)"
     assert corpus_plan(corpus, tracker).refusals == (
         f"{key} (plan#{number}): it differs in its body from what the registries make it at "
-        "this commit: a stale card is never finished; settle it by hand",)
+        "this commit: a stale card is never finished; settle it by hand, giving it that text, "
+        f"its As filed block naming this commit ({COMMIT})",)
 
 
 def test_a_body_github_stored_with_crlf_and_a_trailing_newline_is_not_stale(corpus):

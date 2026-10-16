@@ -204,7 +204,7 @@ def dropped(number: int, cards: Mapping[int, Card], shipped: set[int]) -> bool:
     return _closed_dropped(card) and not (is_work(card, cards, shipped) and number in shipped)
 
 
-def _above(card: Card, cards: Mapping[int, Card]) -> Iterator[Card]:
+def above(card: Card, cards: Mapping[int, Card]) -> Iterator[Card]:
     """The steps above ``card``, nearest first: the step it splits, that step's, ..."""
     while card.parent is not None:
         card = cards[card.parent]
@@ -242,7 +242,7 @@ def resolved(number: int, cards: Mapping[int, Card], shipped: Iterable[int]) -> 
 def dropped_above(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> Card | None:
     """The nearest step above ``card`` that was dropped (R-BAL185); None when none was."""
     shipped = set(shipped)
-    return next((step for step in _above(card, cards) if dropped(step.number, cards, shipped)),
+    return next((step for step in above(card, cards) if dropped(step.number, cards, shipped)),
                 None)
 
 
@@ -299,13 +299,13 @@ def never_offered(card: Card, cards: Mapping[int, Card], shipped: Iterable[int])
     if card.outside:
         links = ", ".join(f"its {link.what} {link.issue}" for link in card.outside)
         return f"it links {links}, outside the tracker (R-BAL188)"
-    above = list(_above(card, cards))
-    for step in above:
+    steps = list(above(card, cards))
+    for step in steps:
         for link in step.outside:
             if link.what == "blocker":
                 return (f"plan#{step.number} above it waits on {link.issue}, outside the "
                         "tracker (R-BAL188)")
-    gone = next((step for step in above if dropped(step.number, cards, shipped)), None)
+    gone = next((step for step in steps if dropped(step.number, cards, shipped)), None)
     return f"plan#{gone.number} above it was dropped (R-BAL185)" if gone else None
 
 
@@ -323,7 +323,7 @@ def workable(card: Card, cards: Mapping[int, Card], shipped: Iterable[int],
         and card.number not in shipped
         and card.number not in claims
         and all(resolved(blocker, cards, shipped)
-                for step in (card, *_above(card, cards)) for blocker in step.blocked_by)
+                for step in (card, *above(card, cards)) for blocker in step.blocked_by)
     )
 
 

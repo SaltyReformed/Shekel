@@ -331,7 +331,30 @@ record.
       **PC-508**, **PC-513**, **PC-514**. Archived with `C17-d`.
 - [ ] **C17-e -- coalesced nominal paydays are ONE paycheck** (**R-PC77**; closes **N-493**). Two
       nominal paydays a closed run displaces onto one cash day derive one paycheck wherever an era's
-      grid is read; `reject_shift_on_short_cadence` is then a fence. `$0.00`, after `C17-d`.
+      grid is read; `reject_shift_on_short_cadence` is then deleted. `$0.00`, after `C17-d`.
+- [ ] **C23 -- the pay-period doors take a narrowed period** (O7, **balance:R-BAL263**). The two
+      locks it deletes are `test_generation_schedule.py`'s `TestNoOrmPayPeriodEntersTheSeam`, which
+      grades an IMPORT of the `PayPeriod` model in the generation seam, and
+      `test_pay_period_admin.py`'s `TestTheDestructiveDoorsHoldNoDerivedColumn`, which grades the
+      names `end_date` and `period_index` on any receiver in the destructive doors and still binds
+      because `DerivedPeriod` carries both (`app/services/pay_calendar/_derive.py:145`, `:147`). The
+      doors already take ids and counts and get their periods from `calendar_for`, and the seam
+      already takes period ids (`generation_schedule.py`'s `for_period_ids`), so a narrowed
+      parameter alone deletes neither lock: the trace re-derives the structure each lock stands in
+      for before anything is built. It waits for `recurrence:R5-b`, which rewrites the seam's
+      dating. `$0.00`.
+- [ ] **C24 -- every civil day through one pinned clock** (O7; closes **balance:N-191**,
+      **balance:N-197**). Every civil-day read in `app/` and `tests/` goes through one clock module
+      the suite pins by default, and `C10`'s process-clock checker extends to `tests/`, so neither
+      the process timezone nor the run date reaches a decision; CI's `TZ: Pacific/Kiritimati`
+      detector (`.github/workflows/ci.yml:93`) and the weekly `calendar-sweep.yml` are deleted,
+      while the checker stays. It waits for `C10` and `balance:X-dg`, whose far-future sweep date
+      this deletes; whether `X-dg` still adds it is the developer's question. `$0.00`.
+- [ ] **C25 -- the developer answers whether paycheck removal stops refusing** (O7; **PC-534**;
+      `C16` waits on it, **balance:R-BAL271**, and on a yes is re-pointed onto, or cancelled by, the
+      deletion step in the same commit).
+- [ ] **C26 -- the developer answers whether `C13-c` keys paycheck lines** (O7; **PC-535**; its
+      answer amends `C13-c`'s specification in the same commit).
 - [ ] **C19 -- the `PayCalendar` door splits by SHAPE** (**PC-512**, re-homed from salary:P77
       2026-09-13): `searches` / `views` / `walks` as a PURE move graded by AST (**R-PC74**'s shape);
       `_calendar.py` sits at 20 of 20 methods and 981 of 1000 lines. ~100 call sites; `$0.00`.
@@ -376,10 +399,10 @@ record.
       across all seven column pairs, expressible-not-present. `fk_statement_matches_owner` and
       `fk_account_external_identities_owner` are already this construction, so each is a superkey
       plus a composite foreign key -- three on `transfers`, one on each other table, eight keys --
-      in ONE migration, and it DELETES `integrity_check.py`'s DC-09, the hand-written fence for
-      exactly this one table over, rather than joining it (`CLAUDE.md` rule 14). Filed here as
-      `C13`'s third leaf though the tables span three arcs: a migration does not care which arc a
-      table's steps live in.
+      in ONE migration, and it DELETES `integrity_check.py`'s DC-09 rather than joining it
+      (`CLAUDE.md` rule 14); DC-09 reads `salary.paycheck_lines`, none of the six, so whether it
+      joins as a seventh is `C26`'s question. Filed here as `C13`'s third leaf though the tables
+      span three arcs: a migration does not care which arc a table's steps live in.
 
 *`C12` (one current-paycheck producer) moved to the `salary` arc on 2026-09-03 (**R-SAL1**) with its
 rows **P62**, **P63** and **P64**'s engine half; its specification is
@@ -430,6 +453,9 @@ Closes **P10**, **P46**.
       `c725b814` stripped it. Closed **P18**, **N-490**; opened **N-491**, owned by **C16**.
 
 - [ ] **C16 -- the ledger's two filing rules stop being one column to its reader.**
+
+It waits for `C25`'s answer (**balance:R-BAL271**): it rules the stored paycheck column on journal
+entries, which that question may reopen.
 
 **Starts with a ruling**, as C7 did. R-PC53 established that the column has two halves; this step
 decides what to do about one READER being unable to tell them apart.
