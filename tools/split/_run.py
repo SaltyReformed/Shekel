@@ -332,7 +332,8 @@ def tree_files(root: Path, *pathspecs: str) -> list[Path]:
     such a file (measured on git 2.56, 2026-10-15, in a repository bound to nothing; no
     file of this repository was tracked under an ignored path that day), so the two walks
     disagreed.  It starts git through :func:`tools.ci.gitcmd.run`, so ``root`` alone is the
-    repository read."""
+    repository read, and no ``GIT_*`` variable the caller exported (a pathspec's magic, a
+    config) changes the set."""
     proc = _git(root, "git ls-files' output", b"\0", "ls-files", "-z", "--cached", "--others",
                 "--exclude-standard", "--", *pathspecs)
     if proc.returncode:

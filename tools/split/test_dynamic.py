@@ -310,6 +310,23 @@ class TestTheImportersAreJudgedByOrigin:
         assert not failures and named == ["t.py:3: shekel-private-module-import"]
 
 
+#: Variables a caller may export that change what git answers once they reach it, each with
+#: a value that does: the four pathspec magics (the second delta review's Medium-2) and a
+#: config passed through the environment, whose ``core.excludesFile`` (``{ignore}``, a file
+#: of ignore rules) hides an untracked file.
+EXPORTED = [("GIT_LITERAL_PATHSPECS", "1"), ("GIT_NOGLOB_PATHSPECS", "1"),
+            ("GIT_GLOB_PATHSPECS", "1"), ("GIT_ICASE_PATHSPECS", "1"),
+            ("GIT_CONFIG_PARAMETERS", "'core.excludesfile'='{ignore}'")]
+
+
+def exported(monkeypatch, tmp_path: Path, name: str, value: str, hidden: str) -> None:
+    """Export ``name`` as ``value``, its ``{ignore}`` a file of ignore rules naming
+    ``hidden``."""
+    ignore = tmp_path / "ignore-rules"
+    ignore.write_text(hidden + "\n", encoding="utf-8")
+    monkeypatch.setenv(name, value.format(ignore=ignore))
+
+
 class TestTheCensus:
     """The old module's name is found in every spelling, and a path into the package is
     not."""
@@ -508,6 +525,21 @@ class TestTheCensus:
         assert census(self.tracked_notes(tmp_path), plan_of()) == self.NOTES_HIT
         assert scratch.sentinel_state(sentinel) == before
 
+    @pytest.mark.parametrize("name, value", EXPORTED, ids=[name for name, _ in EXPORTED])
+    def test_no_variable_the_caller_exports_changes_the_census(self, name, value, tmp_path,
+                                                                monkeypatch):
+        """git is handed no ``GIT_*`` variable of the caller's but the two that date a commit
+        (:data:`tools.ci.gitcmd.PASS_THROUGH`; the coordinator's ruling on the second delta
+        review's Medium-2), so the census reads the same lines whatever the caller exported:
+        the tracked mentions, and one in a file git does not track, which only a config's
+        ignore rule could hide."""
+        root = self.tracked_notes(tmp_path)
+        (root / "docs" / "draft.md").write_text("see ``test_sample.TestBig``\n",
+                                                encoding="utf-8")
+        exported(monkeypatch, tmp_path, name, value, "draft.md")
+        assert census(root, plan_of()) == [("docs/draft.md", 1, "see ``test_sample.TestBig``"),
+                                           *self.NOTES_HIT]
+
     def test_archived_documents_are_classified(self, tmp_path):
         """The plan gate's rule from its one home (:mod:`tools.ci.archive`; the review's F3):
         archive/ and historical/ at any depth, and a first line, past leading blank lines,
@@ -614,6 +646,18 @@ class TestTheImporterWalk:
         root, listed = self.walked(tmp_path)
         assert python_files(root) == listed
         assert scratch.sentinel_state(sentinel) == before
+
+    @pytest.mark.parametrize("name, value", EXPORTED, ids=[name for name, _ in EXPORTED])
+    def test_no_variable_the_caller_exports_changes_the_walk(self, name, value, tmp_path,
+                                                              monkeypatch):
+        """The walk's ``*.py`` is a pathspec, which a pathspec magic in the environment would
+        read another way, and an untracked module is what a config's ignore rule could hide:
+        git is handed neither (:data:`tools.ci.gitcmd.PASS_THROUGH`; the coordinator's
+        ruling on the second delta review's Medium-2), so the walk lists the same modules."""
+        root, listed = self.walked(tmp_path)
+        (root / "loose.py").write_text('"""x"""\n', encoding="utf-8")
+        exported(monkeypatch, tmp_path, name, value, "loose.py")
+        assert python_files(root) == sorted([root / "loose.py", *listed])
 
 
 class TestTheFixtureSetups:

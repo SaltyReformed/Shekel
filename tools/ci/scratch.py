@@ -3,7 +3,7 @@
 Every command but :func:`_prove_bound`'s one control goes through
 :func:`tools.ci.gitcmd.git`, so it runs in the directory named and in no other
 repository, whatever the calling process is bound to (a pre-commit hook binds
-it to the repository being committed: ``gitcmd._binding_variables``).  Never
+it to the repository being committed: :func:`tools.ci.gitcmd.run`).  Never
 point it at a real checkout.
 
 :func:`bound_sentinel` stands up the other half of that claim's control: a
