@@ -125,6 +125,11 @@ Several Claude sessions regularly work this repo at once, each in its own worktr
   another -- in one worktree or many. What concurrent runs still share is this host's cores, which
   is a resource fact rather than a defect: the wrapper PRINTS any other live pytest and its
   worktree, then proceeds. The measurement and the argument: `.claude/rules/testing.md`.
+- **A question to the developer sends an alert first** (**R-BAL282**: "an alert whenever a session
+  stops to wait on your answer to a question"). Before each AskUserQuestion the session sends a
+  PushNotification naming itself and the question in plain words, in a call of its own; the question
+  follows in a later call, because it blocks the turn and two calls in one block run in no set
+  order. The tool skips the push while the developer's terminal is active.
 - **Never `pkill` shared tooling.** Kill by PID after reading `/proc/<pid>/cwd` to confirm whose
   process it is.
 - **Data grants** (developer grant, restated 2026-09-02): production data at `/opt/docker/shekel`

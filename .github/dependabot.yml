@@ -61,6 +61,15 @@ updates:
     target-branch: dev
     cooldown:
       default-days: 7
+    ignore:
+      # The Python version moves only in its own deliberate change: the
+      # Dockerfile, the workflows' eleven python-version settings and the
+      # local venv in ONE pull request, after X-bi-6-4d's release
+      # (developer rulings R-BAL292 and R-BAL297, 2026-10-14).  A tag move
+      # proposed here alone would ship one Python while CI tests another.
+      # Digest updates within the current tag still arrive.
+      - dependency-name: python
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     commit-message:
       prefix: "chore(deps)"
 

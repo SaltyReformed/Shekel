@@ -21,7 +21,8 @@ them now if this session has not. Then hold the work to this brief:
    normalized, robust, maintainable, future-proof, or financially correct: take it if in scope,
    report it as an opportunity if not. Name the fences the right design would delete.
 4. **Decompose.** A multi-leaf step spans sessions: stop at the first leaf boundary and hand off
-   rather than pushing on degraded. Suggest a decomposition whenever it would help.
+   rather than pushing on degraded. Suggest a decomposition whenever it would help. At the
+   boundary, run `/handoff`.
 5. **Adversarial review before commit.** A neutral fresh subagent reviews the design and the diff;
    it grades the fix's own claims about itself hardest. Findings are fixed or reported, never waved
    through.

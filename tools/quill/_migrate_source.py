@@ -481,7 +481,7 @@ def step_labels(row: StepRow) -> tuple[str, ...]:
     """A step card's labels: its arc; :data:`MOVES_MONEY_LABEL` when its sentence carries
     :data:`MOVES_MONEY` and it is no container; :data:`DEPLOY_TOGETHER_LABEL` when
     R-BAL240 names it.  The release tool reads a step's money flag and group through it
-    too, until the cutover (:mod:`tools.quill.plan_labels`), so a row it reads gets the
+    too, until the cutover (:mod:`tools.quill.door`), so a row it reads gets the
     label the migration would give it."""
     labels = [row.arc]
     if MOVES_MONEY in row.title and not row.is_decomposed_parent:
