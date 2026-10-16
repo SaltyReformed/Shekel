@@ -1,14 +1,28 @@
 """The processes the proof runs: the suite through ``./scripts/test.sh`` (never bare
 pytest: the wrapper gives each run a database cluster of its own), pylint, the plan gate,
 and ``git grep`` for the old module's name.  Each returns what it observed; judging it is
-:mod:`tools.split._dynamic`'s.
+:mod:`tools.split._dynamic`'s.  It also reads what a record is judged in: how the working
+tree differs from ``HEAD`` (:func:`differences`) and what the observations are made with
+(:func:`environment`).
+
+A run stopped by an exception does not outlive this process (:func:`_wrapper_run`).  The
+coordinator's condition (c) on 3B-2's signal fork rested on :func:`subprocess.run` killing
+its child on any exception; it sends ``SIGKILL`` only to its DIRECT child, the wrapper,
+whose trap cannot answer it, so the pytest the wrapper started and its database cluster
+outlived the tool, and the pytest wrote its observation after the tool had stopped
+(measured 2026-10-15).
 """
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 from tools.ci import gitcmd
@@ -42,11 +56,47 @@ def observe(root: Path, targets: list[str], out: Path, collect_only: bool) -> di
             "-p", "no:cacheprovider", "-q"]
     if collect_only:
         args += ["-n", "0", "--collect-only"]
-    proc = subprocess.run(args, cwd=root, env=env, capture_output=True, check=False)
+    returncode, output = _wrapper_run(args, root, env)
     if not out.exists():
-        raise RunError(f"{' '.join(args)} wrote no observation (exit {proc.returncode}):\n"
-                       + "\n".join(lines_of(shown(proc.stdout + proc.stderr))[-30:]))
+        raise RunError(f"{' '.join(args)} wrote no observation (exit {returncode}):\n"
+                       + "\n".join(lines_of(shown(output))[-30:]))
     return read_json(out)
+
+
+def _wrapper_run(args: list[str], root: Path, env: dict[str, str]) -> tuple[int, bytes]:
+    """Run the suite wrapper to its end: its exit status, and what it wrote to its output
+    and its errors, as one stream.
+
+    Any exception while it runs (Ctrl-C, the ``SIGTERM`` or ``SIGHUP`` that
+    :func:`tools.split.split.main` raises, anything) stops it with ``SIGTERM``, which its
+    trap answers by stopping pytest, waiting for it and removing its database cluster
+    (``scripts/test.sh``); then the wrapper is waited for, and the exception goes on.  So no
+    pytest it started outlives this process to write an observation, and no cluster is left
+    running.  The wrapper is never sent ``SIGKILL``, the one signal its trap cannot answer
+    (the coordinator's ruling on condition (c), option 1, 2026-10-15): :func:`subprocess.run`,
+    which this replaced, sends exactly that to its child on any exception, after a 0.25 s
+    grace for Ctrl-C.  Measured that day through this module, against the real wrapper and a
+    test that sleeps: under a ``SIGTERM`` to the tool alone, and under a Ctrl-C to its whole
+    process group, the pytest was re-parented to PID 1, wrote its observation after the tool
+    had stopped, and the cluster was still up 30 s later; stopped as here (this code, under
+    both), pytest was gone within a second, the cluster removed and nothing written.
+
+    The output goes to a file, not a pipe, so the wrapper never waits on a reader: a second
+    exception while the wrapper is waited for abandons the wait and nothing else, and the
+    wrapper, already stopping, finishes its teardown writing to a file still open to it."""
+    with tempfile.TemporaryFile() as output:
+        # Pylint: consider-using-with -- a with statement's exit waits for the wrapper
+        # again, so a second exception could not abandon the wait.
+        proc = subprocess.Popen(  # pylint: disable=consider-using-with
+            args, cwd=root, env=env, stdout=output, stderr=subprocess.STDOUT)
+        try:
+            proc.wait()
+        except BaseException:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait()
+            raise
+        output.seek(0)
+        return proc.returncode, output.read()
 
 
 def merged_setups(out: Path) -> tuple[list[dict], list[str]]:
@@ -93,6 +143,48 @@ def unstartable(root: Path) -> list[str]:
     wrapper = root / WRAPPER
     return ([WRAPPER] if not (wrapper.is_file() and os.access(wrapper, os.X_OK)) else []) + (
         [PYLINT] if shutil.which(PYLINT) is None else [])
+
+
+def differences(root: Path) -> set[str]:
+    """Every path, repository-relative, at which the working tree differs from ``HEAD``: a
+    file changed, staged, deleted, or present, untracked and covered by no ignore rule.  The
+    ONE producer of the tree's state a record is judged in (:mod:`tools.split.split`):
+    ``record`` and ``apply`` refuse unless it is empty, and ``prove`` unless it is exactly
+    what ``apply`` writes.
+
+    Exactly ``git status --porcelain=v1 -z --untracked-files=all --no-renames``: each
+    untracked file listed by itself, never its directory, and a rename as the two paths it
+    touches, so every entry is one path, separated by a NUL and never quoted.  The ignore
+    rules are the repository's (``.gitignore``, ``.git/info/exclude``,
+    ``core.excludesFile``), so a file they cover is no difference: a ``__pycache__``, a
+    virtualenv.  ``--no-optional-locks`` keeps git from refreshing the index, so asking
+    writes nothing."""
+    proc = _git(root, "git status' output", b"\0", "--no-optional-locks", "status",
+                "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+    if proc.returncode:
+        raise RunError(f"git status failed: {proc.stderr.strip()}")
+    return {entry[3:] for entry in proc.stdout.split("\0") if entry}
+
+
+def environment(root: Path) -> str:
+    """The sha256 naming what this process makes a record's observations with: the
+    interpreter's version (``sys.version``), every distribution installed where it imports
+    from (``name==version``, sorted, so the order they are found in is no difference), and
+    ``git --version`` (the census and the importer walk are git's answers).  ``record``
+    keeps it, and ``apply`` and ``prove`` refuse a record whose environment is not this one
+    (the coordinator's ruling on delta review 2, REVISED (B) (2), 2026-10-15).
+
+    It is THIS interpreter's: the tool's.  The suite wrapper starts the ``pytest`` on
+    ``PATH`` and pylint is the ``pylint`` on ``PATH``, which are this interpreter's own
+    when the tool runs from the virtualenv that holds them, and are not covered when they
+    belong to another installation.  Nor are the environment variables a run reads
+    (``PYTEST_ADDOPTS``, the wrapper's ``PYTEST_MARKER_EXPR``)."""
+    proc = _git(root, "git --version's output", b"\n", "--version")
+    if proc.returncode:
+        raise RunError(f"git --version failed: {proc.stderr.strip()}")
+    held = [sys.version, proc.stdout.strip(), *sorted(
+        f"{dist.name}=={dist.version}" for dist in importlib.metadata.distributions())]
+    return hashlib.sha256("\n".join(held).encode("utf-8")).hexdigest()
 
 
 def plan_gate(root: Path) -> tuple[int, str]:

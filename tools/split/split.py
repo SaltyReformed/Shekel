@@ -9,14 +9,30 @@ collection and every test's outcome through ``./scripts/test.sh``, every fixture
 up (refusing one whose reach the split would change), and pylint's messages for it and for
 each module that imports it, whose text it fingerprints; its ``meta.json``, written last,
 marks the record complete, and ``apply`` and ``prove`` refuse without one.  ``apply`` writes
-the node-id maps and the package, deletes the source, re-points the importers and runs the
-static proof, as ONE unit: a failure anywhere in it, the proof's included, or Ctrl-C undoes
-every write before it is reported, so no failure it reports leaves an unproved split in the
-tree.  A signal Python does not raise as an exception (by default ``SIGTERM`` and
-``SIGHUP``, and always ``SIGKILL``) ends the process where it stands, and runs no undo; nor
-does a machine that stops (:func:`tools.split._render.write`).  ``prove`` runs the static
-proof again and every run arm, and prints the block a commit body quotes when every arm
-passed.
+the package, deletes the source, re-points the importers, runs the static proof and writes
+the node-id maps, as ONE unit: a failure anywhere in it, the proof's included, Ctrl-C, or a
+``SIGTERM`` or ``SIGHUP`` undoes every write before it is reported, so no failure it
+reports leaves an unproved split in the tree (:func:`tools.split._render.write`).
+``prove`` runs the static proof again and every run arm, and prints the block a commit body
+quotes when every arm passed.
+
+A record is judged only in the repository state and the environment its observations were
+made in (the coordinator's ruling on delta review 2, REVISED (B), 2026-10-15): ``record``
+refuses unless the working tree is ``HEAD``'s, and keeps ``HEAD`` and the environment
+(:func:`tools.split._run.environment`); ``apply`` refuses unless both are the same and the
+tree is still ``HEAD``'s; ``prove`` refuses unless both are the same and the tree differs
+from ``HEAD`` at exactly the paths ``apply`` writes.  One ``HEAD`` covers every file git
+tracks that a record's meaning rests on: this tool, ``.pylintrc``, ``pytest.ini``, the
+pylint checkers, every conftest, ``scripts/test.sh`` and its database image's inputs, the
+app.  A file git ignores is in neither.
+
+``SIGKILL``, and a machine that stops, end an ``apply`` where it stands, with no undo.
+Before its proof passed, that leaves no id map, and a tree differing from ``HEAD`` at only
+part of what ``apply`` writes: a state every command refuses (``record`` and ``apply``: the
+tree is not ``HEAD``'s; ``prove``: the tree is not exactly the apply's), recovered by hand
+with ``git restore -- <the source> <each importer meta.json names>`` and ``git clean -fdx
+-- <the package directory, the source's path without .py>``, then ``apply`` again.  After
+it passed, only the id maps were left to write, so the tree holds the whole proved split.
 Exit status 0 means proved; 1 means refused or failed, with every reason printed; 2 means
 the command line was refused before anything ran (``apply`` or ``prove`` without
 ``--idmap``, or a plan, record or map inside the repository).
@@ -31,6 +47,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -76,10 +93,32 @@ _BEFORE_PYLINT, _BEFORE_IMPORTERS = "before_pylint.json", "before_importers_pyli
 #: observation with its processes' fixture-setup files: :func:`tools.split._run.discard`).
 _RECORD = (_META, _SOURCE, _BEFORE_PYLINT, _BEFORE_IMPORTERS, _BEFORE_COLLECT, _BEFORE_RUN)
 
-#: The node-id map ``apply`` keeps in the record: written inside the apply's unit, so it
-#: stays only when the whole apply succeeded, which makes it the mark that the record's
-#: split is applied.
+#: The node-id map ``apply`` keeps in the record: written inside the apply's unit, LAST,
+#: after its proof passed, so it stays only when the whole apply succeeded and, a process
+#: killed part-way included, exists only once the tree holds the whole proved split, which
+#: makes it the mark that the record's split is applied.
 _APPLIED = "idmap.json"
+
+#: The signals :func:`main` raises as :class:`Signalled`, so an apply's unit undoes them as
+#: it does Ctrl-C: ``kill`` and ``timeout`` send ``SIGTERM`` by default, and a terminal
+#: that closes sends ``SIGHUP``.
+_RAISED = (signal.SIGTERM, signal.SIGHUP)
+
+
+class Signalled(BaseException):
+    """A signal :func:`main` raises as an exception (:data:`_RAISED`), which Python would
+    otherwise answer by ending the process where it stands.  A ``BaseException``, as
+    :class:`KeyboardInterrupt` is, so nothing that catches errors catches it."""
+
+    def __init__(self, signum: int) -> None:
+        """The signal ``signum``, received."""
+        super().__init__(f"{signal.Signals(signum).name} received")
+        self.signum = signum
+
+
+def _raise(signum: int, _frame: object) -> None:
+    """The handler :func:`main` installs for each of :data:`_RAISED`."""
+    raise Signalled(signum)
 
 
 @dataclass(frozen=True)
@@ -137,6 +176,40 @@ def _head(root: Path) -> str:
     return git(root, "rev-parse", "HEAD").strip()
 
 
+def _clean(root: Path, then: str) -> None:
+    """Refuse unless the working tree is ``HEAD``'s (:func:`tools.split._run.differences`
+    empty); ``then`` ends the refusal, saying what to do and what was not done."""
+    found = run.differences(root)
+    if found:
+        raise Refusal(f"the working tree differs from HEAD at {len(found)} path(s), e.g. "
+                      f"{sorted(found)[:5]}, and a record is judged only in the repository "
+                      f"state it was taken in; {then}")
+
+
+def _held_to(ctx: Context, meta: dict, nothing: str) -> None:
+    """Refuse unless this process runs where the record was taken: ``HEAD`` the commit it
+    names, and the environment the one it holds (:func:`tools.split._run.environment`).  A
+    record holding no environment was written by another version of this tool, and is
+    refused alike.  ``nothing`` ends the refusal."""
+    head = _head(ctx.root)
+    if head != meta["head"]:
+        raise Refusal(f"HEAD is {head[:9]}, and the record was taken at {meta['head'][:9]}; "
+                      f"{nothing}")
+    if meta.get("environment") != run.environment(ctx.root):
+        raise Refusal("the record was taken with another interpreter, other installed "
+                      "distributions or another git, or by a version of this tool that did "
+                      f"not record them; {nothing}")
+
+
+def _write_set(ctx: Context, layout: Layout, meta: dict) -> set[str]:
+    """Every path ``apply`` writes in the tree, repository-relative: each file of the package
+    (the writer's own set, :func:`tools.split._render.render_all`'s), the source it deletes,
+    and each importer it re-points (the record's)."""
+    package = layout.plan.package
+    return ({str(package / name) for name in render_all(layout, line_limit(ctx.root))}
+            | {str(layout.plan.source)} | set(meta["importers"]))
+
+
 def _importer_record(rewrites: list[Rewrite], root: Path) -> dict[str, dict]:
     """Each importer the split re-points, by repository-relative path: its fingerprint and
     its rewrites, ``[line, last, old, new]``.  ``record`` keeps it, and ``apply`` refuses
@@ -192,16 +265,22 @@ def record(ctx: Context) -> list[str]:
     discarded, because it is what ``prove`` judges that split by (the coordinator's ruling
     on delta review 2's Medium-1, 2026-10-15: a second ``record`` into the directory of an
     applied split deleted its token and source, and ``prove`` then asked for a record no one
-    could take, the source being gone)."""
+    could take, the source being gone).
+
+    The first of those checks is the repository's: refused unless the working tree is
+    ``HEAD``'s, so ``HEAD``, which the token keeps with the environment, names every tracked
+    file the observations rest on (REVISED (B), the module docstring)."""
     if ctx.applied():
         raise Refusal(f"{ctx.into} holds a record whose split is applied; record into another "
                       "directory")
+    head = _head(ctx.root)
+    _clean(ctx.root, "commit or remove them, then record; nothing is recorded")
     source = ctx.root / ctx.plan.source
     layout = ctx.layout(source)
     render_all(layout, line_limit(ctx.root))
     importers = _importer_record(importer_rewrites(layout, ctx.root), ctx.root)
-    meta = {"source": str(ctx.plan.source), "sha256": _sha256(source),
-            "head": _head(ctx.root), "importers": importers}
+    meta = {"source": str(ctx.plan.source), "sha256": _sha256(source), "head": head,
+            "environment": run.environment(ctx.root), "importers": importers}
     unstartable = run.unstartable(ctx.root)
     if unstartable:
         raise Refusal(f"record cannot start {unstartable}; nothing is recorded")
@@ -223,9 +302,10 @@ def record(ctx: Context) -> list[str]:
 
 
 def apply(ctx: Context, idmap: Path) -> None:
-    """Write the id maps and the package, delete the source, re-point importers, and run the
-    static proof; refused, with nothing written, unless a complete record passed, is not
-    applied already, and the source and every importer are as it found them.  The writes and
+    """Write the package, delete the source, re-point importers, run the static proof and
+    write the id maps; refused, with nothing written, unless a complete record passed, is
+    not applied already, ``HEAD`` and the environment are the record's and the working tree
+    is ``HEAD``'s, and the source and every importer are as it found them.  The writes and
     the proof are ONE unit (:func:`tools.split._render.write`): a failed write, a static
     proof that fails on what was written, or an interrupt undoes every file the apply wrote,
     the id maps beside the tree included, and the refusal names the failure."""
@@ -233,6 +313,8 @@ def apply(ctx: Context, idmap: Path) -> None:
     if ctx.applied():
         raise Refusal(f"{ctx.into}: already applied (it holds the id map an apply keeps only "
                       "when it succeeded); nothing is applied")
+    _held_to(ctx, meta, "record again; nothing is applied")
+    _clean(ctx.root, "undo them, or commit them and record again; nothing is applied")
     source = ctx.root / ctx.plan.source
     if not source.is_file():
         raise Refusal(f"{source} is not there to split; nothing is applied")
@@ -256,6 +338,19 @@ def apply(ctx: Context, idmap: Path) -> None:
         if failures:
             raise Refusal(f"the static proof failed on the split as written "
                           f"({len(failures)} failure(s): {'; '.join(failures)})")
+
+
+def _written_alone(ctx: Context, layout: Layout, meta: dict) -> None:
+    """Refuse unless the working tree differs from ``HEAD`` at exactly the paths ``apply``
+    writes (:func:`_write_set`), naming each path written and not different, and each
+    different and not written."""
+    written, found = _write_set(ctx, layout, meta), run.differences(ctx.root)
+    if found != written:
+        missing, beside = sorted(written - found), sorted(found - written)
+        raise Refusal(f"the working tree must differ from HEAD at exactly the paths apply "
+                      f"writes: {len(missing)} written by apply and not different, e.g. "
+                      f"{missing[:5]}; {len(beside)} different and not written by apply, e.g. "
+                      f"{beside[:5]}")
 
 
 def _run_arms(ctx: Context, layout: Layout, mapping: dict[str, str]) -> tuple[list[str], dict]:
@@ -294,9 +389,15 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     """Every arm of the proof; print the block a commit body quotes only when every arm
     passed.  The block's fixed sentences claim that each arm held, so printed beside a
     failure they would state what the run refuted (the branch's neutral review, F7).
-    Refused without a complete record."""
-    ctx.meta()
+    Refused without a complete record, unless ``HEAD`` and the environment are the record's,
+    and unless the working tree differs from ``HEAD`` at EXACTLY the paths ``apply`` writes
+    (:func:`_write_set`): fewer is an apply killed part-way (``SIGKILL``; the coordinator's
+    ruling on 3B-2's signal fork, (d)), so it is never proved, and more is a change beside
+    the split, which no arm is judging (REVISED (B))."""
+    meta = ctx.meta()
+    _held_to(ctx, meta, "a split is proved where it was recorded, before it is committed")
     layout = ctx.layout(ctx.into / _SOURCE)
+    _written_alone(ctx, layout, meta)
     recorded = _record_verdict(ctx, layout)
     failures, origins = _static_arms(ctx, layout)
     failures = [f"record: {f}" for f in recorded[0]] + failures
@@ -440,7 +541,15 @@ def main(argv: list[str] | None = None, root: Path = REPO) -> int:
     the rest, never a traceback; a decode, JSON or ini error is refused where it is read
     (:mod:`tools.split._source`), naming the file.  A failed git command
     (:class:`tools.ci.gitcmd.GitError`, as a repository with no commit gives ``record``) is
-    caught here too, for every git call at once."""
+    caught here too, for every git call at once.
+
+    While the command runs, ``SIGTERM`` and ``SIGHUP`` raise :class:`Signalled`, which an
+    apply's unit undoes as it does Ctrl-C, and which stops a suite run through the wrapper's
+    own teardown (:func:`tools.split._run._wrapper_run`); like Ctrl-C, nothing swallows it,
+    so it ends the run with its traceback, an apply's carrying the undo's note (the
+    coordinator's ruling on 3B-2's signal fork, 2026-10-15).  The handlers that were there
+    before are put back
+    however the command ends, so a caller in the same process (a test) keeps its own."""
     args = parser().parse_args(argv)
     if args.command != "record" and args.idmap is None:
         parser().error("apply and prove need --idmap")
@@ -450,6 +559,16 @@ def main(argv: list[str] | None = None, root: Path = REPO) -> int:
         parser().error(f"{inside} must lie outside the repository: the census reads every "
                        "file git does not ignore, and a plan or a record names the old module "
                        "throughout")
+    previous = {signum: signal.signal(signum, _raise) for signum in _RAISED}
+    try:
+        return _command(args, root)
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def _command(args: argparse.Namespace, root: Path) -> int:
+    """Run the command ``args`` names in ``root``, and report it (:func:`main`)."""
     try:
         ctx = Context(plan=load_plan(args.plan), root=root, into=args.into)
         if args.command == "record":

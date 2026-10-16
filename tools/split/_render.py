@@ -8,8 +8,8 @@ source's order and blank-line groups), a split class's ``class`` line and one-li
 docstring, and its mixin's ``class`` line.  Nothing is written until every output has
 rendered under the line budget and every importer's line has been re-read (:func:`write`),
 so a refusal leaves the tree as it was; and an apply that fails anywhere, its proof of what
-it wrote included, puts it back, or names what it could not (all but a process ended by a
-signal Python does not raise as an exception: :func:`write`).
+it wrote included, puts it back, or names what it could not (all but a process killed by
+``SIGKILL``, or a machine that stops: :func:`write`).
 
 Every line it renders carries its mark: an :class:`Origin` (the source line it copies, or
 the source statement an import was filtered from), :data:`PROVENANCE` for a composed line
@@ -346,9 +346,12 @@ def _hold(path: Path) -> Held:
 @contextlib.contextmanager
 def write(layout: Layout, root: Path, texts: dict[str, str], rewrites: list[Rewrite],
           beside: dict[Path, str]) -> Iterator[None]:
-    """Write one apply as ONE unit: each file ``beside`` the tree (the id maps, text by path),
-    then the package, the source's deletion and the importers' rewrites; the body of the
-    ``with`` statement (the apply's proof of what was written) runs inside the same unit.
+    """Write one apply as ONE unit: the package, the source's deletion and the importers'
+    rewrites; then the body of the ``with`` statement (the apply's proof of what was
+    written), inside the same unit; then, LAST, each file ``beside`` the tree (the id maps,
+    text by path), so a map exists only for a write whose proof passed, a process killed
+    part-way included (the coordinator, 3B-2b, 2026-10-15: written first, the record's map,
+    which marks its split applied, could mark a half-written tree).
 
     Every check that writes nothing runs before the first write, so a refusal leaves the tree
     as it was (the branch's neutral review, F8a: the importers' re-check ran after the package
@@ -363,14 +366,16 @@ def write(layout: Layout, root: Path, texts: dict[str, str], rewrites: list[Rewr
     from before the first write, so every file it created is removed and every file it
     changed put back, its mode with it.  An :class:`OSError` (a full disk, a permission)
     becomes a :class:`tools.split._run.RunError`, and a :class:`Refusal` or ``RunError`` stays
-    one, each saying what was undone or naming what could not be; anything else (Ctrl-C,
-    which Python raises as :class:`KeyboardInterrupt`) propagates as it was, after the undo,
-    with a note saying the same.  A signal Python does not raise as an exception (by default
-    ``SIGTERM`` and ``SIGHUP``, and always ``SIGKILL``) ends the process where it stands, and
-    a machine that stops does too: no undo runs, and the tree is left as far as the write
-    got.  The unit undone is THE APPLY, not the
-    tree (the same ruling): lane A maps test ids by the id maps, so a map left for a split
-    that never landed would mislead it.  Each held state is taken before any write, so two
+    one, each saying what was undone or naming what could not be; anything else propagates
+    as it was, after the undo, with a note saying the same: Ctrl-C, which Python raises as
+    :class:`KeyboardInterrupt`, and ``SIGTERM`` and ``SIGHUP``, which
+    :func:`tools.split.split.main` raises as :class:`tools.split.split.Signalled`.
+    ``SIGKILL``, and a machine that stops, end the process where it stands: no undo runs,
+    and the tree is left as far as the write got, with an id map only if the proof had
+    passed (:mod:`tools.split.split` names what each command does then).  The unit undone
+    is THE APPLY, not the tree
+    (the same ruling): lane A maps test ids by the id maps, so a map left for a split that
+    never landed would mislead it.  Each held state is taken before any write, so two
     spellings of one path beside the tree are undone alike."""
     package = root / layout.plan.package
     if package.exists():
@@ -387,9 +392,9 @@ def write(layout: Layout, root: Path, texts: dict[str, str], rewrites: list[Rewr
     created: list[Path] = []
     changed: list[Path] = []
     try:
-        _write_beside(beside, held, (created, changed))
         _write_steps(package, texts, source, edited, (created, changed))
         yield
+        _write_beside(beside, held, (created, changed))
     except OSError as exc:
         raise RunError(f"the apply failed ({exc}); {_undone(created, changed, originals)}"
                        ) from exc
@@ -420,7 +425,7 @@ def _rewritten(rewrites: list[Rewrite]) -> tuple[dict[Path, Held], dict[Path, li
 
 def _write_beside(beside: dict[Path, str], held: dict[Path, Held],
                   progress: tuple[list[Path], list[Path]]) -> None:
-    """:func:`write`'s first writes, each file beside the tree; each goes into ``progress``
+    """:func:`write`'s last writes, each file beside the tree; each goes into ``progress``
     BEFORE it is written: changed when ``held`` holds it from before, else created."""
     created, changed = progress
     for path, text in beside.items():
@@ -457,8 +462,8 @@ def _undone(created: list[Path], changed: list[Path], originals: dict[Path, Held
 
 def _undo(created: list[Path], changed: list[Path], originals: dict[Path, Held]
           ) -> list[str]:
-    """Undo a failed :func:`write`: remove what it created, newest first (the package's
-    files, then the package, then the files beside the tree), which frees their space before
+    """Undo a failed :func:`write`: remove what it created, newest first (the files beside
+    the tree, then the package's files, then the package), which frees their space before
     anything is put back; then write back, from its bytes before the write, each file it
     began to change that no longer holds them (a step that failed before it touched its file
     left nothing to put back), and give each its permission bits from before (a deleted

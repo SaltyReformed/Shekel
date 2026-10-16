@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import shutil
+import signal
 from pathlib import Path
 
 import pytest
@@ -103,8 +105,7 @@ def _split(tmp_path, monkeypatch):
     wrapper.parent.mkdir()
     wrapper.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
     wrapper.chmod(0o755)
-    scratch.run(root, "add", "-A")
-    scratch.run(root, "commit", "--quiet", "-m", "the sample")
+    committed(root, "the sample")
     stubs = Stubs(dynamic.id_map(layout_of(root), BEFORE_IDS))
     monkeypatch.setattr(run, "observe", stubs.observe)
     monkeypatch.setattr(run, "pylint_messages", stubs.pylint)
@@ -120,6 +121,13 @@ def _split(tmp_path, monkeypatch):
     command.stubs, command.root = stubs, root
     command.into, command.idmap = tmp_path / "record", tmp_path / "test_sample.idmap.json"
     return command
+
+
+def committed(root: Path, message: str) -> None:
+    """Commit every change in ``root``'s working tree, so a case's edit is ``HEAD``'s and the
+    tree is clean, as ``record`` and ``apply`` require (REVISED (B))."""
+    scratch.run(root, "add", "-A")
+    scratch.run(root, "commit", "--quiet", "-m", message)
 
 
 def applied(split) -> None:
@@ -297,9 +305,11 @@ def test_the_block_counts_the_fixtures_the_record_set_up(split, capsys):
 
 @pytest.mark.parametrize("change", ["an importer added", "an importer edited"])
 def test_apply_refuses_importers_the_record_did_not_take(split, capsys, change):
-    """apply re-derives the importers and refuses, before any write, unless they and their
-    text are what record fingerprinted and linted (the review's M1: a module importing the
-    source added after record was re-pointed and never linted)."""
+    """apply refuses, before any write, importers record did not fingerprint and lint (the
+    review's M1: a module importing the source added after record was re-pointed and never
+    linted).  Since REVISED (B) the change meets the clean-tree refusal first, which names
+    it; the importer re-check behind it can no longer fire through main for a tracked source
+    (the coordinator's ruling, 3B-2b: 3C deletes that re-check, and this case with it)."""
     assert split("record") == 0
     if change == "an importer added":
         (split.root / "tests/test_late.py").write_text(
@@ -310,23 +320,26 @@ def test_apply_refuses_importers_the_record_did_not_take(split, capsys, change):
     before = tree(split.root)
     capsys.readouterr()
     assert split("apply") == 1
-    assert ("REFUSED: the modules importing the source, or their text, changed since the "
-            "record; record again") in capsys.readouterr().err
+    named = "tests/test_late.py" if change == "an importer added" else IMPORTER
+    assert (f"REFUSED: the working tree differs from HEAD at 1 path(s), e.g. ['{named}']"
+            in capsys.readouterr().err)
     assert tree(split.root) == before
     assert not split.idmap.exists()
 
 
 def test_importers_are_found_wherever_git_does_not_ignore_them(split, capsys):
     """Every ``.py`` git does not ignore (the coordinator's ruling on review fork L7): a
-    tracked module outside the four directories the walk once read and an untracked one are
-    re-pointed, recorded and proved; an ignored one is no importer and is left as it was."""
+    tracked module outside the four directories the walk once read is re-pointed, recorded
+    and proved; an ignored one is no importer and is left as it was.  (An untracked one was a
+    case here; since REVISED (B) it is a tree record refuses, by
+    ``test_a_tree_that_is_not_heads_is_refused``.)"""
     text = "from tests.test_area.test_sample import _make\n"
-    found = ["migrations/check.py", IMPORTER, "tests/test_untracked.py"]
+    found = ["migrations/check.py", IMPORTER]
     (split.root / ".gitignore").write_text("build/\n", encoding="utf-8")
-    for path in ("migrations/check.py", "tests/test_untracked.py", "build/stale.py"):
+    for path in ("migrations/check.py", "build/stale.py"):
         (split.root / path).parent.mkdir(exist_ok=True)
         (split.root / path).write_text(text, encoding="utf-8")
-    scratch.run(split.root, "add", ".gitignore", "migrations/check.py")
+    committed(split.root, "a tracked importer, an ignored one")
     applied(split)
     assert sorted(json.loads((split.into / _META).read_text(encoding="utf-8"))["importers"]) \
         == found
@@ -345,6 +358,7 @@ def test_a_message_on_a_multi_line_imports_last_line_is_named(split, capsys):
     path = split.root / IMPORTER
     path.write_text(path.read_text(encoding="utf-8").replace(
         "import _make\n", "import (\n    _make,\n)\n"), encoding="utf-8")
+    committed(split.root, "a parenthesised import")
     applied(split)
     last = REPOINTED + 2
     split.stubs.importer_after = [{"path": IMPORTER, "line": last, "message": "x",
@@ -360,6 +374,7 @@ def test_an_importer_with_carriage_returns_is_refused(split, capsys):
     along with its import (the review's L6): refused at record."""
     path = split.root / IMPORTER
     path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    committed(split.root, "CRLF line endings")
     assert split("record") == 1
     assert f"{path}: a carriage return in its line endings" in capsys.readouterr().err
 
@@ -368,20 +383,23 @@ def test_carriage_returns_in_a_module_the_writer_leaves_alone_are_accepted(split
     """Only a module the writer edits is refused: one that merely names the source keeps its
     line endings, because nothing rewrites it."""
     (split.root / "tests/test_notes.py").write_bytes(b'"""Names test_sample in prose."""\r\n')
+    committed(split.root, "a module naming the source in prose")
     assert split("record") == 0
 
 
 @pytest.mark.parametrize("step", RECORD_STEPS)
 def test_a_record_that_stops_part_way_leaves_no_record(split, capsys, step):
-    """A complete record, then the source edited and recorded again into the same directory,
-    stopped at ``step``: no token, so apply refuses with the tree as it was, and prove
-    refuses (the delta review's H-A: the second record wrote its token first, and apply and
-    prove read the first record's observations as the edited source's)."""
+    """A complete record, then the source edited (and committed, as record requires) and
+    recorded again into the same directory, stopped at ``step``: no token, so apply refuses
+    with the tree as it was, and prove refuses (the delta review's H-A: the second record
+    wrote its token first, and apply and prove read the first record's observations as the
+    edited source's)."""
     assert split("record") == 0
     source = split.root / SOURCE
     source.write_text(source.read_text(encoding="utf-8").replace('"""One."""',
                                                                '"""One, edited."""'),
                       encoding="utf-8")
+    committed(split.root, "the source edited")
     split.stubs.stop_at = step
     capsys.readouterr()
     assert split("record") == 1
@@ -597,8 +615,9 @@ def test_an_apply_that_fails_part_way_changes_nothing_anywhere(split, capsys, mo
     """An OSError at ``step`` undoes THE APPLY, not the tree alone (the coordinator's ruling
     on commit 3b's (A)): the tree, the record directory and the ``--idmap`` file are as they
     were, a map an earlier apply left there put back and a new one removed.  The id maps
-    are written first, so the first case fails with ``--idmap`` written and the package
-    not; the others with both maps and the package written."""
+    are written last, after the proof, so the first case fails with the package, the
+    source's deletion, the importer's rewrite and ``--idmap`` written; the others before
+    either map."""
     assert split("record") == 0
     if earlier:
         split.idmap.write_bytes(b'{"an": "earlier apply\'s map"}\n')
@@ -621,6 +640,9 @@ def test_an_apply_that_fails_part_way_changes_nothing_anywhere(split, capsys, mo
 
 #: What a write that undid itself says.
 UNDONE = "every file it created is removed and every file it changed put back"
+
+#: The signals main raises as an exception, by name.
+SIGNALS = {"SIGTERM": signal.SIGTERM, "SIGHUP": signal.SIGHUP}
 
 
 class TestTheApplyIsOneUnit:
@@ -669,6 +691,50 @@ class TestTheApplyIsOneUnit:
         assert caught.value.__notes__ == [f"tools.split: the apply was undone: {UNDONE}"]
         assert everything(split) == before
 
+    @pytest.mark.parametrize("signum", SIGNALS.values(), ids=SIGNALS)
+    @pytest.mark.parametrize("where", ["in the proof", "writing the record's id map"])
+    def test_a_signal_undoes_the_apply(self, split, monkeypatch, signum, where):
+        """SIGTERM or SIGHUP to the process inside the unit: main raises it as Signalled, so
+        the apply is undone as Ctrl-C's is, the tree and both id maps byte-identical (an
+        earlier apply's ``--idmap`` put back), and the handler there before is there again
+        (the coordinator's ruling on 3B-2's signal fork, (a) and (b)).  The proof sees no id
+        map written yet: they are the unit's last writes."""
+        assert split("record") == 0
+        split.idmap.write_bytes(b'{"an": "earlier apply\'s map"}\n')
+        before, seen = everything(split), []
+
+        def signalled():
+            seen.append((tree(split.root), everything(split)[1:]))
+            os.kill(os.getpid(), signum)
+            return []
+        if where == "in the proof":
+            monkeypatch.setattr(cli, "prove_static", lambda *_: signalled())
+        else:
+            real = Path.write_text
+
+            def write_text(path, *args, **kwargs):
+                if path == split.into / "idmap.json":
+                    signalled()
+                return real(path, *args, **kwargs)
+            monkeypatch.setattr(Path, "write_text", write_text)
+        kept = []
+
+        def keep(received, _frame):
+            kept.append(received)
+        previous = signal.signal(signum, keep)
+        try:
+            with pytest.raises(cli.Signalled) as caught:
+                split("apply")
+            restored = signal.getsignal(signum)
+        finally:
+            signal.signal(signum, previous)
+        assert (caught.value.signum, kept, restored) == (signum, [], keep)
+        assert f"{PACKAGE}/test_first.py" in seen[0][0] and SOURCE not in seen[0][0]
+        if where == "in the proof":
+            assert seen[0][1] == before[1:]
+        assert caught.value.__notes__ == [f"tools.split: the apply was undone: {UNDONE}"]
+        assert everything(split) == before
+
     def test_an_id_map_with_no_directory_is_refused_before_any_write(self, split, capsys,
                                                                     tmp_path):
         """``--idmap`` names a directory that does not exist: refused before anything is
@@ -707,8 +773,10 @@ def test_a_record_whose_split_is_applied_is_never_discarded(split, capsys, rever
 
 
 def _uncompilable(split, _monkeypatch, _tmp_path) -> None:
-    """The source no longer compiles."""
+    """The source no longer compiles (committed: record refuses a tree that is not HEAD's
+    before it reads the source)."""
     (split.root / SOURCE).write_text(SAMPLE + "\ndef (\n", encoding="utf-8")
+    committed(split.root, "the source broken")
 
 
 def _no_pylint(_split, monkeypatch, tmp_path) -> None:
@@ -717,8 +785,9 @@ def _no_pylint(_split, monkeypatch, tmp_path) -> None:
 
 
 def _wrapper_not_executable(split, _monkeypatch, _tmp_path) -> None:
-    """The suite wrapper is there, and cannot be started."""
+    """The suite wrapper is there, and cannot be started (committed, as above)."""
     (split.root / run.WRAPPER).chmod(0o644)
+    committed(split.root, "the wrapper not executable")
 
 
 def _into_not_writable(split, _monkeypatch, _tmp_path) -> None:
@@ -760,3 +829,162 @@ def test_a_record_that_cannot_start_leaves_the_last_record_as_it_was(split, caps
         assert tree(split.into) == before
     finally:
         split.into.chmod(0o700)
+
+
+def test_main_puts_back_the_signal_handlers_it_found(split):
+    """main raises SIGTERM and SIGHUP as Signalled only while its command runs: after it, the
+    handlers there before are there again, so a caller in the same process keeps its own (the
+    coordinator's ruling on 3B-2's signal fork, (a))."""
+    def mine(_received, _frame):
+        """A handler of the caller's own."""
+    previous = {signum: signal.signal(signum, mine) for signum in SIGNALS.values()}
+    try:
+        assert split("record") == 0
+        assert [signal.getsignal(signum) for signum in SIGNALS.values()] == [mine, mine]
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+#: The tracked file most of the cases below change.
+TRACKED = "tests/shared.py"
+
+
+def _edited(root: Path) -> None:
+    """A tracked file edited."""
+    path = root / TRACKED
+    path.write_text(path.read_text(encoding="utf-8") + "# edited\n", encoding="utf-8")
+
+
+def _importer_added(root: Path) -> None:
+    """An untracked module importing the source."""
+    (root / "tests/test_late.py").write_text("from tests.test_area.test_sample import _make\n",
+                                             encoding="utf-8")
+
+
+def _staged(root: Path) -> None:
+    """A new file added to the index and not committed."""
+    (root / "notes.txt").write_text("staged\n", encoding="utf-8")
+    scratch.run(root, "add", "notes.txt")
+
+
+#: Each way the working tree can differ from HEAD: the one path it differs at, and the change.
+DIFFERENCES = {
+    "a tracked file edited": (TRACKED, _edited),
+    "a tracked file deleted": (TRACKED, lambda root: (root / TRACKED).unlink()),
+    "a tracked file's mode changed": (TRACKED, lambda root: (root / TRACKED).chmod(0o755)),
+    "an untracked module importing the source": ("tests/test_late.py", _importer_added),
+    "a new file staged": ("notes.txt", _staged),
+}
+
+
+#: What each command says it did not do.
+DONE = {"record": "recorded", "apply": "applied"}
+
+
+@pytest.mark.parametrize("difference", DIFFERENCES)
+@pytest.mark.parametrize("command", ["record", "apply"])
+def test_a_tree_that_is_not_heads_is_refused(split, capsys, command, difference):
+    """record and apply each refuse a working tree that differs from HEAD, naming where,
+    before anything is written or discarded: the earlier record, the tree and the id maps are
+    as they were (the coordinator's ruling on delta review 2, REVISED (B) (1))."""
+    assert split("record") == 0
+    path, change = DIFFERENCES[difference]
+    change(split.root)
+    before = everything(split)
+    capsys.readouterr()
+    assert split(command) == 1
+    err = capsys.readouterr().err
+    assert f"REFUSED: the working tree differs from HEAD at 1 path(s), e.g. ['{path}']" in err
+    assert err.endswith(f"nothing is {DONE[command]}\n")
+    assert everything(split) == before
+
+
+def _moved(split, _monkeypatch) -> None:
+    """A commit after the record: HEAD moves, and the tree is HEAD's."""
+    (split.root / "README.md").write_text("A commit after the record.\n", encoding="utf-8")
+    committed(split.root, "after the record")
+
+
+def _another_environment(_split, monkeypatch) -> None:
+    """The process runs with another interpreter, distributions or git than record's."""
+    monkeypatch.setattr(run, "environment", lambda _root: "0" * 64)
+
+
+def _no_environment(split, _monkeypatch) -> None:
+    """A record an earlier version of the tool wrote, holding no environment."""
+    path = split.into / _META
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    del meta["environment"]
+    path.write_text(json.dumps(meta), encoding="utf-8")
+
+
+#: Each state a record is not judged in, as a change made after it.
+ELSEWHERE = {"HEAD moved": _moved, "another environment": _another_environment,
+             "no environment kept": _no_environment}
+
+#: What each command's refusal ends with.
+TAILS = {"apply": "record again; nothing is applied",
+         "prove": "a split is proved where it was recorded, before it is committed"}
+
+
+@pytest.mark.parametrize("state", ELSEWHERE)
+@pytest.mark.parametrize("command", ["apply", "prove"])
+def test_a_record_is_judged_only_where_it_was_taken(split, capsys, monkeypatch, command,
+                                                    state):
+    """apply and prove each refuse unless HEAD and the environment are the record's; a record
+    holding no environment is another version's (REVISED (B) (1) and (2)).  For prove, HEAD
+    moved by committing the split itself, the tree then HEAD's."""
+    assert split("record") == 0
+    if command == "prove":
+        assert split("apply") == 0
+    taken = scratch.run(split.root, "rev-parse", "HEAD")
+    ELSEWHERE[state](split, monkeypatch)
+    before = everything(split)
+    capsys.readouterr()
+    assert split(command) == 1
+    said = (f"HEAD is {scratch.run(split.root, 'rev-parse', 'HEAD')[:9]}, and the record was "
+            f"taken at {taken[:9]}") if state == "HEAD moved" else (
+        "the record was taken with another interpreter, other installed distributions or "
+        "another git, or by a version of this tool that did not record them")
+    assert f"REFUSED: {said}; {TAILS[command]}" in capsys.readouterr().err
+    assert everything(split) == before
+
+
+def _package_only(split) -> None:
+    """An apply killed once the package was written: the source and importer as before."""
+    scratch.run(split.root, "checkout", "--quiet", "--", SOURCE, IMPORTER)
+
+
+def _part_of_the_package(split) -> None:
+    """An apply killed while the package was written."""
+    _package_only(split)
+    for name in ("test_first.py", "test_big_late.py"):
+        (split.root / PACKAGE / name).unlink()
+
+
+#: Each tree prove refuses after an apply, and the two lists its refusal names.
+NOT_THE_WRITES = {
+    "killed once the package was written": (_package_only, [SOURCE, IMPORTER], []),
+    "killed while the package was written": (_part_of_the_package, [
+        SOURCE, f"{PACKAGE}/test_big_late.py", f"{PACKAGE}/test_first.py", IMPORTER], []),
+    "a change beside the split": (
+        lambda split: (split.root / "notes.txt").write_text("x\n", encoding="utf-8"),
+        [], ["notes.txt"]),
+}
+
+
+@pytest.mark.parametrize("shape", NOT_THE_WRITES)
+def test_prove_refuses_a_tree_other_than_what_apply_wrote(split, capsys, shape):
+    """prove refuses unless the tree differs from HEAD at EXACTLY the paths apply writes: a
+    partial write set (an apply ``SIGKILL`` ended) is never proved, and a change beside the
+    split is judged by no arm (the coordinator's ruling on 3B-2's signal fork, (d))."""
+    applied(split)
+    change, missing, beside = NOT_THE_WRITES[shape]
+    change(split)
+    capsys.readouterr()
+    assert split("prove") == 1
+    assert ("REFUSED: the working tree must differ from HEAD at exactly the paths apply "
+            f"writes: {len(missing)} written by apply and not different, e.g. {missing}; "
+            f"{len(beside)} different and not written by apply, e.g. {beside}"
+            in capsys.readouterr().err)
