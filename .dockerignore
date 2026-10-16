@@ -1,188 +1,82 @@
-# Shekel Budget App -- Docker build context exclusions
+# Shekel Budget App -- Docker build context: an ALLOWLIST
 #
-# Closes audit finding F-113.  Goal: ship the smallest production
-# image that still supports every container-side workflow documented
-# in docs/runbook.md and entrypoint.sh.
+# Closes audit finding F-113 (ship only what the container runs) and plan
+# step balance:X-do's BAL-625.  The Dockerfile's ``COPY --chown=shekel:shekel
+# . .`` copies the WHOLE build context minus what this file excludes.  This
+# file used to list what to leave out, so every new file shipped by default:
+# by 2026-10-16 the image carried tools/, the linters' configs and host-only
+# shell scripts beside the ones it named, and an image built from a host
+# checkout also carried its lint cache and every ``__pycache__`` its runs had
+# left (the bare ``__pycache__`` pattern matched only the context's root),
+# while the file still named files since deleted.  Now ``*`` leaves
+# out everything, and the ``!`` lines below bring back exactly what the image
+# needs.  A file the image needs that is missing here fails loudly (the
+# container cannot start, or the script is absent); a file wrongly shipped
+# fails silently, which is why the default is out.
 #
-# What MUST live inside the image:
-#   - app/                      Flask application package
-#   - migrations/               Alembic migration history (used by
-#                               flask db upgrade in entrypoint.sh and
-#                               docker exec ops)
-#   - scripts/init_db.sql       Schema bootstrap (entrypoint.sh)
-#   - scripts/init_db_role.sql  Role provisioning (entrypoint.sh)
-#   - scripts/init_database.py  Step 3, one transaction (entrypoint.sh)
-#   - scripts/seed_user.py      Seed initial owner (entrypoint.sh +
-#                               docker exec ops)
-#   - scripts/seed_ref_tables.py    Seed lookup tables (docker exec repair)
-#   - scripts/seed_companion.py     Seed companion user (docker exec)
-#   - scripts/audit_cleanup.py  Audit log retention (docker exec)
-#   - scripts/integrity_check.py    Integrity sweep (docker exec)
-#   - scripts/_integrity_*.py   Its check families + shared types
-#   - scripts/reset_mfa.py      Operator MFA reset (docker exec)
-#   - scripts/rotate_sessions.py    Session invalidation (docker exec)
-#   - scripts/rotate_totp_key.py    Key rotation (docker exec)
-#   - scripts/_script_lib.py    Shared CLI helpers the runtime scripts
-#                               above import (run_in_app_context etc.)
-#   - alembic.ini               Alembic config
-#   - entrypoint.sh             ENTRYPOINT
-#   - gunicorn.conf.py          gunicorn config
-#   - requirements.txt          Pip metadata reference (deps already
-#                               built into /opt/venv in stage 1, but
-#                               kept for forensic ``pip freeze``-style
-#                               diffing inside a debugging exec)
-#   - run.py                    Flask app factory entrypoint
-#
-# Everything else listed below is dev-time tooling, host-side ops
-# scripts, build context noise, or documentation -- none of which is
-# referenced from inside the container.
+# Adding a file the container runs means adding its line here.  The
+# docker-marked tests in tests/test_deploy/test_seed_credential_hygiene.py
+# build the context with docker itself and grade what it holds.
 
-# ── Version control ────────────────────────────────────────────────
-.git
-.gitignore
+*
 
-# ── Environment & secrets ──────────────────────────────────────────
-# .env files contain live credentials; never bake into the image.
-# .env.example is exempted so the image carries the documentation
-# template (referenced by docs/runbook_secrets.md procedures).
-.env
-.env.*
+# ── The application ────────────────────────────────────────────────
+#   app/              the Flask application package
+#   run.py            the module gunicorn serves (Dockerfile CMD run:app)
+#   gunicorn.conf.py  gunicorn's config (Dockerfile CMD)
+#   entrypoint.sh     the image's ENTRYPOINT
+#   migrations/       Alembic's history (scripts/init_database.py upgrades
+#                     through app/migration_runner.py, which reads it and
+#                     alembic.ini by path)
+#   alembic.ini       Alembic's config
+!app/
+!run.py
+!gunicorn.conf.py
+!entrypoint.sh
+!migrations/
+!alembic.ini
+
+# ── What entrypoint.sh runs at container start ─────────────────────
+!scripts/init_db.sql
+!scripts/init_db_role.sql
+!scripts/init_database.py
+!scripts/seed_user.py
+
+# ── What an operator runs inside the container (the ``docker exec``
+#    lines of docs/runbook.md, docs/runbook_secrets.md and
+#    docs/backup_runbook.md; seed_companion.py by its own usage line),
+#    and the modules those scripts import ────────────────────────────
+!scripts/seed_ref_tables.py
+!scripts/seed_companion.py
+!scripts/audit_cleanup.py
+!scripts/integrity_check.py
+!scripts/_integrity_*.py
+!scripts/reset_mfa.py
+!scripts/rotate_sessions.py
+!scripts/rotate_totp_key.py
+!scripts/_script_lib.py
+
+# ── Carried for the operator and the licence ───────────────────────
+#   requirements.txt  stage 1's ``COPY requirements.txt .`` reads it from
+#                     this same context (the build fails without it); the
+#                     image keeps it for a ``pip freeze`` diff in an exec
+#   .env.example      the configuration template docs/runbook_secrets.md
+#                     rebuilds a .env from; never a real .env, which the
+#                     last section leaves out wherever it sits
+#   LICENSE           the BSD 3-Clause notice, which a redistribution in
+#                     binary form must reproduce: the image is published
+!requirements.txt
 !.env.example
+!LICENSE
 
-# ── Python build artifacts ─────────────────────────────────────────
-__pycache__
-*.pyc
-*.pyo
-*.egg
-*.egg-info
-.eggs
-build
-dist
-
-# ── Virtualenvs ────────────────────────────────────────────────────
-# .venv:        Developer virtualenv (deps already installed into
-#               /opt/venv inside the image during stage 1).
-# .audit-venv:  ~437 MB virtualenv used by the audit-time scanner
-#               suite; host-only.
-.venv
-venv
-env
-.audit-venv
-
-# ── Test infrastructure ────────────────────────────────────────────
-# Tests are not runnable inside the slim runtime image (no pytest, no
-# test database fixtures); shipping them only inflates the layer.
-tests/
-.pytest_cache
-htmlcov
-.coverage
-coverage.xml
-pytest.ini
-
-# ── Dev-only toolchain configs ─────────────────────────────────────
-requirements-dev.txt
-.pylintrc
-.markdownlint.json
-.rumdl.toml
-
-# ── Logs & ephemeral state ─────────────────────────────────────────
-# logs/ is a host-side directory used by deploy/backup scripts.  The
-# app inside the container writes to stdout (captured by Docker's
-# json-file driver per Commit C-15), never to /home/shekel/app/logs.
-# state/ is created by entrypoint.sh when running under the dev
-# compose's host-bind mount; the production image ships a fresh
-# (empty) /home/shekel/app/state directory pre-created by the
-# Dockerfile to anchor the named-volume mount.
-logs/
-pgdata/
-state/
-*.log
-
-# ── Documentation ──────────────────────────────────────────────────
-# docs/ holds runbooks, audit reports, plans, and design docs -- all
-# operator-facing content.  The host-side checkout retains all of it
-# for the operator; the runtime container does not need any of it.
-# Top-level *.md files are the same story.
-docs/
-*.md
-
-# ── Editor / IDE / OS ──────────────────────────────────────────────
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
-
-# ── CI ─────────────────────────────────────────────────────────────
-.github/
-
-# ── Docker (don't include compose / Dockerfile in build context) ──
-# Dockerfile and compose files are read by ``docker build`` and
-# ``docker compose`` from the host; copying them into the image
-# would only confuse a forensic reader and leak the deploy topology.
-docker-compose*.yml
-Dockerfile
-.dockerignore
-
-# ── Deployment configs (mounted from host, not baked in) ───────────
-# nginx configs under deploy/ are bind-mounted into the nginx
-# container at runtime; the app container never reads them.  The
-# compose override at deploy/docker-compose.prod.yml is consumed by
-# ``docker compose`` on the host.  Audit finding F-021 / Commit C-32.
-deploy/
-
-# ── External service templates (host-side) ─────────────────────────
-# cloudflared/config.yml is a template installed on the host as
-# /etc/cloudflared/config.yml; it is not used by the app container.
-cloudflared/
-
-# ── Host-only diagnostics & monitoring ─────────────────────────────
-diagnostics/
-monitoring/
-
-# ── Claude Code session state ──────────────────────────────────────
-.claude/
-
-# ── One-time patches (kept in repo for git history, not runtime) ───
-amortization-fix.patch
-
-# ── Worktrees / temp artifacts ─────────────────────────────────────
-.worktrees/
-
-# ── Dev-only scripts ───────────────────────────────────────────────
-# scripts/ is mostly runtime-essential; entrypoint.sh runs five of
-# the .py / .sql files at container start and the runbook documents
-# many ``docker exec ... python scripts/...`` invocations.  Only the
-# strictly host-only or build-time scripts are excluded here.
-#
-# scripts/audit/  Audit-time supporting modules (host-only).
-# scripts/hooks/  Git / claude-code hooks (host-only).
-# scripts/vendor_google_fonts.py Vendoring step that runs at build
-#                 time on the host; fonts already shipped in
-#                 app/static/vendor/.
-# scripts/check_template_syntax.py CI/dev Jinja parse linter; never
-#                 invoked inside the container.
-# scripts/backup.sh, restore.sh, verify_backup.sh,
-# scripts/backup_retention.sh, deploy.sh, retire_stale_containers.sh
-#                 Host-side ops scripts that talk to ``docker`` from
-#                 outside the container.
-# scripts/generate_pg_cert.sh
-#                 Host-side cert generator (sudo, openssl) that
-#                 produces deploy/postgres/server.{crt,key} for the
-#                 shared-mode bind mount.  Runs once on the bare-metal
-#                 host before ``docker compose up`` -- never executed
-#                 inside the container.  Audit finding F-154 / Commit
-#                 C-37.
-scripts/audit/
-scripts/hooks/
-scripts/vendor_google_fonts.py
-scripts/check_template_syntax.py
-scripts/backup.sh
-scripts/backup_retention.sh
-scripts/restore.sh
-scripts/verify_backup.sh
-scripts/deploy.sh
-scripts/retire_stale_containers.sh
-scripts/generate_pg_cert.sh
+# ── Never shipped, even from inside a directory brought back above ─
+# The bytecode a host checkout's own runs leave beside the sources (Python
+# compiles from the sources without it), a .env holding live credentials,
+# and the suite's conftest.py.  Last, so they win over every ``!`` above;
+# the template .env.example is brought back after its own exclusion.
+**/__pycache__
+**/*.py[co]
+**/.env
+**/.env.*
+!.env.example
+**/conftest.py

@@ -208,10 +208,10 @@ Header "Release ok". The question lists, in plain words with each id after its w
 - every declared step, the value declared and its source;
 - every OTHER change to what the image ships, named UNREHEARSED (R-BAL281's interim). Find them:
   `git log --first-parent --format='%h %s' "$BASE".."$CUT"` gives one merge per pull request;
-  name each whose own diff (`git diff --stat <merge>^1 <merge> -- <paths>`) touches the paths
-  `.dockerignore`'s header lists as living in the image, or `Dockerfile`, and that no kit
-  rehearsed. Name `deploy/` and `.github/workflows/` changes too: the first change production's
-  deploy path, the second the image build that runs on `main`;
+  name each whose own diff (`git diff --stat <merge>^1 <merge> -- <paths>`) touches
+  `.dockerignore` (an allowlist), the paths its `!` lines bring into the image, or `Dockerfile`,
+  and that no kit rehearsed. Name `deploy/` and `.github/workflows/` changes too: the first change
+  production's deploy path, the second the image build that runs on `main`;
 - each kit's verdict, or that nothing needed rehearsal.
 
 Options: "Approve this release" or "Not now". "Not now" merges nothing (step 0's early end).

@@ -229,8 +229,9 @@ chmod 600 cosign.key
 mv cosign.key /etc/shekel/cosign.key
 ```
 
-Commit `deploy/cosign.pub` to the repo. Set the `COSIGN_PRIVATE_KEY` path in the host `.env` so
-`scripts/deploy.sh` can find it. The private key file MUST NOT be checked into git (`.gitignore`
+Commit `deploy/cosign.pub` to the repo. `/etc/shekel/cosign.key` is the path `scripts/deploy.sh`
+reads by default; for a key kept elsewhere, export `COSIGN_PRIVATE_KEY` in the shell that runs the
+script, which never reads `.env`. The private key file MUST NOT be checked into git (`.gitignore`
 already excludes `cosign.key*`).
 
 For CI builds, no keypair is needed: the workflow uses sigstore's keyless OIDC flow, so the

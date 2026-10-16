@@ -118,7 +118,9 @@ with AES-256 before being written to disk.
 # Generate a strong passphrase.
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 
-# Set the passphrase in the environment (add to your shell profile or .env).
+# Set the passphrase in the environment of the shell that runs the script.  No backup
+# script reads .env, and a cron line does not read your shell profile: give it the
+# passphrase too.
 export BACKUP_ENCRYPTION_PASSPHRASE="your-generated-passphrase"
 ```
 

@@ -670,8 +670,11 @@ jobs:
           pip install -r requirements-dev.txt
 
       # Version-pinned standalone binaries, extracted to ~/.local/bin via
-      # `find` so a change in an archive's internal layout cannot break the
-      # step. shellcheck is pinned to 0.11.0 specifically: the optional
+      # `find` so a binary that moves inside its archive still installs; a
+      # tool whose name matches anything but exactly ONE file refuses the
+      # step, naming the tool and what it found (plan step balance:X-do,
+      # BAL-625), rather than installing whichever match came first.
+      # shellcheck is pinned to 0.11.0 specifically: the optional
       # masked-errexit groups in .shellcheckrc need >= 0.10 and the runner's
       # preinstalled build may lag.
       - name: Install pinned binary linters
@@ -681,6 +684,7 @@ jobs:
           mkdir -p "${bin}"
           echo "${bin}" >> "${GITHUB_PATH}"
           tmp="$(mktemp -d)"
+          found_list="$(mktemp)"
           curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz | tar -xJf - -C "${tmp}"
           curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz | tar -xzf - -C "${tmp}"
           curl -fsSL https://github.com/crate-ci/typos/releases/download/v1.50.2/typos-v1.50.2-x86_64-unknown-linux-musl.tar.gz | tar -xzf - -C "${tmp}"
@@ -689,7 +693,15 @@ jobs:
           curl -fsSL -o "${tmp}/biome" "https://github.com/biomejs/biome/releases/download/@biomejs/biome@2.5.14/biome-linux-x64"
           curl -fsSL -o "${tmp}/hadolint" https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-Linux-x86_64
           for t in shellcheck actionlint typos gitleaks; do
-              install -m 0755 "$(find "${tmp}" -type f -name "${t}" | head -1)" "${bin}/${t}"
+              # find writes to a file, not a process substitution, so its own
+              # failure fails the step instead of hiding behind a count.
+              find "${tmp}" -type f -name "${t}" -print0 > "${found_list}"
+              mapfile -d '' -t found < "${found_list}"
+              if [ "${#found[@]}" -ne 1 ]; then
+                  echo "::error::expected exactly one '${t}' in the downloaded archives, found ${#found[@]}: ${found[*]}" >&2
+                  exit 1
+              fi
+              install -m 0755 "${found[0]}" "${bin}/${t}"
           done
           install -m 0755 "${tmp}/shfmt" "${bin}/shfmt"
           install -m 0755 "${tmp}/biome" "${bin}/biome"

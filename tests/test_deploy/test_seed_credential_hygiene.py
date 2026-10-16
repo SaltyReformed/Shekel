@@ -8,7 +8,10 @@ removed; polyglot audit OPS/SH-25), and F-113 (.dockerignore excludes
 dev-only files).  These tests are intentionally
 filesystem-and-text-based: they assert on the on-disk shape of the
 deployment artefacts that the Phase 6 audit reviewers will inspect,
-rather than booting a container to observe runtime behaviour.
+rather than booting a container to observe runtime behaviour.  The one
+exception is F-113's: what the image is built from is docker's answer,
+not a file's text, so ``TestTheBuildContextHoldsOnlyWhatTheImageRuns``
+asks docker (plan step balance:X-do).
 
 The runtime-behaviour assertions for the Python side of F-022 (env
 scrubbing in seed_user.py) live in
@@ -19,7 +22,10 @@ tests/test_routes/test_auth.py::TestRegistrationToggle (existing).
 """
 from __future__ import annotations
 
+import ast
+import json
 import re
+import shutil
 import subprocess
 import textwrap
 from pathlib import Path
@@ -398,15 +404,18 @@ class TestRegistrationDisabledByDefault:
 
 
 class TestDockerignoreCoverage:
-    """The image build context is trimmed to runtime essentials.
+    """The ``.dockerignore`` header names what the image keeps.
 
-    Asserts on the .dockerignore file contents directly because
-    invoking ``docker build`` to inspect the actual context would
-    require a Docker daemon and consume non-trivial CI time on every
-    suite run.  The file's text-based assertions are sufficient: a
-    pattern in .dockerignore is the source of truth for what gets
-    excluded, so source-level checks catch every regression that
-    matters.
+    What the build context HOLDS is graded by docker itself, in
+    ``TestTheBuildContextHoldsOnlyWhatTheImageRuns`` below: the per-line
+    checks this class used to make were re-expressed there on what they
+    protect (plan step balance:X-do, finding BAL-625; the developer's
+    rule-5 OK, 2026-10-16), because ``.dockerignore`` is now an allowlist
+    and a line in it says less than what docker builds from it.  The check
+    left here is NOW VACUOUS: the three names it looks for are the
+    allowlist's own ``!`` lines, so it passes with every comment deleted.
+    Whether it is deleted or narrowed to the comment lines is a rule-5
+    question for the developer, reported by that step and not decided here.
     """
 
     @pytest.fixture(scope="class")
@@ -414,129 +423,6 @@ class TestDockerignoreCoverage:
     def dockerignore_text(cls) -> str:
         """Return the full .dockerignore source as a string."""
         return DOCKERIGNORE.read_text(encoding="utf-8")
-
-    @pytest.fixture(scope="class")
-    @classmethod
-    def dockerignore_lines(cls, dockerignore_text: str) -> list[str]:
-        """Return the non-comment, non-blank lines of .dockerignore."""
-        return [
-            line.strip()
-            for line in dockerignore_text.splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        ]
-
-    @pytest.mark.parametrize("pattern", [
-        # Dev tooling
-        ".claude/",
-        ".audit-venv",
-        "amortization-fix.patch",
-        "diagnostics/",
-        "monitoring/",
-        "requirements-dev.txt",
-        "pytest.ini",
-        # Host-side configs not used by the app container
-        "deploy/",
-        "cloudflared/",
-        # Test infrastructure
-        "tests/",
-        ".pytest_cache",
-        # Build context noise
-        ".git",
-        ".github/",
-        ".vscode/",
-        # Secrets
-        ".env",
-        # Dev-only scripts (host-side or build-time)
-        "scripts/audit/",
-        "scripts/hooks/",
-        "scripts/vendor_google_fonts.py",
-        "scripts/backup.sh",
-        "scripts/restore.sh",
-        "scripts/deploy.sh",
-        "scripts/retire_stale_containers.sh",
-        # Host-side cert generator for shared-mode Postgres TLS
-        # (audit finding F-154 / Commit C-37).  Runs once on the
-        # bare-metal host with sudo + openssl; never executed
-        # inside the app container.
-        "scripts/generate_pg_cert.sh",
-    ])
-    def test_dockerignore_excludes_pattern(
-        self, dockerignore_lines: list[str], pattern: str,
-    ) -> None:
-        """Every audited dev-only path appears in .dockerignore."""
-        assert pattern in dockerignore_lines, (
-            f"{pattern} is not excluded by .dockerignore; the pattern "
-            "would be copied into the production image and either "
-            "(a) leak dev tooling to a future RCE, or (b) inflate the "
-            "image size with non-runtime files (audit finding F-113)"
-        )
-
-    def test_dockerignore_keeps_env_example(
-        self, dockerignore_text: str,
-    ) -> None:
-        """.env.example is exempted via a re-include line.
-
-        The image carries the documented template so an operator
-        running ``docker exec shekel-prod-app cat .env.example`` for
-        a forensic comparison sees the intended shape.
-        """
-        # The ``!`` prefix in .dockerignore re-includes a previously
-        # excluded path.  A regression that drops the ``!.env.example``
-        # line would silently exclude the example file.
-        assert "!.env.example" in dockerignore_text, (
-            ".dockerignore no longer re-includes .env.example via ``!`` "
-            "prefix; the documented template will not ship in the image"
-        )
-
-    @pytest.mark.parametrize("pattern", [
-        # Runtime-essential paths the image MUST carry.
-        "scripts/init_db.sql",
-        "scripts/init_db_role.sql",
-        "scripts/init_database.py",
-        "scripts/seed_user.py",
-        "scripts/seed_ref_tables.py",
-        "scripts/audit_cleanup.py",
-        "scripts/integrity_check.py",
-        # Its check families and their shared types (ruling R-BAL161):
-        # the sweep imports every one of them at startup.
-        "scripts/_integrity_core.py",
-        "scripts/_integrity_referential.py",
-        "scripts/_integrity_orphan.py",
-        "scripts/_integrity_balance.py",
-        "scripts/_integrity_consistency.py",
-        "scripts/reset_mfa.py",
-        "scripts/rotate_sessions.py",
-        "scripts/rotate_totp_key.py",
-        "scripts/seed_companion.py",
-        # Shared CLI helpers the runtime scripts above import; excluding
-        # it would break every docker exec script at import time.
-        "scripts/_script_lib.py",
-        "alembic.ini",
-        "entrypoint.sh",
-        "gunicorn.conf.py",
-        "run.py",
-        "requirements.txt",
-    ])
-    def test_dockerignore_does_not_exclude_runtime_path(
-        self, dockerignore_lines: list[str], pattern: str,
-    ) -> None:
-        """Runtime-essential files are NOT excluded by .dockerignore.
-
-        Catches a future maintainer broadly excluding ``scripts/`` or
-        similar without realising several of those files are needed
-        at container start.  See entrypoint.sh and docs/runbook.md
-        for the complete list of in-container script invocations.
-        """
-        # The path is excluded if (a) it appears verbatim in the
-        # ignore list, OR (b) any prefix component is excluded.  We
-        # check (a) directly; (b) is mostly covered by the negative
-        # parametrize list since the only directory exclusions we
-        # apply are ``scripts/audit/`` and ``scripts/hooks/`` --
-        # neither of which prefixes any runtime-essential path.
-        assert pattern not in dockerignore_lines, (
-            f"{pattern} is excluded by .dockerignore but is required "
-            "at runtime (entrypoint.sh or docker exec invocations)"
-        )
 
     def test_dockerignore_documents_intent(
         self, dockerignore_text: str,
@@ -559,6 +445,349 @@ class TestDockerignoreCoverage:
                 "runtime-essential file inventory without spelunking "
                 "entrypoint.sh"
             )
+
+
+# ──────────────────────────────────────────────────────────────────
+# F-113: the build context holds only what the image runs, by
+# docker's own answer
+# ──────────────────────────────────────────────────────────────────
+
+#: A Dockerfile that copies the build context, whole, onto an empty image --
+#: what the real Dockerfile's ``COPY --chown=shekel:shekel . .`` copies -- so
+#: BuildKit's local exporter writes back exactly what the context held.
+_CONTEXT_EXPORT_DOCKERFILE = "FROM scratch\nCOPY . /\n"
+
+#: Seconds one context export may take.  ``FROM scratch`` pulls nothing and
+#: the allowlisted context is about 1,100 files.
+_CONTEXT_EXPORT_TIMEOUT_S = 40
+
+#: The documents whose ``docker exec ... python scripts/<name>.py`` lines tell
+#: an operator to run a script INSIDE the container: the top-level docs and
+#: the two READMEs.  The dated records under docs/ subdirectories (audits/,
+#: historical/, plans/) govern nothing and are not read.
+_OPERATOR_DOCS = (
+    *sorted((REPO_ROOT / "docs").glob("*.md")),
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "deploy" / "README.md",
+)
+
+#: A ``scripts/`` file named in entrypoint.sh's text.
+_SCRIPT_PATH = re.compile(r"\bscripts/[A-Za-z0-9_]+\.(?:py|sql)\b")
+
+#: A script an operator document runs with ``docker exec``.
+_DOCKER_EXEC_SCRIPT = re.compile(
+    r"docker (?:compose )?exec\b[^\n`|]*?\bpython3?\s+(scripts/[A-Za-z0-9_]+\.py)",
+)
+
+#: The migration runner, which opens Alembic's config and history by path.
+_MIGRATION_RUNNER = REPO_ROOT / "app" / "migration_runner.py"
+
+#: A path the migration runner joins to the repository root.
+_REPO_ROOT_JOIN = re.compile(r'os\.path\.join\(\s*_REPO_ROOT,\s*"([^"]+)"\s*\)')
+
+#: Seconds ``git ls-files`` may take.
+_GIT_TIMEOUT_S = 30
+
+
+def _export_build_context(context: Path, dest: Path) -> set[str]:
+    """Return every file docker puts in the build context of ``context``.
+
+    Docker itself reads the context's ``.dockerignore`` (BuildKit's local
+    exporter writes the copied context to ``dest``), so the answer is docker's
+    matcher's, not a reimplementation of it: a second spelling of docker's
+    pattern rules would agree with itself exactly where it disagreed with
+    docker -- root anchoring, ``**`` and ``!`` precedence -- which is where
+    the old deny-list drifted unseen.
+
+    Returns:
+        The context's files, as paths relative to its root.
+    """
+    result = subprocess.run(
+        [
+            "docker", "build",
+            "--output", f"type=local,dest={dest}",
+            "--file", "-",
+            str(context),
+        ],
+        input=_CONTEXT_EXPORT_DOCKERFILE,
+        capture_output=True,
+        text=True,
+        timeout=_CONTEXT_EXPORT_TIMEOUT_S,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"docker could not build the context of {context}:\n{result.stderr}"
+    )
+    return {
+        path.relative_to(dest).as_posix()
+        for path in dest.rglob("*")
+        if not path.is_dir()
+    }
+
+
+def _dockerfile_exec_form(instruction: str) -> list[str]:
+    """Return the argument list of the Dockerfile's last exec-form ``instruction``."""
+    lines = [
+        line for line in DOCKERFILE.read_text(encoding="utf-8").splitlines()
+        if line.startswith(f"{instruction} [")
+    ]
+    assert lines, f"Dockerfile has no exec-form {instruction} line"
+    return json.loads(lines[-1][len(instruction):])
+
+
+def _scripts_imports(path: Path) -> set[str]:
+    """Return the ``scripts/<name>.py`` files the module at ``path`` imports.
+
+    Every ``scripts.<name>`` import anywhere in the module counts, a
+    function-local one included: over-counting only asks the context for a
+    file it should hold anyway.
+    """
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.ImportFrom) and node.module == "scripts":
+            found.update(f"scripts/{alias.name}.py" for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("scripts."):
+            found.add(node.module.replace(".", "/") + ".py")
+        elif isinstance(node, ast.Import):
+            found.update(
+                alias.name.replace(".", "/") + ".py"
+                for alias in node.names if alias.name.startswith("scripts.")
+            )
+    return found
+
+
+def _tracked(*paths: str) -> set[str]:
+    """Return the tracked files at, or under, each repository-relative path."""
+    result = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "-z", "--", *paths],
+        capture_output=True, text=True, timeout=_GIT_TIMEOUT_S, check=True,
+    )
+    return {name for name in result.stdout.split("\0") if name}
+
+
+def _packages_imported_by(path: Path) -> set[str]:
+    """Return this repository's top-level packages the module at ``path`` imports."""
+    names: list[str] = []
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.ImportFrom) and node.module:
+            names.append(node.module)
+        elif isinstance(node, ast.Import):
+            names.extend(alias.name for alias in node.names)
+    return {
+        name.split(".")[0] for name in names
+        if (REPO_ROOT / name.split(".")[0] / "__init__.py").is_file()
+    }
+
+
+def _files_the_image_runs() -> set[str]:
+    """Return the files the image runs, each read off the file that runs it.
+
+    Seven consumers, and the static closure of their ``scripts.*`` imports:
+    the Dockerfile's ENTRYPOINT (relative to its WORKDIR), its CMD (gunicorn's
+    ``--config`` file and the module it serves) and its other COPY sources;
+    every tracked file of each package the served module imports; the paths
+    the migration runner joins to the repository root (a directory's tracked
+    files, all of them); the ``scripts/`` files entrypoint.sh names; and the
+    scripts the operator documents run with ``docker exec``.  Each consumer
+    must name at least one file, so a pattern that stopped matching cannot
+    pass by finding nothing.
+    """
+    from_dockerfile, served_file = _read_off_the_dockerfile()
+    served_packages = _packages_imported_by(REPO_ROOT / served_file)
+    runner_paths = set(_REPO_ROOT_JOIN.findall(_MIGRATION_RUNNER.read_text(encoding="utf-8")))
+    from_entrypoint = set(_SCRIPT_PATH.findall(ENTRYPOINT_SCRIPT.read_text(encoding="utf-8")))
+    from_docs = {
+        match
+        for doc in _OPERATOR_DOCS
+        for match in _DOCKER_EXEC_SCRIPT.findall(doc.read_text(encoding="utf-8"))
+    }
+    for source, named in (
+        (f"{served_file}'s imports", served_packages),
+        ("the migration runner", runner_paths),
+        ("entrypoint.sh", from_entrypoint),
+        ("the operator docs", from_docs),
+    ):
+        assert named, f"nothing found in {source}: the pattern reads nothing"
+
+    required = (
+        from_dockerfile | from_entrypoint | from_docs
+        | _tracked(*sorted(served_packages | runner_paths))
+    )
+    pending = [name for name in required if name.endswith(".py")]
+    while pending:
+        for imported in _scripts_imports(REPO_ROOT / pending.pop()):
+            if imported not in required:
+                required.add(imported)
+                pending.append(imported)
+    return required
+
+
+def _read_off_the_dockerfile() -> tuple[set[str], str]:
+    """Return the files the Dockerfile itself names, and the module gunicorn serves.
+
+    The ENTRYPOINT (relative to the WORKDIR), the CMD's ``--config`` file and
+    served module, and every COPY source but ``.`` and another stage's.
+    """
+    workdir = [
+        line.split(maxsplit=1)[1]
+        for line in DOCKERFILE.read_text(encoding="utf-8").splitlines()
+        if line.startswith("WORKDIR ")
+    ][-1]
+    entrypoint = _dockerfile_exec_form("ENTRYPOINT")[0]
+    assert entrypoint.startswith(f"{workdir}/"), (entrypoint, workdir)
+    cmd = _dockerfile_exec_form("CMD")
+    served_file = cmd[-1].split(":", 1)[0].replace(".", "/") + ".py"
+    copied = {
+        source
+        for line in DOCKERFILE.read_text(encoding="utf-8").splitlines()
+        if line.startswith("COPY ") and "--from=" not in line
+        for source in line.split()[1:-1]
+        if not source.startswith("--") and source != "."
+    }
+    assert copied, "nothing found in the Dockerfile's COPY lines: the pattern reads nothing"
+    return {
+        entrypoint[len(workdir) + 1:], cmd[cmd.index("--config") + 1], served_file, *copied,
+    }, served_file
+
+
+def _is_credential_file(name: str) -> bool:
+    """True for a ``.env`` or ``.env.*`` file other than the template ``.env.example``."""
+    base = name.rsplit("/", 1)[-1]
+    return (base == ".env" or base.startswith(".env.")) and base != ".env.example"
+
+
+def _is_tooling(name: str) -> bool:
+    """True for a file the image must never carry: host or test tooling, or bytecode.
+
+    A shell script other than the ENTRYPOINT runs on the host (backup,
+    restore, deploy, the hooks); ``tests/``, ``tools/`` and any
+    ``conftest.py`` are the suite's and the developer's; ``__pycache__`` and
+    ``*.pyc`` are what a host checkout's own runs leave.
+    """
+    parts = name.split("/")
+    return (
+        (name.endswith(".sh") and name != "entrypoint.sh")
+        or parts[0] in {"tests", "tools"}
+        or parts[-1] == "conftest.py"
+        or "__pycache__" in parts
+        or name.endswith((".pyc", ".pyo"))
+    )
+
+
+@pytest.mark.docker
+class TestTheBuildContextHoldsOnlyWhatTheImageRuns:
+    """What docker copies into the image: everything it runs, and no credential or tooling.
+
+    The re-expression of the deny-list's per-line checks on their subject
+    (plan step balance:X-do, finding BAL-625; the developer's rule-5 OK,
+    2026-10-16): no seed credential and no host-only script is in what the
+    image is built from, and a NEW file stays out until it is named, which
+    no line of a deny-list could grade.
+
+    The census's DIRECTION: the required files are read off seven consumers
+    (``_files_the_image_runs`` names them) and the static closure of their
+    ``scripts.*`` imports.  What it CANNOT see, each of which would fail no
+    test here if its ``!`` line went: a file read by path anywhere but the
+    migration runner's joins to the repository root; ``seed_companion.py``,
+    which no operator document runs; and ``LICENSE``, kept for the licence
+    with no consumer at all (``.env.example`` is graded by the credential
+    test instead).  The never-shipped side is graded only for what
+    ``_is_tooling`` names (shell scripts, tests/, tools/, ``conftest.py``,
+    bytecode) and, through the planted context, for files nobody named: a
+    host-only Python script or a directory re-included BY NAME
+    (``!scripts/check_tax_law.py``, ``!docs/``) passes every test here.
+    Only a run of the image grades the boot path.
+
+    A selected docker test that cannot reach docker FAILS here rather than
+    skipping: ``conftest.py`` in this package already decides when these
+    run (CI, an isolated daemon, or the explicit override), and a skip under
+    that decision would leave CI's gate thinner with nothing in its report.
+    """
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def repo_context(cls, tmp_path_factory: pytest.TempPathFactory) -> set[str]:
+        """Return the files docker puts in this repository's build context."""
+        return _export_build_context(REPO_ROOT, tmp_path_factory.mktemp("context"))
+
+    def test_every_file_the_image_runs_is_in_the_context(
+        self, repo_context: set[str],
+    ) -> None:
+        """Each file a consumer runs, and each module those import, is copied in."""
+        missing = sorted(_files_the_image_runs() - repo_context)
+        assert not missing, (
+            f"the image's build context lacks {missing}: .dockerignore's "
+            "allowlist must name each file the container runs"
+        )
+
+    def test_no_credential_file_is_in_the_context(
+        self, repo_context: set[str],
+    ) -> None:
+        """No ``.env`` or ``.env.*`` is copied in; the template ``.env.example`` is."""
+        credentials = sorted(name for name in repo_context if _is_credential_file(name))
+        assert not credentials, (
+            f"{credentials} would be baked into the image: a .env holds live "
+            "credentials (audit finding F-113)"
+        )
+        assert ".env.example" in repo_context, (
+            "the image no longer carries .env.example, the template "
+            "docs/runbook_secrets.md rebuilds a .env from"
+        )
+
+    def test_no_host_or_test_tooling_is_in_the_context(
+        self, repo_context: set[str],
+    ) -> None:
+        """No host script, test or tool file, ``conftest.py`` or bytecode is copied in."""
+        tooling = sorted(name for name in repo_context if _is_tooling(name))
+        assert not tooling, (
+            f"{tooling} would ship in the production image; it runs on the "
+            "host or in the suite, never in the container (audit finding F-113)"
+        )
+
+    def test_a_new_file_stays_out_until_it_is_named(self, tmp_path: Path) -> None:
+        """Files nobody named -- a .env, a new script, a new directory -- stay out.
+
+        A context of planted files under this repository's ``.dockerignore``:
+        only the ones its allowlist names come back, so a file added
+        tomorrow ships only once someone adds its line.
+        """
+        context = tmp_path / "context"
+        planted = {
+            # Named by the allowlist: these come back.
+            "entrypoint.sh": True,
+            "scripts/seed_user.py": True,
+            "app/new_module.py": True,
+            ".env.example": True,
+            # Named by nothing: these stay out.
+            ".env": False,
+            ".env.production": False,
+            "scripts/new_host_tool.sh": False,
+            "scripts/new_tool.py": False,
+            "conftest.py": False,
+            "tests/conftest.py": False,
+            "tools/new_tool.py": False,
+            "new_directory/settings.toml": False,
+            "NEW_TOP_LEVEL_FILE": False,
+            "app/__pycache__/new_module.cpython-314.pyc": False,
+            "app/routes/__pycache__/x.cpython-314.pyc": False,
+            "app/stray.pyc": False,
+            "app/.env": False,
+            "migrations/.env.local": False,
+            "app/conftest.py": False,
+        }
+        for name in planted:
+            path = context / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"planted {name}\n", encoding="utf-8")
+        shutil.copyfile(DOCKERIGNORE, context / ".dockerignore")
+
+        copied = _export_build_context(context, tmp_path / "exported")
+
+        expected = {name for name, ships in planted.items() if ships}
+        assert copied == expected, (
+            f"shipped but named by nothing: {sorted(copied - expected)}; "
+            f"named but left out: {sorted(expected - copied)}"
+        )
 
 
 # ──────────────────────────────────────────────────────────────────

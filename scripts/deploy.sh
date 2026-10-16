@@ -85,8 +85,10 @@ IMAGE_REF="${IMAGE_REF:-ghcr.io/saltyreformed/shekel:latest}"
 #   continues so a fresh checkout without a generated keypair still
 #   completes a deploy.
 # COSIGN_PRIVATE_KEY: path to the signing key.  Out of repo by
-#   default (chmod 600 in /etc/shekel/cosign.key); operators can
-#   override via .env or the host's exported env.
+#   default (chmod 600 in /etc/shekel/cosign.key); an operator
+#   overrides it by exporting it in the shell that runs this script,
+#   like every setting here: this script never reads .env (compose's
+#   file; check_prerequisites only confirms it exists).
 # COSIGN_REQUIRED: when ``true``, missing cosign or missing key
 #   FAILS the deploy.  Default ``false`` so a first-run bring-up
 #   without cosign still completes.
@@ -152,6 +154,7 @@ Environment Variables:
     COSIGN_PRIVATE_KEY  Signing key path (default: /etc/shekel/cosign.key)
     COSIGN_REQUIRED     When 'true', missing cosign/key fails the deploy
                         instead of warning (default: false)
+    COSIGN_PASSWORD     Passphrase of an encrypted signing key (default: empty)
 EOF
 }
 
@@ -334,7 +337,7 @@ handle_cosign_skip() {
     fi
 
     log "WARNING" "${reason}; continuing without signature controls."
-    log "WARNING" "Set COSIGN_REQUIRED=true in .env or pass --require-cosign"
+    log "WARNING" "Export COSIGN_REQUIRED=true or pass --require-cosign"
     log "WARNING" "to promote this warning to an error in steady-state ops."
     # (--require-cosign exists since the OPS/SH-18 fix; it simply sets
     # COSIGN_REQUIRED=true for this run.)
