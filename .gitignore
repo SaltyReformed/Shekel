@@ -9,9 +9,14 @@ dist/
 build/
 .eggs/
 
-# Virtual environments
+# Virtual environments.  ``.venv`` carries no trailing slash so it also
+# covers a SYMLINK named .venv, which a directory-only ``.venv/`` does not
+# match: each lane worktree's .venv is a link to the main checkout's, and
+# scripts/test.sh runs .venv/bin/python when it is there.  tools/split
+# judges a tree against the COMMITTED ignore rules only, so a rule kept in
+# .git/info/exclude no longer hides it (balance:X-er, 2026-10-16).
 venv/
-.venv/
+.venv
 env/
 
 # Environment / secrets.  ``.env`` is the operator's local copy of
@@ -80,6 +85,12 @@ logs/
 
 # Pylint
 .pylintrc_cache/
+
+# rumdl's cache.  rumdl writes its own untracked .gitignore holding ``*``
+# inside it, and an untracked .gitignore is not a committed rule: tools/split
+# lists it as a difference from HEAD, so the directory is ignored here
+# (balance:X-er, 2026-10-16).
+.rumdl_cache/
 
 # Worktrees
 .worktrees/

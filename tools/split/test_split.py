@@ -207,30 +207,6 @@ def test_the_block_counts_the_fixtures_the_record_set_up(split, capsys):
     assert "- fixtures: 1 set up by the source's tests; none scoped" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("change", ["an importer added", "an importer edited"])
-def test_apply_refuses_importers_the_record_did_not_take(split, capsys, change):
-    """apply refuses, before any write, importers record did not fingerprint and lint (the
-    review's M1: a module importing the source added after record was re-pointed and never
-    linted).  Since REVISED (B) the change meets the clean-tree refusal first, which names
-    it; the importer re-check behind it can no longer fire through main for a tracked source
-    (the coordinator's ruling, 3B-2b: 3C deletes that re-check, and this case with it)."""
-    assert split("record") == 0
-    if change == "an importer added":
-        (split.root / "tests/test_late.py").write_text(
-            "from tests.test_area.test_sample import _make\n", encoding="utf-8")
-    else:
-        path = split.root / IMPORTER
-        path.write_text(path.read_text(encoding="utf-8") + "# edited\n", encoding="utf-8")
-    before = tree(split.root)
-    capsys.readouterr()
-    assert split("apply") == 1
-    named = "tests/test_late.py" if change == "an importer added" else IMPORTER
-    assert (f"REFUSED: the working tree differs from HEAD at 1 path(s), e.g. ['{named}']"
-            in capsys.readouterr().err)
-    assert tree(split.root) == before
-    assert not split.idmap.exists()
-
-
 def test_importers_are_found_wherever_git_does_not_ignore_them(split, capsys):
     """Every ``.py`` git does not ignore (the coordinator's ruling on review fork L7): a
     tracked module outside the four directories the walk once read is re-pointed, recorded

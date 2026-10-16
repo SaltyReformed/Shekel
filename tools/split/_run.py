@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,24 @@ _PYLINT_BROKEN = 1 | 32
 #: The suite wrapper every run goes through, from the repository root, and the linter: the
 #: programs ``record`` starts.
 WRAPPER, PYLINT = "./scripts/test.sh", "pylint"
+
+#: A regular file's mode in git's tree, by whether its owner may execute it: the only
+#: entries :func:`differences` models.
+_FILE_MODES = {False: "100644", True: "100755"}
+
+#: Each module a run executes that reads a file the COMMITTED ignore rules hide, so that it
+#: is no difference from ``HEAD`` and yet changes what an observation means: the file's
+#: name, and whether the module looks for it in its own directory and each one above it
+#: (True) or at the repository root alone.  ``app/config.py`` calls ``load_dotenv()`` on
+#: import, which reads the first ``.env`` found from its directory up to the filesystem's
+#: root (python-dotenv's ``find_dotenv``); ``test_env_dev_file_does_not_exist`` asserts the
+#: root holds no ``.env.dev``.  ``tools/split/test_run.py`` fails when a census of the
+#: tracked tree finds a reader this lacks (the coordinator's ruling on delta review 3's
+#: M-2, 2026-10-16).
+IGNORED_READERS = {
+    "app/config.py": (".env", True),
+    "tests/test_deploy/test_docker_secrets_and_env_hygiene.py": (".env.dev", False),
+}
 
 
 class RunError(RuntimeError):
@@ -146,33 +165,136 @@ def unstartable(root: Path) -> list[str]:
 
 
 def differences(root: Path) -> set[str]:
-    """Every path, repository-relative, at which the working tree differs from ``HEAD``: a
-    file changed, staged, deleted, or present, untracked and covered by no ignore rule.  The
+    """Every path, repository-relative, at which the working tree is not ``HEAD``'s.  The
     ONE producer of the tree's state a record is judged in (:mod:`tools.split.split`):
     ``record`` and ``apply`` refuse unless it is empty, and ``prove`` unless it is exactly
     what ``apply`` writes.
 
-    Exactly ``git status --porcelain=v1 -z --untracked-files=all --no-renames``: each
-    untracked file listed by itself, never its directory, and a rename as the two paths it
-    touches, so every entry is one path, separated by a NUL and never quoted.  The ignore
-    rules are the repository's (``.gitignore``, ``.git/info/exclude``,
-    ``core.excludesFile``), so a file they cover is no difference: a ``__pycache__``, a
-    virtualenv.  ``--no-optional-locks`` keeps git from refreshing the index, so asking
-    writes nothing."""
-    proc = _git(root, "git status' output", b"\0", "--no-optional-locks", "status",
-                "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+    It reads the files themselves, never ``git status``'s view of them (the coordinator's
+    ruling on delta review 3's H-1, the twelfth unit correction, 2026-10-16): status judges a
+    tracked file through the index, so an edit to a file flagged ``--skip-worktree`` or
+    ``--assume-unchanged``, or to a path a sparse checkout leaves out, was no difference to
+    it, and ``.git/info/exclude`` and ``core.excludesFile``, rules kept per machine, hid an
+    untracked file.  A path is listed when it is:
+
+    - tracked by ``HEAD`` (``git ls-tree -r HEAD``) and on disk missing, not a regular
+      file, of another mode (executable by its owner or not, whatever ``core.fileMode``
+      says), or holding other bytes: git's own hash of them (``git hash-object
+      --no-filters``, which writes no object) is not the blob's;
+    - held by the index and not by ``HEAD``, and on disk (a file staged);
+    - untracked, and covered by no ignore rule the ``.gitignore`` files hold
+      (``git ls-files --others --exclude-per-directory=.gitignore``, which reads neither
+      per-machine source);
+    - an untracked ``.gitignore`` git reads, that is, one in a directory no rule ignores
+      (``--others --ignored --directory`` lists it, and never descends into an ignored
+      directory).  ``--exclude-per-directory`` reads the ``.gitignore`` files ON DISK, so
+      an untracked one would hide whatever it names, itself included (the thirteenth unit
+      correction, ruled 2026-10-16); its rules are not ``HEAD``'s, so it is listed itself,
+      and the files only it hides are listed once it is gone.
+
+    A path ``HEAD`` holds as a symlink or a submodule is refused, by name, as not modelled:
+    git hashes a symlink's target, and a submodule's files are another repository's (the
+    coordinator's condition on the thirteenth correction).  Every call is
+    ``--no-optional-locks`` and none refreshes the index, so asking writes nothing."""
+    tracked = _head_files(root)
+    unmodelled = sorted(path for path, (mode, _) in tracked.items()
+                        if mode not in _FILE_MODES.values())
+    if unmodelled:
+        raise RunError(f"HEAD holds {len(unmodelled)} path(s) as a symlink or a submodule, "
+                       f"e.g. {unmodelled[:5]}: not modelled; this tool judges a tree of "
+                       "regular files only")
+    found, regular = set(), []
+    for path, (mode, _) in tracked.items():
+        try:
+            held = os.lstat(root / path)
+        except (FileNotFoundError, NotADirectoryError):
+            found.add(path)
+            continue
+        if not stat.S_ISREG(held.st_mode) or (
+                _FILE_MODES[bool(held.st_mode & stat.S_IXUSR)] != mode):
+            found.add(path)
+        else:
+            regular.append(path)
+    found.update(path for path, blob in zip(regular, _hashes(root, regular))
+                 if blob != tracked[path][1])
+    found.update(path for path in _listed(root, "--cached")
+                 if path not in tracked and os.path.lexists(root / path))
+    found.update(_listed(root, "--others", "--exclude-per-directory=.gitignore"))
+    found.update(path for path in _listed(root, "--others", "--ignored", "--directory",
+                                          "--exclude-per-directory=.gitignore")
+                 if path.rsplit("/", 1)[-1] == ".gitignore")
+    return found
+
+
+def _head_files(root: Path) -> dict[str, tuple[str, str]]:
+    """Every path ``HEAD`` tracks, repository-relative: its mode and its object's name."""
+    proc = _git(root, "git ls-tree's output", b"\0", "--no-optional-locks", "ls-tree", "-r",
+                "-z", "--full-tree", "HEAD")
     if proc.returncode:
-        raise RunError(f"git status failed: {proc.stderr.strip()}")
-    return {entry[3:] for entry in proc.stdout.split("\0") if entry}
+        raise RunError(f"git ls-tree failed: {proc.stderr.strip()}")
+    tracked = {}
+    for entry in proc.stdout.split("\0"):
+        if entry:
+            held, path = entry.split("\t", 1)
+            mode, _kind, name = held.split(" ")
+            tracked[path] = (mode, name)
+    return tracked
+
+
+def _hashes(root: Path, paths: list[str]) -> list[str]:
+    """git's object name for the bytes of each file of ``paths``, in order, as a blob, with
+    no filter applied: the bytes on disk, judged as git names a blob."""
+    if not paths:
+        return []
+    proc = _git(root, "git hash-object's output", b"\n", "--no-optional-locks", "hash-object",
+                "--no-filters", "--", *paths)
+    if proc.returncode:
+        raise RunError(f"git hash-object failed: {proc.stderr.strip()}")
+    return proc.stdout.split()
+
+
+def _listed(root: Path, *args: str) -> list[str]:
+    """The paths ``git ls-files -z <args>`` lists."""
+    proc = _git(root, "git ls-files' output", b"\0", "--no-optional-locks", "ls-files", "-z",
+                *args)
+    if proc.returncode:
+        raise RunError(f"git ls-files failed: {proc.stderr.strip()}")
+    return [path for path in proc.stdout.split("\0") if path]
+
+
+def sha256(path: Path) -> str:
+    """A file's sha256."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def ignored_reads(root: Path) -> list[Path]:
+    """Every path at which a run reads a file the committed ignore rules hide, so that no
+    check of the tree sees it (:data:`IGNORED_READERS`), in the order its reader looks."""
+    found = []
+    for reader, (name, upward) in IGNORED_READERS.items():
+        start = (root / reader).parent
+        found += [where / name for where in (start, *start.parents)] if upward else [
+            root / name]
+    return found
+
+
+def _state(path: Path) -> str:
+    """What a run reading ``path`` finds there: its bytes' sha256, or that there is none."""
+    if path.is_file():
+        return sha256(path)
+    return "present, not a regular file" if path.exists() else "absent"
 
 
 def environment(root: Path) -> str:
     """The sha256 naming what this process makes a record's observations with: the
     interpreter's version (``sys.version``), every distribution installed where it imports
-    from (``name==version``, sorted, so the order they are found in is no difference), and
-    ``git --version`` (the census and the importer walk are git's answers).  ``record``
-    keeps it, and ``apply`` and ``prove`` refuse a record whose environment is not this one
-    (the coordinator's ruling on delta review 2, REVISED (B) (2), 2026-10-15).
+    from (``name==version``, sorted, so the order they are found in is no difference),
+    ``git --version`` (the census and the importer walk are git's answers), and each file a
+    run reads that the committed ignore rules hide (:func:`ignored_reads`), its bytes or its
+    absence (the coordinator's ruling on delta review 3's M-2, 2026-10-16: neither the tree
+    nor the rest of this held ``.env``, which ``app/config.py`` reads on every import).
+    ``record`` keeps it, and ``apply`` and ``prove`` refuse a record whose environment is
+    not this one (the coordinator's ruling on delta review 2, REVISED (B) (2), 2026-10-15).
 
     It is THIS interpreter's: the tool's.  The suite wrapper starts the ``pytest`` on
     ``PATH`` and pylint is the ``pylint`` on ``PATH``, which are this interpreter's own
@@ -183,7 +305,8 @@ def environment(root: Path) -> str:
     if proc.returncode:
         raise RunError(f"git --version failed: {proc.stderr.strip()}")
     held = [sys.version, proc.stdout.strip(), *sorted(
-        f"{dist.name}=={dist.version}" for dist in importlib.metadata.distributions())]
+        f"{dist.name}=={dist.version}" for dist in importlib.metadata.distributions()),
+            *(f"{path}: {_state(path)}" for path in ignored_reads(root))]
     return hashlib.sha256("\n".join(held).encode("utf-8")).hexdigest()
 
 

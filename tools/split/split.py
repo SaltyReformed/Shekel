@@ -18,13 +18,21 @@ quotes when every arm passed.
 
 A record is judged only in the repository state and the environment its observations were
 made in (the coordinator's ruling on delta review 2, REVISED (B), 2026-10-15): ``record``
-refuses unless the working tree is ``HEAD``'s, and keeps ``HEAD`` and the environment
-(:func:`tools.split._run.environment`); ``apply`` refuses unless both are the same and the
-tree is still ``HEAD``'s; ``prove`` refuses unless both are the same and the tree differs
-from ``HEAD`` at exactly the paths ``apply`` writes.  One ``HEAD`` covers every file git
-tracks that a record's meaning rests on: this tool, ``.pylintrc``, ``pytest.ini``, the
-pylint checkers, every conftest, ``scripts/test.sh`` and its database image's inputs, the
-app.  A file git ignores is in neither.
+refuses unless the working tree is ``HEAD``'s and ``HEAD`` tracks the source, and keeps
+``HEAD`` and the environment (:func:`tools.split._run.environment`); ``apply`` refuses
+unless both are the same and the tree is still ``HEAD``'s; ``prove`` refuses unless both
+are the same and the tree differs from ``HEAD`` at exactly the paths ``apply`` writes.
+The tree is judged by its files' bytes, whatever the index's flags or a machine's own
+ignore rules say (:func:`tools.split._run.differences`), so one ``HEAD`` covers every file
+of the tree that a record's meaning rests on but those the COMMITTED ignore rules hide:
+this tool, ``.pylintrc``, ``pytest.ini``, the pylint checkers, every conftest,
+``scripts/test.sh`` and its database image's inputs, the app.  Of the files those rules
+hide, each one a census of the tree finds a run reading is in the environment instead
+(:data:`tools.split._run.IGNORED_READERS`: ``.env`` and ``.env.dev``).
+``record`` and ``prove`` judge all of it again after their runs, so a change while they ran
+is refused (the coordinator's ruling on delta review 3's M-1, 2026-10-16).  A change made
+and undone while they run is outside the model: one session works a worktree at a time
+(``CLAUDE.md``, Multi-session operation).
 
 ``SIGKILL``, and a machine that stops, end an ``apply`` where it stands, with no undo.
 Before its proof passed, that leaves no id map, and a tree differing from ``HEAD`` at only
@@ -43,7 +51,6 @@ a refusal.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shutil
@@ -52,6 +59,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from tools.ci import gitcmd
 from tools.ci.arcs import REPO
 from tools.ci.gitcmd import GitError, git
 from tools.split import _dynamic as dynamic
@@ -165,11 +173,6 @@ class Context:
         partial.replace(path)
 
 
-def _sha256(path: Path) -> str:
-    """A file's sha256."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _head(root: Path) -> str:
     """The commit the record was taken at, read through :func:`tools.ci.gitcmd.git` so
     ``root`` alone is the repository read."""
@@ -201,6 +204,32 @@ def _held_to(ctx: Context, meta: dict, nothing: str) -> None:
                       f"not record them; {nothing}")
 
 
+def _tracked(root: Path, path: Path) -> bool:
+    """Whether ``HEAD`` holds ``path``, repository-relative: git's answer for the object
+    ``HEAD:<path>`` names, which reads no pathspec."""
+    return gitcmd.run(root, "cat-file", "-e", f"HEAD:{path}").returncode == 0
+
+
+def _unmoved(ctx: Context, before: tuple[str, str, set[str]], nothing: str) -> None:
+    """Refuse unless ``HEAD``, the environment and the paths at which the tree differs from
+    ``HEAD`` are, after a command's runs, ``before``: what they were judged to be before
+    them.  A check made only at the start judged a moment, and an observation is a run of
+    minutes: a file edited while record's runs ran, or written beside the split while
+    prove's arms ran, was in no check (the coordinator's ruling on delta review 3's M-1, the
+    twelfth unit correction's second shape, 2026-10-16).  ``nothing`` ends the refusal."""
+    head, environment = _head(ctx.root), run.environment(ctx.root)
+    found = run.differences(ctx.root)
+    moved = ([f"HEAD moved from {before[0][:9]} to {head[:9]}"] if head != before[0] else []) + (
+        ["the environment changed"] if environment != before[1] else [])
+    if found != before[2]:
+        changed = sorted(found ^ before[2])
+        moved.append(f"the working tree changed at {len(changed)} path(s), e.g. "
+                     f"{changed[:5]}")
+    if moved:
+        raise Refusal(f"{'; '.join(moved)} while the runs ran, so no observation was made in "
+                      f"the state judged; {nothing}")
+
+
 def _write_set(ctx: Context, layout: Layout, meta: dict) -> set[str]:
     """Every path ``apply`` writes in the tree, repository-relative: each file of the package
     (the writer's own set, :func:`tools.split._render.render_all`'s), the source it deletes,
@@ -212,9 +241,10 @@ def _write_set(ctx: Context, layout: Layout, meta: dict) -> set[str]:
 
 def _importer_record(rewrites: list[Rewrite], root: Path) -> dict[str, dict]:
     """Each importer the split re-points, by repository-relative path: its fingerprint and
-    its rewrites, ``[line, last, old, new]``.  ``record`` keeps it, and ``apply`` refuses
-    unless the tree still gives the same, so no importer is re-pointed that ``record`` did not
-    fingerprint and lint (the branch's neutral review of this leaf, M1)."""
+    its rewrites, ``[line, last, old, new]``, which ``record`` keeps and ``prove`` judges the
+    importers' lines by.  ``apply`` re-points exactly these: it runs at ``record``'s ``HEAD``
+    on a tree that is ``HEAD``'s, so the walk finds the same importers holding the same text
+    (the branch's neutral review of this leaf, M1, which ``apply`` once re-checked)."""
     importers: dict[str, dict] = {}
     for rewrite in rewrites:
         entry = importers.setdefault(str(rewrite.path.relative_to(root)), {
@@ -268,18 +298,22 @@ def record(ctx: Context) -> list[str]:
     could take, the source being gone).
 
     The first of those checks is the repository's: refused unless the working tree is
-    ``HEAD``'s, so ``HEAD``, which the token keeps with the environment, names every tracked
-    file the observations rest on (REVISED (B), the module docstring)."""
+    ``HEAD``'s and ``HEAD`` tracks the source, so ``HEAD``, which the token keeps with the
+    environment, names every file the observations rest on (REVISED (B), the module
+    docstring).  The same is judged again after the runs, before the token is written."""
     if ctx.applied():
         raise Refusal(f"{ctx.into} holds a record whose split is applied; record into another "
                       "directory")
     head = _head(ctx.root)
     _clean(ctx.root, "commit or remove them, then record; nothing is recorded")
+    if not _tracked(ctx.root, ctx.plan.source):
+        raise Refusal(f"{ctx.plan.source} is not a file HEAD tracks, and a record is judged "
+                      "only against HEAD; commit it, then record; nothing is recorded")
     source = ctx.root / ctx.plan.source
     layout = ctx.layout(source)
     render_all(layout, line_limit(ctx.root))
     importers = _importer_record(importer_rewrites(layout, ctx.root), ctx.root)
-    meta = {"source": str(ctx.plan.source), "sha256": _sha256(source), "head": head,
+    meta = {"source": str(ctx.plan.source), "sha256": run.sha256(source), "head": head,
             "environment": run.environment(ctx.root), "importers": importers}
     unstartable = run.unstartable(ctx.root)
     if unstartable:
@@ -297,6 +331,7 @@ def record(ctx: Context) -> list[str]:
     run.observe(ctx.root, [str(ctx.plan.source)], ctx.into / _BEFORE_COLLECT,
                 collect_only=True)
     run.observe(ctx.root, [str(ctx.plan.source)], ctx.into / _BEFORE_RUN, collect_only=False)
+    _unmoved(ctx, (head, meta["environment"], set()), "nothing is recorded")
     ctx.save(_META, meta)
     return _record_verdict(ctx, layout)[0]
 
@@ -304,8 +339,9 @@ def record(ctx: Context) -> list[str]:
 def apply(ctx: Context, idmap: Path) -> None:
     """Write the package, delete the source, re-point importers, run the static proof and
     write the id maps; refused, with nothing written, unless a complete record passed, is
-    not applied already, ``HEAD`` and the environment are the record's and the working tree
-    is ``HEAD``'s, and the source and every importer are as it found them.  The writes and
+    not applied already, and ``HEAD`` and the environment are the record's and the working
+    tree is ``HEAD``'s: so the source and every importer are as ``record`` found them, which
+    ``record`` made sure of by refusing a source ``HEAD`` does not track.  The writes and
     the proof are ONE unit (:func:`tools.split._render.write`): a failed write, a static
     proof that fails on what was written, or an interrupt undoes every file the apply wrote,
     the id maps beside the tree included, and the refusal names the failure."""
@@ -315,21 +351,13 @@ def apply(ctx: Context, idmap: Path) -> None:
                       "when it succeeded); nothing is applied")
     _held_to(ctx, meta, "record again; nothing is applied")
     _clean(ctx.root, "undo them, or commit them and record again; nothing is applied")
-    source = ctx.root / ctx.plan.source
-    if not source.is_file():
-        raise Refusal(f"{source} is not there to split; nothing is applied")
-    if _sha256(source) != meta["sha256"]:
-        raise Refusal(f"{source} changed since it was recorded; record again")
-    layout = ctx.layout(source)
+    layout = ctx.layout(ctx.root / ctx.plan.source)
     refused, _ = _record_verdict(ctx, layout)
     if refused:
         raise Refusal(f"the record did not pass ({len(refused)} failure(s), first: "
                       f"{refused[0]}); nothing is applied")
     texts = render_all(layout, line_limit(ctx.root))
     rewrites = importer_rewrites(layout, ctx.root)
-    if _importer_record(rewrites, ctx.root) != meta["importers"]:
-        raise Refusal("the modules importing the source, or their text, changed since the "
-                      "record; record again")
     mapping = dynamic.id_map(layout, ctx.read(_BEFORE_COLLECT)["collected"])
     payload = json.dumps(mapping, indent=1, sort_keys=True) + "\n"
     beside = {idmap: payload, ctx.into / _APPLIED: payload}
@@ -340,11 +368,11 @@ def apply(ctx: Context, idmap: Path) -> None:
                           f"({len(failures)} failure(s): {'; '.join(failures)})")
 
 
-def _written_alone(ctx: Context, layout: Layout, meta: dict) -> None:
+def _written_alone(ctx: Context, written: set[str]) -> None:
     """Refuse unless the working tree differs from ``HEAD`` at exactly the paths ``apply``
-    writes (:func:`_write_set`), naming each path written and not different, and each
-    different and not written."""
-    written, found = _write_set(ctx, layout, meta), run.differences(ctx.root)
+    writes, ``written`` (:func:`_write_set`), naming each path written and not different,
+    and each different and not written."""
+    found = run.differences(ctx.root)
     if found != written:
         missing, beside = sorted(written - found), sorted(found - written)
         raise Refusal(f"the working tree must differ from HEAD at exactly the paths apply "
@@ -393,11 +421,13 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     and unless the working tree differs from ``HEAD`` at EXACTLY the paths ``apply`` writes
     (:func:`_write_set`): fewer is an apply killed part-way (``SIGKILL``; the coordinator's
     ruling on 3B-2's signal fork, (d)), so it is never proved, and more is a change beside
-    the split, which no arm is judging (REVISED (B))."""
+    the split, which no arm is judging (REVISED (B)).  The same is judged again after every
+    arm ran, before the block is printed."""
     meta = ctx.meta()
     _held_to(ctx, meta, "a split is proved where it was recorded, before it is committed")
     layout = ctx.layout(ctx.into / _SOURCE)
-    _written_alone(ctx, layout, meta)
+    written = _write_set(ctx, layout, meta)
+    _written_alone(ctx, written)
     recorded = _record_verdict(ctx, layout)
     failures, origins = _static_arms(ctx, layout)
     failures = [f"record: {f}" for f in recorded[0]] + failures
@@ -411,10 +441,10 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     failures += arms
     arms, named = _importer_arm(ctx)
     failures += arms
-    gate, gate_line = run.plan_gate(ctx.root)
-    if gate:
-        failures.append(f"plan gate: {gate_line}")
+    arms, gate_line = _gate_arm(ctx)
+    failures += arms
     hits = dynamic.classify(ctx.root, run.census(ctx.root, layout.plan), origins)
+    _unmoved(ctx, (meta["head"], meta["environment"], written), "no block is printed")
     if not failures:
         print("\n".join(_report_moves(ctx, layout, idmap, seen)
                         + _report_lint(ctx, after_pylint, named)
@@ -446,6 +476,13 @@ def _importer_arm(ctx: Context) -> tuple[list[str], list[str]]:
         ctx.read(_BEFORE_IMPORTERS), run.pylint_messages(ctx.root, sorted(recorded)),
         repointed)
     return [f"importers: {f}" for f in unborne + failures], named
+
+
+def _gate_arm(ctx: Context) -> tuple[list[str], str]:
+    """The plan gate, run as pre-commit and CI run it: a failure when it did not pass, and
+    its summary line for the proof block."""
+    gate, gate_line = run.plan_gate(ctx.root)
+    return ([f"plan gate: {gate_line}"] if gate else []), gate_line
 
 
 def _duplicate_arm(ctx: Context, layout: Layout, idmap: Path, after_pylint: list[dict],
@@ -481,7 +518,7 @@ def _report_moves(ctx: Context, layout: Layout, idmap: Path, seen: dict) -> list
         "module, class or package and defined outside the source, none defined in another "
         "file and registered on it",
         f"- collection: {seen['collected']} ids after = the source's under the map "
-        f"(total, one-to-one); map sha256 {_sha256(idmap)}",
+        f"(total, one-to-one); map sha256 {run.sha256(idmap)}",
         f"- outcomes: identical for every id under the map, "
         f"{dynamic.outcome_counts(seen['outcomes'])}; identical with each part run alone",
     ]
