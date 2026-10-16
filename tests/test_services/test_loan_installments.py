@@ -32,9 +32,8 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import StatusEnum
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.services.amortization_engine import schedule_dates, slotted_dates
 from app.services.loan_ledger import payment_installments
 from app.models.transfer import Transfer
@@ -46,12 +45,12 @@ from app.services.transfer_legs import TransferLeg
 from app.services.transfer_service import TransferSpec, create_transfer
 from tests._test_helpers import (
     an_entered_day,
+    assert_a_twin_is_refused,
     create_loan_account,
     generate_transfer_of,
     loan_params_for,
     make_transfer_template,
     on_both_sides,
-    settle_day_columns,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -74,8 +73,9 @@ def _transfer_to_loan(
     """Create a transfer into *loan*, through the write door.
 
     Through :func:`~app.services.transfer_service.create_transfer` rather than
-    by inserting rows, so the pair of shadows this file reads is the pair
-    production writes (Transfer Invariant 1).
+    by inserting rows, so the transfer this file reads is the one production
+    writes: one row since plan step balance:X-bi-6-4d-3 (ruling **R-BAL258**),
+    where it came with the pair of shadows this file read until then.
     """
     return create_transfer(
         TransferSpec(
@@ -95,31 +95,6 @@ def _transfer_to_loan(
             ),
         ),
     )
-
-
-def _income_shadow(transfer, loan):
-    """Return the loan-side (income) shadow of *transfer*."""
-    return (
-        db.session.query(Transaction)
-        .filter_by(
-            transfer_id=transfer.id,
-            account_id=loan.id,
-            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-            is_deleted=False,
-        )
-        .one()
-    )
-
-
-def _shadow_id_of(installment, loan):
-    """Return the id of the income SHADOW an installment stands for.
-
-    Every installment's ``source`` is the leg of its parent transfer -- a
-    projected one since plan step balance:X-bi-6a, a settled one since
-    balance:X-bi-6-4b -- so a control stated in shadow ids maps each
-    installment back to the shadow it replaces, looked up off its parent.
-    """
-    return _income_shadow(installment.source.transfer, loan).id
 
 
 #: How many payments the eager-load controls build.  More than one, because the
@@ -374,18 +349,33 @@ class TestPaymentInstallments:
     def test_a_projected_row_holding_a_stale_settle_day_reports_none(
         self, app, db, seed_user, seed_periods,
     ):
-        """A Projected shadow that still carries a day is NOT confirmed.
+        """A Projected payment is NOT confirmed, and the row a stale day sat on is refused.
 
-        Only a bypass of the status seam can produce that row -- there is
-        deliberately no ``CHECK`` for it, because the settled predicate lives in
-        ``ref.statuses`` and a constraint cannot join.  The day is written here
-        directly, which is the bypass, and the producer must still report the
-        payment as not-yet-happened.  Since plan step balance:X-bi-6a that is
-        STRUCTURAL rather than a branch: a projected payment arrives as the
-        leg of its PARENT transfer, which carries no settle day of its own, so
-        the shadow's day is not merely unread but unreachable from the
+        Only a bypass of the status seam could produce that row: a settle DAY
+        on the payment's loan-side shadow while it was Projected, which no
+        ``CHECK`` could refuse because the settled predicate lives in
+        ``ref.statuses`` and a constraint cannot join.  The producer had to
+        report the payment as not-yet-happened, and since plan step
+        balance:X-bi-6a that was STRUCTURAL rather than a branch: a projected
+        payment arrives as the leg of its PARENT transfer, which carries no
+        settle day of its own, so the shadow's day was unreachable from the
         producer.  Reporting it would tell the replay an installment was paid
         that the posted ledger has no entry for.
+
+        **Re-expressed at plan step balance:X-bi-6-4d-3** (ruling **R-BAL167**
+        class 2): a transfer is one row since that step (ruling **R-BAL258**),
+        so the row the bypass wrote the day onto -- the loan-side twin --
+        cannot be stored: ``ck_transactions_names_no_transfer`` refuses it at
+        the write with or without the settle-day pair it carried (measured
+        both ways), so it is staged as
+        :func:`~tests._test_helpers.assert_a_twin_is_refused` builds it and
+        that refusal asserted.  A side's day lives on its payment record since
+        plan step balance:X-bi-6-4d-2, where a DATED record under a Projected
+        transfer is money that moved (ruling **R-BAL140**) and the
+        status-band rule refuses it at commit: a different state, graded in
+        ``test_loan_settled_legs``.  What stands is the producer's answer on
+        the Projected payment itself -- the leg of its parent, carrying no
+        day.
         """
         with app.app_context():
             loan = _make_loan(seed_user)
@@ -395,22 +385,11 @@ class TestPaymentInstallments:
                 status_enum=StatusEnum.PROJECTED,
             )
             db.session.commit()
-            shadow = _income_shadow(transfer, loan)
-            # The settle DAY pair, welded by its CHECK (the day needs its
-            # basis), so a fixture that wrote only ``settled_on`` would build
-            # a row the database refuses.  What no CHECK can say is the
-            # STATUS, because the settled predicate lives in ``ref.statuses``
-            # and a constraint cannot join: that is exactly the gap this row
-            # sits in.  No covering movement is laid: the bypass is the DAY
-            # on a Projected row, and a dated movement would be a settled
-            # fact of its own (ruling R-BAL79), which is not this case.
-            # (Through plan step balance:X-bi-4b-1 the row's own figure
-            # columns were laid beside the day because a CHECK paired them.)
-            for column, value in settle_day_columns(
-                seed_periods[1].start_date,
-            ).items():
-                setattr(shadow, column, value)
-            db.session.commit()
+            transfer_id = transfer.id
+            # The bypass's row, the loan-side twin, cannot be stored.
+            assert_a_twin_is_refused(
+                db.session, db.session.get(Transfer, transfer_id), is_income=True,
+            )
 
             installments = payment_installments(
                 loan.id, seed_user["scenario"].id, loan_params_for(db.session, loan.id),
@@ -418,17 +397,12 @@ class TestPaymentInstallments:
             )
 
             assert len(installments) == 1
-            db.session.refresh(shadow)
-            assert shadow.settled_on is not None, (
-                "the bypass did not land -- this case would pass over a "
-                "producer that reads the day and reports it"
-            )
             assert isinstance(installments[0].source, TransferLeg), (
-                "the projected payment arrived as a shadow row, not as the "
-                "leg of its parent -- the day below would be READ, not "
+                "the projected payment did not arrive as the leg of its "
+                "parent -- a day on any other row could be READ, not "
                 "structurally unreachable"
             )
-            assert installments[0].source.transfer.id == transfer.id
+            assert installments[0].source.transfer.id == transfer_id
             assert installments[0].dates.settled_on is None
 
     def test_two_payments_in_one_period_order_by_id(
@@ -442,8 +416,7 @@ class TestPaymentInstallments:
         **balance:X-bl-2a** the feed ordered by ``pay_period.start_date`` alone,
         leaving that to whatever order the database returned.  Since plan step
         **balance:X-bi-6a** the tie-break is the parent transfer's id, the one
-        key both relations carry; the transfer service writes a parent before
-        its shadows, so it is the chronology the shadow id gave.
+        key both relations carry.
 
         **The projected row is created FIRST and the settled row SECOND, and
         that is what gives this case teeth.**  The producer reads the settled
@@ -451,6 +424,11 @@ class TestPaymentInstallments:
         settled-first; a sort on ``start_date`` alone is STABLE and would keep
         the later settled row in front.  Only the tie-break puts them in the
         order the feed's chronology means.
+
+        **Read in TRANSFER ids since plan step balance:X-bi-6-4d-3** (ruling
+        **R-BAL167** class 1): it compared the loan-side shadows' ids, which
+        followed their parents' (the service wrote a parent before its
+        shadows), until that step made a transfer one row.
         """
         with app.app_context():
             loan = _make_loan(seed_user)
@@ -465,9 +443,7 @@ class TestPaymentInstallments:
                 settled_on=seed_periods[1].start_date,
             )
             db.session.commit()
-            earlier_id = _income_shadow(earlier, loan).id
-            later_id = _income_shadow(later, loan).id
-            assert earlier_id < later_id, (
+            assert earlier.id < later.id, (
                 "the projected row must carry the LOWER id, or the settled-set-"
                 "first read order would already put the rows right"
             )
@@ -477,8 +453,8 @@ class TestPaymentInstallments:
                 options=(), leg_options=(),
             )
 
-            assert [_shadow_id_of(i, loan) for i in installments] == [
-                earlier_id, later_id,
+            assert [i.source.transfer.id for i in installments] == [
+                earlier.id, later.id,
             ]
 
     def test_a_settled_and_a_projected_row_interleave_by_period(

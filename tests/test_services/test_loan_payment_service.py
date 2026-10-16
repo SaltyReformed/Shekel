@@ -22,19 +22,20 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
 from app import ref_cache
-from app.enums import AmountSourceEnum, StatusEnum, TxnTypeEnum
+from app.enums import StatusEnum, TxnTypeEnum
 from app.exceptions import AmountUnresolvable, UndatedSettleError
 from app.extensions import db
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.utils.balance_predicates import settled_status_ids
 from app.services.amortization_engine import PaymentDates, PaymentRecord
 from tests._test_helpers import (
     an_entered_day,
+    generate_transfer_of,
     loan_params_for,
+    make_transfer_template,
     on_both_sides,
     one_off_row_of,
     open_books_before_the_first_assertion,
@@ -44,7 +45,7 @@ from tests._test_helpers import (
 from app.services.balance_at import BalanceContext
 from app.services.loan_ledger import LoanCalendars
 from app.services.cash_ledger import derived_amount_basis
-from app.services.row_valuation import settled_contribution
+from app.services.row_valuation import leg_settled_contribution
 from app.services.loan_payment_service import (
     compute_contractual_pi,
     get_payment_history,
@@ -58,8 +59,8 @@ from app.services.transfer_service import (
 )
 from app.services import account_service
 from app.services.installment_calendar import monthly_due_date
+from app.services.transfer_legs import transfer_side_leg
 from app.models.amount_ownership import AmountOwnership
-from app.services.amount_ownership import declare_derived
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -150,8 +151,10 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
                               settled_on=None):
     """Create a transfer from checking to loan account.
 
-    Uses the transfer service to ensure shadow transaction invariants
-    are enforced (exactly two shadows, matching amounts/statuses).
+    Uses the transfer service, the one door that writes a transfer, so the
+    transfer is the one production writes: one row since plan step
+    balance:X-bi-6-4d-3 (ruling **R-BAL258**), where the door also wrote the
+    two shadows whose amounts and statuses it kept equal.
 
     Args:
         seed_user: The seed_user fixture dict.
@@ -265,12 +268,22 @@ class TestGetPaymentHistory:
     def test_excludes_deleted_transactions(
         self, app, db, seed_user, seed_periods, status_enum,
     ):
-        """A soft-deleted payment is excluded, whichever relation it comes from.
+        """A soft-deleted payment is excluded, whether it was planned or paid.
 
-        The feed is two relations since plan step balance:X-bi-6a -- a
-        PROJECTED payment is a leg of its parent in ``budget.transfers``, a
-        SETTLED one is its shadow row in ``budget.transactions`` -- and each
-        carries its own ``is_deleted`` filter, so the case runs once per half.
+        The feed's two halves read the one relation ``budget.transfers``,
+        each through its own ``Transfer.is_deleted`` filter, and **both cases
+        reach the PLAN half's** (``transfer_legs/_records.py``).  The door's
+        soft delete takes a Paid payment's records off and returns it as a
+        plan (ruling **R-BAL246**), so the paid case is a deleted plan when
+        the feed reads it: one filter, graded on two paths into it.
+        Measured 2026-10-15: with the plan half's filter dropped both cases
+        fail at the last assertion, and with the settled half's dropped
+        (``loan_loaders/_shadows.py``) both pass.  The one payment the
+        delete leaves settled is a ``$0.00`` close, which held nothing, and
+        the settled half's filter is graded on it by
+        ``test_loan_settled_legs.py``'s
+        ``TestTheSettledHalfComplementsThePlanHalf`` case
+        ``test_a_soft_deleted_zero_dollar_close_is_in_neither_half``.
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
@@ -285,12 +298,13 @@ class TestGetPaymentHistory:
                 loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )) == 1, "the payment must be in the feed for its deletion to grade"
 
-            # Soft-delete the payment THROUGH THE DOOR, which deletes the
-            # parent and both shadows together.  *It set ``is_deleted`` on the
-            # income shadow alone until plan step balance:X-bi-6a*, a write past
-            # Transfer Invariant 4 that left the parent live; a projected
-            # payment is read off its PARENT now (ruling R-BAL13), so only a
-            # deletion the parent carries removes it from the feed.
+            # Soft-delete the payment THROUGH THE DOOR, which takes a Paid
+            # payment's records off, hides the transfer and returns it as a
+            # plan (ruling R-BAL246).  *It set ``is_deleted`` on the income
+            # shadow alone until plan step balance:X-bi-6a*, a write past
+            # Transfer Invariant 4 that left the parent live; the feed reads
+            # the TRANSFER, so only a deletion the transfer carries removes a
+            # payment from it.
             delete_transfer(transfer.id, seed_user["user"].id, soft=True)
             db.session.commit()
 
@@ -661,8 +675,21 @@ class TestGetPaymentHistory:
             assert len(result) == 3
 
 
+def _generated_loan_payment(seed_user, loan, period):
+    """Return a payment into *loan* GENERATED from its definition: it stores no figure.
+
+    The definition states $1,500.00 (:func:`~tests._test_helpers.make_transfer_template`
+    states its price), and a transfer the generate pass writes from it is
+    DERIVED -- its ``amount`` is ``None`` and the definition's series answers
+    for it (plan step X-au-f; :func:`~tests._test_helpers.generate_transfer_of`).
+    Projected, from the seeded checking account.  Flushed; the caller commits.
+    """
+    template = make_transfer_template(db.session, seed_user, loan, amount="1500.00")
+    return generate_transfer_of(template, period)
+
+
 class TestTheFeedPricesADerivedRow:
-    """A loan-side shadow that stores NO figure is priced, not refused.
+    """A loan payment that stores NO figure is priced, not refused.
 
     **The whole point of plan step balance:X-au-g-2c's first leaf**, and the
     thing finding **N-266**(a) was.  ``get_payment_history`` priced every row
@@ -676,43 +703,56 @@ class TestTheFeedPricesADerivedRow:
     reader.
 
     The cases below have **disjoint fail sets on purpose**.  The first says the
-    reader answers for a derived row; the second says the accessor it used to
-    call still refuses that same row, in the same transaction, so the first is
-    passing because the ROUTE changed and not because the fixture failed to
-    declare anything.  A control that only asserted the happy path would go
-    green against a row that was never derived at all.
+    feed answers for a payment that stores no figure, and asserts that the
+    payment stores none before it asks, so it cannot pass on one that stored
+    its figure all along.  The second says the accessor that values the
+    feed's SETTLED half still refuses that same payment, so the first is
+    passing because the ROUTE prices the projected half through the amount
+    model and not through that accessor.
+
+    **Re-expressed onto the TRANSFER at plan step balance:X-bi-6-4d-3**
+    (ruling **R-BAL167** class 1).  The figure-less row was the loan-side
+    income shadow declared derived (``PARENT_TRANSFER``), and the accessor
+    the ROW accessor :func:`~app.services.row_valuation.settled_contribution`.
+    A transfer is one row since that step (ruling **R-BAL258**), so that
+    shadow cannot be stored: its refusal is pinned on the income side by
+    ``test_a_transfer_shadow_is_derived.py``'s
+    ``TestAShadowIsBornDerived::test_the_transfer_owns_its_figure_and_neither_twin_can_be_stored``
+    and ``test_loan_plan_assembly.py``'s
+    ``test_a_projected_loan_payment_is_priced_and_its_derived_twin_refused``.
+    The payment that stores no figure today is one GENERATED from its
+    definition (:func:`_generated_loan_payment`), priced at the same
+    ``$1,500.00``, and the settled half's accessor is the row accessor's
+    twin over a leg, :func:`~app.services.row_valuation.leg_settled_contribution`.
     """
 
     def test_a_derived_shadow_resolves_through_the_amount_model(
         self, app, db, seed_user, seed_periods,
     ):
-        """A shadow with no stored figure is priced from its parent transfer.
+        """A payment storing no figure is priced through the amount model: $1,500.00.
 
-        Declares the LOAN-side income leg derived -- ``estimated_amount`` NULL
-        and ``amount_source_id`` naming the parent transfer, the two writes
-        ``ck_transactions_amount_ownership`` makes one -- and asserts the feed
-        carries the parent's figure.
+        The transfer stores nothing -- asserted FIRST, because a feed that
+        read the transfer's own ``amount`` column, past the amount model,
+        would answer a STORED ``$1,500.00`` and pass, where on a payment
+        storing none only the amount model can answer -- and the feed's
+        projected half resolves it from its definition through
+        :func:`~app.services.cash_ledger.planned_leg_contribution`, at the
+        $1,500.00 the definition states.
 
-        The transfer here has no ``LoanPaymentSettings``, so the row resolves by
-        rule 5 (a shadow is worth exactly what its parent is) rather than rule 4.
-        That is deliberate for THIS leaf: what is being graded is that a derived
-        row reaches the resolver at all.  Rule 4 end to end -- a derive-mode
-        payment priced from the loan's own installment -- is the next leaf's,
-        which is where a payment gains a settings row.
+        It declared the LOAN-side income shadow derived and asserted the feed
+        carried its parent's $1,500.00 until plan step balance:X-bi-6-4d-3
+        (see the class).  The transfer has no ``LoanPaymentSettings``, so it
+        is priced from its definition's $1,500.00, not from the loan's own
+        installment.
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
-            xfer = _create_transfer_to_loan(
-                seed_user, loan, seed_periods[1], Decimal("1500.00"),
+            xfer = _generated_loan_payment(seed_user, loan, seed_periods[1])
+            db.session.commit()
+            assert db.session.get(Transfer, xfer.id).amount is None, (
+                "the payment stores a figure, so a feed reading the plan "
+                "column past the amount model would pass this case"
             )
-            db.session.commit()
-
-            shadow = db.session.query(Transaction).filter(
-                Transaction.transfer_id == xfer.id,
-                Transaction.account_id == loan.id,
-            ).one()
-            declare_derived(shadow, AmountSourceEnum.PARENT_TRANSFER)
-            db.session.commit()
 
             result = get_payment_history(
                 loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
@@ -723,42 +763,36 @@ class TestTheFeedPricesADerivedRow:
     def test_the_accessor_it_used_to_call_still_refuses_that_row(
         self, app, db, seed_user, seed_periods,
     ):
-        """``settled_contribution`` refuses the row the feed above prices.
+        """The settled half's accessor refuses the payment the feed above prices.
 
-        The other half of the pair, and it is what makes the pair a measurement.
-        Same fixture, same declaration: the accessor
-        ``get_payment_history`` called until this step raises
-        :class:`~app.exceptions.AmountUnresolvable` on this row, which is the
-        state that made the loan-side leg undeclarable.  If a future change
-        reverted the route, this test would still pass and its sibling would
-        fail -- which is the direction that matters.
+        The other half of the pair, and it is what makes the pair a
+        measurement.  Same fixture:
+        :func:`~app.services.row_valuation.leg_settled_contribution`, which
+        values the feed's SETTLED half, raises
+        :class:`~app.exceptions.AmountUnresolvable` on this payment's
+        loan-side leg, because its transfer has not settled and its money has
+        not moved.  If a future change priced the projected half through it,
+        this test would still pass and its sibling would fail -- which is the
+        direction that matters.  The ``match`` names that refusal.
 
-        **The ``match`` is load-bearing since plan step X-bx, and without it
-        this case stopped being the measurement it claims to be.**  That step
-        widened the accessor to refuse ANY unsettled row, so a bare
-        ``pytest.raises`` would now pass on the row's Projected STATUS alone --
-        and deleting ``declare_derived`` above, the whole subject of the
-        fixture, would leave it green.  Pinning the message keeps the assertion
-        attached to the declaration.  *The shadow is Projected here, so the
-        status arm is what fires; the DERIVED half is what makes the sibling's
-        route necessary, and it is graded there.*
+        It asked the ROW accessor
+        :func:`~app.services.row_valuation.settled_contribution` of the
+        loan-side income shadow declared derived until plan step
+        balance:X-bi-6-4d-3 (see the class); that accessor's refusal of a
+        derived Projected row is graded on an ordinary row by
+        ``test_amount_ownership.py``'s ``test_a_derived_transaction_refuses``.
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
-            xfer = _create_transfer_to_loan(
-                seed_user, loan, seed_periods[1], Decimal("1500.00"),
+            xfer = _generated_loan_payment(seed_user, loan, seed_periods[1])
+            db.session.commit()
+            leg = transfer_side_leg(
+                db.session.get(Transfer, xfer.id), is_income=True,
             )
-            db.session.commit()
-
-            shadow = db.session.query(Transaction).filter(
-                Transaction.transfer_id == xfer.id,
-                Transaction.account_id == loan.id,
-            ).one()
-            declare_derived(shadow, AmountSourceEnum.PARENT_TRANSFER)
-            db.session.commit()
+            assert leg.account_id == loan.id
 
             with pytest.raises(AmountUnresolvable, match="has not settled"):
-                settled_contribution(shadow)
+                leg_settled_contribution(leg)
 
 
 # ── Tests for compute_contractual_pi ─────────────────────────────
@@ -1285,14 +1319,19 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
         and a producer could honour them while still reading the rows.  Removing
         the rows leaves nothing for a coupled producer to read at all.
 
-        **The feed is TWO relations since plan step balance:X-bi-6a**, so both
-        are emptied: the shadow rows in ``budget.transactions`` (the settled
-        half) and the parent rows in ``budget.transfers`` (the projected half,
-        as derived legs).  Deleting the shadows alone left the projected half
-        standing -- measured at 3 records before and after -- so this control
-        graded nothing about that half until the parents went too.  The feed
-        is asserted EMPTY after the delete, which is the non-vacuity the old
-        "non-empty before" assertion could not supply on its own.
+        **The feed is ONE relation, ``budget.transfers``, since plan step
+        balance:X-bi-6-4d-3**, so the transfers into the loan are what is
+        deleted.  It was two from plan step balance:X-bi-6a: the shadow rows
+        in ``budget.transactions`` (the settled half) and the parent rows
+        (the projected half, as derived legs), and deleting the shadows alone
+        left the projected half standing -- measured at 3 records before and
+        after.  The settled half moved onto the transfers at plan step
+        balance:X-bi-6-4b, and since a transfer became one row (ruling
+        **R-BAL258**) the shadow delete this case also ran removed NOTHING
+        (measured: 0 rows, 2026-10-15): vacuous code, deleted with nothing
+        re-expressed in its place.  The feed is asserted EMPTY after the
+        delete, which is the non-vacuity the old "non-empty before" assertion
+        could not supply on its own.
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
@@ -1308,16 +1347,13 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
                 loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             ), "the feed must be non-empty for emptying it to mean anything"
 
-            db.session.query(Transaction).filter(
-                Transaction.account_id == loan.id,
-            ).delete(synchronize_session=False)
             db.session.query(Transfer).filter(
                 Transfer.to_account_id == loan.id,
             ).delete(synchronize_session=False)
             db.session.commit()
             assert get_payment_history(
                 loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
-            ) == [], "the feed is not empty: one of its two relations survived"
+            ) == [], "the feed is not empty: a transfer into the loan survived"
 
             after = LoanCalendars().loan_calendar_of(loan.id)
             assert after is not None
