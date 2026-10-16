@@ -3,12 +3,27 @@ and not in the other, by kind.  The second record's places are read in the first
 a translation (a moved file's line to the source line it was copied from), and its node ids
 through a map; two runs of one layout compare under the identity of both.
 
+Before two records are compared, each one's assert explanations are normalized by kind
+(:func:`normalized`): a value that differs from run to run, or names the tree or the module
+the record was measured in, is rewritten to one spelling, and Flask's session cookie is read
+as the session it signs.  Each kind is anchored on exactly the context it was measured in
+(the coordinator's rulings on the R-BAL303 pilot's Fork 3 and on PR A's item (3),
+2026-10-16).  A value a kind does not match is compared as it was recorded, so a shape no
+kind was measured on is a difference, never a match.
+
 Nothing here starts a process, so every kind can be shown on a hand-built record.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+import ast
+import base64
+import binascii
+import json
+import re
+import zlib
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
+from functools import partial
 
 from tools.testrecord.record import Record, Trace
 
@@ -127,3 +142,179 @@ def differences(first: Record, second: Record, ids: dict[str, str] | None = None
         for phase in phases:
             found += _phase_differences(test, phase, one, other, translate)
     return found
+
+
+#: A UUID as ``str(uuid.UUID(...))`` writes it.
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+#: A session cookie's value as Flask signs it (itsdangerous): ``.`` when its payload is
+#: zlib-compressed, then the payload, its timestamp and its signature, each base64url.
+_SIGNED = re.compile(r"(\.?)([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+
+#: The values a set-order element may be, alone or as the items of a tuple: the hashable
+#: scalars a set's repr prints in a form that does not depend on the process.
+_SCALARS = (str, bytes, int, float, bool, type(None))
+
+
+def _session(match: re.Match[str]) -> str:
+    """A ``Set-Cookie`` header's session value (``match``'s second group, after the header
+    its first) read as the session it signs, in compact JSON with sorted keys: its timestamp
+    and signature dropped, and a top-level ``csrf_token`` (Flask-WTF's random token) as
+    ``<csrf-token>``; no other field is rewritten.  The value as it is unless it decodes, as
+    Flask encodes it, to a JSON object (the coordinator's ruling on item (3)'s review H1,
+    2026-10-16).  The payload holds what the app flashed, which no other explanation of the
+    test may hold: ``Recurring monthly transfer of $1,611.77 created from Checking to My
+    Mortgage.``, the same in every run of both layouts while the timestamp and signature
+    differ (test_loan, PR A's item (2) re-records)."""
+    signed = _SIGNED.fullmatch(match.group(2))
+    if signed is None:
+        return match.group(0)
+    payload = signed.group(2)
+    try:
+        raw = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+        session = json.loads((zlib.decompress(raw) if signed.group(1) else raw).decode("utf-8"))
+    except (binascii.Error, zlib.error, UnicodeDecodeError, json.JSONDecodeError,
+            RecursionError):
+        return match.group(0)
+    if not isinstance(session, dict):
+        return match.group(0)
+    if "csrf_token" in session:
+        session["csrf_token"] = "<csrf-token>"
+    return (f"{match.group(1)}<session "
+            f"{json.dumps(session, sort_keys=True, separators=(',', ':'))}>")
+
+
+def _scalar(value: object) -> bool:
+    """Whether ``value`` is one of :data:`_SCALARS`, or a tuple of them (one level)."""
+    return isinstance(value, _SCALARS) or (
+        isinstance(value, tuple) and all(isinstance(item, _SCALARS) for item in value))
+
+
+def _sorted_set(side: str) -> str | None:
+    """``side`` re-rendered with its elements sorted by their repr, when it is byte for byte
+    the repr of a set of :func:`_scalar` values: it parses as a set display whose values'
+    reprs, joined as a set's repr joins them, are the side, and no two values are equal.
+    Else None.  ``ast.literal_eval`` alone would read text no set printed as one,
+    canonicalized: ``{1, True}`` as ``{1}``, ``{1.00}`` as ``{1.0}`` (measured on CPython
+    3.14.8, 2026-10-16), so two different texts would compare as one.  The parser refuses
+    text by raising :class:`SyntaxError`; :class:`MemoryError` when deep nesting overflows its
+    stack; :class:`RecursionError` when tens of thousands of chained operators overflow the
+    compiler's (40,000 measured); and :class:`ValueError` (a ``UnicodeEncodeError``) on a lone
+    surrogate.  The repr of an integer past the digit limit (a hex literal parses) raises
+    :class:`ValueError`.
+
+    A repr pytest cut short can be a set's repr too: of the 228 cuts its ``_ellipsize`` makes
+    (sizes 5 to 232) of the savings instance's right set as the source layout printed it,
+    161 are (pytest 9.1.1, 2026-10-16), and no text tells a cut from a string holding
+    ``...``.  No cut side reaches here from a recorded run: at assertion verbosity 2, which
+    :data:`tools.testrecord.record.SETTINGS` sets, pytest prints both sides of a comparison
+    in full."""
+    try:
+        node = ast.parse(side, mode="eval").body
+    except (SyntaxError, MemoryError, RecursionError, ValueError):
+        return None
+    if not isinstance(node, ast.Set):
+        return None
+    try:
+        values = [ast.literal_eval(element) for element in node.elts]
+        if not all(_scalar(value) for value in values):
+            return None
+        texts = [repr(value) for value in values]
+    except (ValueError, TypeError):
+        return None
+    if side != "{" + ", ".join(texts) + "}" or len(set(values)) != len(values):
+        return None
+    return "{" + ", ".join(sorted(texts)) + "}"
+
+
+def _set_order(explanation: str) -> str:
+    """``explanation`` with each side of its first line's one `` == `` re-rendered by
+    :func:`_sorted_set`, when both sides are a set's repr; else as it is.  A set literal's
+    iteration order depends on what its process compiled before it, under one hash seed
+    (measured 2026-10-16, CPython 3.14.8), so the two layouts of a split print one literal's
+    elements in two orders: test_savings_dashboard_service's
+    ``TestComputeDashboardData::test_returns_expected_keys``.  pytest's diff below the first
+    line sorts a set's elements where it can order them.  A line with two `` == `` is
+    compared as it is: where it splits is not known."""
+    first, newline, rest = explanation.partition("\n")
+    if first.count(" == ") != 1:
+        return explanation
+    sides = [_sorted_set(side) for side in first.split(" == ")]
+    if None in sides:
+        return explanation
+    return " == ".join(sides) + newline + rest
+
+
+def _kinds(root: str, relocated: Mapping[str, str]) -> dict[str, Callable[[str], str]]:
+    """Each normalization kind's rewrite of one explanation, by name, in the order they
+    apply, for a record measured under ``root`` of a move that wrote each module of
+    ``relocated`` from the module it maps to (dotted names).
+
+    Each kind but ``run-socket`` matches exactly the context its every measured instance
+    had, in the 60,312 explanations of 48 recorded runs of the four merged splits (the
+    R-BAL303 pilot's 32 and PR A's item (2)'s 16, 2026-10-16; the number of explanations each
+    kind changed follows its name), and widening one needs a measured instance and the
+    coordinator's ruling, as a new kind does:
+
+    - ``tree-root`` (168): the root, a directory, so followed by ``/``: a module's ``from
+      '...'`` and a ``PosixPath``.  First, as the coordinator ruled; the pilot's unanchored
+      UUID pattern matched inside a scratch root, which ``uuid`` below cannot.
+    - ``address`` (4,380): a default repr's memory address, which its ``>`` closes.
+    - ``csrf-token`` (5,100): Flask-WTF's token as the hidden field's ``value`` and the meta
+      tag's ``content``, each directly after the name.
+    - ``session-cookie`` (132): Flask's session in a ``Set-Cookie`` header's repr, up to the
+      ``;`` that ends it, read as the session it signs (:func:`_session`).
+    - ``run-socket`` (852): the suite wrapper's per-run socket directory, by its name alone,
+      as the pilot wrote it (ruled); every instance was in a database URL's host.
+    - ``uuid`` (132): a response's ``X-Request-Id`` header in its repr.
+    - ``relocated-repr`` (420): a moved module's name in the default repr of an object of a
+      class it defines, read as the module it moved from.  Never a class's repr (none
+      measured), and never a module's name as a value.
+    - ``set-order`` (48 in item (2)'s 16 runs): last, so it sorts the text the other kinds
+      wrote (:func:`_set_order`).  It also reorders a set printed in value order already (an
+      int set, sorted by repr), and counts it, though that order was no noise."""
+    tree = re.compile(re.escape(root) + "(?=/)")
+    moved = re.compile("<(" + "|".join(map(re.escape, relocated)) + r")\.(?=\w+ object at 0x)")
+
+    def relocate(text: str) -> str:
+        return moved.sub(lambda m: f"<{relocated[m.group(1)]}.", text) if relocated else text
+
+    return {
+        "tree-root": partial(tree.sub, "<root>"),
+        "address": partial(re.compile(r" at 0x[0-9a-f]+(?=>)").sub, " at 0x?"),
+        "csrf-token": partial(re.compile(
+            r'(name="csrf_token" value="|name="csrf-token" content=")[^"]+').sub,
+            r"\1<csrf-token>"),
+        "session-cookie": partial(re.compile(
+            r"""(\('Set-Cookie', 'session=)([^;'"]+)(?=;)""").sub, _session),
+        "run-socket": partial(re.compile(r"shekel-testrun-\d+").sub, "shekel-testrun-?"),
+        "uuid": partial(re.compile(r"(\('X-Request-Id', ')" + _UUID + "(?=')").sub,
+                        r"\1<uuid>"),
+        "relocated-repr": relocate,
+        "set-order": _set_order,
+    }
+
+
+def normalized(record: Record, root: str, relocated: Mapping[str, str]
+               ) -> tuple[Record, dict[str, int]]:
+    """``record`` with every passing assert's explanation rewritten by each normalization
+    kind in turn (:func:`_kinds`), and how many explanations each kind changed, every kind
+    named, in the order they apply.  ``root`` is the root the record was measured under, in
+    the spelling its explanations hold; ``relocated`` maps each module a move wrote to the
+    module it moved from, by dotted name (empty: nothing moved).  Outcomes, arcs, and each
+    assert's line and text are kept as they are."""
+    kinds = _kinds(root, relocated)
+    changed = dict.fromkeys(kinds, 0)
+
+    def rewritten(explanation: str) -> str:
+        for kind, rewrite in kinds.items():
+            text = rewrite(explanation)
+            if text != explanation:
+                changed[kind] += 1
+            explanation = text
+        return explanation
+
+    tests = {nodeid: replace(trace, asserts={
+        phase: tuple((line, orig, rewritten(expl)) for line, orig, expl in held)
+        for phase, held in trace.asserts.items()}) for nodeid, trace in record.tests.items()}
+    return replace(record, tests=tests), changed
