@@ -1800,20 +1800,26 @@ class TestALegsDisplayProjections:
         projection table (:class:`TestBothSidesShowTheTransfer`) committed
         AD-HOC ones; a saved PLACED transfer's sides are asked by no case
         here.  Neither reads a label, so a label gated on a saved transfer
-        or on a record is graded in other files, both sides in each corner:
-        a saved, still-Projected transfer's two labels by
+        or on a record is graded in other files, both sides in each of two
+        corners, and both catchers hold an AD-HOC transfer: a saved transfer
+        whose sides hold no record (a Projected one) by
         ``test_statement_match/test_leg_candidates.py``'s
         ``TestAStillPlannedTransferIsOfferedAsItsLeg`` case
         ``test_each_side_is_offered_on_its_own_account_keyed_by_the_transfer``,
-        and a settled one's by ``test_calendar_service.py``'s
-        ``TestATransferIsALegOfItsParent`` case
-        ``test_a_settled_leg_is_a_paid_cell_worth_its_record``.  Each fails
-        under a side answering its transfer's own name in its corner (only
-        where the transfer is saved and the side holds no record, or only
-        where the side holds one), on the expense side alone and on the
-        income side alone (measured after plan step ``balance:X-bi-6-4d-3``'s
-        checkpoint 2e-2b-1b-2c, by its delta review and again at that
-        review's fix).  ``test_calendar_service.py``'s
+        and a settled one, each side holding its dated record, by
+        ``test_calendar_service.py``'s ``TestATransferIsALegOfItsParent``
+        case ``test_a_settled_leg_is_a_paid_cell_worth_its_record``.  Each
+        fails under a side answering its transfer's own name in its corner
+        (only where the transfer is saved and the side holds no record, or
+        only where the side holds one), on the expense side alone and on the
+        income side alone (measured at the fix of the delta review of plan
+        step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2c, and again by
+        that fix's own review).  Two neighbouring states are asked their
+        label by no case named here: a REVERTED transfer, Projected over
+        each side's kept un-dated record (ruling R-BAL61), and a saved
+        transfer of a definition, generated or placed.  A side answering its
+        transfer's own name only in either state passed every file named
+        here (measured by that fix's review).  ``test_calendar_service.py``'s
         ``TestDayAssignment::test_due_date_none_fallback``,
         ``test_spending_report_service.py``'s
         ``TestATransferIsALegOfItsParent`` and
@@ -1906,9 +1912,14 @@ class TestALegsDisplayProjections:
         side carrying its RECORD (its payment).  Every leg the grid draws in
         production is persisted, and the grid's row match reads a side's
         ``template_id`` (``grid_view_service._match_row_in_period``).  A
-        Cancelled transfer is not asked: the grid's two readers of a side's
-        link skip a cancelled item before they read it
-        (``grid_view_service.build_row_keys`` and ``_match_row_in_period``).
+        Cancelled GENERATED transfer is not asked: the grid's two readers of
+        a side's link skip a cancelled item before they read it
+        (``grid_view_service.build_row_keys`` and ``_match_row_in_period``),
+        and the calendar's two readers of a side's ``recurs``
+        (``calendar_infrequency.badge_cadence`` and ``is_infrequent``) never
+        see one, since the calendar's loader leaves a Cancelled parent out
+        (``balance_predicates.balance_contributing_clause``).  The projection
+        table asks a Cancelled AD-HOC transfer's sides their link.
         The label case's transfers are unsaved and carry no status
         (``Transfer.status_id`` has no default).  No production path makes an
         unsaved transfer whose side carries a record, since a settle needs a
@@ -1934,8 +1945,8 @@ class TestALegsDisplayProjections:
         was not there would fail that read before any guard ran.  Guards on
         the input come first at each read: the row is linked and recurs, and
         it is Projected with no side carrying a record before the settle, and
-        every side carries one after it.  Each side is read through two doors: by ACCOUNT
-        (``grid_transfer_leg``, the grid's) and by SIDE
+        every side carries one after it.  Each side is read through two
+        doors: by ACCOUNT (``grid_transfer_leg``, the grid's) and by SIDE
         (``transfer_side_leg``, the transfer service's).  It asks
         ``template_id`` and ``recurs`` alone; where a saved side's label is
         graded, the label case says.
