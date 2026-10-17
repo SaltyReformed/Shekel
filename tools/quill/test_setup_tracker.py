@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import copy
 import re
+from functools import partial
 
 import pytest
 
 from tools.ci.arcs import ARCS
 from tools.quill import setup_tracker
-from tools.quill._github import GitHubError
+from tools.quill._github import GitHubError, app_credentials, app_jwt
 from tools.quill.setup_tracker import (
     APP_PERMISSIONS,
     ISSUE_TYPES,
@@ -644,6 +645,27 @@ def test_an_app_not_yet_installed_is_a_difference_not_a_crash(monkeypatch):
     report = Report()
     setup_tracker.check_app(report)
     assert report.differences == 1
+
+
+@pytest.mark.parametrize(("files", "said"), [
+    pytest.param({"app.json": b'{"client_id": "Iv23client"}', "app.pem": b"not a pem"},
+                 "private key cannot be loaded", id="app-pem"),
+    pytest.param({"app.json": b"{not json", "app.pem": b"pem"}, "is not JSON", id="app-json"),
+    pytest.param({}, "not in", id="missing"),
+])
+def test_unusable_app_credentials_are_a_difference_not_a_crash(monkeypatch, tmp_path, files,
+                                                               said):
+    """L9d: a corrupt app.json or app.pem, read by the real readers, escaped the setup check
+    as a traceback; it is a difference, as a missing one already was."""
+    _app_setup(monkeypatch, installation=_installation())
+    for name, data in files.items():
+        (tmp_path / name).write_bytes(data)
+    monkeypatch.setattr(setup_tracker, "app_credentials", partial(app_credentials, tmp_path))
+    monkeypatch.setattr(setup_tracker, "app_jwt", app_jwt)
+    report = Report()
+    setup_tracker.check_app(report)
+    assert report.differences == 1
+    assert said in report.lines[-1]
 
 
 @pytest.mark.parametrize(

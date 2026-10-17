@@ -58,6 +58,7 @@ from urllib.parse import quote
 from tools.ci.arcs import ARCS
 from tools.quill._github import (
     APP_DIR,
+    CredentialsError,
     GitHub,
     GitHubError,
     app_credentials,
@@ -701,10 +702,13 @@ def check_app(report: Report) -> None:
     """Check quill's App: registered by the organization, installed on the tracker only."""
     try:
         client_id, private_key = app_credentials()
+        token = app_jwt(client_id, private_key, int(time.time()))
     except FileNotFoundError:
         report.differs(f"the App's credentials are not in {APP_DIR} (app.json, app.pem)")
         return
-    token = app_jwt(client_id, private_key, int(time.time()))
+    except CredentialsError as error:
+        report.differs(f"the App's credentials in {APP_DIR} cannot be used: {error}")
+        return
     app = GitHub(token).rest("GET", "/app")
     if app["owner"]["login"] != ORG:
         report.differs(f"the App {app['slug']!r} is registered by {app['owner']['login']}")

@@ -5,13 +5,15 @@ module, ``test_quill_file.py``.  Nothing here calls GitHub.
 """
 from __future__ import annotations
 
+from functools import partial
+
 import pytest
 import requests
 
 from tools.ci.gitcmd import GitError
 from tools.ci.scratch import point_dev
 from tools.ci.scratch import run as _run
-from tools.quill import _git
+from tools.quill import _git, _github, _tracker
 from tools.quill import quill
 from tools.quill._fake import FakeTracker, run, ship
 from tools.quill._github import GitHubError
@@ -448,6 +450,26 @@ def test_a_network_error_or_missing_credentials_exit_2_not_a_traceback(code, cap
     assert quill.main(["next"], connect=no_credentials, root=code) == 2
     assert "app.json" in capsys.readouterr().err
 
+
+
+@pytest.mark.parametrize("corrupt", [
+    pytest.param(({"app.json": b"{not json"}, "is not JSON"), id="app-json"),
+    pytest.param(({"app.json": b'{"client_id": "Iv23client"}', "app.pem": b"not a pem"},
+                  "the App's private key cannot be loaded"), id="app-pem"),
+])
+def test_corrupt_app_credentials_exit_2_not_a_traceback(code, capsys, monkeypatch, tmp_path,
+                                                        corrupt):
+    """L9d: a corrupt app.json or app.pem escaped ``main`` as a traceback with exit 1,
+    which means refused; read by the real connection, it is a tracker quill cannot reach.
+    ``corrupt`` is the files written and what the refusal says."""
+    files, said = corrupt
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    for name, data in files.items():
+        (keys / name).write_bytes(data)
+    monkeypatch.setattr(_tracker, "app_credentials", partial(_github.app_credentials, keys))
+    assert quill.main(["next"], connect=quill.CONNECT, root=code) == 2
+    assert said in capsys.readouterr().err
 
 
 def test_a_claim_whose_branch_cannot_be_read_is_released_by_saying_so(code, capsys):
