@@ -195,7 +195,8 @@ class TestTheOutstandingSet:
     is correct for a unit test of the filter and is why the figures a tick
     MOVES are graded end to end in
     ``test_anchor_settle_partition.py::TestRecordingAPurchaseDoesNotMoveTheProjection``
-    and the route's day-resolution in ``test_routes/test_accounts.py``.
+    and the route's day-resolution in
+    ``test_routes/test_accounts/test_reconcile_panel.py``.
     """
 
     @staticmethod
