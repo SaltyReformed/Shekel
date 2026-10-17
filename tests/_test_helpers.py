@@ -832,7 +832,7 @@ def _sync_loan_ledger(loan_account_id):
     built through :func:`create_loan_account` / :func:`create_loan_with_trueup` /
     :func:`insert_trueup_event` / :func:`insert_tracking_start_event`.  Roughly
     twenty test modules still hand-roll a loan (a bare ``LoanParams(...)`` insert;
-    e.g. ``tests/test_services/test_balance_at.py::_make_mortgage``, a near-copy of
+    e.g. ``tests/test_services/test_balance_at/_helpers.py::_make_mortgage``, a near-copy of
     :func:`create_loan_account`).  Such a loan gets a ledger only if one of the
     anchor helpers above happens to be called on it afterwards, and otherwise has
     none at all -- ``test_year_end_summary_service.py``'s hand-built loan is in
@@ -1237,11 +1237,12 @@ def create_loan_account(
     #
     # Origination alone was measured too tight.  An installment may be settled
     # EARLY, before the loan closes, and the developer ruled that legitimate:
-    # ``test_balance_at.TestLoanNotYetOriginated`` pays a 2026-05-01 installment
-    # on 2026-03-10 against a loan originating 2026-04-15, which is the ONE
-    # shape in which the origination guard is the guard doing the work.  So the
-    # bound is the earliest of the origination, the assertion and the owner's
-    # calendar, which is what the shared helper already computes.
+    # ``test_balance_at.test_loan_origination.TestLoanNotYetOriginated`` pays a
+    # 2026-05-01 installment on 2026-03-10 against a loan originating
+    # 2026-04-15, which is the ONE shape in which the origination guard is the
+    # guard doing the work.  So the bound is the earliest of the origination,
+    # the assertion and the owner's calendar, which is what the shared helper
+    # already computes.
     open_books_before_the_first_assertion(
         db_session, account, also_before=origination_date,
     )

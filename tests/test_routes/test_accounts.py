@@ -5998,7 +5998,7 @@ def _override_account_anchor(db_session, account, pay_period, anchor_balance):
     against the seed_periods anchor period; the Commit-7 symptom
     reproductions need $614.29 anchored to today's period.
 
-    Mirrors ``tests/test_services/test_savings_dashboard_service.py``'s
+    Mirrors ``tests/test_services/test_savings_dashboard_service/_helpers.py``'s
     ``_override_anchor`` (Commit 6).  Kept private to this module so
     later moves to a shared fixture remain a refactor rather than a
     contract change.
@@ -9398,7 +9398,7 @@ class TestAnchorDifference:
 
     Plan step **X-f2-a**, ruling **R-EU** -- R-DH (f)'s second half.  The
     figure's own contract is pinned in
-    ``tests/test_services/test_balance_at.py::TestRecordsBalanceAt``; these
+    ``tests/test_services/test_balance_at/test_records.py::TestRecordsBalanceAt``; these
     cases grade the WIRING: that the editor mounts the region without previewing
     its own prefill, that the two boxes reach the producer by the write door's
     parsing rules, and that a state the save would refuse is refused here.
@@ -9792,7 +9792,7 @@ class TestTheBalanceHistoryCard:
     caption -- which by definition is never the back-dated row.
 
     Every figure is graded at the producer
-    (``test_services/test_balance_at.py::TestCashAnchorHistory``); what is
+    (``test_services/test_balance_at/test_records.py::TestCashAnchorHistory``); what is
     graded HERE is the route's own three decisions -- which rows are shown by
     default, that the card is reachable only by its owner, and that it refreshes
     when a write appends to it.
