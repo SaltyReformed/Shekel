@@ -61,9 +61,9 @@ the plan gate's package as ``test_citations.py``, where it runs in both scopes.
 is every ``.py`` under the suite's root (but ``tests/manual``, below), and
 the files pytest itself imports from ABOVE the root to run it: the
 ``conftest.py`` and ``__init__.py`` of each directory between the repository
-root and the suite's (:func:`censused`; ``test_ci_workflow.py`` grades that
-set against pytest itself, each skipped suite started as ``ci.yml`` starts
-it).  A module named for pytest to import (``pytest_plugins``, ``-p``) is an
+root and the suite's (:func:`censused`; ``test_ci_skipped_suites.py`` grades
+that set against pytest itself, each skipped suite started as ``ci.yml``
+starts it).  A module named for pytest to import (``pytest_plugins``, ``-p``) is an
 import, which neither census follows (below).  The
 census is ``ast``-based and LEXICAL: a docstring that DISCUSSES
 ``docs/plans`` is prose and is skipped; a string a statement evaluates is a
@@ -379,8 +379,8 @@ def censused(roots: Iterable[Path] = (), *, repo: Path | None = None) -> list[Pa
     ``tools/__init__.py`` up; in a scratch repository holding this one's ``pytest.ini``, each
     skipped suite started as ``ci.yml`` starts it (steps 7, 7b and 5b) loads the
     repository-root ``conftest.py``, and step 5b sets the scratch ``tools/__init__.py`` up by
-    ``Package.setup`` alone.  ``test_ci_workflow.py`` re-measures the scratch half on every
-    run.
+    ``Package.setup`` alone.  ``test_ci_skipped_suites.py`` re-measures the scratch half on
+    every run.
 
     The census's DIRECTION: it grades what a censused file SPELLS, never what a module that
     file imports reads.  A file above a root is censused because pytest imports it, not

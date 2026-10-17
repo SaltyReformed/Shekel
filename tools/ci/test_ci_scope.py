@@ -16,9 +16,10 @@ Three claims, each graded in the direction it can fail:
 
 The fourth claim, that ``ci.yml`` is wired to the answer, is
 ``test_ci_workflow.py`` (split out by step X-cx's L4, when this module passed
-pylint's 1,000-line ceiling), and so is the census graded against pytest
-itself: each skipped suite run as ``ci.yml`` starts it imports no file the
-census does not read.
+pylint's 1,000-line ceiling).  The census graded against pytest itself, each
+skipped suite run as ``ci.yml`` starts it importing no file the census does not
+read, is ``test_ci_skipped_suites.py`` (split out of that module by step
+balance:X-er's L-2, at the same ceiling).
 """
 from __future__ import annotations
 

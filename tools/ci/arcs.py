@@ -38,7 +38,7 @@ PLANS = REPO / "docs" / "plans"
 #: run a database cluster of its own (never bare pytest).  The recorder
 #: (:func:`tools.testrecord.record.record`) and the split tool's runs start it,
 #: and two of ``ci.yml``'s guarded steps start the application suite with it,
-#: which ``tools/ci/test_ci_workflow.py`` reads.
+#: which ``tools/ci/test_ci_skipped_suites.py`` and ``test_ci_workflow.py`` read.
 WRAPPER = "./scripts/test.sh"
 
 #: One row per arc: the slug its registry rows and its tracker label carry, its

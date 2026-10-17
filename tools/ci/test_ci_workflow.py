@@ -2,37 +2,35 @@
 
 ``ci.yml`` is wired to ``ci_scope``'s answer: every code-grading JOB is guarded
 by it, the plan gate is not, the guard names the classifier, and the
-``lint-and-test`` aggregate judges every grader through ``ci_verdict``.  And
-``ci_scope``'s census reads every file the suites the guard skips import:
-each skipped suite is run here, as ``ci.yml`` starts it, in a scratch
-repository (step balance:X-er, the review of 53fc83b84's L3).
+``lint-and-test`` aggregate judges every grader through ``ci_verdict``.
 (Re-expressed over jobs when ``bank_import:X-gy`` split the single job, the
 developer confirming the change under rule 5, 2026-09-22.)  Since step X-cx's
 L4 the scope job also hands each event's change set to the ``commit-trailers``
 job, and the merge queue's ``merge_group`` event triggers the workflow.  Split
 out of ``test_ci_scope.py`` by that step, unchanged but for this docstring and
 the imports.
+
+That ``ci_scope``'s census reads every file the suites the guard skips import is
+``test_ci_skipped_suites.py``'s to grade, by running each as ``ci.yml`` starts it (step
+balance:X-er, the review of 53fc83b84's L3); step balance:X-er's L-2 split it out of this
+module.  The guard and the suite net the two share are :mod:`tools.ci.ci_yml`'s, and the
+workflow's one reader is ``conftest.py``'s.
 """
 from __future__ import annotations
 
-import os
-import shlex
-import shutil
 import subprocess
-import sys
 import time
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
 import pytest
 import yaml
 
-from tools.ci import arcs, ci_scope, ci_verdict, scratch
+from tools.ci import arcs, ci_verdict, scratch
+from tools.ci.ci_yml import GUARD, WRAPPER_NAME, names_a_suite
 
 
 # ---------------------------------------------------------------- the wiring
 
-
-GUARD = "needs.scope.outputs.scope != 'registry-only'"
 
 #: Jobs that may run code without the guard: the classifier, the card-trailer
 #: check (step X-cx's L4), the plan gate, the tax-law check (plan step
@@ -68,11 +66,6 @@ STEP_CONDITIONS = {
 GRADED_JOBS = ("scope", "commit-trailers", "plan-gate", "tax-law", "lint", "test",
                "lint-and-test")
 
-#: The suite wrapper's file name (:data:`tools.ci.arcs.WRAPPER`'s last part).  The nets
-#: below look for the NAME, so a step starting the wrapper by any path or through any shell
-#: (``cd scripts && ./test.sh``) is caught, and a renamed wrapper renames them.
-WRAPPER_NAME = PurePosixPath(arcs.WRAPPER).name
-
 #: What marks a step's ``run`` as running code: pytest, pylint, a Python script, or the
 #: suite wrapper.
 CODE_MARKERS = ("pytest", "pylint", "python ", WRAPPER_NAME)
@@ -95,63 +88,60 @@ def _runs_code(run: str) -> bool:
     return any(marker in run for marker in CODE_MARKERS)
 
 
-def _names_a_suite(line: str) -> bool:
-    """Whether a line of a step's ``run`` names pytest or the suite wrapper, however it
-    starts it: the derivation's net (:func:`_skipped_invocations`)."""
-    return "pytest" in line or WRAPPER_NAME in line
+def _steps(workflow: dict, job: str) -> dict[str, dict]:
+    """One job's steps in ``workflow``, keyed by name."""
+    return {step["name"]: step for step in workflow["jobs"][job]["steps"]}
 
 
-def _jobs() -> dict[str, dict]:
-    """Read the jobs out of the live workflow file."""
-    text = (arcs.REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    return yaml.safe_load(text)["jobs"]
-
-
-def _steps(job: str) -> dict[str, dict]:
-    """One job's steps, keyed by name."""
-    return {step["name"]: step for step in _jobs()[job]["steps"]}
+def test_each_read_of_the_workflow_is_its_own(read_workflow):
+    """``conftest.py``'s one reader parses the file afresh on every call, so a test that
+    changes the workflow it was handed changes no other test's."""
+    first = read_workflow()
+    first["jobs"].clear()
+    assert read_workflow()["jobs"], "a read handed on what an earlier read's holder changed"
 
 
 class TestTheWorkflowIsWiredToTheAnswer:
     """Claim 4: read ``ci.yml`` and hold every job to the scope it should have."""
 
-    def test_the_classifier_step_exists_and_calls_this_module(self):
+    def test_the_classifier_step_exists_and_calls_this_module(self, workflow):
         """The ``scope`` job pipes a rename-visible diff into ``ci_scope.py``."""
-        steps = {s.get("id"): s for s in _jobs()["scope"]["steps"] if s.get("id")}
+        steps = {s.get("id"): s for s in workflow["jobs"]["scope"]["steps"] if s.get("id")}
         assert "scope" in steps, "no step with id: scope"
         assert "python -m tools.ci.ci_scope" in steps["scope"]["run"]
         assert "--no-renames" in steps["scope"]["run"], "a rename must show both paths"
         assert "pull_request" in steps["scope"]["run"], "a push to main must be full"
-        assert _jobs()["scope"]["outputs"] == {
+        assert workflow["jobs"]["scope"]["outputs"] == {
             "scope": "${{ steps.scope.outputs.scope }}",
             "base": "${{ steps.scope.outputs.base }}",
             "head": "${{ steps.scope.outputs.head }}",
         }
 
-    def test_the_classifier_step_is_unconditional(self):
+    def test_the_classifier_step_is_unconditional(self, workflow):
         """A skipped classifier has no output; the guards must never see that state."""
-        job = _jobs()["scope"]
+        job = workflow["jobs"]["scope"]
         assert "if" not in job and "needs" not in job
         steps = {s.get("id"): s for s in job["steps"] if s.get("id")}
         assert "if" not in steps["scope"]
 
-    def test_the_guard_fails_closed_on_a_missing_output(self):
+    def test_the_guard_fails_closed_on_a_missing_output(self, workflow):
         """Every scope guard in the file is ``!= 'registry-only'``: no output runs everything."""
-        conditions = [job["if"] for job in _jobs().values() if "if" in job]
+        conditions = [job["if"] for job in workflow["jobs"].values() if "if" in job]
         conditions += [
-            step["if"] for job in _jobs().values() for step in job["steps"] if "if" in step
+            step["if"] for job in workflow["jobs"].values() for step in job["steps"]
+            if "if" in step
         ]
         scoped = [c for c in conditions if "scope" in c]
         assert scoped, "no guarded job at all"
         assert set(scoped) == {GUARD}
         assert "== 'full'" not in GUARD
 
-    def test_the_plan_gate_runs_in_both_scopes_and_the_code_graders_only_in_full(self):
+    def test_the_plan_gate_runs_in_both_scopes_and_the_code_graders_only_in_full(self, workflow):
         """The plan gate is unguarded and waits on nothing; every code grader is guarded."""
-        jobs = _jobs()
+        jobs = workflow["jobs"]
         gate = jobs["plan-gate"]
         assert "if" not in gate and "needs" not in gate
-        run = _steps("plan-gate")["Plan gate (every scope)"]["run"]
+        run = _steps(workflow, "plan-gate")["Plan gate (every scope)"]["run"]
         assert "pytest tools/plan_gate" in run
         assert "pylint tools/plan_gate/" in run
         for job in ("lint", "test"):
@@ -172,59 +162,59 @@ class TestTheWorkflowIsWiredToTheAnswer:
             ],
         }
         for job, names in graders.items():
-            steps = _steps(job)
+            steps = _steps(workflow, job)
             for name in names:
                 assert name in steps, f"{name!r} is no longer in the guarded {job!r} job"
 
-    def test_this_package_is_linted_and_tested_in_both_scopes(self):
+    def test_this_package_is_linted_and_tested_in_both_scopes(self, workflow):
         """``tools/ci`` decides what runs, so its own floor and tests run in every scope.
 
         It is not a registry-only prefix (a change to it runs everything), but
         a registry pass still runs the classifier it holds, so its tests must
         not be skipped by the scope they grade.
         """
-        run = _steps("plan-gate")["Plan gate (every scope)"]["run"]
+        run = _steps(workflow, "plan-gate")["Plan gate (every scope)"]["run"]
         assert "pylint tools/ci/ --fail-under=10 --fail-on=E,F" in run
         assert "pytest tools/ci -c /dev/null -q" in run
 
-    def test_the_release_tool_is_linted_and_tested_in_both_scopes(self):
+    def test_the_release_tool_is_linted_and_tested_in_both_scopes(self, workflow):
         """``tools/release`` reads steps.md at a commit until the cutover, so a registry-only
         change set must not skip its floor or its tests (step X-cx's L9a)."""
-        run = _steps("plan-gate")["Plan gate (every scope)"]["run"]
+        run = _steps(workflow, "plan-gate")["Plan gate (every scope)"]["run"]
         assert "pylint tools/release/ --fail-under=10 --fail-on=E,F" in run
         assert "pytest tools/release -c /dev/null -q" in run
 
-    def test_the_split_tool_is_linted_and_tested_in_both_scopes(self):
+    def test_the_split_tool_is_linted_and_tested_in_both_scopes(self, workflow):
         """``tools/split`` (step balance:X-er) holds the tools packages' one floor in their
         one step: its pylint 10.00 and its tests run beside quill, ci and release."""
-        run = _steps("plan-gate")["Plan gate (every scope)"]["run"]
+        run = _steps(workflow, "plan-gate")["Plan gate (every scope)"]["run"]
         assert "pylint tools/split/ --fail-under=10 --fail-on=E,F" in run
         assert "pytest tools/split -c /dev/null -q" in run
 
-    def test_the_recorder_is_linted_and_tested_in_both_scopes(self):
+    def test_the_recorder_is_linted_and_tested_in_both_scopes(self, workflow):
         """``tools/testrecord`` (ruling balance:R-BAL303), which ``tools/split`` calls, holds
         the same floor in the same step: its pylint 10.00 and its tests."""
-        run = _steps("plan-gate")["Plan gate (every scope)"]["run"]
+        run = _steps(workflow, "plan-gate")["Plan gate (every scope)"]["run"]
         assert "pylint tools/testrecord/ --fail-under=10 --fail-on=E,F" in run
         assert "pytest tools/testrecord -c /dev/null -q" in run
 
-    def test_no_code_running_job_escapes_the_guard(self):
+    def test_no_code_running_job_escapes_the_guard(self, workflow):
         """A job that runs code (:data:`CODE_MARKERS`) is guarded or named here."""
-        for name, job in _jobs().items():
+        for name, job in workflow["jobs"].items():
             if name in UNGUARDED_JOBS:
                 continue
             runs = " ".join(step.get("run", "") for step in job["steps"])
             if _runs_code(runs):
                 assert job.get("if") == GUARD, name
 
-    def test_no_code_running_step_in_an_unguarded_job_escapes_the_allowlist(self):
+    def test_no_code_running_step_in_an_unguarded_job_escapes_the_allowlist(self, workflow):
         """Inside every unguarded job but the polyglot linters, only named steps run code.
 
         The single job held this per STEP; a grader added to an unguarded job
         would run on a registry pass and be judged by nobody's guard.
         """
         for name in ("scope", "commit-trailers", "plan-gate", "tax-law", "lint-and-test"):
-            for step in _jobs()[name]["steps"]:
+            for step in workflow["jobs"][name]["steps"]:
                 run = step.get("run", "")
                 if _runs_code(run):
                     assert (name, step["name"]) in UNGUARDED_CODE_STEPS, (name, step["name"])
@@ -232,13 +222,13 @@ class TestTheWorkflowIsWiredToTheAnswer:
     @pytest.mark.parametrize("run", list(WRAPPER_STARTS.values()), ids=list(WRAPPER_STARTS))
     def test_every_net_catches_the_wrapper_however_a_step_starts_it(self, run):
         """The job and step nets (:func:`_runs_code`) and the derivation's net
-        (:func:`_names_a_suite`) each catch the suite wrapper by its file name, however a
-        step starts it.  Against the live ``ci.yml`` no net's wrapper arm decides anything
-        (the review of N6, L1), so this is what grades it."""
+        (:func:`tools.ci.ci_yml.names_a_suite`) each catch the suite wrapper by its file name,
+        however a step starts it.  Against the live ``ci.yml`` no net's wrapper arm decides
+        anything (the review of N6, L1), so this is what grades it."""
         assert _runs_code(run)
-        assert _names_a_suite(run)
+        assert names_a_suite(run)
 
-    def test_no_step_in_a_graded_job_carries_a_condition_of_its_own(self):
+    def test_no_step_in_a_graded_job_carries_a_condition_of_its_own(self, workflow):
         """Every step of a graded job runs, bar the one serial-benchmark leg.
 
         A step skipped by its own ``if:`` leaves its job ``success`` -- the
@@ -247,20 +237,20 @@ class TestTheWorkflowIsWiredToTheAnswer:
         over EVERY step condition; this is that claim over the jobs.
         """
         for name in GRADED_JOBS:
-            for step in _jobs()[name]["steps"]:
+            for step in workflow["jobs"][name]["steps"]:
                 assert step.get("if") == STEP_CONDITIONS.get((name, step["name"])), (
                     name, step["name"], step.get("if"),
                 )
 
-    def test_no_graded_step_or_job_may_fail_without_failing(self):
+    def test_no_graded_step_or_job_may_fail_without_failing(self, workflow):
         """``continue-on-error`` would turn a red grader green before the verdict sees it."""
         for name in GRADED_JOBS:
-            job = _jobs()[name]
+            job = workflow["jobs"][name]
             assert "continue-on-error" not in job, name
             for step in job["steps"]:
                 assert "continue-on-error" not in step, (name, step["name"])
 
-    def test_the_tax_law_check_runs_in_every_scope_at_the_refuse_stage(self):
+    def test_the_tax_law_check_runs_in_every_scope_at_the_refuse_stage(self, workflow):
         """From December 1 every pull request waits for next year's tax law (R-SAL74).
 
         Unguarded and waiting on nothing, like the plan gate, because the
@@ -269,9 +259,9 @@ class TestTheWorkflowIsWiredToTheAnswer:
         refusing a month early.  The weekly watch is the NOTICE stage, on a
         schedule.
         """
-        job = _jobs()["tax-law"]
+        job = workflow["jobs"]["tax-law"]
         assert "if" not in job and "needs" not in job
-        assert _steps("tax-law")[TAX_LAW_STEP]["run"].strip() == (
+        assert _steps(workflow, "tax-law")[TAX_LAW_STEP]["run"].strip() == (
             "python scripts/check_tax_law.py refuse"
         )
         text = (arcs.REPO / ".github/workflows/tax-law.yml").read_text(encoding="utf-8")
@@ -426,145 +416,10 @@ class TestTheWorkflowIsWiredToTheAnswer:
             assert result.returncode != 0, failing
             assert output.read_text() == "", failing
 
-    def test_the_plan_gate_no_longer_hides_inside_the_checker_step(self):
+    def test_the_plan_gate_no_longer_hides_inside_the_checker_step(self, workflow):
         """Step 5b used to carry ``pytest tools/plan_gate``; a guarded copy is a second run."""
-        checker_step = _steps("lint")["Test and apply custom pylint checkers"]
+        checker_step = _steps(workflow, "lint")["Test and apply custom pylint checkers"]
         assert "tools/plan_gate" not in checker_step["run"]
-
-
-# ------------------------------------------------- what the skipped suites import
-
-
-#: How a guarded step starts a suite: pytest itself, or the wrapper, which hands its
-#: arguments to pytest behind a ``-m`` of its own (``scripts/test.sh``'s last lines).  That
-#: ``-m`` is not added here: a marker expression only deselects, and a deselected test's
-#: packages are never set up, so leaving it out can only ADD imports to the scratch run.
-LAUNCHERS = ("pytest", arcs.WRAPPER)
-
-#: The scratch repository CI's skipped suites run in.  Every file records its own path when
-#: it runs and imports nothing, so a path recorded is a file PYTEST imported.  Beside what
-#: the suites import -- each root's files, conftests above the roots, the root package's
-#: ``__init__.py`` and ``tools/__init__.py`` -- stand what they must not: a sibling package's
-#: files, a module beside a conftest, and a harness under ``tests/manual``.  ``tools/`` holds
-#: no conftest and ``tools/pylint`` no ``__init__.py``, as in this repository: a conftest
-#: inside a package imports the package's ``__init__.py`` itself, so ``tools/__init__.py``
-#: is imported here by pytest's package setup alone, the load the census's second half
-#: rests on (``Package.setup``; delta review of L3, M1).
-SCRATCH_TREE = (
-    "__init__.py", "conftest.py", "helper.py",
-    "tests/__init__.py", "tests/conftest.py", "tests/_helpers.py", "tests/test_a.py",
-    "tests/sub/__init__.py", "tests/sub/conftest.py", "tests/sub/test_b.py",
-    "tests/test_performance/__init__.py", "tests/test_performance/conftest.py",
-    "tests/test_performance/test_p.py", "tests/manual/verify_x.py",
-    "tools/__init__.py", "tools/helper.py", "tools/pylint/conftest.py",
-    "tools/pylint/tests/conftest.py", "tools/pylint/tests/test_c.py",
-    "tools/ci/__init__.py", "tools/ci/conftest.py", "tools/ci/test_d.py",
-    "sibling/__init__.py", "sibling/conftest.py", "sibling/test_e.py",
-)
-
-
-def _skipped_invocations() -> dict[str, list[str]]:
-    """Every suite the ``registry-only`` scope skips, as ``ci.yml`` starts it: each line of a
-    guarded job's step that begins with a :data:`LAUNCHERS` entry, split as bash splits it,
-    keyed by its step's name.  A guarded line that names pytest or the wrapper any other way
-    (``python -m pytest``, ``timeout 900 ./scripts/test.sh``) fails here rather than going
-    unseen."""
-    found: dict[str, list[str]] = {}
-    for job in _jobs().values():
-        if job.get("if") != GUARD:
-            continue
-        for step in job["steps"]:
-            for line in step.get("run", "").splitlines():
-                words = shlex.split(line)
-                if not words or words[0] not in LAUNCHERS:
-                    assert not _names_a_suite(line), (
-                        f"{step['name']!r} starts a suite as {line!r}, which this "
-                        f"derivation does not read: start it with one of {LAUNCHERS}")
-                    continue
-                assert step["name"] not in found, f"{step['name']!r} starts two suites"
-                found[step["name"]] = words
-    return found
-
-
-@pytest.fixture(name="imported", scope="module")
-def _imported(tmp_path_factory) -> tuple[Path, dict[str, set[str]]]:
-    """Run every skipped suite once in one scratch repository; the repository and, per step,
-    the repository-relative paths of the files its run imported.
-
-    pytest is the console script ``ci.yml`` calls, in the repository's own ``pytest.ini``,
-    with the caller's environment less every ``GIT_*`` (a hook's binding) and ``PYTEST_*``
-    (an outer run's options and xdist identity) variable: neither is the step's.  Each run
-    must pass, so one that collected nothing (exit 5) or named a path the tree lacks (exit
-    4) fails here rather than reading as clean.
-    """
-    repo = tmp_path_factory.mktemp("repo").resolve()
-    log = repo.parent / "imported.log"
-    record = (f"with open({str(log)!r}, 'a', encoding='utf-8') as _log:\n"
-              "    _log.write(__file__ + '\\n')\n")
-    for rel in SCRATCH_TREE:
-        path = repo / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        test = "def test_x():\n    pass\n" if path.name.startswith("test_") else ""
-        path.write_text(record + test, encoding="utf-8")
-    shutil.copyfile(arcs.REPO / "pytest.ini", repo / "pytest.ini")
-    pytest_script = Path(sys.executable).with_name("pytest")
-    env = {name: value for name, value in os.environ.items()
-           if not name.startswith(("GIT_", "PYTEST_"))}
-    runs: dict[str, set[str]] = {}
-    for step, words in _skipped_invocations().items():
-        log.unlink(missing_ok=True)
-        done = subprocess.run([str(pytest_script), *words[1:]], cwd=repo, env=env,
-                              capture_output=True, text=True, check=False)
-        assert done.returncode == 0, (step, words, done.stdout[-2000:], done.stderr)
-        runs[step] = {Path(line).resolve().relative_to(repo).as_posix()
-                      for line in log.read_text(encoding="utf-8").splitlines()}
-    return repo, runs
-
-
-class TestTheCensusReadsWhatTheSkippedSuitesImport:
-    """``ci_scope``'s census against pytest itself: each suite the ``registry-only`` scope
-    skips, run in a scratch repository exactly as ``ci.yml`` starts it, imports no file the
-    census does not read, and above the skipped roots the census reads exactly what the
-    suites import (its dated measurement: :func:`tools.ci.ci_scope.censused`).
-
-    The census's own tests grade it against a model of pytest; this grades the model, so a
-    pytest upgrade that moves its conftest walk or its package setup fails here.
-    """
-
-    def test_the_skipped_suites_are_the_three_ci_yml_starts(self):
-        """The derivation finds every suite, so an empty one cannot pass by running nothing:
-        the application suite (step 7), its serial benchmarks (step 7b) and the checkers'
-        tests (step 5b).  Their arguments are graded by running them, not pinned here."""
-        assert set(_skipped_invocations()) == {
-            "Run tests", "Run audit-trigger benchmarks (serial)",
-            "Test and apply custom pylint checkers",
-        }
-
-    def test_every_skipped_suite_imports_the_repository_root_conftest(self, imported):
-        """The probe measures: each run records the root conftest, the file the census was
-        widened for (``ci_scope.censused``), so a run that recorded nothing cannot pass."""
-        _repo, runs = imported
-        assert {step: "conftest.py" in files for step, files in runs.items()} == {
-            step: True for step in _skipped_invocations()}
-
-    def test_no_skipped_suite_imports_a_file_the_census_does_not_read(self, imported):
-        """Every file each run imported is one the census reads."""
-        repo, runs = imported
-        census = {path.relative_to(repo).as_posix() for path in ci_scope.censused(repo=repo)}
-        assert {step: sorted(files - census) for step, files in runs.items()} == {
-            step: [] for step in runs}
-
-    def test_above_the_roots_the_census_reads_exactly_what_the_suites_import(self, imported):
-        """The files above a skipped root that the census reads are the ones some skipped
-        suite imports: no fewer (a read there would go ungraded) and no more (the census
-        would claim a load pytest never makes)."""
-        repo, runs = imported
-        roots = [repo / root for root in ci_scope.SKIPPED_TEST_ROOTS]
-        above = {path.relative_to(repo).as_posix() for path in ci_scope.censused(repo=repo)
-                 if not any(path.is_relative_to(root) for root in roots)}
-        loaded = {rel for files in runs.values() for rel in files
-                  if not any((repo / rel).is_relative_to(root) for root in roots)}
-        assert above == loaded
 
 
 class TestTheChangeSetIsHandedOver:
@@ -575,21 +430,20 @@ class TestTheChangeSetIsHandedOver:
     ``commit-trailers`` job reads them from its outputs.
     """
 
-    def test_the_merge_queue_triggers_the_workflow(self):
+    def test_the_merge_queue_triggers_the_workflow(self, workflow):
         """``merge_group`` beside ``pull_request``; ``push`` still only to ``main``."""
-        text = (arcs.REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         # PyYAML reads the bare key ``on`` as the boolean True (YAML 1.1).
-        triggers = yaml.safe_load(text)[True]
+        triggers = workflow[True]
         assert set(triggers) == {"push", "pull_request", "merge_group"}
         assert triggers["push"] == {"branches": ["main"]}
 
-    def test_the_card_trailer_job_checks_the_scope_jobs_range_over_full_history(self):
+    def test_the_card_trailer_job_checks_the_scope_jobs_range_over_full_history(self, workflow):
         """Unguarded, waiting on the scope job, a full checkout, and exactly this command."""
-        job = _jobs()["commit-trailers"]
+        job = workflow["jobs"]["commit-trailers"]
         assert job["needs"] == "scope" and "if" not in job
         checkout = job["steps"][0]
         assert checkout["with"] == {"fetch-depth": 0, "persist-credentials": False}
-        step = _steps("commit-trailers")["Card trailers (every scope)"]
+        step = _steps(workflow, "commit-trailers")["Card trailers (every scope)"]
         assert step["env"] == {"BASE_SHA": "${{ needs.scope.outputs.base }}",
                                "HEAD_SHA": "${{ needs.scope.outputs.head }}"}
         # EXACTLY this: a ``|| true`` would let a refusal fall on the floor.
@@ -598,7 +452,7 @@ class TestTheChangeSetIsHandedOver:
         )
 
     @pytest.fixture(name="ran")
-    def _ran(self, tmp_path):
+    def _ran(self, tmp_path, workflow):
         """Run the scope step's text, as bash, in a scratch repository; its outputs and log.
 
         A stand-in ``python`` answers ``registry-only`` for ``-m
@@ -613,7 +467,7 @@ class TestTheChangeSetIsHandedOver:
         stand_in.write_text('#!/bin/sh\ntest "$*" = "-m tools.ci.ci_scope" || exit 9\n'
                             'cat >/dev/null\necho registry-only\n')
         stand_in.chmod(0o755)
-        run = {s.get("id"): s for s in _jobs()["scope"]["steps"]}["scope"]["run"]
+        run = {s.get("id"): s for s in workflow["jobs"]["scope"]["steps"]}["scope"]["run"]
 
         def _run(event: str, **ends: str) -> tuple[dict[str, str], str]:
             output = tmp_path / f"output_{event}"
@@ -665,7 +519,7 @@ class TestTheRequiredCheckJudgesEveryGrader:
     run whatever happened and hand every result to ``ci_verdict``.
     """
 
-    def test_the_aggregate_runs_always_and_needs_every_grader(self):
+    def test_the_aggregate_runs_always_and_needs_every_grader(self, workflow):
         """``if: always()``, and ``needs`` is exactly the jobs ``ci_verdict`` grades.
 
         And EVERY job in the workflow but the aggregate and the separately
@@ -674,15 +528,15 @@ class TestTheRequiredCheckJudgesEveryGrader:
         step was inside the required check by construction; this is what
         keeps a new JOB there.
         """
-        jobs = _jobs()
+        jobs = workflow["jobs"]
         job = jobs["lint-and-test"]
         assert job.get("if") == "always()"
         assert set(job["needs"]) == set(ci_verdict.EVERY_SCOPE + ci_verdict.FULL_SCOPE_ONLY)
         assert set(jobs) - {"lint-and-test", "polyglot-lint"} == set(job["needs"])
 
-    def test_the_aggregate_hands_the_whole_needs_context_to_the_verdict(self):
+    def test_the_aggregate_hands_the_whole_needs_context_to_the_verdict(self, workflow):
         """The verdict step pipes ``toJSON(needs)`` into ``ci_verdict.py``."""
-        step = _steps("lint-and-test")["Verdict"]
+        step = _steps(workflow, "lint-and-test")["Verdict"]
         assert step["env"] == {"NEEDS": "${{ toJSON(needs) }}"}
         # EXACTLY this: a ``|| true`` or a second command after the pipe would
         # let the verdict's exit 1 fall on the floor.
@@ -690,7 +544,7 @@ class TestTheRequiredCheckJudgesEveryGrader:
             "printf '%s' \"${NEEDS}\" | python -m tools.ci.ci_verdict"
         )
 
-    def test_the_verdicts_classes_are_the_workflows_guards(self):
+    def test_the_verdicts_classes_are_the_workflows_guards(self, workflow):
         """``EVERY_SCOPE`` jobs are unguarded; ``FULL_SCOPE_ONLY`` jobs carry the guard.
 
         The verdict lets a ``FULL_SCOPE_ONLY`` job skip on a registry pass; a
@@ -698,7 +552,7 @@ class TestTheRequiredCheckJudgesEveryGrader:
         -- would make the verdict and the workflow disagree about what a
         registry pass may skip.
         """
-        jobs = _jobs()
+        jobs = workflow["jobs"]
         for name in ci_verdict.EVERY_SCOPE:
             assert "if" not in jobs[name], name
         for name in ci_verdict.FULL_SCOPE_ONLY:
