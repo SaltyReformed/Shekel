@@ -14,7 +14,8 @@ cadence from the form would manufacture rule-less definitions holding
 scattered rows listed nowhere.  The transaction class below grades the
 REFUSAL -- the rule and every row stand -- and the sweep's own semantics
 (what a cleared cadence retires and retains) stay graded on the transfer
-twin here and on the engine in ``test_recurrence_engine``.
+twin here and on the engine in ``TestRegenerateForTemplate``
+(``test_recurrence_engine/``).
 
 **It meant none of those things.**  Measured on a real edit of an
 every-paycheck template before this step::

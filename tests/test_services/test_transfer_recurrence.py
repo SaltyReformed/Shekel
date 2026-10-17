@@ -255,8 +255,8 @@ class TestTransferGeneration:
     ):
         """A transfer template that does not repeat auto-generates nothing.
 
-        The transfer-side twin of
-        ``test_recurrence_engine.test_a_rule_less_template_generates_nothing``;
+        The transfer-side twin of ``test_recurrence_engine.test_generation``'s
+        ``test_a_rule_less_template_generates_nothing``;
         both engines share ``resolve_generation_plan``'s gate.  Named the
         ``Once`` PATTERN until plan step R2e-3 retired it -- and the single
         Transfer such a template stands for is created by the transfer ROUTE,
@@ -443,7 +443,7 @@ class TestTransferGenerationSharesTheOccurrencePairs:
         pass refuses and writes nothing.  Identical to the transaction engine's
         answer, which is the point: the two are deliberate parallels and this
         asserts they did not diverge across the cutover.  The transaction twin
-        is ``test_recurrence_engine.TestALegacyScheduleHole``.
+        is ``test_recurrence_engine.test_legacy_schedule_hole.TestALegacyScheduleHole``.
 
         **The whole fixture is the real writer's**, and since plan step
         ``pay_calendar:C4-c`` nothing has to be undone afterwards: a batch
@@ -1838,7 +1838,8 @@ class TestTransferMaintain:
     names instead of destroying and rebuilding them, retires a row the rule has
     stopped naming, and RETAINS -- untouched, reported -- a row the owner has
     records against.  The transaction engine's twin is
-    ``TestRegenerateForTemplate`` in ``test_recurrence_engine.py``.
+    ``TestRegenerateForTemplate`` in ``test_recurrence_engine/``, split across its
+    ``test_regenerate_retention.py`` and ``test_regenerate_conflicts.py``.
     """
 
     def _template_with_rows(self, seed_user, seed_periods, name="Maintained"):

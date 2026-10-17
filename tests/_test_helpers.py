@@ -10120,7 +10120,7 @@ def rebuild_calendar_on(user_id, first_payday, num_periods, rhythm):
     the author typed, and it wrote no ``budget.pay_schedule`` row, so
     ``pay_schedule_service.resolve_schedule`` fell back to INFERRING the
     cadence from that same hand-typed ``end_date``.  Eight cases in
-    ``test_recurrence_engine.TestDueDateGeneration`` passed only through that
+    ``test_recurrence_engine.test_dates.TestDueDateGeneration`` passed only through that
     loop: they wrote a 28-day February period, the fallback read 28 back as
     the owner's cadence, and the derived span therefore matched the typed one.
     Give the owner a real cadence and the same rows derive a 14-day span and
