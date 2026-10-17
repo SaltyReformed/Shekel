@@ -16,7 +16,8 @@
 #
 # Loaded by deploy/shekel-deploy.sh, deploy/verify_prod_deploy.sh,
 # scripts/_backup_lib.sh (for backup.sh, restore.sh, verify_backup.sh and
-# backup_retention.sh), scripts/deploy.sh, scripts/generate_pg_cert.sh and
+# backup_retention.sh), scripts/_settings_lib.sh, scripts/deploy.sh,
+# scripts/generate_pg_cert.sh and
 # scripts/reconcile_prod_to_canonical.sh.  Each loader names the functions it
 # reads with `declare -F` and refuses to start when this file is missing or
 # lacks one, so a copy from another revision that lacks a function its loader

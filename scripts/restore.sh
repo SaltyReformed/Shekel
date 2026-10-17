@@ -42,7 +42,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"
 
 # ── Configuration ────────────────────────────────────────────────
-# Each read from the environment, else its default in _backup_lib.sh.
+# Each read from the environment, else its default in _settings_lib.sh.
 read_settings \
     DB_CONTAINER "Docker container name for PostgreSQL" \
     APP_CONTAINER "Docker container name for the app" \

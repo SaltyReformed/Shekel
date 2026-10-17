@@ -48,6 +48,8 @@ PROD_COMPOSE_OVERRIDE = REPO_ROOT / "deploy" / "docker-compose.prod.yml"
 ENV_EXAMPLE = REPO_ROOT / ".env.example"
 GITIGNORE = REPO_ROOT / ".gitignore"
 DEPLOY_SCRIPT = REPO_ROOT / "scripts" / "deploy.sh"
+SETTINGS_LIB = REPO_ROOT / "scripts" / "_settings_lib.sh"
+COMMITTED_COSIGN_PUB = REPO_ROOT / "deploy" / "cosign.pub"
 DEPLOY_README = REPO_ROOT / "deploy" / "README.md"
 DOCKER_PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
 
@@ -825,8 +827,8 @@ class TestDeployScriptCosignWrappers:
 
     def test_cosign_required_env_var_handled(self, text: str) -> None:
         """The script reads COSIGN_REQUIRED so steady-state ops can
-        promote warnings to errors via .env without changing the
-        invocation.
+        promote warnings to errors from the environment that runs it
+        without changing the invocation.
         """
         assert "COSIGN_REQUIRED" in text, (
             "scripts/deploy.sh does not reference COSIGN_REQUIRED; "
@@ -834,11 +836,23 @@ class TestDeployScriptCosignWrappers:
             "passing a flag on every invocation."
         )
 
-    def test_cosign_public_key_default_points_to_deploy(self, text: str) -> None:
-        """COSIGN_PUBLIC_KEY defaults to ``deploy/cosign.pub`` so a
-        committed verifier key auto-applies without operator config.
+    def test_cosign_public_key_default_points_to_deploy(self) -> None:
+        """COSIGN_PUBLIC_KEY defaults to the checkout's ``deploy/cosign.pub``
+        so a committed verifier key auto-applies without operator config.
+        The default's one home is the settings table in
+        ``scripts/_settings_lib.sh`` (plan step balance:X-do, BAL-664).
         """
-        assert "deploy/cosign.pub" in text, (
+        result = subprocess.run(
+            ["bash", "-c", 'source "$1"; printf "%s" '
+             '"${SHEKEL_SETTING_DEFAULTS[COSIGN_PUBLIC_KEY]}"', "_",
+             str(SETTINGS_LIB)],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        # Absolute: a relative default would name another file from another
+        # working directory.
+        assert Path(result.stdout).is_absolute(), result.stdout
+        assert Path(result.stdout).resolve() == COMMITTED_COSIGN_PUB, (
             "scripts/deploy.sh does not default COSIGN_PUBLIC_KEY to "
             "deploy/cosign.pub; operators would have to set the path "
             "explicitly even when using the committed key."

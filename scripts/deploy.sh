@@ -18,15 +18,7 @@
 # Migrations run automatically via entrypoint.sh on container start.
 # No manual migration step is needed.
 #
-# Usage:
-#     ./scripts/deploy.sh [OPTIONS]
-#
-# Options:
-#     --skip-pull         Skip git pull (deploy from current working tree)
-#     --skip-backup       Skip pre-deploy database backup
-#     --health-timeout N  Seconds to wait for health check (default: 60)
-#     --health-interval N Seconds between health check retries (default: 5)
-#     --help              Show this help message
+# Options and settings, each setting with its default: ./scripts/deploy.sh --help
 #
 # Exit codes:
 #     0   Deployment completed successfully
@@ -34,7 +26,8 @@
 #
 # Prerequisites:
 #     - Docker and Docker Compose installed
-#     - Git repository cloned to DEPLOY_DIR
+#     - This script run from the git checkout to deploy: it deploys the
+#       checkout it is in
 #     - .env file configured (see .env.example)
 #     - The stack running (docker compose -f docker-compose.yml
 #       -f docker-compose.build.yml up -d): the health check reaches the app
@@ -46,29 +39,40 @@
 
 set -euo pipefail
 
-# The docker facts the shell scripts share -- an image digest's shape, the
-# production app container's name -- have one home beside this script (plan
-# step balance:X-do).  A copy of it lacking a function read below is refused
-# here, before anything is pulled, built or restarted.
+# The docker facts the shell scripts share -- an image digest's shape -- have
+# one home beside this script (plan step balance:X-do).  A copy of it lacking
+# a function read below is refused here, before anything is pulled, built or
+# restarted.
 _docker_lib="$(dirname "${BASH_SOURCE[0]}")/_docker_lib.sh"
 # shellcheck source=_docker_lib.sh
 if ! {
     source "${_docker_lib}" \
-        && declare -F image_digest_or_empty shekel_prod_app_container >/dev/null
+        && declare -F image_digest_or_empty >/dev/null
 }; then
     echo "ERROR: cannot load ${_docker_lib}, or it lacks a function this script" \
-        "reads (image_digest_or_empty, shekel_prod_app_container).  It must" \
-        "come from this script's revision." >&2
+        "reads (image_digest_or_empty).  It must come from this script's" \
+        "revision." >&2
     exit 1
 fi
 
-# ── Configuration ────────────────────────────────────────────────
-# All values can be overridden via environment variables.
+# The settings the shell scripts read, each default's one home, and the
+# checkout this script deploys (SHEKEL_REPO_ROOT, the checkout this script and
+# its libs are in; plan step balance:X-do, finding BAL-664).
+# shellcheck source=_settings_lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_settings_lib.sh"
 
-DEPLOY_DIR="${DEPLOY_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
-APP_CONTAINER="${APP_CONTAINER:-$(shekel_prod_app_container)}"
-HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
-HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
+# ── Configuration ────────────────────────────────────────────────
+# Each read from the environment of the shell that runs this script (never
+# .env, which is compose's file; check_prerequisites only confirms it
+# exists), else its default in _settings_lib.sh.
+read_settings \
+    APP_CONTAINER "App container name" \
+    HEALTH_TIMEOUT "Seconds to wait for the health check (--health-timeout sets it)" \
+    HEALTH_INTERVAL "Seconds between health check retries (--health-interval sets it)" \
+    COSIGN_PUBLIC_KEY "Verifier key the new image is verified with before the swap" \
+    COSIGN_PRIVATE_KEY "Signing key, kept outside the repository (chmod 600); signing needs both keys" \
+    COSIGN_REQUIRED "When 'true', a missing cosign or key fails the deploy (--require-cosign)"
+
 # Array, not a space-joined string: the callers expand it unquoted
 # otherwise -- the precise unquoted-expansion pattern the shell
 # standards ban (OPS/SH-19).
@@ -83,31 +87,25 @@ COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.build.yml)
 NGINX_CONTAINER_PORT=8080
 HEALTH_URL=""
 
-# Image reference used by Cosign sign + verify steps.  Matches the
-# tag the local build produces (the COMPOSE_FILES merge tags the
-# image as ghcr.io/saltyreformed/shekel:latest).  Cosign signs the
-# image at the digest the local build produced; the digest itself
-# is captured at sign time and printed for the operator to paste
-# into /opt/docker/shekel/.env (SHEKEL_IMAGE_DIGEST).
-IMAGE_REF="${IMAGE_REF:-ghcr.io/saltyreformed/shekel:latest}"
+# IMAGE_REF, the reference cosign signs and verifies and rollback restores,
+# is no setting: it is compose's name for the app service's image, the tag
+# its build writes and the name its up starts the app from, and
+# resolve_image_ref asks compose for it before anything is touched (plan step
+# balance:X-do, finding BAL-664).  Any other name would sign and verify one
+# image while the deploy started another.  It does not make up run the image
+# the build wrote: docker-compose.yml's pull_policy: always has up pull that
+# name from the registry first, and a pull that succeeds replaces the local
+# build under it (finding BAL-670).  Cosign signs it at the digest the local
+# build produced; the digest is printed for the operator to paste into
+# /opt/docker/shekel/.env (SHEKEL_IMAGE_DIGEST).
 
-# Cosign integration (audit findings F-060, F-155 / Commit C-36).
-# COSIGN_PUBLIC_KEY: path to the verifier key (committed to repo at
-#   deploy/cosign.pub).  When this file exists, sign + verify run on
-#   every deploy; when it is absent, the script logs a warning and
-#   continues so a fresh checkout without a generated keypair still
-#   completes a deploy.
-# COSIGN_PRIVATE_KEY: path to the signing key.  Out of repo by
-#   default (chmod 600 in /etc/shekel/cosign.key); an operator
-#   overrides it by exporting it in the shell that runs this script,
-#   like every setting here: this script never reads .env (compose's
-#   file; check_prerequisites only confirms it exists).
-# COSIGN_REQUIRED: when ``true``, missing cosign or missing key
-#   FAILS the deploy.  Default ``false`` so a first-run bring-up
-#   without cosign still completes.
-COSIGN_PUBLIC_KEY="${COSIGN_PUBLIC_KEY:-${DEPLOY_DIR}/deploy/cosign.pub}"
-COSIGN_PRIVATE_KEY="${COSIGN_PRIVATE_KEY:-/etc/shekel/cosign.key}"
-COSIGN_REQUIRED="${COSIGN_REQUIRED:-false}"
+# Cosign integration (audit findings F-060, F-155 / Commit C-36): signing
+# needs cosign and both keys, verifying cosign and COSIGN_PUBLIC_KEY.  A step
+# missing what it needs warns and is skipped, so a fresh checkout without
+# cosign or a generated keypair still completes a first deploy, unless
+# COSIGN_REQUIRED (or --require-cosign) makes it fail.  A verifier key with
+# no signing key skips the signing and then fails the verify: the deploy
+# refuses the unsigned image.
 
 # Flags (overridden by command-line options).
 SKIP_PULL=false
@@ -126,15 +124,15 @@ log() {
 }
 
 usage() {
-    local app_container_default
-    app_container_default=$(shekel_prod_app_container)
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Deploy the latest version of the Shekel budget app.
+Deploy the latest version of the Shekel budget app: the checkout this script
+is in, ${SHEKEL_REPO_ROOT}.
 
 Workflow:
-  0. Ask compose where nginx is published (refused if nginx is not)
+  0. Ask compose where nginx is published and what it names the app image
+     (refused when it answers either with nothing)
   1. Pull latest code from GitHub
   2. Back up the database (optional)
   3. Tag the current Docker image for rollback
@@ -152,23 +150,40 @@ Options:
     --require-cosign    Fail the deploy when cosign/keys are missing
                         (equivalent to COSIGN_REQUIRED=true)
     --force-self-hosted Run even though /opt/docker/shekel exists (see header)
-    --health-timeout N  Seconds to wait for health check (default: 60)
-    --health-interval N Seconds between health check retries (default: 5)
+    --health-timeout N  Seconds to wait for health check (sets HEALTH_TIMEOUT)
+    --health-interval N Seconds between health check retries (sets HEALTH_INTERVAL)
     --help              Show this help message
 
-Environment Variables:
-    DEPLOY_DIR          Repository root directory (default: script parent dir)
-    APP_CONTAINER       App container name (default: ${app_container_default})
-    HEALTH_TIMEOUT      Health check timeout in seconds (default: 60)
-    HEALTH_INTERVAL     Health check retry interval in seconds (default: 5)
-    IMAGE_REF           Image reference passed to cosign sign/verify
-                        (default: ghcr.io/saltyreformed/shekel:latest)
-    COSIGN_PUBLIC_KEY   Verifier key path (default: deploy/cosign.pub)
-    COSIGN_PRIVATE_KEY  Signing key path (default: /etc/shekel/cosign.key)
-    COSIGN_REQUIRED     When 'true', missing cosign/key fails the deploy
-                        instead of warning (default: false)
-    COSIGN_PASSWORD     Passphrase of an encrypted signing key (default: empty)
+Cosign itself reads COSIGN_PASSWORD, the signing key's passphrase when it
+has one; this script only passes it on.
+
 EOF
+    print_settings
+}
+
+refuse_retired_settings() {
+    # DEPLOY_DIR and IMAGE_REF are no settings any more (plan step
+    # balance:X-do, finding BAL-664).  Set at all -- empty included -- each
+    # is refused before anything else, naming what replaced it: an install
+    # still setting one would otherwise believe it chose what this script
+    # now takes from elsewhere.
+    local refused=false
+    if [[ -n "${DEPLOY_DIR+x}" ]]; then
+        log "ERROR" "DEPLOY_DIR is set, but this script no longer reads it: it deploys the"
+        log "ERROR" "checkout it is in, ${SHEKEL_REPO_ROOT}.  To deploy another checkout,"
+        log "ERROR" "run that checkout's own scripts/deploy.sh."
+        log "ERROR" "Remove DEPLOY_DIR from wherever it is set (a shell profile, a wrapper)."
+        refused=true
+    fi
+    if [[ -n "${IMAGE_REF+x}" ]]; then
+        log "ERROR" "IMAGE_REF is set, but this script no longer reads it: cosign signs and"
+        log "ERROR" "verifies the image compose names for the app service."
+        log "ERROR" "Remove IMAGE_REF from wherever it is set (a shell profile, a wrapper)."
+        refused=true
+    fi
+    if [[ "${refused}" == true ]]; then
+        exit 1
+    fi
 }
 
 check_prerequisites() {
@@ -190,20 +205,27 @@ check_prerequisites() {
         missing=true
     fi
 
+    # resolve_image_ref reads compose's answer with it, before anything is
+    # touched.
+    if ! command -v python3 &>/dev/null; then
+        log "ERROR" "python3 command not found"
+        missing=true
+    fi
+
     if [ "$missing" = true ]; then
         log "ERROR" "Missing prerequisites. Install the required tools and retry."
         exit 1
     fi
 
     # Verify we're in a git repository.
-    if [ ! -d "${DEPLOY_DIR}/.git" ]; then
-        log "ERROR" "Not a git repository: ${DEPLOY_DIR}"
+    if [ ! -d "${SHEKEL_REPO_ROOT}/.git" ]; then
+        log "ERROR" "Not a git repository: ${SHEKEL_REPO_ROOT}"
         exit 1
     fi
 
     # Verify .env file exists.
-    if [ ! -f "${DEPLOY_DIR}/.env" ]; then
-        log "ERROR" ".env file not found in ${DEPLOY_DIR}"
+    if [ ! -f "${SHEKEL_REPO_ROOT}/.env" ]; then
+        log "ERROR" ".env file not found in ${SHEKEL_REPO_ROOT}"
         log "ERROR" "Copy .env.example to .env and configure it before deploying."
         exit 1
     fi
@@ -250,7 +272,7 @@ resolve_health_url() {
     # app``, so no deploy starts or recreates nginx and its binding is the
     # same before the swap and after it.  A stopped nginx is refused here,
     # with nothing pulled, backed up, built or swapped.
-    cd "${DEPLOY_DIR}"
+    cd "${SHEKEL_REPO_ROOT}"
     HEALTH_URL=$(nginx_health_url)
     if [[ -z "${HEALTH_URL}" ]]; then
         log "ERROR" "No published IPv4 address for nginx's port ${NGINX_CONTAINER_PORT} (compose's answer is above)."
@@ -261,10 +283,44 @@ resolve_health_url() {
     log "INFO" "Health check URL: ${HEALTH_URL} (nginx's published address)"
 }
 
+resolve_image_ref() {
+    # Set IMAGE_REF to compose's name for the app service's image, or refuse
+    # before anything is touched.  `config --format json app` renders the
+    # app service and the ones it depends on over the same files and .env the
+    # build and up read, and only the app's image is taken: `config --images
+    # app` would list the others' images too (both measured on compose 5.6.0,
+    # 2026-10-17).  Compose's own refusal (a required .env variable missing,
+    # say) reaches stderr; an answer that is not that shape, or names no
+    # image, is refused here.
+    local config
+    cd "${SHEKEL_REPO_ROOT}"
+    IMAGE_REF=""
+    if config=$(docker compose "${COMPOSE_FILES[@]}" config --format json app); then
+        IMAGE_REF=$(python3 -c '
+import json, sys
+try:
+    image = json.load(sys.stdin)["services"]["app"]["image"]
+except (ValueError, KeyError, TypeError):
+    sys.exit(0)
+if isinstance(image, str):
+    print(image)
+' <<<"${config}")
+    fi
+    if [[ -z "${IMAGE_REF}" ]]; then
+        log "ERROR" "Compose names no image for the app service: docker compose"
+        log "ERROR" "${COMPOSE_FILES[*]} config --format json app refused (its reason is"
+        log "ERROR" "above) or its answer holds no services.app.image.  Cosign signs, and"
+        log "ERROR" "rollback restores, the image compose names: fix the compose files or"
+        log "ERROR" ".env and retry."
+        exit 1
+    fi
+    log "INFO" "App image: ${IMAGE_REF} (compose's name for the app service's image)"
+}
+
 pull_latest() {
     # Pull the latest code from the remote repository.
     log "INFO" "Pulling latest code from GitHub..."
-    cd "${DEPLOY_DIR}"
+    cd "${SHEKEL_REPO_ROOT}"
 
     if ! git pull --ff-only; then
         log "ERROR" "git pull failed. Resolve conflicts or network issues and retry."
@@ -279,7 +335,7 @@ backup_database() {
     # Run a pre-deploy database backup, or stop the deploy before the app is
     # touched: a backup script that cannot run is refused like one that
     # refuses (Josh's ruling R-BAL304; --skip-backup is the explicit choice).
-    local backup_script="${DEPLOY_DIR}/scripts/backup.sh"
+    local backup_script="${SHEKEL_REPO_ROOT}/scripts/backup.sh"
 
     if [ ! -x "$backup_script" ]; then
         log "ERROR" "Backup script not found or not executable: ${backup_script}"
@@ -319,7 +375,7 @@ tag_previous_image() {
 build_image() {
     # Build the new Docker image.
     log "INFO" "Building new Docker image..."
-    cd "${DEPLOY_DIR}"
+    cd "${SHEKEL_REPO_ROOT}"
 
     if ! docker compose "${COMPOSE_FILES[@]}" build app; then
         log "ERROR" "Docker image build failed. The previous version is still running."
@@ -501,7 +557,7 @@ restart_app() {
     # Restart the app container with the new image.
     # Migrations run automatically via entrypoint.sh.
     log "INFO" "Restarting application container..."
-    cd "${DEPLOY_DIR}"
+    cd "${SHEKEL_REPO_ROOT}"
 
     # Recreate the app container with the new image.
     # --no-deps: only restart the app, not db or nginx.
@@ -567,24 +623,18 @@ rollback() {
         return 1
     fi
 
-    cd "${DEPLOY_DIR}"
+    cd "${SHEKEL_REPO_ROOT}"
 
     # Stop the failed container.
     log "INFO" "Stopping failed container..."
     docker compose "${COMPOSE_FILES[@]}" stop app 2>/dev/null || true
 
-    # Re-tag the previous image as the current compose image.
-    # Get the compose image name (what docker compose build targets).
-    local compose_image
-    compose_image=$(docker compose "${COMPOSE_FILES[@]}" images app --format json 2>/dev/null \
-        | python3 -c "import sys,json; data=json.load(sys.stdin); print(data[0].get('Repository','') if isinstance(data,list) else data.get('Repository',''))" 2>/dev/null || true)
-
-    if [ -n "$compose_image" ]; then
-        docker tag "${APP_CONTAINER}:previous" "${compose_image}:latest"
-        log "INFO" "Restored previous image as ${compose_image}:latest"
-    else
-        log "WARNING" "Could not determine compose image name. Using direct container restart."
-    fi
+    # Put the previous image back under the name compose starts the app from
+    # (resolve_image_ref).  The recreate below starts it only when compose
+    # does not pull over that name first, which docker-compose.yml's
+    # pull_policy: always asks it to (finding BAL-670).
+    docker tag "${APP_CONTAINER}:previous" "${IMAGE_REF}"
+    log "INFO" "Restored previous image as ${IMAGE_REF}"
 
     # Restart with the previous image.
     docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate app
@@ -603,6 +653,8 @@ rollback() {
 }
 
 main() {
+    refuse_retired_settings
+
     # Parse command-line arguments.
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -650,7 +702,7 @@ main() {
     done
 
     log "INFO" "=== Shekel Deployment Starting ==="
-    log "INFO" "Deploy directory: ${DEPLOY_DIR}"
+    log "INFO" "Deploying the checkout ${SHEKEL_REPO_ROOT}"
 
     # Canonical-stack guard (OPS/SH-14): on the maintainer host the
     # digest-pinned hardened stack lives at /opt/docker/shekel and is
@@ -666,9 +718,11 @@ main() {
     fi
 
     # Step 1: Check prerequisites, and resolve where nginx publishes the
-    # health endpoint (refused here, before anything is touched).
+    # health endpoint and what compose names the app image (each refused
+    # here, before anything is touched).
     check_prerequisites
     resolve_health_url
+    resolve_image_ref
 
     # Step 2: Pull latest code.
     if [ "$SKIP_PULL" = false ]; then

@@ -624,18 +624,17 @@ _DB_DEFAULT = "shekel_prod_db_container"
 
 #: Every assignment of a container name from the lib: the script, its
 #: variable, and which container that variable names.  The pairing is the
-#: specification, not a copy of a name.  The backup scripts' defaults are
-#: the two entries of the settings table in ``scripts/_backup_lib.sh``, which
-#: every backup script reads (plan step balance:X-do, leaf L2b-2a; Josh's
-#: answer of 2026-10-17 moved these rows with them).
+#: specification, not a copy of a name.  The defaults of scripts/deploy.sh
+#: and the backup scripts are the two entries of the settings table in
+#: ``scripts/_settings_lib.sh``, which each of them reads (plan step
+#: balance:X-do, leaf L2b-2a and finding BAL-664; Josh's answers of
+#: 2026-10-17 moved these rows with them).
 _DEFAULT_SITES = (
     ("deploy/shekel-deploy.sh", "CONTAINER_NAME", _APP_DEFAULT),
     ("deploy/shekel-deploy.sh", "DB_CONTAINER", _DB_DEFAULT),
     ("deploy/verify_prod_deploy.sh", "CONTAINER", _APP_DEFAULT),
-    ("scripts/deploy.sh", "APP_CONTAINER", _APP_DEFAULT),
-    ("scripts/deploy.sh", "app_container_default", _APP_DEFAULT),
-    ("scripts/_backup_lib.sh", "SHEKEL_SETTING_DEFAULTS[DB_CONTAINER]", _DB_DEFAULT),
-    ("scripts/_backup_lib.sh", "SHEKEL_SETTING_DEFAULTS[APP_CONTAINER]", _APP_DEFAULT),
+    ("scripts/_settings_lib.sh", "SHEKEL_SETTING_DEFAULTS[DB_CONTAINER]", _DB_DEFAULT),
+    ("scripts/_settings_lib.sh", "SHEKEL_SETTING_DEFAULTS[APP_CONTAINER]", _APP_DEFAULT),
     ("scripts/generate_pg_cert.sh", "PROD_DB_CONTAINER", _DB_DEFAULT),
     ("scripts/reconcile_prod_to_canonical.sh", "app_container", _APP_DEFAULT),
 )

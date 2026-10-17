@@ -37,7 +37,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"
 
 # ── Configuration ────────────────────────────────────────────────
-# Each read from the environment, else its default in _backup_lib.sh.
+# Each read from the environment, else its default in _settings_lib.sh.
 read_settings \
     BACKUP_LOCAL_DIR "Local backup directory" \
     BACKUP_NAS_DIR "NAS backup directory" \

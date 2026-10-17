@@ -40,7 +40,7 @@ _DEPLOY = _REPO_ROOT / "scripts" / "deploy.sh"
 #: Every step ``main`` takes after its canonical-stack guard, in order.  Each
 #: is replaced by a recorder, so the ordering test runs no real step.
 _STEPS = (
-    "check_prerequisites", "pull_latest", "backup_database",
+    "check_prerequisites", "resolve_image_ref", "pull_latest", "backup_database",
     "tag_previous_image", "build_image", "sign_image",
     "verify_image_signature", "restart_app", "wait_for_health", "rollback",
 )
@@ -205,6 +205,8 @@ def _run_main(tmp_path: Path, *, answer: str, status: int):
 
     The test process runs from the repository root, never the deploy
     directory, and every compose call must have run in the deploy directory.
+    ``main``'s first step, the retired-setting check, runs for real: neither
+    setting is in the harness's environment.
 
     Returns:
         The completed process and the steps taken, in order.
@@ -218,13 +220,14 @@ def _run_main(tmp_path: Path, *, answer: str, status: int):
         for step in _STEPS
     )
     result = run_bash(
-        'STEPS="$1"; DEPLOY_DIR="$2"; eval "$3"; eval "$4"; eval "$5"; '
-        'eval "$6"; eval "$7"; eval "$8"; '
+        'STEPS="$1"; SHEKEL_REPO_ROOT="$2"; eval "$3"; eval "$4"; eval "$5"; '
+        'eval "$6"; eval "$7"; eval "$8"; eval "$9"; '
         'SKIP_PULL=false; SKIP_BACKUP=false; SKIP_COSIGN=false; '
         'FORCE_SELF_HOSTED=false; APP_CONTAINER=probe-app; '
         'main --force-self-hosted',
         str(steps), str(deploy_dir), _config(), recorders,
         function_text(_DEPLOY, "log"),
+        function_text(_DEPLOY, "refuse_retired_settings"),
         function_text(_DEPLOY, "nginx_health_url"),
         function_text(_DEPLOY, "resolve_health_url"),
         function_text(_DEPLOY, "main"),
@@ -266,7 +269,7 @@ class TestADeployWithoutNginxsAddressTouchesNothing:
         result, taken = _run_main(tmp_path, answer="0.0.0.0:8081\n", status=0)
         assert result.returncode == 0, result.stdout + result.stderr
         assert [line.split()[0] for line in taken] == [
-            "check_prerequisites", "pull_latest", "backup_database",
+            "check_prerequisites", "resolve_image_ref", "pull_latest", "backup_database",
             "tag_previous_image", "build_image", "sign_image",
             "verify_image_signature", "restart_app", "wait_for_health",
         ]

@@ -426,6 +426,6 @@ runs them, never from `.env` (the passphrase is no setting: it is the key file, 
 ./scripts/verify_backup.sh --help
 ```
 
-Each default's one home is the table `SHEKEL_SETTING_DEFAULTS` in `scripts/_backup_lib.sh` (the
+Each default's one home is the table `SHEKEL_SETTING_DEFAULTS` in `scripts/_settings_lib.sh` (the
 production containers' names come from `scripts/_docker_lib.sh`); the paths in this runbook's
 commands are examples.

@@ -799,7 +799,7 @@ def _backup_database(tmp_path: Path, script: str | None, mode: int = 0o755):
         path.write_text(f"#!/usr/bin/env bash\n{script}\n", encoding="utf-8")
         path.chmod(mode)
     return run_bash(
-        'DEPLOY_DIR="$1"; eval "$2"; eval "$3"; backup_database; '
+        'SHEKEL_REPO_ROOT="$1"; eval "$2"; eval "$3"; backup_database; '
         'echo returned',
         str(tmp_path), function_text(_DEPLOY, "log"),
         function_text(_DEPLOY, "backup_database"),

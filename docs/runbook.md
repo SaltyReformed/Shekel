@@ -85,7 +85,7 @@ Measured against the running maintainer host 2026-08-08. The nginx row differs b
 |--------|---------|-------|
 | `shekel-deploy` | **Production deploy** (digest-pinned GHCR image + cosign) | `shekel-deploy [sha256:... ] [--dry-run] [--no-verify]`, or `shekel-deploy --dump-only` |
 | `deploy/verify_prod_deploy.sh` | Read-only check of production after a deploy | `deploy/verify_prod_deploy.sh [SINCE]` |
-| `scripts/deploy.sh` | Self-hosted **source-build** deploy (NOT the production path) | `./scripts/deploy.sh [--skip-pull] [--skip-backup]` |
+| `scripts/deploy.sh` | Self-hosted **source-build** deploy (NOT the production path) | `./scripts/deploy.sh --help` lists its options and settings |
 | `scripts/backup.sh` | Create database backup | `./scripts/backup.sh --help` lists its options and settings |
 | `scripts/restore.sh` | Restore database from backup | `./scripts/restore.sh --help` lists its options and settings |
 | `scripts/verify_backup.sh` | Verify backup integrity | `./scripts/verify_backup.sh --help` lists its options and settings |
@@ -184,8 +184,10 @@ cd /opt/shekel
 
 **What it does (in order):**
 
-1. Asks compose where nginx is published (`docker compose ... port nginx`) and builds the health
-   check URL from the answer; refuses, before touching anything, when nginx is not running
+1. Asks compose where nginx is published (`docker compose ... port nginx`), for the health check
+   URL, and what it names the app image (`docker compose ... config --format json app`), which
+   cosign signs and rollback restores; refuses, before touching anything, when nginx is not running
+   or compose names no image
 2. Pulls the latest code from GitHub (`git pull --ff-only`)
 3. Runs a pre-deploy database backup (`scripts/backup.sh`); the deploy stops, before touching the
    app, when the backup refuses (no usable key file, `docs/backup_runbook.md` §3.3) or the script is
@@ -193,17 +195,12 @@ cd /opt/shekel
 4. Tags the current Docker image as `:previous` for rollback
 5. Builds the new Docker image (`docker compose build app`)
 6. Restarts the app container (`docker compose up -d --no-deps --force-recreate app`)
-7. Waits for the health endpoint to report healthy (default: 60s timeout)
+7. Waits for the health endpoint to report healthy, for up to `HEALTH_TIMEOUT` seconds
 8. On health check failure: rolls back to the `:previous` image automatically
 
-**Options:**
-
-| Flag | Effect |
-|------|--------|
-| `--skip-pull` | Skip `git pull` (deploy from current working tree) |
-| `--skip-backup` | Skip pre-deploy database backup |
-| `--health-timeout N` | Seconds to wait for health check (default: 60) |
-| `--health-interval N` | Seconds between health check retries (default: 5) |
+**Options and settings:** `./scripts/deploy.sh --help` lists each, every setting with its default.
+It deploys the checkout it is in: to deploy another checkout, run that checkout's own
+`scripts/deploy.sh`.
 
 **Example: deploy from a specific branch without backup:**
 
@@ -382,9 +379,9 @@ docker compose up -d --no-deps --force-recreate app
 # Option B: If the previous image is still tagged.
 # deploy.sh tags the in-place image as ${APP_CONTAINER}:previous
 # (so shekel-prod-app:previous) before each deploy, then on rollback
-# re-tags it as <compose_image>:latest.  The compose image for the
-# bundled deployment is ghcr.io/saltyreformed/shekel:latest -- adjust
-# below if you build a custom image with a different name.
+# re-tags it as the image compose names for the app service.  For the
+# bundled deployment that is ghcr.io/saltyreformed/shekel:latest --
+# adjust below if you build a custom image with a different name.
 docker tag shekel-prod-app:previous ghcr.io/saltyreformed/shekel:latest
 docker compose up -d --no-deps --force-recreate app
 ```
@@ -1463,7 +1460,8 @@ curl -s https://<domain>/health
 Health checks are also performed automatically by:
 
 - **Docker:** Every 30 seconds for the `app` and `nginx` containers
-- **deploy.sh:** After each deployment (60s timeout, 5s interval)
+- **deploy.sh:** After each deployment (`HEALTH_TIMEOUT` and `HEALTH_INTERVAL`; `--help` prints
+  their defaults)
 
 ---
 
