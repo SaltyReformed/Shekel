@@ -76,6 +76,9 @@ Usage, at the repository root::
 
 Exit status: 0 nothing refused; 1 refused, each reason printed; 2 the command
 line or git failed, or the change set holds no commit, so nothing was checked.
+What a command line must name is :func:`ends`, and how a verdict is printed and exits is
+:func:`report`: the one rule and the one reporter CI's landing check
+(``tools/quill/landing.py``) reads its change set by and prints its verdict with too.
 """
 from __future__ import annotations
 
@@ -234,31 +237,47 @@ def problems(root: Path, base: str, head: str) -> tuple[int, list[str]]:
     return len(commits), reasons
 
 
+def ends(args: list[str]) -> tuple[str, str] | None:
+    """A change set's two ends, ``(base, head)``, from a command line naming them: two full
+    commit ids, neither all zeros; None for any other command line."""
+    if (len(args) != 2 or not all(_FULL_ID.fullmatch(a) for a in args)
+            or any(set(a) == {"0"} for a in args)):
+        return None
+    return args[0], args[1]
+
+
+def report(check: str, base: str, head: str, count: int, reasons: list[str]) -> int:
+    """Print the verdict of the change-set check named ``check`` on ``<base>..<head>``, which
+    holds ``count`` commits and broke a rule for each of ``reasons``; its exit status as the
+    module says.  A change set holding no commit is refused: no pull request, merge group
+    or push has one, so it means the two ends are wrong.  CI's landing check
+    (``tools/quill/landing.py``) prints its verdict here too."""
+    if not count:
+        print(f"{check}: {base[:12]}..{head[:12]} holds no commit, so nothing was "
+              "checked; no pull request, merge group or push has an empty change set",
+              file=sys.stderr)
+        return 2
+    for reason in reasons:
+        print(f"REFUSED -- {reason}")
+    print(f"{check}: {count} commit(s) in {base[:12]}..{head[:12]}, {len(reasons)} refused")
+    return 1 if reasons else 0
+
+
 def main(argv: list[str] | None = None, root: Path = REPO) -> int:
     """Check the change set ``<base>..<head>``; print each refusal; exit as the module says."""
     args = sys.argv[1:] if argv is None else argv
-    if (len(args) != 2 or not all(_FULL_ID.fullmatch(a) for a in args)
-            or any(set(a) == {"0"} for a in args)):
+    if (pair := ends(args)) is None:
         print("usage: python -m tools.ci.commit_trailers <base-sha> <head-sha> (two full "
               f"commit ids, neither all zeros); given {args!r}", file=sys.stderr)
         return 2
-    base, head = args
+    base, head = pair
     try:
         count, reasons = problems(root, base, head)
     except GitError as exc:
         print(f"commit trailers: git could not read {base[:12]}..{head[:12]}: {exc}",
               file=sys.stderr)
         return 2
-    if not count:
-        print(f"commit trailers: {base[:12]}..{head[:12]} holds no commit, so nothing was "
-              "checked; no pull request, merge group or push has an empty change set",
-              file=sys.stderr)
-        return 2
-    for reason in reasons:
-        print(f"REFUSED -- {reason}")
-    print(f"commit trailers: {count} commit(s) in {base[:12]}..{head[:12]}, "
-          f"{len(reasons)} refused")
-    return 1 if reasons else 0
+    return report("commit trailers", base, head, count, reasons)
 
 
 if __name__ == "__main__":

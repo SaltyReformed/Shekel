@@ -102,6 +102,9 @@ BOARD_WAIT_SECONDS = 60
 POLL_SECONDS = 5
 #: A connection GitHub caps per card (a parent holds at most 100 sub-issues).
 _PAGE = 100
+#: The largest number a read by number can ask for: GraphQL's ``Int`` is a signed 32-bit
+#: integer (the GraphQL specification), so no issue is numbered past it.
+GRAPHQL_INT_MAX = 2**31 - 1
 #: GitHub's issue search serves at most this many results of one query, whatever its
 #: ``total_count`` says.
 _SEARCH_CAP = 1000
@@ -539,8 +542,12 @@ class CardReader:
                                  card: Callable[[dict], CardT]) -> dict[int, CardT]:
         """The cards numbered ``numbers`` that exist, each read with ``card_fields`` and
         built by ``card``: the one walk of a read by number, which each reader's
-        :meth:`cards` names its fields and its card type to."""
-        wanted = sorted(set(numbers))
+        :meth:`cards` names its fields and its card type to.  A number past
+        :data:`GRAPHQL_INT_MAX` is never asked, so it is absent like one nobody filed: asked,
+        it is an argument GraphQL's ``Int`` cannot hold, which the specification's input
+        coercion refuses, and with it the read's every other card (GitHub's own answer is
+        unmeasured)."""
+        wanted = sorted(number for number in set(numbers) if number <= GRAPHQL_INT_MAX)
         found = {}
         for start in range(0, len(wanted), _PAGE // 2):
             batch = wanted[start:start + _PAGE // 2]
