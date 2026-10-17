@@ -1,6 +1,7 @@
 """The suite wrapper's door, :func:`tools.split._run.observe`, run to its end and stopped by
-an exception, against STAND-INS for ``scripts/test.sh``; and the two readers of what a record
-is judged in, :func:`tools.split._run.differences` and :func:`tools.split._run.environment`.
+an exception, and the environment it starts the wrapper in, against STAND-INS for
+``scripts/test.sh``; and the two readers of what a record is judged in,
+:func:`tools.split._run.differences` and :func:`tools.split._run.environment`.
 
 The tool suite starts no docker, so a stopped run is graded against a stand-in with the
 wrapper's contract under ``SIGTERM``: a child started in the background (pytest's place),
@@ -29,6 +30,7 @@ import pytest
 from tools.ci import gitcmd, scratch
 from tools.ci.arcs import REPO, WRAPPER
 from tools.split import _run as run
+from tools.testrecord.record import HASH_SEED, ORDER_ENV, XDIST_IDENTITY
 
 #: ``scripts/test.sh``'s contract under ``SIGTERM``, standing in for it.  It writes its
 #: child's pid to ``child`` (the trap is set first); on ``TERM`` it writes ``trapped``,
@@ -48,6 +50,18 @@ STAND_IN = textwrap.dedent('''\
     child=$!
     echo "$child" > "$marks/child"
     wait "$child"
+    ''')
+
+
+#: A wrapper writing the environment it was started in as its observation: a Python script,
+#: so no shell adds a variable of its own.
+ENVIRONMENT_DUMP = textwrap.dedent(f'''\
+    #!{sys.executable}
+    import json
+    import os
+
+    with open(os.environ["SHEKEL_SPLIT_OBSERVE"], "w", encoding="utf-8") as out:
+        json.dump(dict(os.environ), out)
     ''')
 
 
@@ -165,6 +179,28 @@ def test_a_run_that_wrote_no_observation_shows_its_exit_and_output(tmp_path):
         run.observe(root, ["tests"], tmp_path / "observed.json", collect_only=True)
     assert str(caught.value).endswith(
         "wrote no observation (exit 3):\nan-output-line\nan-error-line")
+
+
+def test_the_wrapper_starts_in_the_environment_every_wrapper_run_shares(tmp_path,
+                                                                        monkeypatch):
+    """The door starts the wrapper in :func:`tools.testrecord.record.wrapper_env`'s
+    environment, as a recorded run does (the coordinator's ruling on item (4)'s Fork 2,
+    2026-10-16): hashed with :data:`tools.testrecord.record.HASH_SEED` whatever seed this
+    process holds, holding none of the xdist identity or the run order this process
+    inherited, and the root first on ``PYTHONPATH`` with this process's entries after it.
+    It copied this process's environment whole but ``PYTHONPATH``, so a record's outcome
+    runs and a prove's could hash apart (each process drew its own seed unless the caller
+    exported one), and one started inside an xdist worker took itself for that worker."""
+    root = tmp_path / "code"
+    _wrapper(root, ENVIRONMENT_DUMP)
+    monkeypatch.setenv("PYTHONHASHSEED", "random")
+    monkeypatch.setenv("PYTHONPATH", "/elsewhere")
+    for name in (*XDIST_IDENTITY, ORDER_ENV):
+        monkeypatch.setenv(name, "inherited")
+    seen = run.observe(root, ["tests"], tmp_path / "observed.json", collect_only=False)
+    assert seen["PYTHONHASHSEED"] == HASH_SEED
+    assert not {*XDIST_IDENTITY, ORDER_ENV} & set(seen)
+    assert seen["PYTHONPATH"] == os.pathsep.join((str(root), "/elsewhere"))
 
 
 def test_the_differences_are_every_path_once(tmp_path):

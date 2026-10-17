@@ -27,7 +27,7 @@ from tools.ci.arcs import WRAPPER
 from tools.split._model import Plan, mentions
 from tools.split._observe import OBSERVE_ENV, setup_key, setups_path
 from tools.split._source import decode, lines_of, load_json, read_json, shown, undecodable
-from tools.testrecord.record import wrapper_run
+from tools.testrecord.record import wrapper_env, wrapper_run
 
 #: pylint's exit-status bits for a fatal message and a usage error: either means it did
 #: not lint, so its message list is not an observation.
@@ -70,10 +70,11 @@ def observe(root: Path, targets: list[str], out: Path, collect_only: bool) -> di
     outlived an earlier run writes into that run's directory, never this one's (the
     coordinator's rulings on 3B-2b's condition (c), 2026-10-15, and on 3C-2's prove fork,
     2026-10-16).  Nothing is deleted before the run: a file deleted first could still be
-    written by such a pytest after the deletion."""
-    env = dict(os.environ)
+    written by such a pytest after the deletion.  The wrapper starts in the environment
+    every wrapper run the tools start shares (:func:`tools.testrecord.record.wrapper_env`),
+    so it hashes with the recorded runs' seed and inherits no xdist identity."""
+    env = wrapper_env(root)
     env[OBSERVE_ENV] = str(out)
-    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(root), env.get("PYTHONPATH")) if p)
     args = [WRAPPER, *targets, "-p", "tools.split._observe",
             "-p", "no:cacheprovider", "-q"]
     if collect_only:

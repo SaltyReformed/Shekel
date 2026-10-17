@@ -3,8 +3,9 @@
 loaded and reads back, for each test, how it ended, the arcs each of its phases executed in
 :data:`MEASURED` and the passing asserts of each phase that pytest rewrote (the plugin names
 which those are), in order.  It also holds what every run of the wrapper
-(:data:`tools.ci.arcs.WRAPPER`) shares, whoever starts it: its run to its end
-(:func:`wrapper_run`), and how a test ended from its phases' reports (:func:`verdict`).
+(:data:`tools.ci.arcs.WRAPPER`) shares, whoever starts it: the environment it starts in
+(:func:`wrapper_env`), its run to its end (:func:`wrapper_run`), and how a test ended from its
+phases' reports (:func:`verdict`).
 
 A run writes into a directory made for it, which must be empty: each process's files, the
 wrapper's whole output (``wrapper-output.txt``, kept as written, for a refusal to point
@@ -45,7 +46,7 @@ ORDER_ENV = "SHEKEL_TESTRECORD_ORDER"
 #: describing that worker's session rather than the run's: with the first the run takes
 #: itself for the worker and writes no outcomes, and with the run id alone
 #: ``tests/conftest.py`` takes it for an xdist controller and skips its database bootstrap.
-#: So :func:`record` starts the wrapper without them.
+#: So :func:`wrapper_env` leaves them out.
 WORKER = "PYTEST_XDIST_WORKER"
 XDIST_IDENTITY = (WORKER, "PYTEST_XDIST_WORKER_COUNT", "PYTEST_XDIST_TESTRUNUID")
 
@@ -59,23 +60,23 @@ LONE = "main"
 #: contexts (:mod:`tools.testrecord.plugin`).
 CORE = "CTracer"
 
-#: The hash seed every process of every recorded run hashes with (``PYTHONHASHSEED``; ``0``
-#: turns hash randomization off), whatever the caller's environment holds.  A string's or a
-#: date's hash is seeded per process, so a set's iteration order differs run to run, and a
-#: record followed it: the R-BAL303 pilot (2026-10-16) measured a set's repr in an assert's
-#: explanation (``{'raises', 'periods', 'today', 'thirds'}`` against ``{'thirds',
-#: 'periods', 'raises', 'today'}``), and app control flow, where
-#: ``escrow_calculator._escrow_unchanged_by_merge`` takes ``all()`` over a set of dates and
-#: stops at the first False, so ``TestEscrow::test_merge_rejects_overlap`` ran a line of
-#: ``app/utils/effective_dated.py`` in one run only.  Two RECORDS of one tree, and of a
-#: split's two layouts, must hash alike (the coordinator's ruling on the pilot's Fork 2).
-#: The split tool's outcome runs (:func:`tools.split._run.observe`) are not pinned: they
-#: compare outcomes and fixture setups, not the values a set's order prints, and a test
-#: whose outcome changes with the seed shows there as a difference, failing closed.  What
-#: no seed fixes: an object hashed by its identity (``object.__hash__`` derives from its
-#: address), and a string holding the layout or the run (a node id, a module path,
-#: ``tmp_path``'s directory), each of which may still iterate differently between layouts;
-#: a proof sees that as a difference, and refuses.
+#: The hash seed every process that inherits the environment of a run of the wrapper the tools
+#: start hashes with (``PYTHONHASHSEED``; ``0`` turns hash randomization off), whatever the
+#: caller's environment holds (:func:`wrapper_env`): a recorded run's, and the split tool's outcome
+#: runs (:func:`tools.split._run.observe`).  A string's or a date's hash is seeded per process, so
+#: a set's iteration order differs run to run, and a record followed it: the R-BAL303 pilot
+#: (2026-10-16) measured a set's repr in an assert's explanation (``{'raises', 'periods', 'today',
+#: 'thirds'}`` against ``{'thirds', 'periods', 'raises', 'today'}``), and app control flow, where
+#: ``escrow_calculator._escrow_unchanged_by_merge`` takes ``all()`` over a set of dates and stops
+#: at the first False, so ``TestEscrow::test_merge_rejects_overlap`` ran a line of
+#: ``app/utils/effective_dated.py`` in one run only.  Two RECORDS of one tree, and of a split's two
+#: layouts, must hash alike (the coordinator's ruling on the pilot's Fork 2), and so must a
+#: record's outcome runs and a prove's, which compare one layout's outcomes and fixture setups with
+#: the other's (the coordinator's ruling on item (4)'s Fork 2, 2026-10-16).  What no seed fixes: an
+#: object hashed by its identity (``object.__hash__`` derives from its address), and a string
+#: holding the layout or the run (a node id, a module path, ``tmp_path``'s directory), each of
+#: which may still iterate differently between layouts; a proof sees that as a difference, and
+#: refuses.
 HASH_SEED = "0"
 
 #: The three phases of a test, in order.
@@ -202,6 +203,25 @@ def verdict(phases: dict[str, tuple[str, bool]]) -> str:
     return status
 
 
+def wrapper_env(root: Path) -> dict[str, str]:
+    """The environment every run of the suite wrapper the tools start runs in, before its
+    caller adds the variables of its own run: this process's, without the xdist identity
+    (:data:`XDIST_IDENTITY`) or a run order (:data:`ORDER_ENV`), neither of which is the
+    run's; hashed with :data:`HASH_SEED`; and ``root`` first on ``PYTHONPATH``, so a plugin
+    the run loads is imported from the tree it runs.  The ONE builder (the coordinator's
+    ruling on item (4)'s Fork 2, 2026-10-16): :func:`record` and the split tool's outcome
+    runs (:func:`tools.split._run.observe`) built it two ways, and only the first dropped the
+    identity and the run order and pinned the seed, so an outcome run started from inside an
+    xdist worker took itself for that worker and wrote no observation, and a record's outcome
+    runs and a prove's could hash apart: each process drew its own seed unless the caller
+    exported one."""
+    env = {name: value for name, value in os.environ.items()
+           if name not in (*XDIST_IDENTITY, ORDER_ENV)}
+    env["PYTHONHASHSEED"] = HASH_SEED
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(root), env.get("PYTHONPATH")) if p)
+    return env
+
+
 def record(root: Path, targets: list[str], out: Path, order: list[str] | None = None,
            extra: tuple[str, ...] = ()) -> Record:
     """Run ``targets`` through the suite wrapper in ``root`` with the plugin loaded, writing
@@ -209,10 +229,9 @@ def record(root: Path, targets: list[str], out: Path, order: list[str] | None = 
     ``order``, when given, runs exactly those tests in that order in one process (``-n 0``);
     ``extra`` is passed to pytest after everything else.  Refused as :func:`read` refuses a
     record, when the run wrote no outcomes, and when an order was given and the tests ran in
-    another.  The wrapper is started without the run order or the xdist identity this
-    process may hold (:data:`XDIST_IDENTITY`): neither is the run's.  Its ``PYTHONHASHSEED``
-    is :data:`HASH_SEED`, whatever this process's environment holds, so the wrapper, pytest,
-    each xdist worker and every child that inherits their environment hash alike; a test
+    another.  The wrapper starts in :func:`wrapper_env`'s environment, so the wrapper,
+    pytest, each xdist worker and every child that inherits their environment hash with
+    :data:`HASH_SEED`, and none inherits this process's run order or xdist identity; a test
     that builds its child's environment from a list of names (the seed scripts' tests in
     ``tests/test_scripts``) starts that child unseeded.  Stopped as :func:`wrapper_run` stops
     the wrapper, so only on an exception: a caller that must be stopped by ``SIGTERM`` or
@@ -222,13 +241,10 @@ def record(root: Path, targets: list[str], out: Path, order: list[str] | None = 
     if order is not None and any(arg.startswith(("-n", "--numprocesses")) for arg in extra):
         raise RecordError("a run order runs in one process; it takes no -n of its own")
     pycache = out / "pycache"
-    env = {name: value for name, value in os.environ.items()
-           if name not in (*XDIST_IDENTITY, ORDER_ENV)}
+    env = wrapper_env(root)
     env[RECORD_ENV] = str(out)
     env[ROOT_ENV] = str(root.resolve())
-    env["PYTHONHASHSEED"] = HASH_SEED
     env["PYTHONPYCACHEPREFIX"] = str(pycache)
-    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(root), env.get("PYTHONPATH")) if p)
     args = [WRAPPER, *targets, "-p", PLUGIN, "-p", "no:cacheprovider", "-q", *SETTINGS]
     if order is not None:
         held = out / "order.json"

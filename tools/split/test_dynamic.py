@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import errno
 import json
-import os
 import re
 import subprocess
 import sys
@@ -35,6 +34,7 @@ from tools.split.conftest import (
     plan_of,
 )
 from tools.split.test_apply import applied
+from tools.testrecord.record import wrapper_env
 
 
 def mapping(repo: Path) -> dict[str, str]:
@@ -800,12 +800,13 @@ class TestTheObserver:
 
     @staticmethod
     def observed(root: Path, target: str, collect_only: bool, *extra: str) -> dict:
-        """Run pytest on ``target`` in ``root`` with the observer, as the tool's runs do
-        (``extra``: more pytest arguments, such as xdist's ``-n``)."""
+        """Run pytest on ``target`` in ``root`` with the observer, in the environment the
+        tool's runs start in (:func:`tools.testrecord.record.wrapper_env`), this repository
+        first on ``PYTHONPATH`` for the plugin (``extra``: more pytest arguments, such as
+        xdist's ``-n``)."""
         out = root / "observed.json"
-        env = dict(os.environ)
+        env = wrapper_env(REPO)
         env[OBSERVE_ENV] = str(out)
-        env["PYTHONPATH"] = str(REPO)
         args = [sys.executable, "-m", "pytest", target, "-c", "pytest.ini", "-q",
                 "-p", "tools.split._observe", "-p", "no:cacheprovider", *extra]
         subprocess.run(args + (["--collect-only"] if collect_only else []), cwd=root,
