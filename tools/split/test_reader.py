@@ -2,10 +2,11 @@
 :mod:`tools.ci.text`): every text, process output, JSON value, syntax tree, symbol table and
 ini file the tool reads goes through it, and each refuses, naming what it read, where Python
 would raise (the coordinator's ruling on the delta review's L-B, 2026-10-15: every path from
-``split.main`` to a traceback becomes a refusal naming the file); and no module of the tool
-splits text with :meth:`str.splitlines`, which ends a line where Python does not: the
-reader's :func:`tools.ci.text.lines_of` splits as Python numbers lines (the coordinator's
-ruling on commit 3b-1's first report, 2026-10-15).
+``split.main`` to a traceback becomes a refusal naming the file); and no module of the tool,
+the reader or the recorder (:mod:`tools.testrecord`) splits text with :meth:`str.splitlines`,
+which ends a line where Python does not: the reader's :func:`tools.ci.text.lines_of` splits
+as Python numbers lines (the coordinator's rulings on commit 3b-1's first report, 2026-10-15,
+and on the lane review's M-B, 2026-10-17).
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from tools.ci import text as ci_text
+from tools.ci.arcs import REPO
 from tools.ci.text import lines_of
 from tools.split import _dynamic as dynamic
 from tools.split import _run as run
@@ -38,15 +40,29 @@ from tools.split._source import (
 )
 from tools.split.conftest import SOURCE, build, layout_of, only_on_path, refusal, sample_with
 from tools.split.test_apply import applied, proof
+from tools.testrecord import record as recorder
 
 #: The ONE reader's modules, named once (the coordinator's ruling on M-B's pure move,
-#: 2026-10-17): the only modules the scan exempts, and the ones its control scans.
+#: 2026-10-17): the only modules the reading scan exempts, and the ones its control scans.
 READER = tuple(Path(module.__file__).resolve() for module in (source, ci_text))
 
+
+def _modules(package: Path) -> list[Path]:
+    """A package's modules, its tests and its ``conftest.py`` aside."""
+    return sorted(p for p in package.glob("*.py")
+                  if not p.stem.startswith("test_") and p.stem != "conftest")
+
+
 #: The tool's modules, every one but the reader and the tests.
-TOOL = sorted(p for p in Path(__file__).parent.glob("*.py")
-              if not p.stem.startswith("test_") and p.stem != "conftest"
-              and p.resolve() not in READER)
+TOOL = [p for p in _modules(Path(__file__).parent) if p.resolve() not in READER]
+
+#: The recorder's modules (:mod:`tools.testrecord`), its tests aside: a run's output the
+#: tool's refusals show is split there (:func:`tools.testrecord.record.wrapper_tail`).
+RECORDER = _modules(Path(recorder.__file__).parent)
+
+#: Every module the ``splitlines`` scan reads: the tool's, the reader's and the recorder's
+#: (the coordinator's ruling on the lane review's M-B, 2026-10-17: widened from the tool's).
+SPLITTING = [*TOOL, *READER, *RECORDER]
 
 #: Calls that read, decode, parse, load or split text into lines, by the attribute they call
 #: on a module name (``json.loads``) or on any object (``.read_text``, ``.decode``,
@@ -106,6 +122,53 @@ def test_the_census_sees_every_spelling_it_refuses(tmp_path):
     assert {"__init__.py", "_classes.py", "_dynamic.py", "_identity.py", "_layout.py",
             "_model.py", "_observe.py", "_prove.py", "_render.py", "_run.py", "_similar.py",
             "split.py"} <= {p.name for p in TOOL}
+
+
+#: A :meth:`str.splitlines` call in the shape :func:`tools.testrecord.record.wrapper_tail` split
+#: a refusal's tail by.
+STRAY_SPLIT = 'tail = "\\n".join(shown(output).splitlines()[-30:])\n'
+
+
+def splitters(path: Path) -> list[str]:
+    """Each call in ``path`` that splits text into lines with :meth:`str.splitlines`, as
+    :func:`readers` finds it."""
+    return [call for call in readers(path) if call.endswith(".splitlines")]
+
+
+def test_no_module_splits_text_with_str_splitlines():
+    """The tool's, the reader's and the recorder's modules (:data:`SPLITTING`) never split
+    text with :meth:`str.splitlines`, which ends a line at each character of
+    :data:`NOT_LINE_ENDS` (a form feed among them), where Python ends none:
+    :func:`tools.ci.text.lines_of` splits as Python numbers lines (the coordinator's ruling
+    on the lane review's M-B, 2026-10-17)."""
+    assert {f"{p.parent.name}/{p.name}": splitters(p) for p in SPLITTING if splitters(p)} == {}
+
+
+def test_the_splitlines_scan_reads_the_recorder_and_the_reader(tmp_path):
+    """The control: the scan finds a ``splitlines`` in the shape the recorder's tail was split
+    by, so an empty answer above is the modules'; and it reads the recorder's modules and the
+    reader's beside the tool's, each this checkout's, so a ``splitlines`` in the recorder,
+    where a refusal's tail is split, is found (the scope widened from the tool's modules
+    alone)."""
+    stray = tmp_path / "stray.py"
+    stray.write_text(STRAY_SPLIT, encoding="utf-8")
+    assert splitters(stray) == ["1: shown(output).splitlines"]
+    names = {f"{p.parent.name}/{p.name}" for p in SPLITTING}
+    assert {"testrecord/__init__.py", "testrecord/compare.py", "testrecord/plugin.py",
+            "testrecord/record.py", "ci/text.py", "split/_source.py"} <= names
+    assert {f"split/{p.name}" for p in TOOL} <= names
+    assert all(p.resolve().is_relative_to(REPO) for p in SPLITTING)
+
+
+def test_the_splitlines_scan_reads_every_module_of_its_scope(tmp_path, monkeypatch):
+    """The scan reads :data:`SPLITTING` itself, every module of it: a ``splitlines`` in a
+    module added to the scope fails it, naming the module, so a scan reading less than its
+    scope (the tool's modules alone, as it did) is seen."""
+    stray = tmp_path / "stray.py"
+    stray.write_text(STRAY_SPLIT, encoding="utf-8")
+    monkeypatch.setitem(globals(), "SPLITTING", [*SPLITTING, stray])
+    with pytest.raises(AssertionError, match="stray.py"):
+        test_no_module_splits_text_with_str_splitlines()
 
 
 class TestTheReader:

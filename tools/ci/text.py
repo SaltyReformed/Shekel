@@ -1,8 +1,9 @@
 """The translation of line endings and the splitter of text into lines that :mod:`tools.split`
-reads by (its ``test_reader.py`` holds that no other module of that package reads text, or
-splits it with :meth:`str.splitlines`, itself), and the ONE decoder of a process's bytes into
-text for a message, by which :mod:`tools.split` and :mod:`tools.testrecord` both show a
-refusal.
+reads by, and that :func:`tools.testrecord.record.wrapper_tail` splits a run's output by
+(``tools/split/test_reader.py`` holds that no other module of :mod:`tools.split` reads text
+itself, and that no module of either package splits it with :meth:`str.splitlines`, their
+tests and ``conftest.py`` aside in both); and the ONE decoder of a process's bytes into text
+for a message, by which both packages show a refusal.
 
 In the bottom layer, so the two packages reach one home: ``tools/split`` imports
 ``tools/testrecord``, never the reverse, and each imports this package (the coordinator's
@@ -21,8 +22,8 @@ import io
 
 def universal(text: str) -> io.StringIO:
     """``text`` behind :mod:`io`'s own universal newlines, the ONE translation of line endings
-    the tool reads by: ``\\r\\n`` and a lone ``\\r`` read as ``\\n``, as Python's tokenizer
-    reads them."""
+    :mod:`tools.split` reads by, and the one :func:`lines_of` splits by: ``\\r\\n`` and a lone
+    ``\\r`` read as ``\\n``, as Python's tokenizer reads them."""
     return io.StringIO(text, newline=None)
 
 

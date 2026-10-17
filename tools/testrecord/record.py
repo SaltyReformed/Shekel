@@ -212,9 +212,12 @@ def wrapper_tail(output: bytes) -> str:
     (:func:`wrapper_run`), shown (:func:`tools.ci.text.shown`): what a refusal of a run that
     wrote nothing prints, a recorded run's (:func:`record`) and an outcome run's
     (:func:`tools.split._run.observe`) alike (the coordinator's ruling on delta review 4's
-    n1, 2026-10-16).  A message's lines, which nothing numbers, so no rule about line numbers
-    applies to how they are split."""
-    return "\n".join(ci_text.shown(output).splitlines()[-TAIL_LINES:])
+    n1, 2026-10-16).  Its lines are split by :func:`tools.ci.text.lines_of`, so a line
+    holding a character :meth:`str.splitlines` ends a line at and Python does not (a form
+    feed in an exception's message, as pytest prints it on its ``E`` line and in its short
+    summary) is shown whole and counted once (the coordinator's ruling on the lane review's
+    M-B, 2026-10-17)."""
+    return "\n".join(ci_text.lines_of(ci_text.shown(output))[-TAIL_LINES:])
 
 
 def verdict(phases: dict[str, tuple[str, bool]]) -> str:

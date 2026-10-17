@@ -352,6 +352,15 @@ class TestARefusedRun:
         assert wrapper_tail(output + b"bad \xff\n") == "\n".join(
             [f"line {number}" for number in range(11, TAIL_LINES + 10)] + ["bad \\xff"])
 
+    def test_a_tail_line_is_split_as_python_numbers_lines(self):
+        """A line holding a form feed, which :meth:`str.splitlines` ends a line at and Python
+        does not, is shown whole and counted once; a CRLF and a lone CR each end a line; and
+        a last line with no newline, which a wrapper stopped mid-write leaves, is kept (the
+        coordinator's ruling on the lane review's M-B, 2026-10-17)."""
+        output = b"".join(b"line %d\n" % number for number in range(TAIL_LINES + 10))
+        assert wrapper_tail(output + b"a\x0cb\r\nc\rd") == "\n".join(
+            [f"line {number}" for number in range(13, TAIL_LINES + 10)] + ["a\x0cb", "c", "d"])
+
 
 class TestTheReader:
     """What :func:`tools.testrecord.record.read` refuses in a run's files."""
