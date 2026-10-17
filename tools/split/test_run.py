@@ -9,6 +9,8 @@ and a ``TERM`` trap that stops it, waits for it, runs the teardown (here, a mark
 143.  The real wrapper under the same signals was measured instead, 2026-10-15
 (:func:`tools.testrecord.record.wrapper_run`), and ``tests/test_scripts/test_test_runner.py``
 holds that it traps ``TERM``.
+
+Last, the reader of the zone the app shows dates in, :func:`tools.split._run.display_zone`.
 """
 from __future__ import annotations
 
@@ -24,12 +26,14 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from tools.ci import gitcmd, scratch
 from tools.ci.arcs import REPO, WRAPPER
 from tools.split import _run as run
+from tools.split.conftest import SAMPLE_ZONE, display_home
 from tools.testrecord.record import HASH_SEED, ORDER_ENV, XDIST_IDENTITY
 
 #: ``scripts/test.sh``'s contract under ``SIGTERM``, standing in for it.  It writes its
@@ -539,3 +543,80 @@ def test_the_census_sees_each_shape_it_names(tmp_path):
         module = tmp_path / "module.py"
         module.write_text(text, encoding="utf-8")
         assert _reads_ignored(module, names) is listed, text
+
+
+def test_the_display_zone_is_read_from_the_repository_and_writes_nothing(
+        tmp_path, monkeypatch):
+    """The zone is the one the repository's own home defines (the sample's names
+    :data:`tools.split.conftest.SAMPLE_ZONE`, not the app's), and reading it writes nothing
+    into the tree: bytecode is written beside the file here, where any loader that writes it
+    would (the coordinator's ruling on M-1's build, (1), 2026-10-17)."""
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    display_home(tmp_path)
+    before = sorted(tmp_path.rglob("*"))
+    assert run.display_zone(tmp_path) is ZoneInfo(SAMPLE_ZONE)
+    assert sorted(tmp_path.rglob("*")) == before
+
+
+def test_the_display_home_of_this_repository_holds_the_zone():
+    """The ONE case reading this repository's own home, not a stand-in: a moved file or a
+    renamed constant fails here, in the tool suite, rather than in a real record (the
+    coordinator's ruling on M-1, condition 3, 2026-10-17)."""
+    assert isinstance(run.display_zone(REPO), ZoneInfo)
+
+
+#: Each display home that does not hold the zone: its text (None: no file at the path;
+#: ``"a directory"``: a directory there), and how the refusal goes on after the path.
+NOT_A_HOME = {
+    "no file": (None, "did not load (FileNotFoundError: "),
+    "a directory": ("a directory", "did not load (ImportError: "),
+    "not Python": ("DISPLAY_TIMEZONE = (\n", "did not load (SyntaxError: "),
+    "an import that fails": ("import shekel_no_such_module\n",
+                             "did not load (ModuleNotFoundError: "),
+    "a zone the tz database lacks": (
+        'from zoneinfo import ZoneInfo\n\nDISPLAY_TIMEZONE = ZoneInfo("Nowhere/Zone")\n',
+        "did not load (ZoneInfoNotFoundError: "),
+    "no DISPLAY_TIMEZONE": ('"""Nothing."""\n', "defines no ZoneInfo named DISPLAY_TIMEZONE"),
+    "a DISPLAY_TIMEZONE that is no ZoneInfo": (f'DISPLAY_TIMEZONE = "{SAMPLE_ZONE}"\n',
+                                               "defines no ZoneInfo named DISPLAY_TIMEZONE"),
+}
+
+
+@pytest.mark.parametrize("home", NOT_A_HOME)
+def test_a_display_home_that_does_not_hold_the_zone_is_refused_by_name(tmp_path, home):
+    """Each failure the reader can name is refused, naming the path, never raised as it
+    came (the coordinator's ruling on M-1, condition 2, as amended by the ruling on M-1's
+    build, (2), 2026-10-17)."""
+    text, said = NOT_A_HOME[home]
+    path = tmp_path / run.DISPLAY_HOME
+    if text == "a directory":
+        path.mkdir(parents=True)
+    elif text is not None:
+        display_home(tmp_path, text)
+    with pytest.raises(run.RunError) as caught:
+        run.display_zone(tmp_path)
+    assert str(caught.value).startswith(f"{path} {said}")
+    assert str(caught.value).endswith(
+        ", and it is the app's one home of the zone it shows dates in")
+
+
+def test_a_display_home_whose_own_code_fails_otherwise_is_not_refused(tmp_path):
+    """Any failure the reader does not name is the home's own code broken, and goes on as it
+    was raised, its traceback with it (the coordinator's ruling on M-1's build, (2),
+    2026-10-17; the lane review of M-1, L-2: a reader catching more passed every test)."""
+    display_home(tmp_path, 'raise ValueError("the home\'s own code")\n')
+    with pytest.raises(ValueError, match="the home's own code"):
+        run.display_zone(tmp_path)
+
+
+@pytest.mark.parametrize("zone,offset", [("Pacific/Kiritimati", "+14:00"), ("UTC", "+00:00")])
+def test_the_clock_reads_the_local_zone_of_its_process(zone, offset):
+    """The ONE clock the tool reads, run in a process of its own under ``TZ``, keeps that
+    zone's offset: the record keeps the local date its tests read by it (the coordinator's
+    ruling on M-1, R1, 2026-10-17; the lane review of M-1, M-1: every other case sets the
+    clock, so a clock reading UTC, or no zone at all, passed them all)."""
+    done = subprocess.run(
+        [sys.executable, "-c", "from tools.split import _run; print(_run.now().isoformat())"],
+        cwd=REPO, env={**os.environ, "TZ": zone}, capture_output=True, text=True, check=True)
+    assert done.stdout.strip().endswith(offset)

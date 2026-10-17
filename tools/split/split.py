@@ -40,7 +40,12 @@ hide, each one a census of the tree finds a run reading is in the environment in
 ``record`` and ``prove`` judge all of it again after their runs, so a change while they ran
 is refused (the coordinator's ruling on delta review 3's M-1, 2026-10-16).  A change made
 and undone while they run is outside the model: one session works a worktree at a time
-(``CLAUDE.md``, Multi-session operation).
+(``CLAUDE.md``, Multi-session operation).  A record is judged, too, only on the day its
+first test run began, in UTC, in the app's display zone and in the local zone
+(:func:`tools.split._run.display_zone`; the coordinator's rulings on M-1, 2026-10-17):
+``record`` keeps that instant, and judges the day again after its runs; ``apply`` and
+``prove`` refuse another day before they write or run anything, and ``prove`` judges it
+again after its runs.
 
 ``SIGKILL``, and a machine that stops, end an ``apply`` where it stands, with no undo.
 Before its proof passed, that leaves no id map, and a tree differing from ``HEAD`` at only
@@ -53,9 +58,9 @@ Exit status 0 means proved; 1 means refused (its reason printed) or failed (ever
 printed); 2 means
 the command line was refused before anything ran (``apply`` or ``prove`` without
 ``--idmap``, or a plan, record or map inside the repository).
-A record is what this tool wrote: a record file edited by hand into another JSON shape is
-outside its model, and fails closed with a traceback (a ``KeyError`` or ``TypeError``), not
-a refusal.
+A record is what this tool wrote: a record file edited by hand is outside its model, and
+fails closed with a traceback (a ``KeyError`` or ``TypeError`` for another JSON shape, a
+``ValueError`` for a start instant that is not ISO 8601), not a refusal.
 """
 from __future__ import annotations
 
@@ -66,7 +71,9 @@ import signal
 import sys
 import tempfile
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from tools.ci import gitcmd
 from tools.ci.arcs import REPO
@@ -124,6 +131,13 @@ _AFTER_RECORDED = ("after_recorded_1", "after_recorded_2")
 #: makes it the mark that the record's split is applied.
 _APPLIED = "idmap.json"
 
+#: The cure a refusal of a date that moved names, for each command (the coordinator's rulings
+#: on M-1, condition 1, and on its lane review, (B), 2026-10-17): at ``record`` and ``apply``
+#: nothing is applied, and at ``prove`` the split is.
+_RECORD_DAY = "record again on one day"
+_APPLY_DAY = "record again, then apply and prove on one day; nothing is applied"
+_PROVE_DAY = "revert the apply, record into a new --into, apply and prove on one day"
+
 #: The signals :func:`main` raises as :class:`Signalled`, so an apply's unit undoes them as
 #: it does Ctrl-C: ``kill`` and ``timeout`` send ``SIGTERM`` by default, and a terminal
 #: that closes sends ``SIGHUP``.
@@ -148,13 +162,16 @@ def _raise(signum: int, _frame: object) -> None:
 
 @dataclass(frozen=True)
 class Context:
-    """One invocation's inputs: the plan, the repository root, the record directory, and,
-    once a record is bound to it, that record's token (:meth:`bound`, or ``record``'s
-    own)."""
+    """One invocation's inputs: the plan, the repository root, the record directory, the zone
+    the app shows dates in, read ONCE from the root's own home before any refusal or run
+    (:func:`tools.split._run.display_zone`, which :func:`_command` calls; the coordinator's
+    ruling on M-1's lane review, (B), 2026-10-17), and, once a record is bound to it, that
+    record's token (:meth:`bound`, or ``record``'s own)."""
 
     plan: Plan
     root: Path
     into: Path
+    zone: ZoneInfo
     meta: dict | None = None
 
     def rules(self) -> CollectRules:
@@ -227,13 +244,18 @@ def _clean(root: Path, then: str) -> None:
                       f"state it was taken in; {then}")
 
 
-def _held_to(ctx: Context, nothing: str) -> None:
-    """Refuse unless this process runs where, and under what, the bound record was taken:
-    ``HEAD`` the commit it names, the environment the one it holds
-    (:func:`tools.split._run.environment`), and the plan the one whose bytes it hashed
-    (:attr:`tools.split._model.Plan.sha256`).  A record holding no environment, or no plan,
-    was written by another version of this tool, and is refused alike.  ``nothing`` ends the
-    refusal.
+def _held_to(ctx: Context, nothing: str, day: str) -> None:
+    """Refuse unless this process runs where, when and under what the bound record was
+    taken: ``HEAD`` the commit it names, the environment the one it holds
+    (:func:`tools.split._run.environment`), the plan the one whose bytes it hashed
+    (:attr:`tools.split._model.Plan.sha256`), and the day its runs began on
+    (:func:`_day_moved`).  A record holding no environment, no plan, or no instant its runs
+    began at, was written by another version of this tool, and is refused alike (the
+    instant: the coordinator's ruling on M-1's build, (3), 2026-10-17).  ``nothing`` ends the
+    refusal, and ``day`` ends a refusal of the day: the cure for the command.  Every command
+    that consumes a record is held to its day as to its ``HEAD`` (the coordinator's ruling
+    on M-1's lane review, (B), 2026-10-17): before it, an ``apply`` on another day wrote a
+    split that ``prove`` then refused (measured by that review).
 
     The plan is the record's as much as ``HEAD`` is: ``record`` lays the source out by it,
     computes each importer's rewrites from it, and lints the importers those rewrites
@@ -254,6 +276,13 @@ def _held_to(ctx: Context, nothing: str) -> None:
     if ctx.meta.get("plan") != ctx.plan.sha256:
         raise Refusal("the record was taken under another plan, or by a version of this tool "
                       f"that did not record its plan; {nothing}")
+    if "started" not in ctx.meta:
+        raise Refusal("the record was taken by a version of this tool that did not record when "
+                      f"its runs began; {nothing}")
+    dated = _day_moved(ctx)
+    if dated:
+        raise Refusal(f"{dated[0]}, and a record is judged only on the day its runs began; "
+                      f"{day}")
 
 
 def _tracked(root: Path, path: Path) -> bool:
@@ -262,13 +291,49 @@ def _tracked(root: Path, path: Path) -> bool:
     return gitcmd.run(root, "cat-file", "-e", f"HEAD:{path}").returncode == 0
 
 
-def _unmoved(ctx: Context, before: tuple[str, str, set[str]], nothing: str) -> None:
+def _day_moved(ctx: Context) -> list[str]:
+    """Why this instant (:func:`tools.split._run.now`) is not on the day the bound record's
+    runs began on, when it is not: each zone, of UTC, the app's display zone and the local
+    one, whose date differs between the two, and both instants (the coordinator's ruling on
+    M-1, R1 and condition 1, 2026-10-17).  The display zone is the one the command read
+    before any refusal or run (:attr:`Context.zone`): it can change only through the tree,
+    which :func:`_unmoved` judges again after the runs.  The record keeps ONE fact, the
+    instant its first test run began, with the record process's local offset, and each date
+    is derived from it (rule 14).  The offset is what keeps the local date the
+    record's tests read: an instant kept in UTC and read in this process's zone names that
+    date only when the two processes' zones agree, and ``TZ`` can differ between them."""
+    zone = ctx.zone
+    started, now = datetime.fromisoformat(ctx.meta["started"]), run.now()
+    dates = {"UTC": (started.astimezone(timezone.utc).date(),
+                     now.astimezone(timezone.utc).date()),
+             str(zone): (started.astimezone(zone).date(), now.astimezone(zone).date()),
+             "the local zone": (started.date(), now.date())}
+    moved = [f"in {name} from {then} to {today}" for name, (then, today) in dates.items()
+             if then != today]
+    return [f"the date moved {', '.join(moved)} since the record's runs began at "
+            f"{started.isoformat()} (it is now {now.isoformat()})"] if moved else []
+
+
+def _unmoved(ctx: Context, before: tuple[str, str, set[str]], nothing: str, day: str
+             ) -> None:
     """Refuse unless ``HEAD``, the environment and the paths at which the tree differs from
     ``HEAD`` are, after a command's runs, ``before``: what they were judged to be before
-    them.  A check made only at the start judged a moment, and an observation is a run of
-    minutes: a file edited while record's runs ran, or written beside the split while
-    prove's arms ran, was in no check (the coordinator's ruling on delta review 3's M-1, the
-    twelfth unit correction's second shape, 2026-10-16).  ``nothing`` ends the refusal."""
+    them; and unless the date, in UTC, in the app's display zone and in the local zone, is
+    still the one the bound record's runs began on (:func:`_day_moved`), the refusal then
+    naming ``day``, the cure.  A check made only at the start judged a moment, and an
+    observation is a run of minutes: a file edited while record's runs ran, or written
+    beside the split while prove's arms ran, was in no check (the coordinator's ruling on
+    delta review 3's M-1, the twelfth unit correction's second shape, 2026-10-16); nor was a
+    midnight passed while they ran (the ruling on M-1's R2, 2026-10-17).
+
+    Within one zone, where the date moves forward only, a date that is the record's both
+    when a command's runs begin and when they end was the record's throughout them: at
+    ``record`` the start is the record's own instant, and at ``prove`` its check before the
+    runs judges the start (:func:`_held_to`).  The end alone binds nothing in the local
+    zone, which may be another at ``prove`` than at ``record`` (another ``TZ``), so that the
+    local date can step back between the two (the lane review of M-1, L-1).  A date that
+    steps back within a command's runs, a clock set back across a midnight, is outside this
+    model.  ``nothing`` ends the refusal."""
     head, environment = _head(ctx.root), run.environment(ctx.root)
     found = run.differences(ctx.root)
     moved = ([f"HEAD moved from {before[0][:9]} to {head[:9]}"] if head != before[0] else []) + (
@@ -277,9 +342,10 @@ def _unmoved(ctx: Context, before: tuple[str, str, set[str]], nothing: str) -> N
         changed = sorted(found ^ before[2])
         moved.append(f"the working tree changed at {len(changed)} path(s), e.g. "
                      f"{changed[:5]}")
-    if moved:
-        raise Refusal(f"{'; '.join(moved)} while the runs ran, so no observation was made in "
-                      f"the state judged; {nothing}")
+    dated = _day_moved(ctx)
+    if moved or dated:
+        raise Refusal(f"{'; '.join(moved + dated)} while the runs ran, so no observation was "
+                      f"made in the state judged; {f'{day}; ' if dated else ''}{nothing}")
 
 
 def _write_set(ctx: Context, layout: Layout) -> set[str]:
@@ -388,10 +454,13 @@ def record(ctx: Context) -> list[str]:
 
     Refused unless the working tree is ``HEAD``'s and ``HEAD`` tracks the source, so
     ``HEAD``, which the token keeps with the environment and the plan's sha256, names every
-    file the observations rest on (REVISED (B), the module docstring).  The same is judged
-    again after the runs, before the token is written.  The token holds no copy of what the
-    plan says (the source's path): the plan it binds says it (the coordinator's ruling on
-    3C-2b, 2026-10-16, rule 14)."""
+    file the observations rest on (REVISED (B), the module docstring).  The token keeps,
+    too, the instant the first test run began (the collect-only observe; pylint, which runs
+    before it, reads no date), so that ``apply`` and ``prove`` are held to the day the
+    source was recorded on (:func:`_held_to`; the coordinator's ruling on M-1, R1,
+    2026-10-17).  The same is judged again after the runs, before the token is written, and
+    so is that day.  The token holds no copy of what the plan says (the source's path): the
+    plan it binds says it (the coordinator's ruling on 3C-2b, 2026-10-16, rule 14)."""
     if ctx.applied():
         raise Refusal(f"{ctx.into} holds a record whose split is applied; record into a new "
                       "--into")
@@ -413,13 +482,14 @@ def record(ctx: Context) -> list[str]:
     _save(ctx.held(_BEFORE_PYLINT), run.pylint_messages(ctx.root, [str(ctx.plan.source)]))
     _save(ctx.held(_BEFORE_IMPORTERS),
           run.pylint_messages(ctx.root, sorted(importers)) if importers else [])
+    ctx = replace(ctx, meta={**ctx.meta, "started": run.now().isoformat()})
     run.observe(ctx.root, [str(ctx.plan.source)], ctx.held(_BEFORE_COLLECT),
                 collect_only=True)
     run.observe(ctx.root, [str(ctx.plan.source)], ctx.held(_BEFORE_RUN), collect_only=False)
     for name in _BEFORE_RECORDED:
         ctx.held(name).mkdir()
         recorder.record(ctx.root, [str(ctx.plan.source)], ctx.held(name), extra=ONE_PROCESS)
-    _unmoved(ctx, (head, ctx.meta["environment"], set()), "nothing is recorded")
+    _unmoved(ctx, (head, ctx.meta["environment"], set()), "nothing is recorded", _RECORD_DAY)
     _save(ctx.into / _META, ctx.meta)
     return _record_verdict(ctx, layout).failures
 
@@ -427,10 +497,10 @@ def record(ctx: Context) -> list[str]:
 def apply(ctx: Context, idmap: Path) -> None:
     """Write the package, delete the source, re-point importers, run the static proof and
     write the id maps; refused, with nothing written, unless a complete record passed, is
-    not applied already, and ``HEAD``, the environment and the plan are the record's
-    (:func:`_held_to`) and the working tree is ``HEAD``'s: so the source and every importer
-    are as ``record`` found them, which ``record`` made sure of by refusing a source
-    ``HEAD`` does not track, and are laid out as it laid them out.  The writes and
+    not applied already, and ``HEAD``, the environment, the plan and the day are the
+    record's (:func:`_held_to`) and the working tree is ``HEAD``'s: so the source and every
+    importer are as ``record`` found them, which ``record`` made sure of by refusing a
+    source ``HEAD`` does not track, and are laid out as it laid them out.  The writes and
     the proof are ONE unit (:func:`tools.split._render.write`): a failed write, a static
     proof that fails on what was written, or an interrupt undoes every file the apply wrote,
     the id maps beside the tree included, and the refusal names the failure."""
@@ -438,7 +508,7 @@ def apply(ctx: Context, idmap: Path) -> None:
     if ctx.applied():
         raise Refusal(f"{ctx.into}: already applied (it holds the id map an apply keeps only "
                       "when it succeeded); nothing is applied")
-    _held_to(ctx, "record again; nothing is applied")
+    _held_to(ctx, "record again; nothing is applied", _APPLY_DAY)
     _clean(ctx.root, "undo them, or commit them and record again; nothing is applied")
     layout = ctx.layout(ctx.root / ctx.plan.source)
     refused = _record_verdict(ctx, layout).failures
@@ -549,19 +619,23 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     """Every arm of the proof; print the block a commit body quotes only when every arm
     passed.  The block's fixed sentences claim that each arm held, so printed beside a
     failure they would state what the run refuted (the branch's neutral review, F7).
-    Refused without a complete record, unless ``HEAD``, the environment and the plan are the
-    record's (:func:`_held_to`), and unless the working tree differs from ``HEAD`` at
-    EXACTLY the paths ``apply`` writes
-    (:func:`_write_set`): fewer is an apply killed part-way (``SIGKILL``; the coordinator's
-    ruling on 3B-2's signal fork, (d)), so it is never proved, and more is a change beside
-    the split, which no arm is judging (REVISED (B)).  The same is judged again after every
-    arm ran, before the block is printed.  Once those refusals pass, every file the prove
-    writes goes into a directory made for it (:func:`_run_directory`), which its block
-    names.  Every arm reads the node-id map the PLAN produces, computed once; the ``--idmap``
-    file is judged against it, and a file edited by hand is that arm's failure, never another
-    arm's input (the coordinator's ruling on item (4)'s Fork 3, 2026-10-16)."""
+    Refused without a complete record, unless ``HEAD``, the environment, the plan and the day
+    are the record's (:func:`_held_to`), and unless the working tree differs from ``HEAD`` at
+    EXACTLY the paths ``apply`` writes (:func:`_write_set`): fewer is an apply killed
+    part-way (``SIGKILL``; the coordinator's ruling on 3B-2's signal fork, (d)), so it is
+    never proved, and more is a change beside the split, which no arm is judging (REVISED
+    (B)).  The day is the record's in UTC, in the app's display zone and in the local zone
+    (:func:`_day_moved`): a test that reads the date reads another one on another day, so
+    the layouts would be compared across two days (the coordinator's ruling on M-1, R2,
+    2026-10-17).  The same is judged again after every arm ran, before the block is printed.
+    Once those refusals pass, every file the prove writes goes into a directory made for it
+    (:func:`_run_directory`), which its block names.  Every arm reads the node-id map the
+    PLAN produces, computed once; the ``--idmap`` file is judged against it, and a file
+    edited by hand is that arm's failure, never another arm's input (the coordinator's
+    ruling on item (4)'s Fork 3, 2026-10-16)."""
     ctx = ctx.bound()
-    _held_to(ctx, "a split is proved where it was recorded, before it is committed")
+    _held_to(ctx, "a split is proved where it was recorded, before it is committed",
+             _PROVE_DAY)
     layout = ctx.layout(ctx.held(_SOURCE))
     written = _write_set(ctx, layout)
     _written_alone(ctx, written)
@@ -584,7 +658,8 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     arms, gate_line = _gate_arm(ctx)
     failures += arms
     hits = dynamic.classify(ctx.root, run.census(ctx.root, layout.plan), origins)
-    _unmoved(ctx, (ctx.meta["head"], ctx.meta["environment"], written), "no block is printed")
+    _unmoved(ctx, (ctx.meta["head"], ctx.meta["environment"], written), "no block is printed",
+             _PROVE_DAY)
     if not failures:
         print("\n".join(_report_moves(ctx, layout, idmap, runs, seen)
                         + _report_recorded(seen["recorded"])
@@ -775,7 +850,8 @@ def main(argv: list[str] | None = None, root: Path = REPO) -> int:
 def _command(args: argparse.Namespace, root: Path) -> int:
     """Run the command ``args`` names in ``root``, and report it (:func:`main`)."""
     try:
-        ctx = Context(plan=load_plan(args.plan), root=root, into=args.into)
+        ctx = Context(plan=load_plan(args.plan), root=root, into=args.into,
+                      zone=run.display_zone(root))
         if args.command == "record":
             failures = record(ctx)
         elif args.command == "apply":

@@ -7,7 +7,7 @@ it; the readers of what the tool refuses or accepts for a source built from the 
 sample's collection, outcomes and the exceptions its phases raise; and the ``split`` fixture,
 which runs the command line on
 the sample with the arms that start a process stubbed (the suite runs, the recorded runs,
-pylint and the plan gate)."""
+pylint and the plan gate) and the clock set (:class:`Clock`)."""
 from __future__ import annotations
 
 import copy
@@ -16,7 +16,9 @@ import re
 import shutil
 import textwrap
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -212,6 +214,42 @@ PLAN = {
 PYTEST_INI = "[pytest]\npython_files = test_*.py\npython_classes = Test*\n" \
              "python_functions = test_*\n"
 PYLINTRC = "[FORMAT]\nmax-line-length=99\n"
+
+#: The zone the sample repository's display home names: not the app's, so a case reading
+#: the tool's own checkout's home rather than the repository's sees another zone.
+SAMPLE_ZONE = "Asia/Tokyo"
+
+#: The instant the ``split`` fixture's clock reads until a case moves it: 12:00 in UTC-4,
+#: 01:00 the next day in :data:`SAMPLE_ZONE`, so no case's commands straddle a midnight the
+#: wall clock passes.
+NOON = datetime(2026, 10, 16, 12, 0, tzinfo=timezone(timedelta(hours=-4)))
+
+
+def display_home(root: Path, text: str | None = None) -> Path:
+    """Write ``text`` as ``root``'s display home (:data:`tools.split._run.DISPLAY_HOME`), by
+    default one defining ``DISPLAY_TIMEZONE`` as :data:`SAMPLE_ZONE`; its path."""
+    path = root / run.DISPLAY_HOME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text if text is not None else textwrap.dedent(f'''\
+        """The sample repository's display home."""
+        from zoneinfo import ZoneInfo
+
+        DISPLAY_TIMEZONE = ZoneInfo("{SAMPLE_ZONE}")
+        '''), encoding="utf-8")
+    return path
+
+
+class Clock:
+    """The clock the tool reads (:func:`tools.split._run.now`), set by a case: it reads
+    ``at``, :data:`NOON` until a case sets another instant."""
+
+    def __init__(self) -> None:
+        """A clock reading :data:`NOON`."""
+        self.at = NOON
+
+    def __call__(self) -> datetime:
+        """The instant the case set."""
+        return self.at
 
 
 def plan_dict() -> dict:
@@ -453,18 +491,22 @@ def copied_places(root: Path) -> dict[int, tuple[str, int]]:
 
 @pytest.fixture(name="split")
 def _split(tmp_path, monkeypatch):
-    """The sample committed to a throwaway repository, the process arms stubbed (``stubs``, and
-    the recorded runs ``recording``); a function running one command through ``main``,
-    returning its exit status."""
+    """The sample committed to a throwaway repository with its display home
+    (:func:`display_home`), the process arms stubbed (``stubs``, and the recorded runs
+    ``recording``) and the clock set (``clock``); a function running one command through
+    ``main``, returning its exit status."""
     root = scratch.repository(tmp_path)
     build(root)
+    display_home(root)
     committed(root, "the sample")
     stubs = Stubs(dynamic.id_map(layout_of(root), BEFORE_IDS))
     recording = Recording(stubs, copied_places(root))
+    clock = Clock()
     monkeypatch.setattr(run, "observe", stubs.observe)
     monkeypatch.setattr(recorder, "record", recording.record)
     monkeypatch.setattr(run, "pylint_messages", stubs.pylint)
     monkeypatch.setattr(run, "plan_gate", lambda _root: stubs.gate)
+    monkeypatch.setattr(run, "now", clock)
     plan = tmp_path / "test_sample.plan.json"
     plan.write_bytes(plan_bytes())
 
@@ -474,6 +516,7 @@ def _split(tmp_path, monkeypatch):
             args += ["--idmap", str(command.idmap)]
         return main(args, root=root)
     command.stubs, command.recording, command.root, command.plan = stubs, recording, root, plan
+    command.clock = clock
     command.into, command.idmap = tmp_path / "record", tmp_path / "test_sample.idmap.json"
     return command
 
@@ -495,7 +538,8 @@ def held(split, name: str) -> Path:
     """Where the complete record in ``split.into`` holds the file ``name``, as the tool finds
     it (:meth:`tools.split.split.Context.held`): in the directory of the run its token
     names."""
-    return Context(plan=plan_of(), root=split.root, into=split.into).bound().held(name)
+    return Context(plan=plan_of(), root=split.root, into=split.into,
+                   zone=ZoneInfo(SAMPLE_ZONE)).bound().held(name)
 
 
 def only_on_path(tmp_path: Path, monkeypatch, *programs: str) -> None:

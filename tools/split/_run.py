@@ -2,8 +2,9 @@
 pytest: the wrapper gives each run a database cluster of its own), pylint, the plan gate,
 and ``git grep`` for the old module's name.  Each returns what it observed; judging it is
 :mod:`tools.split._dynamic`'s.  It also reads what a record is judged in: how the working
-tree differs from ``HEAD`` (:func:`differences`) and what the observations are made with
-(:func:`environment`).
+tree differs from ``HEAD`` (:func:`differences`), what the observations are made with
+(:func:`environment`), the clock (:func:`now`) and the zone the app shows dates in
+(:func:`display_zone`).
 
 A run stopped by an exception does not outlive this process
 (:func:`tools.testrecord.record.wrapper_run`).  The coordinator's condition (c) on 3B-2's
@@ -17,10 +18,13 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import os
+import runpy
 import stat
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from tools.ci import gitcmd
 from tools.ci.arcs import WRAPPER
@@ -54,6 +58,16 @@ IGNORED_READERS = {
     "app/config.py": (".env", True),
     "tests/test_deploy/test_docker_secrets_and_env_hygiene.py": (".env.dev", False),
 }
+
+#: The app's one home of the zone it shows dates in, repository-relative: the module that
+#: defines ``DISPLAY_TIMEZONE``.
+DISPLAY_HOME = "app/utils/dates.py"
+
+#: Each failure to load :data:`DISPLAY_HOME` that :func:`display_zone` can name, and so
+#: refuses by name: the file cannot be read, cannot be compiled, makes an import that fails
+#: (a directory at the path is one), or names a zone this machine's tz database lacks (the
+#: coordinator's ruling on M-1's build, (2), 2026-10-17).
+_UNLOADED = (OSError, SyntaxError, ImportError, ZoneInfoNotFoundError)
 
 
 class RunError(RuntimeError):
@@ -261,6 +275,56 @@ def environment(root: Path) -> str:
         f"{dist.name}=={dist.version}" for dist in importlib.metadata.distributions()),
             *(f"{path}: {_state(path)}" for path in ignored_reads(root))]
     return hashlib.sha256("\n".join(held).encode("utf-8")).hexdigest()
+
+
+def now() -> datetime:
+    """This instant, in this process's local zone, its offset held: the ONE reading of the
+    clock in this tool (the coordinator's ruling on M-1, condition 5, 2026-10-17), which the
+    tool's tests set but one, which runs it under two ``TZ`` values.  The suite runs inherit
+    this process's ``TZ`` (:func:`tools.testrecord.record.wrapper_env` copies its
+    environment), and no file of the tracked tree writes ``TZ`` or calls ``time.tzset``
+    (grep, 2026-10-17: every hit is a comment, a docstring, or ``ci.yml``'s workflow-level
+    ``TZ``, which this process and the runs both inherit), so this local zone is the one
+    their tests read."""
+    return datetime.now().astimezone()
+
+
+def display_zone(root: Path) -> ZoneInfo:
+    """The zone the app shows dates in, ``DISPLAY_TIMEZONE``, as ``root``'s own
+    :data:`DISPLAY_HOME` defines it: the app's one home of it, read from the tree being
+    recorded (the coordinator's ruling on M-1, (a2), 2026-10-17).
+
+    The file is run by its path (:func:`runpy.run_path`, its module's globals), never
+    imported through the ``app`` package: importing any module of ``app`` runs
+    ``app/__init__.py``, whose config calls ``load_dotenv()``, which would put ``.env``'s
+    variables into this process's environment and so into every wrapper run's
+    (:func:`tools.testrecord.record.wrapper_env`), and the package imported would be the one
+    on this process's path, not necessarily ``root``'s.  The home imports the standard
+    library alone (its imports, and its own docstring, read 2026-10-17); running it took
+    0.006 s, importing it through the package 0.42-0.49 s (measured 2026-10-17).  Were it to
+    import from ``app``, running it would import that package as any import does, from this
+    process's path, ``load_dotenv()`` included, and an import that fails is refused by name.
+
+    The tool writes nothing into the tree it judges (the coordinator's ruling on M-1's
+    build, (1), 2026-10-17): :func:`runpy.run_path` compiles the source and writes no
+    bytecode, where the loader of :func:`importlib.util.spec_from_file_location`'s spec
+    writes ``__pycache__`` beside the file (measured 2026-10-17): a difference from ``HEAD``
+    (:func:`differences`) in a tree whose ``.gitignore`` does not name it.
+
+    Refused, naming the path, for each failure it can name (:data:`_UNLOADED`), and when the
+    home defines no :class:`~zoneinfo.ZoneInfo` named ``DISPLAY_TIMEZONE``.  Any other
+    exception is the home's own code broken, and ends the command with its traceback, as a
+    record edited by hand does (the ruling's (2))."""
+    path = root / DISPLAY_HOME
+    try:
+        zone = runpy.run_path(str(path)).get("DISPLAY_TIMEZONE")
+    except _UNLOADED as exc:
+        raise RunError(f"{path} did not load ({type(exc).__name__}: {exc}), and it is the "
+                       "app's one home of the zone it shows dates in") from exc
+    if not isinstance(zone, ZoneInfo):
+        raise RunError(f"{path} defines no ZoneInfo named DISPLAY_TIMEZONE, and it is the "
+                       "app's one home of the zone it shows dates in")
+    return zone
 
 
 def plan_gate(root: Path) -> tuple[int, str]:

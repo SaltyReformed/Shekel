@@ -54,11 +54,14 @@ def test_a_proved_split_prints_its_block(split, capsys):
 def test_the_block_names_the_source_the_bound_plan_names(split, capsys):
     """The block's source line reads the plan the record binds, beside the record's HEAD and
     the source's sha256; the token keeps no copy of the source's path, which the plan it
-    binds says (the coordinator's ruling on 3C-2b, 2026-10-16, rule 14)."""
+    binds says (the coordinator's ruling on 3C-2b, 2026-10-16, rule 14); the instant the
+    record's runs began joined the token (M-1's R1, accepted here by the ruling on M-1's
+    build, (3), 2026-10-17)."""
     applied(split)
     head = scratch.run(split.root, "rev-parse", "HEAD")
     token = json.loads((split.into / _META).read_text(encoding="utf-8"))
-    assert sorted(token) == ["environment", "head", "importers", "plan", "run", "sha256"]
+    assert sorted(token) == ["environment", "head", "importers", "plan", "run", "sha256",
+                             "started"]
     capsys.readouterr()
     assert split("prove") == 0
     assert (f"- source {plan_of().source} at {head[:9]}, sha256 "

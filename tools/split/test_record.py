@@ -10,6 +10,7 @@ from __future__ import annotations
 import errno
 import json
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -22,6 +23,7 @@ from tools.split.conftest import (
     EMPTY,
     RECORD_STEPS,
     SAMPLE,
+    SAMPLE_ZONE,
     SOURCE,
     applied,
     committed,
@@ -201,7 +203,7 @@ def test_a_token_stopped_mid_write_leaves_the_last_one(tmp_path, monkeypatch, la
     writing it (here, a full disk half way through) leaves the last record's token byte for
     byte, or none where there was none: never a part of a new one that ``apply`` would read
     as the record's."""
-    ctx = Context(plan=plan_of(), root=tmp_path, into=tmp_path)
+    ctx = Context(plan=plan_of(), root=tmp_path, into=tmp_path, zone=ZoneInfo(SAMPLE_ZONE))
     token, kept = tmp_path / _META, {"plan": ctx.plan.sha256, "run": "record-last"}
     if last:
         _save(token, kept)

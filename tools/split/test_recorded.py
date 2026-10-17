@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -22,6 +23,7 @@ from tools.split.conftest import (
     PACKAGE,
     RAISED,
     SAMPLE,
+    SAMPLE_ZONE,
     SOURCE,
     accepted,
     applied,
@@ -326,7 +328,8 @@ def test_a_record_is_normalized_under_the_root_it_prints(tmp_path):
     held_record = Record(tests={"t": Trace(outcome="passed", arcs={}, asserts={"call": (
         (1, "x", f"PosixPath('{real}/tests') != None"),)}, raised={})}, order=("t",),
                          exitstatus=0)
-    ctx = Context(plan=plan_of(), root=tmp_path / "link", into=tmp_path / "into")
+    ctx = Context(plan=plan_of(), root=tmp_path / "link", into=tmp_path / "into",
+                  zone=ZoneInfo(SAMPLE_ZONE))
     found, kinds = _normalized(ctx, held_record)
     assert kinds["tree-root"] == 1
     assert found.tests["t"].asserts["call"][0][2] == "PosixPath('<root>/tests') != None"
