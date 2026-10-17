@@ -53,8 +53,9 @@ from tests._test_helpers import one_off_row_of
 def _create_projected_expense(seed_user, period):
     """Create a baseline projected expense for the seeded user.
 
-    Mirrors the inline helper in ``tests/test_routes/test_grid.py``
-    but is reproduced locally so this module stays self-contained.
+    Mirrors the inline helper ``_TestTransactionCRUDMembers._create_test_txn``
+    in ``tests/test_routes/test_grid/_helpers.py`` but is reproduced locally so
+    this module stays self-contained.
 
     Returns:
         The created Transaction (committed, refreshed).

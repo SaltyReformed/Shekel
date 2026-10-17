@@ -18,7 +18,7 @@ The seam's composed subtotal and its "On other accounts" term are graded in
 ``test_balance_at/test_cash_flow.py`` (``TestTheSubtotalsAreThePaychecksAcrossTheSet``),
 and the identity oracle they extend in ``test_balance_at/test_grid.py``
 (``TestTheRemainderOracleSeesEveryTerm``); the grid's render in
-``test_routes/test_grid.py``.
+``test_routes/test_grid/test_accounts_and_cards.py``.
 """
 
 from decimal import Decimal
