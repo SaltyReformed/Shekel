@@ -1,6 +1,7 @@
 """Refuse a change set whose card trailers name what the tracker says no commit may land:
 CI's landing check (step X-cx's L9d, leaf a; ruling ``balance:R-BAL289``, "CI's trailer
-check reads the tracker with a read-only token").
+check reads the tracker with a read-only token", whose token ``balance:R-BAL311`` makes
+one minted per run from a read-only GitHub App).
 
 :mod:`tools.ci.commit_trailers` reads git alone: a trailer's shape, and what a revert
 owes.  This check asks the tracker what each card a trailer names IS, before it lands:
@@ -47,9 +48,16 @@ shipped set is ``dev``'s history and those commits together
 (:func:`tools.ci.trailers.shipped`).
 
 **The tracker is read only when a trailer names a card**, through the card-only reader
-(:class:`_tracker.CardReader`) and the token :data:`TOKEN_VARIABLE` holds, which is to be
-one that can read the tracker's issues and nothing else (its kind and scope are set where
-the secret is made): never quill's App, never the board.  **What
+(:class:`_tracker.CardReader`) and the token :data:`TOKEN_VARIABLE` holds: never quill's
+App, never the board.  In CI that token is an installation token of the read-only App
+"Shekel plan reader" (Issues read-only, installed on the tracker only; ``R-BAL311``),
+minted by ``ci.yml``'s ``landing`` job for this run alone and revoked when the job ends
+(GitHub expires one within the hour in any case).
+The App's private key never reaches this module, but it is in the runner's memory for the
+whole job, so the design narrows what a leak from this job yields and does not close it.
+A run that is handed no key mints no token (GitHub documents that a Dependabot run and a
+fork's pull request get no Actions secrets), so there a change set naming a card refuses
+to judge, and one naming none passes without a read.  **What
 cannot be read refuses to judge**: no token, an error GitHub answers, a tracker that
 cannot be reached, a list GitHub cut short, or a card linked to one the tracker lacks
 exits 2, nothing checked.  So does a change set holding no commit, as

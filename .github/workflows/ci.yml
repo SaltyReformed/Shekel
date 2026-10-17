@@ -1,13 +1,15 @@
 # Shekel Budget App -- Continuous Integration
 #
-# Seven jobs grade a pull request, and an eighth -- lint-and-test -- answers
-# for the six it needs (polyglot-lint is a required check of its own):
+# Eight jobs grade a pull request, and a ninth -- lint-and-test -- answers
+# for the seven it needs (polyglot-lint is a required check of its own):
 #
 #   scope          classifies the change set: ``registry-only`` or ``full``
 #                  (tools/ci/ci_scope.py; step 2b below), and hands its two
-#                  ends to commit-trailers.
+#                  ends to commit-trailers and landing.
 #   commit-trailers  refuses a commit that breaks the card-trailer rules
 #                  (tools/ci/commit_trailers.py), in EVERY scope (step 4d).
+#   landing        refuses a trailer naming a card the tracker says no commit
+#                  may land (tools/quill/landing.py), in EVERY scope (step 4e).
 #   plan-gate      the plan gate, quill and tools/ci, in EVERY scope
 #                  (step 4b).
 #   tax-law        refuses from December 1 until next year's tax law is in
@@ -18,7 +20,7 @@
 #                  ``scripts/test.sh`` (steps 5d-7b), skipped likewise.
 #   polyglot-lint  the non-Python linters, in every scope (its own check).
 #   lint-and-test  the check branch protection on ``main`` requires.  It
-#                  NEEDS the first six and runs ``if: always()``, because a
+#                  NEEDS the first seven and runs ``if: always()``, because a
 #                  SKIPPED required check counts as passing and a job that
 #                  merely depended on a failed shard would be skipped --
 #                  green.  tools/ci/ci_verdict.py judges every result.
@@ -138,8 +140,8 @@ jobs:
       # A pull_request event and a merge-queue group have a change set: a
       # push to main is a release and runs everything.  The step hands every
       # event's two ends -- a push's included, its before and after -- to the
-      # commit-trailers job, so which payload field holds them is read here
-      # and nowhere else.  The three-dot diff is the branch's own
+      # commit-trailers and landing jobs, so which payload field holds them is
+      # read here and nowhere else.  The three-dot diff is the branch's own
       # changes since it forked from its base, so a ``git merge origin/dev``
       # on the branch does not drag dev's files into the set; --no-renames
       # shows a rename as its old AND new path, so a file renamed out of
@@ -215,6 +217,99 @@ jobs:
           BASE_SHA: ${{ needs.scope.outputs.base }}
           HEAD_SHA: ${{ needs.scope.outputs.head }}
         run: python -m tools.ci.commit_trailers "${BASE_SHA}" "${HEAD_SHA}"
+
+  landing:
+    needs: scope
+    runs-on: ubuntu-24.04
+    env:
+      # Whether this run was handed the reader App's key at all: GitHub
+      # documents that a Dependabot run and a fork's pull request get no
+      # Actions secrets.  A boolean only -- the key itself never enters the
+      # job's env.
+      # It decides the mint step alone; whether the tracker must be read is
+      # tools/quill/landing.py's to decide, and with no token it refuses to
+      # judge a change set naming a card (exit 2), so a skipped mint never
+      # turns a needed read green.
+      PLAN_READER_KEY_PRESENT: ${{ secrets.PLAN_READER_KEY != '' }}
+    steps:
+      # The check reads dev's whole history -- what has shipped, and which of
+      # the change set's commits dev already holds -- so this checkout is full;
+      # the history is only READ.
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      # This job holds a token, so it runs the least third-party code it can:
+      # the two packages the check imports (``requests``, and ``cryptography``
+      # through quill's GitHub client), at the versions requirements.txt pins
+      # -- read from that file, their one home -- and no pip upgrade.  (A
+      # constraints file cannot be used: pip refuses one holding extras, and
+      # requirements.txt has two.)  A package the check comes to import
+      # beyond these fails the job red.
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          grep -E '^(requests|cryptography)==' requirements.txt > "${RUNNER_TEMP}/landing-requirements.txt"
+          python -m pip install -r "${RUNNER_TEMP}/landing-requirements.txt"
+
+      # The tracker's owner and repository, from quill's PLAN
+      # (tools/quill/setup_tracker.py), their one home: the mint reads them
+      # from this step rather than spelling them.
+      - name: Read the tracker's place
+        id: plan
+        run: |
+          set -euo pipefail
+          python - >> "${GITHUB_OUTPUT}" <<'EOF'
+          from tools.quill.setup_tracker import PLAN
+          print(f"owner={PLAN.owner}")
+          print(f"name={PLAN.name}")
+          EOF
+
+      # ── 4e. The card trailers against the tracker, in EVERY scope ─
+      # Ruling balance:R-BAL289 (CI reads the tracker with a read-only token)
+      # as balance:R-BAL311 makes it: the read-only App "Shekel plan reader"
+      # (Issues read-only, installed on the tracker only), its private key in
+      # the PLAN_READER_KEY secret and its Client ID in the
+      # PLAN_READER_CLIENT_ID variable.  GitHub's own action mints an
+      # installation token for this run, narrowed again here to reading
+      # issues of that one repository, and revokes it when the job ends
+      # (GitHub expires one within the hour in any case).
+      # Only the check step is handed the token in its env, and only the mint
+      # is handed the key, as an input, which the runner puts in that step's
+      # own environment (INPUT_PRIVATE-KEY); but the key is in the runner's
+      # memory for the whole job, so this narrows what a leak from the job
+      # yields and does not close it.
+      - name: Mint the tracker read token
+        id: token
+        if: env.PLAN_READER_KEY_PRESENT == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.PLAN_READER_CLIENT_ID }}
+          private-key: ${{ secrets.PLAN_READER_KEY }}
+          owner: ${{ steps.plan.outputs.owner }}
+          repositories: ${{ steps.plan.outputs.name }}
+          permission-issues: read
+
+      # A trailer naming a card the tracker lacks, a Ships: naming no work,
+      # or one naming a card that carries the filing mark (still being filed,
+      # or dropped while it was) is refused, each trailer judged once, when
+      # its commit first lands on dev (step X-cx's L9d).
+      # The tracker is read only when a trailer names a card.  No condition:
+      # with the mint skipped the token is empty, and the check decides.
+      # The rules: tools/quill/landing.py.
+      - name: Card trailers against the tracker (every scope)
+        env:
+          BASE_SHA: ${{ needs.scope.outputs.base }}
+          HEAD_SHA: ${{ needs.scope.outputs.head }}
+          PLAN_READ_TOKEN: ${{ steps.token.outputs.token }}
+        run: python -m tools.quill.landing "${BASE_SHA}" "${HEAD_SHA}"
 
   plan-gate:
     runs-on: ubuntu-24.04
@@ -607,7 +702,7 @@ jobs:
         run: ./scripts/test.sh tests/test_performance -q -n 0 -p no:randomly --override-ini=addopts=
 
   lint-and-test:
-    needs: [scope, commit-trailers, plan-gate, tax-law, lint, test]
+    needs: [scope, commit-trailers, landing, plan-gate, tax-law, lint, test]
     if: always()
     runs-on: ubuntu-24.04
     steps:

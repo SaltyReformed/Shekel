@@ -8,17 +8,24 @@ developer confirming the change under rule 5, 2026-09-22.)  Since step X-cx's
 L4 the scope job also hands each event's change set to the ``commit-trailers``
 job, and the merge queue's ``merge_group`` event triggers the workflow.  Split
 out of ``test_ci_scope.py`` by that step, unchanged but for this docstring and
-the imports.
+the imports.  Since L9d the change set also goes to the ``landing`` job, which
+asks the tracker about its trailers through a token minted for that run alone
+(ruling balance:R-BAL311).
 """
 from __future__ import annotations
 
+import os
+import re
 import subprocess
+import sys
 import time
 
 import pytest
 import yaml
 
 from tools.ci import arcs, ci_verdict, scratch
+from tools.quill import landing
+from tools.quill.setup_tracker import PLAN
 
 
 # ---------------------------------------------------------------- the wiring
@@ -27,11 +34,11 @@ from tools.ci import arcs, ci_verdict, scratch
 GUARD = "needs.scope.outputs.scope != 'registry-only'"
 
 #: Jobs that may run code without the guard: the classifier, the card-trailer
-#: check (step X-cx's L4), the plan gate, the tax-law check (plan step
-#: salary:X-at-4), the aggregate that judges them, and the polyglot linters
-#: (every scope).
-UNGUARDED_JOBS = {"scope", "commit-trailers", "plan-gate", "tax-law", "lint-and-test",
-                  "polyglot-lint"}
+#: check (step X-cx's L4), the landing check (step X-cx's L9d), the plan gate,
+#: the tax-law check (plan step salary:X-at-4), the aggregate that judges them,
+#: and the polyglot linters (every scope).
+UNGUARDED_JOBS = {"scope", "commit-trailers", "landing", "plan-gate", "tax-law",
+                  "lint-and-test", "polyglot-lint"}
 
 #: The tax-law job's one grading step (ruling salary:R-SAL74).
 TAX_LAW_STEP = "Is next year's tax law in? (refuses from December 1)"
@@ -41,6 +48,9 @@ TAX_LAW_STEP = "Is next year's tax law in? (refuses from December 1)"
 UNGUARDED_CODE_STEPS = {
     ("scope", "Classify the change set"),
     ("commit-trailers", "Card trailers (every scope)"),
+    ("landing", "Install dependencies"),
+    ("landing", "Read the tracker's place"),
+    ("landing", "Card trailers against the tracker (every scope)"),
     ("plan-gate", "Install dependencies"),
     ("plan-gate", "Plan gate (every scope)"),
     ("tax-law", "Install dependencies"),
@@ -48,17 +58,24 @@ UNGUARDED_CODE_STEPS = {
     ("lint-and-test", "Verdict"),
 }
 
-#: The ONE step condition a graded job may carry.  A step skipped by its own
-#: ``if:`` leaves its job ``success``, so ``ci_verdict`` would read a skipped
-#: grader as green: every other step in a graded job runs unconditionally.
+#: The step conditions a graded job may carry, each for its own reason.  A step
+#: skipped by its own ``if:`` leaves its job ``success``, so ``ci_verdict`` would
+#: read a skipped GRADER as green: every other step in a graded job runs
+#: unconditionally.  The serial benchmarks run on one shard of six.  The landing
+#: job's mint grades nothing: it is skipped on a run handed no key (GitHub
+#: documents that a Dependabot run and a fork's pull request get no Actions
+#: secrets), and the check after it, which has no condition, then refuses to
+#: judge a change set naming a card, so the skip can never turn a needed read
+#: green (step X-cx's L9d).
 STEP_CONDITIONS = {
     ("test", "Run audit-trigger benchmarks (serial)"): "strategy.job-index == 0",
+    ("landing", "Mint the tracker read token"): "env.PLAN_READER_KEY_PRESENT == 'true'",
 }
 
-#: The jobs whose every step grades: the six ``lint-and-test`` needs, and the
+#: The jobs whose every step grades: the seven ``lint-and-test`` needs, and the
 #: aggregate itself.
-GRADED_JOBS = ("scope", "commit-trailers", "plan-gate", "tax-law", "lint", "test",
-               "lint-and-test")
+GRADED_JOBS = ("scope", "commit-trailers", "landing", "plan-gate", "tax-law", "lint",
+               "test", "lint-and-test")
 
 
 def _jobs() -> dict[str, dict]:
@@ -176,14 +193,14 @@ class TestTheWorkflowIsWiredToTheAnswer:
         The single job held this per STEP; a grader added to an unguarded job
         would run on a registry pass and be judged by nobody's guard.
         """
-        for name in ("scope", "commit-trailers", "plan-gate", "tax-law", "lint-and-test"):
+        for name in sorted(UNGUARDED_JOBS - {"polyglot-lint"}):
             for step in _jobs()[name]["steps"]:
                 run = step.get("run", "")
                 if any(tool in run for tool in ("pytest", "pylint", "python ", "scripts/test.sh")):
                     assert (name, step["name"]) in UNGUARDED_CODE_STEPS, (name, step["name"])
 
     def test_no_step_in_a_graded_job_carries_a_condition_of_its_own(self):
-        """Every step of a graded job runs, bar the one serial-benchmark leg.
+        """Every step of a graded job runs, bar the serial-benchmark leg and the landing mint.
 
         A step skipped by its own ``if:`` leaves its job ``success`` -- the
         skipped-reads-as-passing hole ``lint-and-test`` exists to close, one
@@ -465,6 +482,173 @@ class TestTheChangeSetIsHandedOver:
         """No change set: ``full`` here, and an empty range the trailer check refuses."""
         run, _base, _head = ran
         assert run("workflow_dispatch")[0] == {"base": "", "head": "", "scope": "full"}
+
+
+class TestTheLandingCheckReadsTheTrackerWithATokenOfItsOwn:
+    """The ``landing`` job: the tracker read through a token minted for this run alone.
+
+    Step X-cx's L9d, ruling balance:R-BAL311: GitHub's own action mints an
+    installation token of the read-only App "Shekel plan reader" from the key
+    in the ``PLAN_READER_KEY`` secret, narrowed to reading issues of the
+    tracker, and only the check step is handed it.  The tracker's owner and
+    name come from quill's ``PLAN``, their one home, never from this file.
+    """
+
+    MINT = "Mint the tracker read token"
+    CHECK = "Card trailers against the tracker (every scope)"
+    PLACE = "Read the tracker's place"
+    #: Every key each step may hold.  A ``shell:`` could run something other than the
+    #: check and exit 0, an ``env:`` could hand a step the key or move pip's index, and a
+    #: ``continue-on-error`` could fail green: none may be added unseen.
+    SHAPES = {
+        "Checkout code": {"name", "uses", "with"},
+        "Set up Python 3.14": {"name", "uses", "with"},
+        "Install dependencies": {"name", "run"},
+        PLACE: {"name", "id", "run"},
+        MINT: {"name", "id", "if", "uses", "with"},
+        CHECK: {"name", "env", "run"},
+    }
+
+    def test_the_job_checks_the_scope_jobs_range_over_full_history_in_order(self):
+        """Unguarded, waiting on the scope job, a full checkout, every install before the mint."""
+        job = _jobs()["landing"]
+        assert job["needs"] == "scope" and "if" not in job
+        assert [step["name"] for step in job["steps"]] == [
+            "Checkout code", "Set up Python 3.14", "Install dependencies", self.PLACE,
+            self.MINT, self.CHECK,
+        ]
+        assert job["steps"][0]["with"] == {"fetch-depth": 0, "persist-credentials": False}
+        check = _steps("landing")[self.CHECK]
+        assert check["env"] == {"BASE_SHA": "${{ needs.scope.outputs.base }}",
+                                "HEAD_SHA": "${{ needs.scope.outputs.head }}",
+                                landing.TOKEN_VARIABLE: "${{ steps.token.outputs.token }}"}
+        # EXACTLY this, with no condition: the check decides whether a read is
+        # needed, and a ``|| true`` would let a refusal fall on the floor.
+        assert "if" not in check
+        assert check["run"].strip() == (
+            'python -m tools.quill.landing "${BASE_SHA}" "${HEAD_SHA}"'
+        )
+
+    def test_the_job_and_every_step_hold_exactly_their_keys(self):
+        """Nothing beyond these keys on the job or any step, and every action pinned by sha.
+
+        A job-level ``defaults`` (a ``shell:`` for every step) could make the check
+        exit 0 unrun, and ``permissions:`` widen the job's GitHub token, as each
+        step's extra key could (:attr:`SHAPES`).
+        """
+        job = _jobs()["landing"]
+        assert set(job) == {"needs", "runs-on", "env", "steps"}
+        assert {step["name"]: set(step) for step in job["steps"]} == self.SHAPES
+        for step in job["steps"]:
+            if "uses" in step:
+                assert re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", step["uses"]), step["name"]
+        assert _steps("landing")["Set up Python 3.14"]["with"] == {"python-version": "3.14"}
+
+    def test_the_token_is_minted_for_reading_the_trackers_issues_alone(self):
+        """The pinned action, its inputs exactly these, and its only condition the key's presence.
+
+        Exactly these inputs: no ``skip-token-revoke`` (the action revokes the
+        token when the job ends; GitHub expires it within the hour regardless) and
+        no permission beyond reading issues.  The key reaches the job's env only as
+        a boolean, and the mint reads it from the secret itself.
+        """
+        job = _jobs()["landing"]
+        mint = _steps("landing")[self.MINT]
+        assert re.fullmatch(r"actions/create-github-app-token@[0-9a-f]{40}", mint["uses"])
+        assert mint["id"] == "token"
+        assert mint["with"] == {
+            "client-id": "${{ vars.PLAN_READER_CLIENT_ID }}",
+            "private-key": "${{ secrets.PLAN_READER_KEY }}",
+            "owner": "${{ steps.plan.outputs.owner }}",
+            "repositories": "${{ steps.plan.outputs.name }}",
+            "permission-issues": "read",
+        }
+        assert job["env"] == {"PLAN_READER_KEY_PRESENT": "${{ secrets.PLAN_READER_KEY != '' }}"}
+        assert mint["if"] == "env.PLAN_READER_KEY_PRESENT == 'true'"
+
+    def test_no_step_but_the_check_is_handed_the_token_and_none_but_the_mint_the_key(self):
+        """Of the steps, the check alone is handed the token and the mint alone the key.
+
+        (The mint's own post step keeps the token, to revoke it.)  The job's env
+        holds the key only as the boolean the mint's condition reads, and no step
+        writes GITHUB_ENV or GITHUB_PATH, through which a value set once would
+        reach every later step.  Either context, by attribute or by index
+        (``secrets['PLAN_READER_KEY']``), counts.
+        """
+        token = re.compile(r"\bsteps\s*(\.\s*token\b|\[\s*['\"]token['\"])")
+        for step in _jobs()["landing"]["steps"]:
+            text = yaml.safe_dump(step)
+            assert "GITHUB_ENV" not in text and "GITHUB_PATH" not in text, step["name"]
+            if step["name"] != self.CHECK:
+                assert not token.search(text), step["name"]
+            if step["name"] != self.MINT:
+                assert not re.search(r"\bsecrets\b", text), step["name"]
+
+    def test_the_place_step_hands_the_mint_plans_owner_and_name(self, tmp_path):
+        """The step's own shell, RUN: it writes PLAN's owner and name -- the real PLAN's, and a
+        stand-in PLAN's made-up ones, so a step spelling the place itself cannot pass -- or
+        fails."""
+        place = _steps("landing")[self.PLACE]
+        assert place["id"] == "plan"
+        output = tmp_path / "github_output"
+        bindir = os.path.dirname(sys.executable)
+        env = {**os.environ, "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+               "GITHUB_OUTPUT": str(output), "PYTHONDONTWRITEBYTECODE": "1"}
+
+        def _run(cwd, run_env):
+            output.write_text("")
+            return subprocess.run(["bash", "--noprofile", "--norc", "-e", "-c", place["run"]],
+                                  cwd=cwd, env=run_env, capture_output=True, text=True,
+                                  check=False)
+
+        done = _run(arcs.REPO, env)
+        assert done.returncode == 0, done.stderr
+        assert output.read_text() == f"owner={PLAN.owner}\nname={PLAN.name}\n"
+
+        # Run from a directory whose ``tools.quill.setup_tracker`` holds a made-up PLAN.
+        fake = tmp_path / "fake"
+        (fake / "tools" / "quill").mkdir(parents=True)
+        (fake / "tools" / "__init__.py").write_text("")
+        (fake / "tools" / "quill" / "__init__.py").write_text("")
+        (fake / "tools" / "quill" / "setup_tracker.py").write_text(
+            "class PLAN:\n    owner = 'made-up-owner'\n    name = 'made-up-tracker'\n")
+        done = _run(fake, {**env, "PYTHONPATH": ""})
+        assert done.returncode == 0, done.stderr
+        assert output.read_text() == "owner=made-up-owner\nname=made-up-tracker\n"
+
+        # A python that fails part-way fails the step.
+        stand_in = tmp_path / "python"
+        stand_in.write_text("#!/bin/sh\ncat >/dev/null\necho owner=someone\nexit 1\n")
+        stand_in.chmod(0o755)
+        assert _run(arcs.REPO, {**env, "PATH": f"{tmp_path}:/usr/bin:/bin"}).returncode != 0
+
+    def test_the_install_takes_the_checks_two_pins_from_requirements_and_nothing_else(
+            self, tmp_path):
+        """The install step's shell, RUN with a stand-in ``python``: it is called once, as
+        exactly ``python -m pip install -r <file>`` (no index or other option), the file
+        holding requirements.txt's own ``requests`` and ``cryptography`` lines, and no pip
+        upgrade runs in the job that holds the token."""
+        install = _steps("landing")["Install dependencies"]
+        assert "--upgrade" not in install["run"]
+        stand_in = tmp_path / "python"
+        record = tmp_path / "called"
+        stand_in.write_text(
+            "#!/bin/sh\n"
+            '[ "$#" -eq 5 ] || exit 8\n'
+            'test "$1 $2 $3 $4" = "-m pip install -r" || exit 9\n'
+            f'test ! -e "{record}" || exit 7\n'
+            f'cp "$5" "{record}"\n'
+        )
+        stand_in.chmod(0o755)
+        done = subprocess.run(
+            ["bash", "--noprofile", "--norc", "-e", "-c", install["run"]], cwd=arcs.REPO,
+            env={"PATH": f"{tmp_path}:/usr/bin:/bin", "RUNNER_TEMP": str(tmp_path)},
+            capture_output=True, text=True, check=False)
+        assert done.returncode == 0, done.stderr
+        pins = (arcs.REPO / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        wanted = [line for line in pins if line.split("==")[0] in {"requests", "cryptography"}]
+        assert len(wanted) == 2, wanted
+        assert record.read_text().splitlines() == wanted
 
 
 class TestTheRequiredCheckJudgesEveryGrader:
