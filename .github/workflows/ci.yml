@@ -134,8 +134,9 @@ jobs:
       # Markdown.  Every code-grading JOB (lint, test) is guarded
       # ``!= 'registry-only'``, so a missing output runs everything rather
       # than nothing; the plan gate (step 4b) is unguarded.  Approved by the
-      # developer 2026-09-11 as its own PR; ``test_ci_scope.py`` holds this
-      # wiring, and that PR's body cites the runs that proved each scope.
+      # developer 2026-09-11 as its own PR; ``tools/ci/test_ci_workflow.py``
+      # holds this wiring (split out of ``test_ci_scope.py`` at step X-cx's
+      # L4), and that PR's body cites the runs that proved each scope.
       #
       # A pull_request event and a merge-queue group have a change set: a
       # push to main is a release and runs everything.  The step hands every
@@ -357,7 +358,7 @@ jobs:
       # pre-commit alone until 2026-09-11 (its hook comment says so); a
       # registry-only run that edits the gate would otherwise merge unlinted,
       # so the floor is held here too, in both scopes.  ``yaml`` (PyYAML,
-      # pinned in requirements-dev.txt) is what ``tools/ci/test_ci_scope.py``
+      # pinned in requirements-dev.txt) is what ``tools/ci/test_ci_workflow.py``
       # reads THIS file with, which is why the step follows the install.
       #
       # Quill (tools/quill/: the private tracker's setup, and from
