@@ -22,12 +22,14 @@ from tools.testrecord.conftest import SAMPLE_IDS
 from tools.testrecord.record import (
     HASH_SEED,
     ORDER_ENV,
+    TAIL_LINES,
     RecordError,
     outcomes_path,
     read,
     record,
     trace_path,
     verdict,
+    wrapper_tail,
 )
 
 #: Each sample test's outcome.
@@ -334,12 +336,21 @@ class TestARefusedRun:
 
     def test_a_run_that_wrote_no_outcomes_is_refused(self, project, out):
         """A wrapper that ends before pytest starts recorded nothing: the refusal names its
-        exit status, and its output is kept."""
+        exit status and ends with what the wrapper wrote, as an outcome run's does (the
+        coordinator's ruling on delta review 4's n1), and its output is kept."""
         (project / WRAPPER).write_text("#!/bin/sh\necho no cluster\nexit 3\n",
                                        encoding="utf-8")
-        with pytest.raises(RecordError, match=r"wrote no outcomes \(exit 3\)"):
+        with pytest.raises(RecordError, match=r"wrote no outcomes \(exit 3\)") as caught:
             record(project, ["tests"], out)
+        assert str(caught.value).endswith(", ending:\nno cluster")
         assert (out / "wrapper-output.txt").read_bytes() == b"no cluster\n"
+
+    def test_a_refusal_shows_the_last_lines_the_wrapper_wrote(self):
+        """The tail both refusals of a run that wrote nothing print: the last
+        :data:`TAIL_LINES` lines, a byte that is not UTF-8 shown escaped."""
+        output = b"".join(b"line %d\n" % number for number in range(TAIL_LINES + 10))
+        assert wrapper_tail(output + b"bad \xff\n") == "\n".join(
+            [f"line {number}" for number in range(11, TAIL_LINES + 10)] + ["bad \\xff"])
 
 
 class TestTheReader:

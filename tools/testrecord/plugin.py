@@ -25,9 +25,16 @@ per phase.  pytest calls it only when ``enable_assertion_pass_hook`` is set, and
 an assert it rewrote: one in a module matching ``python_files``, a ``conftest.py``, a module
 named on the command line, or a module registered for rewriting; an assert anywhere else
 passes unrecorded.  The
-explanation shows each value through pytest's ``saferepr``, which shortens a long one
-unless the assertion verbosity is 2 or more (``verbosity_assertions``, which the runner
-sets).
+explanation's first line shows each side of the comparison through pytest's ``saferepr``,
+which shortens a long one unless the assertion verbosity is 2 or more
+(``verbosity_assertions``, which the runner sets); the detail lines below it (``Differing
+items:`` and the like) keep ``saferepr``'s default limit at any verbosity (measured on
+pytest 9.1.1 by the branch's neutral review of M-2, 2026-10-17).  A run with pytest's
+assertion plugin unloaded, an assertion mode other than ``rewrite``, the hook off or an
+assertion verbosity below 2 is refused before any test runs, whatever route set it
+(:func:`unrecordable`; ``PYTEST_ADDOPTS=--assert=plain`` was the route measured): under it
+passing asserts go unrecorded, or are recorded shortened, while the record reads whole (the
+coordinator's ruling on delta review 4's M-2, 2026-10-16).
 
 **How a phase ended: the exception that ended it, its type and its message only**: for each
 phase pytest reports with an exception (``call.excinfo`` in ``pytest_runtest_makereport``, in
@@ -67,12 +74,16 @@ import coverage
 import pytest
 
 from tools.testrecord.record import (
+    ASSERTION_PLUGIN,
     CORE,
     MEASURED,
     ORDER_ENV,
+    PASS_HOOK,
     PHASES,
     RECORD_ENV,
     ROOT_ENV,
+    VERBOSITY,
+    WHOLE_VALUES,
     WORKER,
     outcomes_path,
     process_name,
@@ -262,6 +273,45 @@ def pytest_load_initial_conftests(early_config: pytest.Config) -> None:
     manager.register(Tracer(root, directory, process), "testrecord-tracer")
     if WORKER not in os.environ:
         manager.register(Outcomes(directory), "testrecord-outcomes")
+
+
+def unrecordable(config: pytest.Config) -> list[str]:
+    """Each setting of ``config`` under which a passing assert would not be recorded whole:
+    pytest's assertion plugin unloaded (``-p no:assertion``, which leaves neither the mode nor
+    the hook's setting to read), an assertion mode other than ``rewrite`` (pytest rewrites no
+    assert), the assert-pass hook off (pytest reports no passing assert), and an assertion
+    verbosity below :data:`~tools.testrecord.record.WHOLE_VALUES`, read as pytest reads it
+    for an explanation (``Config.get_verbosity``, so the global verbosity counts where the
+    setting is ``auto``).  Running under ``python -O`` is none of them: a rewritten assert is
+    code pytest wrote, which runs and reports its pass under it (measured on pytest 9.1.1,
+    2026-10-17)."""
+    if not config.pluginmanager.has_plugin(ASSERTION_PLUGIN):
+        return [f"pytest's {ASSERTION_PLUGIN} plugin is not loaded"]
+    found = []
+    mode = config.getoption("assertmode")
+    if mode != "rewrite":
+        found.append(f"the assertion mode is {mode!r}, not 'rewrite' (--assert)")
+    if not config.getini(PASS_HOOK):
+        found.append(f"{PASS_HOOK} is off")
+    verbosity = config.get_verbosity(pytest.Config.VERBOSITY_ASSERTIONS)
+    if verbosity < WHOLE_VALUES:
+        found.append(f"the assertion verbosity is {verbosity}, below {WHOLE_VALUES} "
+                     f"({VERBOSITY})")
+    return found
+
+
+@pytest.hookimpl
+def pytest_configure(config: pytest.Config) -> None:
+    """When ``$SHEKEL_TESTRECORD`` is set, refuse the run, naming each setting
+    :func:`unrecordable` finds, before any test runs: here, once pytest has parsed every
+    option.  When the recorders are registered (:func:`pytest_load_initial_conftests`), the
+    ``-o`` settings already read as given, but ``config.option`` holds neither the assertion
+    mode nor the verbosity yet (measured on pytest 9.1.1 by the branch's neutral review of
+    M-2, 2026-10-17)."""
+    found = unrecordable(config) if os.environ.get(RECORD_ENV) else []
+    if found:
+        raise pytest.UsageError("a recorded run records every passing assert whole, and "
+                                f"under this run's settings it cannot: {'; '.join(found)}")
 
 
 @pytest.hookimpl(trylast=True)

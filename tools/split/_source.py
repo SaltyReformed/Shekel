@@ -62,12 +62,6 @@ def decode(data: bytes, where: str, separator: bytes = b"\n") -> str:
         raise undecodable(exc, where, separator) from exc
 
 
-def shown(data: bytes) -> str:
-    """Bytes a process wrote, made text for a MESSAGE alone (a byte that is not UTF-8 shown
-    escaped), so a refusal's diagnostics never stop it naming why; never read as data."""
-    return data.decode("utf-8", "backslashreplace")
-
-
 def _universal(text: str) -> io.StringIO:
     """``text`` behind :mod:`io`'s own universal newlines, the ONE translation of line endings
     the tool reads by: ``\\r\\n`` and a lone ``\\r`` read as ``\\n``, as Python's tokenizer

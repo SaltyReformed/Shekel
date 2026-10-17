@@ -345,7 +345,7 @@ def test_an_exceptions_message_is_normalized_by_the_same_kinds_and_counted():
 
 
 def test_a_failing_set_comparison_is_compared_as_it_was_recorded():
-    """set-order reads a first line that is two sets' reprs around one `` == ``; a failing
+    """set-order reads a first line that is sets' reprs joined by `` == ``; a failing
     assert's first line opens with ``assert``, so one set printed in two orders there is a
     difference after normalization, where the same sides in a passing explanation are sorted
     (the branch's neutral review of H-1, M1: fail closed)."""
@@ -355,6 +355,19 @@ def test_a_failing_set_comparison_is_compared_as_it_was_recorded():
     assert kinds(differences(normal[0][0], normal[1][0])) == [("raised", "call")]
     assert [changed["set-order"] for _, changed in normal] == [0, 0]
     assert norm("{'b', 'a'} == {'c'}") == ("{'a', 'b'} == {'c'}", ["set-order"])
+
+
+def test_a_set_a_failing_assert_prints_as_its_message_is_compared_as_it_was_recorded():
+    """A failing assert's own message can open its text with a set alone (``assert not
+    missing, f"{missing}"``), which no line below it need repeat: one set printed in two
+    orders there is a difference after normalization (the branch's neutral review of M-2, n1
+    and L-1, M-A: fail closed)."""
+    records = [of(t=trace(outcome="failed", raised={"call": ("AssertionError", text)}))
+               for text in ("{'b', 'a'}\nassert not {'b', 'a'}",
+                            "{'a', 'b'}\nassert not {'b', 'a'}")]
+    normal = [normalized(held, ROOT, MOVED) for held in records]
+    assert kinds(differences(normal[0][0], normal[1][0])) == [("raised", "call")]
+    assert [changed["set-order"] for _, changed in normal] == [0, 0]
 
 
 def _set(*names) -> str:
@@ -422,6 +435,7 @@ NOT_TWO_SETS = {
     "an-element-holding-equals-in-the-left-set": "{'b', 'x == y'} == {'b', 'a'}",
     "an-element-holding-equals-in-the-right-set": "{'b', 'a'} == {'a', 'b == c'}",
     "one-side-a-set": "{'b', 'a'} == expected_keys",
+    "a-set-alone": "{'b', 'a'}",
     "a-non-literal-element": (
         "{datetime.date(2024, 1, 4), 'a'} == {'a', datetime.date(2024, 1, 4)}"),
     "a-nested-frozenset": "{frozenset({2, 1}), 3} == {3, frozenset({1, 2})}",
@@ -445,9 +459,15 @@ NOT_TWO_SETS = {
 
 @pytest.mark.parametrize("text", list(NOT_TWO_SETS.values()), ids=list(NOT_TWO_SETS))
 def test_a_line_that_is_not_two_sets_reprs_is_compared_as_it_is(text):
-    """Fail closed: a first line that does not hold exactly one `` == `` between two sides
-    that are each byte for byte the repr of a set of scalars is compared as recorded."""
+    """Fail closed: a first line whose sides, split at every `` == ``, are not each byte for
+    byte the repr of a set of scalars is compared as recorded."""
     assert norm(text) == (text, [])
+
+
+def test_a_chain_of_sets_is_sorted_side_by_side():
+    """Every `` == `` of a first line splits it, so each set of a chain is re-rendered (the
+    coordinator's ruling on delta review 4's L-1, 2026-10-16)."""
+    assert norm("{1, 2} == {2, 1} == {1, 2}") == ("{1, 2} == {1, 2} == {1, 2}", ["set-order"])
 
 
 #: The known answers, as the R-BAL303 pilot recorded them (2026-10-16): each test's node id,

@@ -5,8 +5,9 @@ loaded and reads back, for each test, how it ended, the arcs each of its phases 
 which those are), in order, and the exception that ended each phase that raised one.  It
 also holds what every run of the wrapper
 (:data:`tools.ci.arcs.WRAPPER`) shares, whoever starts it: the environment it starts in
-(:func:`wrapper_env`), its run to its end (:func:`wrapper_run`), and how a test ended from its
-phases' reports (:func:`verdict`).
+(:func:`wrapper_env`), its run to its end (:func:`wrapper_run`), the last lines of what it
+wrote that a refusal shows (:func:`wrapper_tail`, through :func:`shown`), and how a test ended
+from its phases' reports (:func:`verdict`).
 
 A run writes into a directory made for it, which must be empty: each process's files, the
 wrapper's whole output (``wrapper-output.txt``, kept as written, for a refusal to point
@@ -85,14 +86,29 @@ CORE = "CTracer"
 #: refuses.
 HASH_SEED = "0"
 
+#: How many of the last lines a run of the wrapper wrote a refusal shows (:func:`wrapper_tail`).
+TAIL_LINES = 30
+
 #: The three phases of a test, in order.
 PHASES = ("setup", "call", "teardown")
 
+#: pytest's assertion plugin, by the name ``-p no:`` blocks it under; the ini setting under
+#: which pytest reports each assert it rewrote that passes (``pytest_assertion_pass``); and
+#: the ini setting of the assertion verbosity, and the verbosity from which pytest shows each
+#: side of an explanation's first line whole and cuts no explanation short (pytest 9.1.1's
+#: ``_get_maxsize_for_saferepr`` and ``truncate._get_truncation_parameters``; the detail lines
+#: below the first keep ``saferepr``'s default limit at any verbosity).  The plugin refuses a
+#: run under which any of them does not hold (:func:`tools.testrecord.plugin.unrecordable`).
+ASSERTION_PLUGIN = "assertion"
+PASS_HOOK = "enable_assertion_pass_hook"
+VERBOSITY = "verbosity_assertions"
+WHOLE_VALUES = 2
+
 #: What the plugin is loaded as, and the settings every recorded run passes on the command
-#: line, never through ``pytest.ini``: the assert-pass hook enabled, and each value an
-#: explanation shows in full (pytest shortens one at assertion verbosity below 2).
+#: line, never through ``pytest.ini``: the assert-pass hook enabled, and the assertion
+#: verbosity at which values are shown whole.
 PLUGIN = "tools.testrecord.plugin"
-SETTINGS = ("-o", "enable_assertion_pass_hook=true", "-o", "verbosity_assertions=2")
+SETTINGS = ("-o", f"{PASS_HOOK}=true", "-o", f"{VERBOSITY}={WHOLE_VALUES}")
 
 #: The pytest exit statuses a session that ran to its end exits with: every test passed, or
 #: some failed.  Any other (interrupted, an internal error, a usage error, nothing collected)
@@ -190,6 +206,22 @@ def wrapper_run(args: list[str], root: Path, env: dict[str, str]) -> tuple[int, 
         return proc.returncode, output.read()
 
 
+def shown(data: bytes) -> str:
+    """Bytes a process wrote, made text for a MESSAGE alone (a byte that is not UTF-8 shown
+    escaped), so a refusal's diagnostics never stop it naming why; never read as data."""
+    return data.decode("utf-8", "backslashreplace")
+
+
+def wrapper_tail(output: bytes) -> str:
+    """The last :data:`TAIL_LINES` lines of what a run of the wrapper wrote
+    (:func:`wrapper_run`), shown (:func:`shown`): what a refusal of a run that wrote nothing
+    prints, a recorded run's (:func:`record`) and an outcome run's
+    (:func:`tools.split._run.observe`) alike (the coordinator's ruling on delta review 4's
+    n1, 2026-10-16).  A message's lines, which nothing numbers, so no rule about line numbers
+    applies to how they are split."""
+    return "\n".join(shown(output).splitlines()[-TAIL_LINES:])
+
+
 def verdict(phases: dict[str, tuple[str, bool]]) -> str:
     """One test's outcome from its phases' ``(outcome, wasxfail)``: ``passed``, ``failed``,
     ``error``, ``skipped``, ``xfailed`` or ``xpassed``, or ``not-run`` when no call was
@@ -268,7 +300,8 @@ def record(root: Path, targets: list[str], out: Path, order: list[str] | None = 
         shutil.rmtree(pycache)
     if not outcomes_path(out).exists():
         raise RecordError(f"{' '.join(args)} wrote no outcomes (exit {returncode}); its "
-                          f"output is {out / 'wrapper-output.txt'}")
+                          f"output is {out / 'wrapper-output.txt'}, ending:\n"
+                          + wrapper_tail(output))
     found = read(out)
     if order is not None and found.order != tuple(order):
         raise RecordError(f"{' '.join(args)} ran its tests in another order than the one "

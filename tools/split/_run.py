@@ -26,8 +26,8 @@ from tools.ci import gitcmd
 from tools.ci.arcs import WRAPPER
 from tools.split._model import Plan, mentions
 from tools.split._observe import OBSERVE_ENV, setup_key, setups_path
-from tools.split._source import decode, lines_of, load_json, read_json, shown, undecodable
-from tools.testrecord.record import wrapper_env, wrapper_run
+from tools.split._source import decode, lines_of, load_json, read_json, undecodable
+from tools.testrecord.record import shown, wrapper_env, wrapper_run, wrapper_tail
 
 #: pylint's exit-status bits for a fatal message and a usage error: either means it did
 #: not lint, so its message list is not an observation.
@@ -82,7 +82,7 @@ def observe(root: Path, targets: list[str], out: Path, collect_only: bool) -> di
     returncode, output = wrapper_run(args, root, env)
     if not out.exists():
         raise RunError(f"{' '.join(args)} wrote no observation (exit {returncode}):\n"
-                       + "\n".join(lines_of(shown(output))[-30:]))
+                       + wrapper_tail(output))
     return read_json(out)
 
 

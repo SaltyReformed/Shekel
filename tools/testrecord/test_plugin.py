@@ -8,15 +8,48 @@ any other than the C tracer is refused, and ``COVERAGE_CORE`` cannot choose anot
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import NamedTuple
 
 import coverage
 import pytest
 
 from tools.testrecord import plugin
-from tools.testrecord.record import RECORD_ENV, ROOT_ENV, record
+from tools.testrecord.record import (
+    ASSERTION_PLUGIN,
+    PASS_HOOK,
+    RECORD_ENV,
+    ROOT_ENV,
+    VERBOSITY,
+    WHOLE_VALUES,
+    RecordError,
+    record,
+)
 
 #: The names the plugin registers its two recorders under.
 RECORDERS = ("testrecord-tracer", "testrecord-outcomes")
+
+
+class Unrecordable(NamedTuple):
+    """A setting under which a passing assert is not recorded whole: what turns it off in a
+    run (the environment, then pytest's arguments), and the words the refusal names it by."""
+
+    env: dict[str, str]
+    extra: tuple[str, ...]
+    named: str
+
+
+#: Each setting :func:`tools.testrecord.plugin.unrecordable` refuses, by its id.  The
+#: assertion mode is turned off as delta review 4 measured it, through the environment.
+UNRECORDABLE = {
+    "assertion-plugin": Unrecordable({}, ("-p", f"no:{ASSERTION_PLUGIN}"),
+                                     f"pytest's {ASSERTION_PLUGIN} plugin is not loaded"),
+    "assertion-mode": Unrecordable({"PYTEST_ADDOPTS": "--assert=plain"}, (),
+                                   "the assertion mode is 'plain', not 'rewrite' (--assert)"),
+    "pass-hook": Unrecordable({}, ("-o", f"{PASS_HOOK}=false"), f"{PASS_HOOK} is off"),
+    "assertion-verbosity": Unrecordable(
+        {}, ("-o", f"{VERBOSITY}={WHOLE_VALUES - 1}"),
+        f"the assertion verbosity is {WHOLE_VALUES - 1}, below {WHOLE_VALUES} ({VERBOSITY})"),
+}
 
 
 def test_a_core_that_keeps_no_context_is_refused(tmp_path, monkeypatch):
@@ -72,3 +105,32 @@ def test_an_order_naming_another_set_is_refused(order):
     items = [SimpleNamespace(nodeid=nodeid) for nodeid in ("a", "b")]
     with pytest.raises(pytest.UsageError, match="exactly once"):
         plugin.ordered(items, order)
+
+
+@pytest.mark.parametrize("case", list(UNRECORDABLE.values()), ids=list(UNRECORDABLE))
+def test_a_run_that_cannot_record_every_passing_assert_whole_is_refused(project, out,
+                                                                        monkeypatch, case):
+    """A run under which a passing assert would go unrecorded, or be recorded shortened, is
+    refused before any test runs, naming the setting (the coordinator's ruling on delta
+    review 4's M-2, 2026-10-16), whatever the runner passed: the record's own settings are on
+    its command line, and these come after them or from the environment.  The refusal is in
+    the recorded run's own message, which ends with the wrapper's last lines (its n1), and it
+    is the first thing the run wrote: no test ran before it (the branch's neutral review of
+    M-2, L-4)."""
+    for name, value in case.env.items():
+        monkeypatch.setenv(name, value)
+    with pytest.raises(RecordError) as caught:
+        record(project, ["tests"], out, extra=(*case.extra, "-n", "0"))
+    assert "wrote no outcomes (exit 4)" in str(caught.value)
+    refusal = ("a recorded run records every passing assert whole, and under this run's "
+               f"settings it cannot: {case.named}")
+    assert refusal in str(caught.value)
+    assert (out / "wrapper-output.txt").read_text(encoding="utf-8").startswith(
+        f"ERROR: {refusal}")
+
+
+def test_a_run_that_records_nothing_is_never_refused_for_its_settings(monkeypatch):
+    """Loaded without ``$SHEKEL_TESTRECORD``, the plugin records nothing, so it judges no
+    setting: the configuration it is handed is never read."""
+    monkeypatch.delenv(RECORD_ENV, raising=False)
+    plugin.pytest_configure(SimpleNamespace())

@@ -251,16 +251,22 @@ def _sorted_set(side: str) -> str | None:
 
 
 def _set_order(explanation: str) -> str:
-    """``explanation`` with each side of its first line's one `` == `` re-rendered by
-    :func:`_sorted_set`, when both sides are a set's repr; else as it is.  A set literal's
+    """``explanation`` with each side of its first line's `` == `` re-rendered by
+    :func:`_sorted_set`, when every side is a set's repr; else as it is.  A set literal's
     iteration order depends on what its process compiled before it, under one hash seed
     (measured 2026-10-16, CPython 3.14.8), so the two layouts of a split print one literal's
     elements in two orders: test_savings_dashboard_service's
     ``TestComputeDashboardData::test_returns_expected_keys``.  pytest's diff below the first
-    line sorts a set's elements where it can order them.  A line with two `` == `` is
-    compared as it is: where it splits is not known."""
+    line sorts a set's elements where it can order them.  A line holding no `` == `` is no
+    comparison of sets and is compared as it is: a set printed alone (a passing ``assert s``,
+    or a failing assert's own message) is outside the kind's measured context (the branch's
+    neutral review of M-2, n1 and L-1, M-A).  Every `` == `` splits the line, so each set of
+    a chain is re-rendered; one inside a string element leaves a side holding half a string,
+    which is no set's repr, so that line is compared as it is (the coordinator's ruling on
+    delta review 4's L-1, 2026-10-16, which deleted a guard that compared every line holding
+    two `` == `` as it is)."""
     first, newline, rest = explanation.partition("\n")
-    if first.count(" == ") != 1:
+    if " == " not in first:
         return explanation
     sides = [_sorted_set(side) for side in first.split(" == ")]
     if None in sides:
@@ -330,8 +336,8 @@ def normalized(record: Record, root: str, relocated: Mapping[str, str]
     within a layout and between two (the coordinator's ruling on delta review 4's H-1,
     2026-10-16).  A failing assert's message is ``assert`` and pytest's explanation, the
     assert's own message before it when it has one, and each kind reads it where it reads
-    an explanation, but ``set-order``: that kind reads a first line that is two sets' reprs
-    around one `` == ``, and a failing assert's first line is not, so a failing set
+    an explanation, but ``set-order``: that kind reads a first line that is sets' reprs
+    joined by `` == ``, and a failing assert's first line is not, so a failing set
     comparison is compared as it was recorded, and a set printed in two orders is a
     difference (the branch's neutral review of H-1, M1: fail closed; widening the kind needs
     a measured instance and the coordinator's ruling)."""
