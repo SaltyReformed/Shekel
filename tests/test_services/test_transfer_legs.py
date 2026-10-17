@@ -1795,22 +1795,31 @@ class TestALegsDisplayProjections:
         the rule, the active flag, ``recurs`` or ``is_placed`` is set --
         disagrees here.  None of the three has an id or a record, so the
         case cannot see an answer gated on either.  For the link and
-        ``recurs``, the next case asks a saved generated transfer's sides
+        ``recurs``, the next case asks a saved GENERATED transfer's sides
         while it is still Projected and again once it is settled, and the
         projection table (:class:`TestBothSidesShowTheTransfer`) committed
-        ad-hoc ones.  Neither reads a label, so a label gated on a saved
-        transfer or on a record is graded in other files, one test per
-        corner at least: a saved, still-Projected side's label by
-        ``test_calendar_service.py``'s
-        ``TestDayAssignment::test_due_date_none_fallback``, and a settled
-        side's by that file's ``TestATransferIsALegOfItsParent``, by
+        AD-HOC ones; a saved PLACED transfer's sides are asked by no case
+        here.  Neither reads a label, so a label gated on a saved transfer
+        or on a record is graded in other files, both sides in each corner:
+        a saved, still-Projected transfer's two labels by
+        ``test_statement_match/test_leg_candidates.py``'s
+        ``TestAStillPlannedTransferIsOfferedAsItsLeg`` case
+        ``test_each_side_is_offered_on_its_own_account_keyed_by_the_transfer``,
+        and a settled one's by ``test_calendar_service.py``'s
+        ``TestATransferIsALegOfItsParent`` case
+        ``test_a_settled_leg_is_a_paid_cell_worth_its_record``.  Each fails
+        under a side answering its transfer's own name in its corner (only
+        where the transfer is saved and the side holds no record, or only
+        where the side holds one), on the expense side alone and on the
+        income side alone (measured after plan step ``balance:X-bi-6-4d-3``'s
+        checkpoint 2e-2b-1b-2c, by its delta review and again at that
+        review's fix).  ``test_calendar_service.py``'s
+        ``TestDayAssignment::test_due_date_none_fallback``,
         ``test_spending_report_service.py``'s
-        ``TestATransferIsALegOfItsParent`` and by
+        ``TestATransferIsALegOfItsParent`` and
         ``test_the_entry_doors_ask_the_movement.py``'s
-        ``TestATransfersPaymentIsNamedByItsLeg`` (measured at plan step
-        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2c, under a side
-        answering its transfer's own name only where the transfer is saved
-        and the side holds no record, and only where the side holds one).
+        ``TestATransfersPaymentIsNamedByItsLeg`` read the expense side's
+        label alone.
 
         ``test_transfer_service.py``'s ``test_with_custom_name`` and
         ``test_with_template_id`` asked a created transfer's two sides these
@@ -1887,19 +1896,24 @@ class TestALegsDisplayProjections:
         The fact the label case above asks in memory -- a side names no
         transaction definition and does not recur, whatever its transfer's
         shape -- asked on the two axes an in-memory transfer cannot hold:
-        this transfer is PERSISTED (it has an id), and it is asked in both
-        corners a saved transfer can be in.  First still Projected, no side
-        carrying a record: the state a generated transfer is born in and
-        keeps until it is settled, and the state
-        ``test_transfer_service.py``'s ``test_with_template_id`` asked each
-        side in until plan step ``balance:X-bi-6-4d-3``'s checkpoint
-        2e-2b-1b-2.  Then settled, each side carrying its RECORD (its
-        payment).  Every leg the grid draws in production is persisted, and
-        the grid's row match reads a side's ``template_id``
-        (``grid_view_service._match_row_in_period``).  The other two corners
-        are not a saved transfer's: unsaved and Projected is the label
-        case's, and unsaved and settled cannot be built, since a settle needs
-        a saved row.
+        this transfer is PERSISTED (it has an id), and it is asked in the two
+        corners a saved transfer passes through on its way to being paid.
+        First still Projected, no side carrying a record: the state a
+        generated transfer is born in and keeps until it is settled or
+        cancelled, and the state ``test_transfer_service.py``'s
+        ``test_with_template_id`` asked each side in until plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2.  Then settled, each
+        side carrying its RECORD (its payment).  Every leg the grid draws in
+        production is persisted, and the grid's row match reads a side's
+        ``template_id`` (``grid_view_service._match_row_in_period``).  A
+        Cancelled transfer is not asked: the grid's two readers of a side's
+        link skip a cancelled item before they read it
+        (``grid_view_service.build_row_keys`` and ``_match_row_in_period``).
+        The label case's transfers are unsaved and carry no status
+        (``Transfer.status_id`` has no default).  No production path makes an
+        unsaved transfer whose side carries a record, since a settle needs a
+        saved row, though a leg built in memory can carry one
+        (``TransferLeg(record=...)``).
 
         A side that answered its link only for a saved transfer, or only
         where it carries a record, passed the label case and the projection
@@ -1915,10 +1929,12 @@ class TestALegsDisplayProjections:
         The transfer is the ENGINE's (:func:`generate_transfer_of`) over the
         fixture's every-period definition, committed and re-read, then
         settled through the transfer service's door (``settle_transfer``),
-        committed and re-read again.  Guards on the input come first at each
-        read: the row is saved, linked and recurs, and it is Projected with
-        no side carrying a record before the settle, and every side carries
-        one after it.  Each side is read through two doors: by ACCOUNT
+        committed and re-read again.  The row is saved by construction: it is
+        read back by its id after a commit (``_reread_sides``), and a row that
+        was not there would fail that read before any guard ran.  Guards on
+        the input come first at each read: the row is linked and recurs, and
+        it is Projected with no side carrying a record before the settle, and
+        every side carries one after it.  Each side is read through two doors: by ACCOUNT
         (``grid_transfer_leg``, the grid's) and by SIDE
         (``transfer_side_leg``, the transfer service's).  It asks
         ``template_id`` and ``recurs`` alone; where a saved side's label is
@@ -1932,11 +1948,8 @@ class TestALegsDisplayProjections:
             row, planned = _reread_sides(transfer_id)
             # Guards on the INPUT: a saved, still-Projected transfer of the
             # recurring definition, no side of it carrying a record.
-            assert (
-                row.id is not None, row.transfer_template_id, row.recurs,
-                row.status_id,
-            ) == (
-                True, data["transfer_template"].id, True,
+            assert (row.transfer_template_id, row.recurs, row.status_id) == (
+                data["transfer_template"].id, True,
                 ref_cache.status_id(StatusEnum.PROJECTED),
             ), "precondition: a saved, Projected transfer of the recurring definition"
             assert [side.record is None for side in planned] == [True] * 4, (
@@ -1951,8 +1964,8 @@ class TestALegsDisplayProjections:
             row, settled = _reread_sides(transfer_id)
             # Guards on the INPUT: the same saved transfer, every side of it
             # carrying its record now.
-            assert (row.id is not None, row.transfer_template_id, row.recurs) == (
-                True, data["transfer_template"].id, True,
+            assert (row.transfer_template_id, row.recurs) == (
+                data["transfer_template"].id, True,
             ), "precondition: a saved transfer of the recurring definition"
             assert [side.record is not None for side in settled] == [True] * 4, (
                 "precondition: every side carries its record"
