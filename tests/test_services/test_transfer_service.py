@@ -14,7 +14,10 @@ that step's checkpoint 2e-2b-1b-1, and the create and figure groups,
 :class:`TestCreateTransfer` and :class:`TestTheFigureCorrectionDoorOnAPair`,
 since its checkpoint 2e-2b-1b-2, and the move group,
 :class:`TestMovingATransferBetweenAccounts`, since its checkpoint 2e-2b-1b-3;
-the restore group moves onto the same reads at a later checkpoint.  What
+the restore group moves onto the same reads at a later checkpoint.  The
+delete group, :class:`TestDeleteTransfer`, holds one case per state of the
+transfer and kind of delete since that step's checkpoint 2e-2b-2a (ruling
+R-BAL290 part 2), where it took in the already-hidden and paid groups.  What
 each side shows of a Projected or
 Cancelled row is ``test_transfer_legs.py``'s
 ``TestBothSidesShowTheTransfer``, and a settled row's price that file's
@@ -772,6 +775,31 @@ class TestUpdateTransfer:
                     amount_ownership=AmountOwnership.own(Decimal("100")),
                 )
 
+    def test_update_soft_deleted_transfer_raises_not_found(self, app, db, transfer_data):
+        """Verify that calling update_transfer on a soft-deleted transfer
+        raises NotFoundError, not a misleading data integrity ValidationError.
+        The transfer service treats soft-deleted transfers as non-existent to
+        prevent confusing error messages during debugging.
+
+        An EDIT refusal, moved here from ``TestSoftDeleteHandling`` at plan
+        step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2a, which merged that
+        group's delete cases into :class:`TestDeleteTransfer` (ruling
+        R-BAL290 part 2).
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.flush()
+
+            with pytest.raises(NotFoundError, match="not found"):
+                transfer_service.update_transfer(
+                    xfer_id, td["user"].id,
+                    amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                )
+
     def test_validates_positive_amount(self, app, db, transfer_data):
         """Update with zero amount raises ValidationError."""
         with app.app_context():
@@ -1080,7 +1108,116 @@ class TestUpdateTransfer:
 
 
 class TestDeleteTransfer:
-    """Tests for transfer_service.delete_transfer."""
+    """``transfer_service.delete_transfer``, one case per state and kind of delete.
+
+    A delete case is set by two things: the transfer's state before the
+    delete (planned, paid, or already hidden) and which delete runs (a soft
+    delete HIDES it, a hard delete removes it for good).  Each case checks
+    what that delete must leave behind (ruling R-BAL290 part 2, the
+    developer, 2026-10-14).  The group has been laid out this way since plan
+    step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2a, which merged two groups
+    into it: ``TestSoftDeleteHandling`` (the already-hidden cases) and
+    ``TestADeleteReturnsAPaidTransferToAPlan`` (the paid cases).
+
+    - PLANNED: hidden (:meth:`test_soft_hides_the_transfer`), or removed
+      (:meth:`test_hard_removes_the_transfer`).
+    - PAID: hidden.  The delete that takes a Paid transfer's payment records
+      off (ruling credit_card:R-CC75) also sets it back to Projected, so a
+      restore brings back a plan, never a ``$0.00`` close, which a loan reads
+      as a missed installment (ruling R-BAL246, the developer 2026-10-09,
+      "Back as a plan, now";
+      :meth:`test_a_paid_transfer_comes_off_as_a_hidden_plan_and_restores_as_one`).
+      The set-back has two edges: a ``$0.00`` close held nothing and keeps
+      Paid (:meth:`test_a_zero_close_held_nothing_and_keeps_paid`), and a
+      Cancelled transfer whose kept records came off stays Cancelled
+      (:meth:`test_a_cancelled_transfer_whose_kept_records_came_off_stays_cancelled`).
+      A paid transfer REMOVED for good is graded in two other files and is
+      not written again here: ``test_transfer_posting_lifecycle.py``'s
+      ``TestDeleteAndRestore::test_hard_delete_settled_reverses_and_pairs_survive_null_links``
+      (the row is gone, its posted legs reversed) and
+      ``test_cc5_4a3_movement_removal.py``'s
+      ``TestEveryDoorWithdrawsTheActItself`` case
+      ``test_a_hard_transfer_delete_withdraws_the_act_naming_its_leg`` (the
+      statement match its payment was in is withdrawn).  That the row
+      is gone is the first one's alone: a hard delete that kept a transfer
+      whose sides held a payment failed it and no case in this file
+      (measured at checkpoint 2e-2b-2a).
+    - ALREADY HIDDEN: hidden again
+      (:meth:`test_delete_soft_deleted_transfer_is_idempotent`), or removed
+      (:meth:`test_hard_delete_soft_deleted_transfer_succeeds`, a planned
+      transfer hidden first; a PAID one hidden and then removed is
+      ``test_transfer_posting_lifecycle.py``'s ``TestDeleteAndRestore`` case
+      ``test_hard_delete_of_a_soft_deleted_pair_finds_the_ledger_at_zero``).
+    - Someone else's transfer, or none: not found
+      (:meth:`test_wrong_user_rejected`, :meth:`test_nonexistent_rejected`).
+
+    Every case here holds an AD-HOC transfer.  The shape production hides
+    is a transfer of a definition (the instance delete hides a linked
+    transfer and removes an ad-hoc one; the template archive hides only
+    linked ones), and a hide that skipped a linked transfer passes this
+    group: it is graded at the route tier, by ``test_routes/test_transfers/``
+    ``test_instance.py``'s ``test_delete_template_transfer_soft_deletes``
+    among others (measured at checkpoint 2e-2b-2a's review).
+
+    Editing a hidden transfer answers not found too, which is an EDIT
+    refusal: :class:`TestUpdateTransfer`'s
+    ``test_update_soft_deleted_transfer_raises_not_found``.  The paid cases
+    read each side's record by its own SQL
+    (:func:`tests._test_helpers.transfer_side_record`), never the producer.
+    """
+
+    @staticmethod
+    def _sides(td, xfer_id):
+        """Each side's record ``(amount, settled_on)``, or ``None``, from Checking then Savings."""
+        db.session.expire_all()
+        sides = []
+        for account in (td["account"], td["savings_account"]):
+            record = transfer_side_record(db.session, xfer_id, account.id)
+            sides.append(
+                None if record is None else (record.amount, record.settled_on),
+            )
+        return tuple(sides)
+
+    def test_soft_hides_the_transfer(self, app, transfer_data):
+        """A planned transfer hidden is flagged deleted, stays Projected, and is returned.
+
+        What the delete wrote, re-read from the database (ruling R-BAL290
+        part 1): the flag, and the status a delete leaves alone on a
+        transfer whose sides held no payment (read since checkpoint
+        2e-2b-2a's review: a delete that cancelled a hidden plan passed this
+        file).  The door returns the session's own row, the one it hid, by
+        identity, so the returned object's flag is the stored one.  It
+        also asked each endpoint's plan loader for a leg of the transfer,
+        before the delete and after it, until plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2a.  That a hidden transfer
+        leaves both accounts' plans is the LOADER's fact, whichever delete
+        hid it, and it is asked of this case's own stored state (saved,
+        ad-hoc, Projected, hidden, no side holding a record) on BOTH sides by
+        :meth:`test_delete_soft_deleted_transfer_is_idempotent` below, and on
+        the expense side alone by ``test_transfer_legs.py``'s
+        ``TestTransferLegs::test_a_settled_a_cancelled_and_a_deleted_parent_yield_no_leg``,
+        which asks Checking's plan only (measured at that checkpoint: a
+        loader letting a hidden transfer through on the income side alone
+        fails the first and passes the second; on the expense side alone it
+        fails both).  Renamed from
+        ``test_soft_hides_the_transfer_and_both_legs``, and before that
+        ``test_soft_marks_shadows_deleted``.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer_id = _create_basic_transfer(td).id
+
+            hidden = transfer_service.delete_transfer(
+                xfer_id, td["user"].id, soft=True,
+            )
+
+            row = _reread(xfer_id)
+            assert hidden is row, "the door returns the session's row, the one it hid"
+            # Hidden, and still a plan: only a delete that took a payment
+            # off a SETTLED transfer moves its status (ruling R-BAL246).
+            assert (row.is_deleted, row.status_id) == (
+                True, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
 
     def test_hard_removes_the_transfer(self, app, db, transfer_data):
         """Hard delete removes the transfer row.
@@ -1103,214 +1240,6 @@ class TestDeleteTransfer:
             db.session.expire_all()
 
             assert db.session.get(Transfer, xfer_id) is None
-
-    def test_soft_hides_the_transfer_and_both_legs(self, app, transfer_data):
-        """Soft delete flags the transfer deleted, and neither endpoint plans a leg of it.
-
-        It counted the transfer's two shadow rows and read each one's flag
-        until plan step ``balance:X-bi-6-4d-3``, whose create door stopped
-        writing them (ruling R-BAL167 class 1).  A leg is derived from its
-        transfer now, so a deleted transfer's legs leave the plan: each
-        endpoint's plan loader, the read the balance fold plans legs with,
-        held one before the delete and holds none after it.  The two loader
-        reads after the delete are PROJECTION reads, separated from the
-        transfer's own flag only by a defect in the loader's filter.  Renamed
-        from ``test_soft_marks_shadows_deleted``.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-            endpoints = (xfer.from_account_id, xfer.to_account_id)
-            for account_id in endpoints:
-                assert [
-                    leg.transfer.id for leg in planned_transfer_legs(
-                        account_id, td["scenario"].id, options=(),
-                    )
-                ] == [xfer_id], "precondition: each endpoint plans its leg"
-
-            result = transfer_service.delete_transfer(
-                xfer_id, td["user"].id, soft=True
-            )
-
-            assert result.is_deleted is True
-            for account_id in endpoints:
-                assert planned_transfer_legs(
-                    account_id, td["scenario"].id, options=(),
-                ) == []
-
-    def test_hard_on_already_soft_deleted(self, app, db, transfer_data):
-        """Hard delete after soft delete physically removes the transfer.
-
-        It also counted the shadow rows naming the transfer afterwards (0)
-        until plan step ``balance:X-bi-6-4d-3``; from that step's create door
-        on no row can name one (``ck_transactions_names_no_transfer``, ruling
-        R-BAL258), so the count it took after the last delete read none (a
-        vacuous read; a probe counted such rows 0 before the first delete and
-        after the last, at checkpoint 2e-2a-2), and it is dropped.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-            db.session.commit()
-
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            db.session.commit()
-
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=False)
-            db.session.commit()
-            db.session.expire_all()
-
-            assert db.session.get(Transfer, xfer_id) is None
-
-    def test_wrong_user_rejected(self, app, db, transfer_data, second_user):
-        """Delete by non-owner raises NotFoundError."""
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-
-            with pytest.raises(NotFoundError):
-                transfer_service.delete_transfer(
-                    xfer.id, second_user["user"].id
-                )
-
-    def test_nonexistent_rejected(self, app, db, transfer_data):
-        """Delete of non-existent transfer raises NotFoundError."""
-        with app.app_context():
-            with pytest.raises(NotFoundError):
-                transfer_service.delete_transfer(
-                    99999, transfer_data["user"].id
-                )
-
-    def test_soft_delete_idempotent(self, app, db, transfer_data):
-        """Soft delete on already soft-deleted transfer is a no-op."""
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            # Second soft delete should not raise.
-            result = transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            assert result.is_deleted is True
-
-
-# ── Soft-Delete Handling Tests (M2) ──────────────────────────────
-
-
-class TestSoftDeleteHandling:
-    """Tests verifying that soft-deleted transfers produce clear errors
-    instead of misleading data-integrity messages, and that delete
-    operations remain idempotent across active/deleted states.
-    """
-
-    def test_update_soft_deleted_transfer_raises_not_found(self, app, db, transfer_data):
-        """Verify that calling update_transfer on a soft-deleted transfer
-        raises NotFoundError, not a misleading data integrity ValidationError.
-        The transfer service treats soft-deleted transfers as non-existent to
-        prevent confusing error messages during debugging.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            db.session.flush()
-
-            with pytest.raises(NotFoundError, match="not found"):
-                transfer_service.update_transfer(
-                    xfer_id, td["user"].id,
-                    amount_ownership=AmountOwnership.own(Decimal("500.00")),
-                )
-
-    def test_delete_soft_deleted_transfer_is_idempotent(self, app, transfer_data):
-        """Verify that calling delete_transfer(soft=True) on an already
-        soft-deleted transfer succeeds idempotently without raising
-        NotFoundError.  Repeated soft-delete must not break the template
-        deactivation workflow, which may process the same transfers
-        multiple times.
-
-        It read the shadow rows' flags afterwards ("still soft-deleted")
-        until plan step ``balance:X-bi-6-4d-3``; from that step's create door
-        on no row can name the transfer (``ck_transactions_names_no_transfer``,
-        ruling R-BAL258), so ``all()`` ran over none after the second delete
-        (a vacuous read; a probe counted such rows 0 before the first delete
-        and after the second, at checkpoint 2e-2a-2).  What it meant is asked
-        of the plan now: neither endpoint's plan loader holds a leg of it, a
-        PROJECTION read as in :class:`TestDeleteTransfer`'s
-        ``test_soft_hides_the_transfer_and_both_legs``.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            # Second call must not raise.
-            result = transfer_service.delete_transfer(
-                xfer_id, td["user"].id, soft=True
-            )
-            assert result.is_deleted is True
-
-            # Still out of the plan on both sides.
-            for account_id in (xfer.from_account_id, xfer.to_account_id):
-                assert planned_transfer_legs(
-                    account_id, td["scenario"].id, options=(),
-                ) == []
-
-    def test_hard_delete_soft_deleted_transfer_succeeds(self, app, db, transfer_data):
-        """Verify that hard-deleting a previously soft-deleted transfer
-        succeeds and removes the transfer from the database.  The
-        hard-delete path must work regardless of the is_deleted flag.
-
-        It also counted the shadow rows naming the transfer afterwards (0)
-        until plan step ``balance:X-bi-6-4d-3``; from that step's create door
-        on no row can name one (``ck_transactions_names_no_transfer``, ruling
-        R-BAL258), so the count it took after the last delete read none (a
-        vacuous read; a probe counted such rows 0 before the first delete and
-        after the last, at checkpoint 2e-2a-2), and it is dropped.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-            db.session.commit()
-
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            db.session.commit()
-
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=False)
-            db.session.commit()
-            db.session.expire_all()
-
-            assert db.session.get(Transfer, xfer_id) is None
-
-
-class TestADeleteReturnsAPaidTransferToAPlan:
-    """The soft delete's set-back to Projected (ruling R-BAL246).
-
-    Developer 2026-10-09, "Back as a plan, now": the delete that takes a Paid
-    transfer's payment records off (ruling credit_card:R-CC75) also sets it
-    back to Projected, so a restore brings back a plan -- never a ``$0.00``
-    close, which a loan reads as a missed installment.  A ``$0.00`` close
-    held nothing and keeps Paid; a hard delete removes the row and sets no
-    status.  Every case reads each side's record by its own SQL
-    (:func:`tests._test_helpers.transfer_side_record`), never the producer.
-    """
-
-    @staticmethod
-    def _sides(td, xfer_id):
-        """Each side's record ``(amount, settled_on)``, or ``None``, from Checking then Savings."""
-        db.session.expire_all()
-        sides = []
-        for account in (td["account"], td["savings_account"]):
-            record = transfer_side_record(db.session, xfer_id, account.id)
-            sides.append(
-                None if record is None else (record.amount, record.settled_on),
-            )
-        return tuple(sides)
 
     def test_a_paid_transfer_comes_off_as_a_hidden_plan_and_restores_as_one(
         self, app, db, transfer_data,
@@ -1406,6 +1335,109 @@ class TestADeleteReturnsAPaidTransferToAPlan:
             assert xfer.is_deleted is True
             assert xfer.status_id == ref_cache.status_id(StatusEnum.CANCELLED)
             assert self._sides(td, xfer_id) == (None, None)
+
+    def test_delete_soft_deleted_transfer_is_idempotent(self, app, transfer_data):
+        """Hiding a hidden transfer again does not raise; it stays hidden and out of both plans.
+
+        A repeated soft delete must not break the template deactivation
+        workflow, which may process the same transfers more than once.  The
+        one copy of a pair: the delete group's ``test_soft_delete_idempotent``
+        made the same two deletes, asked only the flag on the transfer the
+        second one returned, and was deleted at plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2a (ruling R-BAL290 part 2,
+        "the stronger check survives"), where this case moved into the delete
+        group from ``TestSoftDeleteHandling``.  What the second delete left
+        is read off the row re-read from the database since then (ruling
+        R-BAL290 part 1), where it read the object the door returned, and off
+        each endpoint's plan loader, a PROJECTION read that holds a leg of
+        the transfer on both sides before the first delete (a guard on the
+        input, moved here from the planned case,
+        :meth:`test_soft_hides_the_transfer`, at that checkpoint) and none
+        after the second.
+
+        It read the shadow rows' flags afterwards ("still soft-deleted")
+        until plan step ``balance:X-bi-6-4d-3``; from that step's create door
+        on no row can name the transfer (``ck_transactions_names_no_transfer``,
+        ruling R-BAL258), so ``all()`` ran over none after the second delete
+        (a vacuous read; a probe counted such rows 0 before the first delete
+        and after the second, at checkpoint 2e-2a-2).
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            endpoints = (xfer.from_account_id, xfer.to_account_id)
+            for account_id in endpoints:
+                assert [
+                    leg.transfer.id for leg in planned_transfer_legs(
+                        account_id, td["scenario"].id, options=(),
+                    )
+                ] == [xfer_id], "precondition: each endpoint plans its leg"
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            # Second call must not raise.
+            again = transfer_service.delete_transfer(
+                xfer_id, td["user"].id, soft=True
+            )
+
+            row = _reread(xfer_id)
+            assert again is row, "the door returns the session's row, the one it hid"
+            assert row.is_deleted is True
+            for account_id in endpoints:
+                assert planned_transfer_legs(
+                    account_id, td["scenario"].id, options=(),
+                ) == []
+
+    def test_hard_delete_soft_deleted_transfer_succeeds(self, app, db, transfer_data):
+        """A hidden transfer removed for good is gone.
+
+        The hard-delete path must work regardless of the is_deleted flag.
+        The one copy of a pair: the delete group's
+        ``test_hard_on_already_soft_deleted`` was this case line for line and
+        was deleted at plan step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2a
+        (ruling R-BAL290 part 2), where this case moved into the delete group
+        from ``TestSoftDeleteHandling``.
+
+        It also counted the shadow rows naming the transfer afterwards (0)
+        until plan step ``balance:X-bi-6-4d-3``; from that step's create door
+        on no row can name one (``ck_transactions_names_no_transfer``, ruling
+        R-BAL258), so the count it took after the last delete read none (a
+        vacuous read; a probe counted such rows 0 before the first delete and
+        after the last, at checkpoint 2e-2a-2), and it is dropped.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            db.session.commit()
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.commit()
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=False)
+            db.session.commit()
+            db.session.expire_all()
+
+            assert db.session.get(Transfer, xfer_id) is None
+
+    def test_wrong_user_rejected(self, app, db, transfer_data, second_user):
+        """Delete by non-owner raises NotFoundError."""
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+
+            with pytest.raises(NotFoundError):
+                transfer_service.delete_transfer(
+                    xfer.id, second_user["user"].id
+                )
+
+    def test_nonexistent_rejected(self, app, db, transfer_data):
+        """Delete of non-existent transfer raises NotFoundError."""
+        with app.app_context():
+            with pytest.raises(NotFoundError):
+                transfer_service.delete_transfer(
+                    99999, transfer_data["user"].id
+                )
 
 
 # ── Restore Tests (M1) ──────────────────────────────────────────
