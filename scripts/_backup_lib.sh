@@ -8,8 +8,8 @@
 # the application schema set (three divergent copies meant a new schema
 # missed in backup.sh would silently drop that schema from every backup,
 # discovered only at restore time), the log() function, the docker
-# prerequisite stanza, the backup key file, and the pipelines that write and
-# read an artifact.
+# prerequisite stanza, the family's settings and their defaults, the backup
+# key file, and the pipelines that write and read an artifact.
 #
 # errexit discipline: every helper uses explicit `if ! cmd; return 1`
 # control flow instead of relying on set -e, because callers routinely
@@ -68,6 +68,33 @@ if ! {
     log "ERROR" "shekel_prod_db_container).  It must come from this file's revision."
     exit 1
 fi
+
+# ── Settings ─────────────────────────────────────────────────────
+# Every setting a backup script reads from its environment, and its default:
+# the one home of each.  A script declares the settings it reads with
+# read_settings and prints them in its --help with print_settings, both from
+# _settings_lib.sh, which a script outside this family can load alone.
+# shellcheck source=_settings_lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_settings_lib.sh"
+SHEKEL_SETTING_DEFAULTS+=(
+    [BACKUP_LOCAL_DIR]=/var/backups/shekel
+    [BACKUP_NAS_DIR]=/mnt/nas/backups/shekel
+    [PGUSER]=shekel_user
+    [PGDATABASE]=shekel
+    # One database per run, so two verifications at once never drop each
+    # other's (OPS/SH-27).
+    [VERIFY_DB]="shekel_verify_${SHEKEL_SETTING_PID_PLACEHOLDER}"
+    [RETENTION_DAILY_DAYS]=7
+    [RETENTION_WEEKLY_WEEKS]=4
+    [RETENTION_MONTHLY_MONTHS]=6
+    [RETENTION_MIN_KEEP]=3
+    [RETENTION_STALE_ALERT_DAYS]=2
+)
+# The production containers' names, from their one home (_docker_lib.sh),
+# one per statement: a second command substitution in one assignment would
+# hide the first one's exit status.
+SHEKEL_SETTING_DEFAULTS[DB_CONTAINER]="$(shekel_prod_db_container)"
+SHEKEL_SETTING_DEFAULTS[APP_CONTAINER]="$(shekel_prod_app_container)"
 
 # Verify docker exists and the named DB container is running.
 # Usage: require_db_container "$DB_CONTAINER" || exit 1

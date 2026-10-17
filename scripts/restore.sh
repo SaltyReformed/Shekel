@@ -25,18 +25,10 @@
 # If anything fails between the drop and a completed restore, the script
 # prints recovery guidance naming the safety dump.
 #
-# Usage:
-#     ./scripts/restore.sh <backup_file>
-#     ./scripts/restore.sh --skip-confirm <backup_file>
-#
-# Options:
-#     --skip-confirm      Skip the interactive confirmation prompt
-#     --skip-safety-dump  Proceed without the pre-restore safety dump (for the
-#                         disaster case where the current database is already
-#                         lost/unreadable and the dump step itself fails)
-#     --plaintext-safety-dump
-#                         Write the safety dump UNENCRYPTED (.sql.gz)
-#     --help              Show this help message
+# Usage, options and settings, each setting with its default:
+#     ./scripts/restore.sh --help
+# --skip-safety-dump is for the disaster case: the current database is
+# already lost or unreadable, and the safety dump itself fails.
 #
 # An encrypted backup (.gpg) and the encrypted safety dump both use the
 # backup key file (SHEKEL_BACKUP_KEY_FILE in _backup_lib.sh; --help prints
@@ -50,12 +42,13 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"
 
 # ── Configuration ────────────────────────────────────────────────
-
-DB_CONTAINER="${DB_CONTAINER:-$(shekel_prod_db_container)}"
-APP_CONTAINER="${APP_CONTAINER:-$(shekel_prod_app_container)}"
-PGUSER="${PGUSER:-shekel_user}"
-PGDATABASE="${PGDATABASE:-shekel}"
-BACKUP_LOCAL_DIR="${BACKUP_LOCAL_DIR:-/var/backups/shekel}"
+# Each read from the environment, else its default in _backup_lib.sh.
+read_settings \
+    DB_CONTAINER "Docker container name for PostgreSQL" \
+    APP_CONTAINER "Docker container name for the app" \
+    PGUSER "PostgreSQL user" \
+    PGDATABASE "PostgreSQL database name" \
+    BACKUP_LOCAL_DIR "Where the safety dump is written"
 
 # Set once the DROP DATABASE has run; drives the recovery-guidance trap.
 DESTRUCTIVE_WINDOW=false
@@ -98,13 +91,8 @@ for the group or others).  Without it the script stops before touching
 anything, except for an unencrypted backup under --plaintext-safety-dump or
 --skip-safety-dump.
 
-Environment Variables:
-    DB_CONTAINER                  Docker container name for PostgreSQL
-    APP_CONTAINER                 Docker container name for the app
-    PGUSER                        PostgreSQL user
-    PGDATABASE                    PostgreSQL database name
-    BACKUP_LOCAL_DIR              Where the safety dump is written
 EOF
+    print_settings
 }
 
 recovery_guidance() {

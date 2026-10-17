@@ -9,11 +9,8 @@
 # decrypted with the backup key file (SHEKEL_BACKUP_KEY_FILE in
 # _backup_lib.sh; --help prints its path), checked once, before any step.
 #
-# Usage:
-#     ./scripts/verify_backup.sh <backup_file>
-#
-# Options:
-#     --help          Show this help message
+# Usage and settings, each setting with its default:
+#     ./scripts/verify_backup.sh --help
 #
 # Exit codes:
 #     0   All checks passed
@@ -29,14 +26,13 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"
 
 # ── Configuration ────────────────────────────────────────────────
-
-DB_CONTAINER="${DB_CONTAINER:-$(shekel_prod_db_container)}"
-APP_CONTAINER="${APP_CONTAINER:-$(shekel_prod_app_container)}"
-PGUSER="${PGUSER:-shekel_user}"
-PGDATABASE="${PGDATABASE:-shekel}"
-# Per-run suffix so two overlapping verification runs cannot drop each
-# other's temp database mid-restore (OPS/SH-27).
-VERIFY_DB="${VERIFY_DB:-shekel_verify_$$}"
+# Each read from the environment, else its default in _backup_lib.sh.
+# VERIFY_DB's default is unique to the run (OPS/SH-27).
+read_settings \
+    DB_CONTAINER "Docker container name for PostgreSQL" \
+    APP_CONTAINER "Docker container name for the app" \
+    PGUSER "PostgreSQL user" \
+    VERIFY_DB "Temporary database the backup is restored into"
 
 # ── Functions ────────────────────────────────────────────────────
 
@@ -48,7 +44,7 @@ Verify a Shekel backup by restoring to a temporary database and running
 sanity checks.
 
 This will:
-    1. Create a temporary database (${VERIFY_DB})
+    1. Create a temporary database (VERIFY_DB, below)
     2. Restore the backup into it
     3. Run sanity check queries (row counts, user check, date ranges)
     4. Run the integrity check script
@@ -64,13 +60,8 @@ Arguments:
 Options:
     --help          Show this help message
 
-Environment Variables:
-    DB_CONTAINER                  Docker container name for PostgreSQL
-    APP_CONTAINER                 Docker container name for the app
-    PGUSER                        PostgreSQL user
-    PGDATABASE                    Production database name (for reference)
-    VERIFY_DB                     Temporary database name for verification
 EOF
+    print_settings
 }
 
 # shellcheck disable=SC2329 # invoked indirectly as the EXIT trap handler registered by 'trap cleanup EXIT' in main, never called by name
@@ -122,7 +113,10 @@ check_prerequisites() {
 create_temp_database() {
     log "INFO" "Creating temporary database: ${VERIFY_DB}"
 
-    # Drop if it exists from a previous failed run.
+    # Drop any database by this name first.  With the default name, this
+    # run's own, that finds nothing unless a run killed outright (no EXIT
+    # trap) left one under the same process id; with VERIFY_DB set, it drops
+    # WHATEVER database that names, and nothing refuses the production one.
     docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d postgres --quiet -c \
         "DROP DATABASE IF EXISTS ${VERIFY_DB};" 2>/dev/null || true
 

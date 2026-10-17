@@ -45,6 +45,7 @@ from tests.test_scripts._shell_harness import fake_docker, function_text, run_ba
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DOCKER_LIB = _REPO_ROOT / "scripts" / "_docker_lib.sh"
 _BACKUP_LIB = _REPO_ROOT / "scripts" / "_backup_lib.sh"
+_SETTINGS_LIB = _REPO_ROOT / "scripts" / "_settings_lib.sh"
 _RECONCILE = _REPO_ROOT / "scripts" / "reconcile_prod_to_canonical.sh"
 _RESTORE = _REPO_ROOT / "scripts" / "restore.sh"
 _SELF_HOSTED_DEPLOY = _REPO_ROOT / "scripts" / "deploy.sh"
@@ -623,18 +624,18 @@ _DB_DEFAULT = "shekel_prod_db_container"
 
 #: Every assignment of a container name from the lib: the script, its
 #: variable, and which container that variable names.  The pairing is the
-#: specification, not a copy of a name.
+#: specification, not a copy of a name.  The backup scripts' defaults are
+#: the two entries of the settings table in ``scripts/_backup_lib.sh``, which
+#: every backup script reads (plan step balance:X-do, leaf L2b-2a; Josh's
+#: answer of 2026-10-17 moved these rows with them).
 _DEFAULT_SITES = (
     ("deploy/shekel-deploy.sh", "CONTAINER_NAME", _APP_DEFAULT),
     ("deploy/shekel-deploy.sh", "DB_CONTAINER", _DB_DEFAULT),
     ("deploy/verify_prod_deploy.sh", "CONTAINER", _APP_DEFAULT),
     ("scripts/deploy.sh", "APP_CONTAINER", _APP_DEFAULT),
     ("scripts/deploy.sh", "app_container_default", _APP_DEFAULT),
-    ("scripts/backup.sh", "DB_CONTAINER", _DB_DEFAULT),
-    ("scripts/restore.sh", "DB_CONTAINER", _DB_DEFAULT),
-    ("scripts/restore.sh", "APP_CONTAINER", _APP_DEFAULT),
-    ("scripts/verify_backup.sh", "DB_CONTAINER", _DB_DEFAULT),
-    ("scripts/verify_backup.sh", "APP_CONTAINER", _APP_DEFAULT),
+    ("scripts/_backup_lib.sh", "SHEKEL_SETTING_DEFAULTS[DB_CONTAINER]", _DB_DEFAULT),
+    ("scripts/_backup_lib.sh", "SHEKEL_SETTING_DEFAULTS[APP_CONTAINER]", _APP_DEFAULT),
     ("scripts/generate_pg_cert.sh", "PROD_DB_CONTAINER", _DB_DEFAULT),
     ("scripts/reconcile_prod_to_canonical.sh", "app_container", _APP_DEFAULT),
 )
@@ -773,8 +774,9 @@ class TestEachDefaultIsTheLibsOwnName:
     review's M3: the deploy behaviour tests always set both overrides, so no
     test read a default, and a db default reading the APP's function would
     have aimed every nightly backup at the app.  Each site's assignment is
-    run alone with the lib loaded, as ``function_text`` runs a function:
-    the scripts that drop or write production are never run here.
+    run alone with the lib loaded (and the settings lib, whose table an
+    entry of it needs), as ``function_text`` runs a function: the scripts
+    that drop or write production are never run here.
 
     **The known limit:** the expected name is the lib's own answer, so a
     wrong NAME in the lib itself passes here.  No test can see that without
@@ -795,9 +797,11 @@ class TestEachDefaultIsTheLibsOwnName:
         """A new default read from the lib must join the table.
 
         The census reads in ONE direction: it finds an ``X=...`` assignment,
-        top-level or indented, that calls a name function.  A default spelled
-        any other way (``local X=...``, through ``declare``, or as a literal
-        name) is invisible to it.  The ledger's census markers on BAL-644 count a
+        or one of an array entry ``X[KEY]=...``, top-level or indented, that
+        calls a name function.  A default spelled any other way
+        (``local X=...``, through ``declare``, inside a multi-entry array
+        literal, or as a literal name) is invisible to it.  The ledger's
+        census markers on BAL-644 count a
         re-spelled literal in ``scripts/*.sh`` and a ``:-`` default of one in
         ``deploy/*.sh``, not a bare literal there; a site reaching the lib in
         another form is wiring no test here checks.
@@ -806,7 +810,7 @@ class TestEachDefaultIsTheLibsOwnName:
             (str(script.relative_to(_REPO_ROOT)), match)
             for script in _shell_scripts()
             for match in re.findall(
-                r"^\s*(\w+)=.*\bshekel_prod_(?:app|db)_container\b",
+                r"^\s*(\w+(?:\[\w+\])?)=.*\bshekel_prod_(?:app|db)_container\b",
                 script.read_text(encoding="utf-8"), flags=re.M,
             )
         }
@@ -819,15 +823,16 @@ class TestEachDefaultIsTheLibsOwnName:
     def test_with_no_override_it_is_the_lib_s_name(self, script, variable, function):
         """The assignment, run alone, holds what the lib's function prints."""
         lines = re.findall(
-            rf"^\s*{variable}=.*$",
+            rf"^\s*{re.escape(variable)}=.*$",
             (_REPO_ROOT / script).read_text(encoding="utf-8"), flags=re.M,
         )
         assert len(lines) == 1, lines
         expected = run_bash('source "$1"; "$2"', str(_DOCKER_LIB), function)
         assert expected.returncode == 0 and expected.stdout.strip(), expected
         result = run_bash(
-            f'unset {_OVERRIDES}; source "$1"; eval "$2"; printf "%s" "${{!3}}"',
-            str(_DOCKER_LIB), lines[0], variable,
+            f'unset {_OVERRIDES}; source "$1"; source "$4"; eval "$2"; '
+            f'printf "%s" "${{!3}}"',
+            str(_DOCKER_LIB), lines[0], variable, str(_SETTINGS_LIB),
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout == expected.stdout.rstrip("\n"), result.stdout

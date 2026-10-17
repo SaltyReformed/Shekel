@@ -2,9 +2,9 @@
 # Shekel Budget App -- Backup Retention Pruning
 #
 # Prunes old backup files according to a tiered retention policy:
-#     Daily backups:   kept for 7 days    (configurable)
-#     Weekly (Sunday): kept for 4 weeks   (configurable)
-#     Monthly (1st):   kept for 6 months  (configurable)
+#     Daily backups:   kept for RETENTION_DAILY_DAYS days
+#     Weekly (Sunday): kept for RETENTION_WEEKLY_WEEKS weeks
+#     Monthly (1st):   kept for RETENTION_MONTHLY_MONTHS months
 #
 # Retention classification is based on the date in the backup filename
 # (shekel_backup_YYYYMMDD_HHMMSS.sql.gz), NOT the file modification time.
@@ -15,24 +15,17 @@
 #   * Deletion requires --force; without it every run is a dry-run. The
 #     house shell standard is confirm-or---force for destructive
 #     operations, and this script deletes the disaster-recovery story.
-#   * A keep-floor (RETENTION_MIN_KEEP, default 3) is enforced per
-#     directory: pruning never reduces a directory below the N newest
-#     backups, so a silently-dead backup producer can no longer let this
-#     script age every remaining file out to zero.
+#   * A keep-floor (RETENTION_MIN_KEEP) is enforced per directory: pruning
+#     never reduces a directory below the N newest backups, so a
+#     silently-dead backup producer can no longer let this script age every
+#     remaining file out to zero.
 #   * A staleness alarm: when the NEWEST backup in a directory is older
-#     than RETENTION_STALE_ALERT_DAYS (default 2), the run logs ERROR and
-#     exits 1 so cron/monitoring surfaces "backups stopped being made" --
-#     the classic retention failure mode.
+#     than RETENTION_STALE_ALERT_DAYS, the run logs ERROR and exits 1 so
+#     cron/monitoring surfaces "backups stopped being made" -- the classic
+#     retention failure mode.
 #
-# Usage:
-#     ./scripts/backup_retention.sh [OPTIONS]
-#
-# Options:
-#     --local-dir DIR     Local backup directory (default: /var/backups/shekel)
-#     --nas-dir DIR       NAS backup directory (default: /mnt/nas/backups/shekel)
-#     --force             Actually delete files (default: dry-run)
-#     --dry-run           Explicit dry-run (the default; kept for cron clarity)
-#     --help              Show this help message
+# Options and settings, each setting with its default:
+#     ./scripts/backup_retention.sh --help
 #
 # Exit codes:
 #     0   Retention cleanup completed (missing directories produce warnings)
@@ -45,19 +38,15 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"
 
 # ── Configuration ────────────────────────────────────────────────
-# All values can be overridden via environment variables.
-
-BACKUP_LOCAL_DIR="${BACKUP_LOCAL_DIR:-/var/backups/shekel}"
-BACKUP_NAS_DIR="${BACKUP_NAS_DIR:-/mnt/nas/backups/shekel}"
-
-# Retention periods.
-RETENTION_DAILY_DAYS="${RETENTION_DAILY_DAYS:-7}"
-RETENTION_WEEKLY_WEEKS="${RETENTION_WEEKLY_WEEKS:-4}"
-RETENTION_MONTHLY_MONTHS="${RETENTION_MONTHLY_MONTHS:-6}"
-
-# Safety rails.
-RETENTION_MIN_KEEP="${RETENTION_MIN_KEEP:-3}"
-RETENTION_STALE_ALERT_DAYS="${RETENTION_STALE_ALERT_DAYS:-2}"
+# Each read from the environment, else its default in _backup_lib.sh.
+read_settings \
+    BACKUP_LOCAL_DIR "Local backup directory" \
+    BACKUP_NAS_DIR "NAS backup directory" \
+    RETENTION_DAILY_DAYS "Days to keep daily backups" \
+    RETENTION_WEEKLY_WEEKS "Weeks to keep weekly/Sunday backups" \
+    RETENTION_MONTHLY_MONTHS "Months to keep monthly/1st backups" \
+    RETENTION_MIN_KEEP "Newest backups never deleted" \
+    RETENTION_STALE_ALERT_DAYS "Newest-backup age, in days, that trips the alarm"
 
 # Set when any processed directory's newest backup exceeds the staleness
 # threshold; drives the final exit code.
@@ -81,21 +70,14 @@ Safety rails:
     must surface here, not as an empty directory months later.
 
 Options:
-    --local-dir DIR     Local backup directory (default: /var/backups/shekel)
-    --nas-dir DIR       NAS backup directory (default: /mnt/nas/backups/shekel)
+    --local-dir DIR     Prune DIR instead of BACKUP_LOCAL_DIR
+    --nas-dir DIR       Prune DIR instead of BACKUP_NAS_DIR
     --force             Actually delete files (default: dry-run)
     --dry-run           Explicit dry-run (the default)
     --help              Show this help message
 
-Environment Variables:
-    BACKUP_LOCAL_DIR            Local backup directory
-    BACKUP_NAS_DIR              NAS backup directory
-    RETENTION_DAILY_DAYS        Days to keep daily backups (default: 7)
-    RETENTION_WEEKLY_WEEKS      Weeks to keep weekly/Sunday backups (default: 4)
-    RETENTION_MONTHLY_MONTHS    Months to keep monthly/1st backups (default: 6)
-    RETENTION_MIN_KEEP          Newest backups never deleted (default: 3)
-    RETENTION_STALE_ALERT_DAYS  Newest-backup age that trips the alarm (default: 2)
 EOF
+    print_settings
 }
 
 extract_date_from_filename() {

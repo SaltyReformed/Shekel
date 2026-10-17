@@ -8,15 +8,7 @@
 # script REFUSES and writes nothing, unless --no-encrypt chooses an
 # unencrypted backup (Josh's rulings R-BAL304 and R-BAL305).
 #
-# Usage:
-#     ./scripts/backup.sh [OPTIONS]
-#
-# Options:
-#     --local-dir DIR     Local backup directory (default: /var/backups/shekel)
-#     --nas-dir DIR       NAS backup directory (default: /mnt/nas/backups/shekel)
-#     --no-nas            Skip NAS copy (local backup only)
-#     --no-encrypt        Write an UNENCRYPTED backup (.sql.gz)
-#     --help              Show this help message
+# Options and settings, each setting with its default: ./scripts/backup.sh --help
 #
 # Exit codes:
 #     0   Backup completed successfully (local backup always succeeds for exit 0)
@@ -37,17 +29,13 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"
 
 # ── Configuration ────────────────────────────────────────────────
-# All values can be overridden via environment variables.
-
-BACKUP_LOCAL_DIR="${BACKUP_LOCAL_DIR:-/var/backups/shekel}"
-BACKUP_NAS_DIR="${BACKUP_NAS_DIR:-/mnt/nas/backups/shekel}"
-
-# Docker container names.
-DB_CONTAINER="${DB_CONTAINER:-$(shekel_prod_db_container)}"
-
-# Database connection (used inside the db container).
-PGUSER="${PGUSER:-shekel_user}"
-PGDATABASE="${PGDATABASE:-shekel}"
+# Each read from the environment, else its default in _backup_lib.sh.
+read_settings \
+    BACKUP_LOCAL_DIR "Local backup directory" \
+    BACKUP_NAS_DIR "NAS backup directory" \
+    DB_CONTAINER "Docker container name for PostgreSQL" \
+    PGUSER "PostgreSQL user" \
+    PGDATABASE "PostgreSQL database name"
 
 # Timestamp format for filenames.  main adds .gpg for an encrypted backup.
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
@@ -83,19 +71,14 @@ for the group or others).  Without a usable key file nothing is written,
 unless --no-encrypt.
 
 Options:
-    --local-dir DIR     Local backup directory (default: /var/backups/shekel)
-    --nas-dir DIR       NAS backup directory (default: /mnt/nas/backups/shekel)
+    --local-dir DIR     Write the backup to DIR instead of BACKUP_LOCAL_DIR
+    --nas-dir DIR       Copy it to DIR instead of BACKUP_NAS_DIR
     --no-nas            Skip NAS copy (local only)
     --no-encrypt        Write an UNENCRYPTED backup (.sql.gz)
     --help              Show this help message
 
-Environment Variables:
-    BACKUP_LOCAL_DIR              Local backup directory
-    BACKUP_NAS_DIR                NAS backup directory
-    DB_CONTAINER                  Docker container name for PostgreSQL
-    PGUSER                        PostgreSQL user
-    PGDATABASE                    PostgreSQL database name
 EOF
+    print_settings
 }
 
 check_prerequisites() {
