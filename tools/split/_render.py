@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
+from tools.ci.text import lines_of
 from tools.split._classes import mixin_name
 from tools.split._layout import Layout, Output, Piece
 from tools.split._model import HELPERS, INIT
@@ -41,7 +42,6 @@ from tools.split._source import (
     bound_name,
     decode,
     imported,
-    lines_of,
     parse,
     read_ini,
     text_holding,

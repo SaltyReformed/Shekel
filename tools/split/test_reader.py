@@ -1,8 +1,10 @@
-"""The ONE reader (:mod:`tools.split._source`): every text, process output, JSON value, syntax
-tree, symbol table and ini file the tool reads goes through it, and each refuses, naming what
-it read, where Python would raise (the coordinator's ruling on the delta review's L-B,
-2026-10-15: every path from ``split.main`` to a traceback becomes a refusal naming the file);
-and every text split into lines is split by it, as Python numbers lines (the coordinator's
+"""The ONE reader, in two modules (:data:`READER`: :mod:`tools.split._source` and
+:mod:`tools.ci.text`): every text, process output, JSON value, syntax tree, symbol table and
+ini file the tool reads goes through it, and each refuses, naming what it read, where Python
+would raise (the coordinator's ruling on the delta review's L-B, 2026-10-15: every path from
+``split.main`` to a traceback becomes a refusal naming the file); and no module of the tool
+splits text with :meth:`str.splitlines`, which ends a line where Python does not: the
+reader's :func:`tools.ci.text.lines_of` splits as Python numbers lines (the coordinator's
 ruling on commit 3b-1's first report, 2026-10-15).
 """
 from __future__ import annotations
@@ -14,8 +16,11 @@ from pathlib import Path
 
 import pytest
 
+from tools.ci import text as ci_text
+from tools.ci.text import lines_of
 from tools.split import _dynamic as dynamic
 from tools.split import _run as run
+from tools.split import _source as source
 from tools.split._model import load_plan
 from tools.split._render import importer_rewrites, line_limit
 from tools.split._similar import checker_defaults
@@ -23,7 +28,6 @@ from tools.split._source import (
     Refusal,
     collect_rules,
     decode,
-    lines_of,
     load_json,
     parse,
     read_ini,
@@ -35,9 +39,14 @@ from tools.split._source import (
 from tools.split.conftest import SOURCE, build, layout_of, only_on_path, refusal, sample_with
 from tools.split.test_apply import applied, proof
 
-#: The tool's modules, every one but the reader itself and the tests.
+#: The ONE reader's modules, named once (the coordinator's ruling on M-B's pure move,
+#: 2026-10-17): the only modules the scan exempts, and the ones its control scans.
+READER = tuple(Path(module.__file__).resolve() for module in (source, ci_text))
+
+#: The tool's modules, every one but the reader and the tests.
 TOOL = sorted(p for p in Path(__file__).parent.glob("*.py")
-              if not p.stem.startswith("test_") and p.stem not in {"conftest", "_source"})
+              if not p.stem.startswith("test_") and p.stem != "conftest"
+              and p.resolve() not in READER)
 
 #: Calls that read, decode, parse, load or split text into lines, by the attribute they call
 #: on a module name (``json.loads``) or on any object (``.read_text``, ``.decode``,
@@ -76,24 +85,27 @@ def readers(path: Path) -> list[str]:
 
 
 def test_no_module_but_the_reader_reads_text_itself():
-    """Every other module reads through :mod:`tools.split._source`, so a decode, JSON, parse
-    or ini error is a refusal naming the file wherever it is read."""
+    """Every other module reads through the reader (:data:`READER`), so a decode, JSON,
+    parse or ini error is a refusal naming the file wherever it is read."""
     assert {str(p.name): readers(p) for p in TOOL if readers(p)} == {}
 
 
 def test_the_census_sees_every_spelling_it_refuses(tmp_path):
-    """The control: the scan finds each kind of read in the reader itself, so an empty
-    answer above is the modules' and not the scan's blindness; and a ``splitlines``, which
-    the reader no longer calls, in a file holding one."""
-    found = " ".join(readers(Path(__file__).parent / "_source.py"))
+    """The control: the scan finds each kind of read in the reader itself, its two modules
+    (:data:`READER`), so an empty answer above is the modules' and not the scan's
+    blindness; a ``splitlines``, which the reader no longer calls, in a file holding one;
+    and every module of the tool but the reader's is scanned, so a module named in
+    :data:`READER`, which the scan exempts, is seen leaving it."""
+    found = " ".join(call for path in READER for call in readers(path))
     for call in ("data.decode", "json.loads", "compile", "ast.parse", "symtable.symtable",
                  "configparser.ConfigParser", "tokenize.generate_tokens", ".readlines"):
         assert call in found, call
     stray = tmp_path / "stray.py"
     stray.write_text("lines = text.splitlines()\n", encoding="utf-8")
     assert readers(stray) == ["1: text.splitlines"]
-    assert {"split.py", "_run.py", "_render.py", "_prove.py", "_similar.py"} <= {
-        p.name for p in TOOL}
+    assert {"__init__.py", "_classes.py", "_dynamic.py", "_identity.py", "_layout.py",
+            "_model.py", "_observe.py", "_prove.py", "_render.py", "_run.py", "_similar.py",
+            "split.py"} <= {p.name for p in TOOL}
 
 
 class TestTheReader:

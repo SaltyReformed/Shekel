@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from tools.ci import text as ci_text
+
 
 class Refusal(RuntimeError):
     """The tool cannot PROVE a move of this source under this plan, so it makes none."""
@@ -37,7 +39,10 @@ class Refusal(RuntimeError):
 # naming what it read, where Python would raise (the coordinator's ruling on the delta
 # review's L-B, 2026-10-15: every path from ``split.main`` to a traceback becomes a refusal
 # naming the file).  An OSError is not converted here: it names its file itself, and
-# ``split.main`` reports it, the one place it is caught.
+# ``split.main`` reports it, the one place it is caught.  The translation of line endings
+# and the splitter of text into lines this reader uses live in :mod:`tools.ci.text`, the
+# layer below this package and :mod:`tools.testrecord` both (the coordinator's ruling on the
+# lane review's M-B, 2026-10-17).
 
 
 def undecodable(exc: UnicodeDecodeError, where: str, separator: bytes = b"\n") -> Refusal:
@@ -62,37 +67,16 @@ def decode(data: bytes, where: str, separator: bytes = b"\n") -> str:
         raise undecodable(exc, where, separator) from exc
 
 
-def _universal(text: str) -> io.StringIO:
-    """``text`` behind :mod:`io`'s own universal newlines, the ONE translation of line endings
-    the tool reads by: ``\\r\\n`` and a lone ``\\r`` read as ``\\n``, as Python's tokenizer
-    reads them."""
-    return io.StringIO(text, newline=None)
-
-
 def text_from(data: bytes, where: str) -> str:
     """Bytes read from ``where`` as text, as :meth:`pathlib.Path.read_text` reads a file's:
-    decoded by :func:`decode`, newlines translated (:func:`_universal`).  For a reader that
-    keeps the bytes it parsed (:func:`tools.split._model.parse_plan` hashes them)."""
-    return _universal(decode(data, where)).read()
+    decoded by :func:`decode`, newlines translated (:func:`tools.ci.text.universal`).  For a
+    reader that keeps the bytes it parsed (:func:`tools.split._model.parse_plan` hashes them)."""
+    return ci_text.universal(decode(data, where)).read()
 
 
 def read_text(path: Path) -> str:
     """A file's text, by :func:`text_from`."""
     return text_from(path.read_bytes(), str(path))
-
-
-def lines_of(text: str, keepends: bool = False) -> list[str]:
-    """``text``'s lines exactly as Python numbers them, so the line the syntax tree calls
-    ``n`` is item ``n - 1``: line endings translated (:func:`_universal`), then each line
-    ended by ``\\n`` alone, the empty remainder after a final ``\\n`` no line; ``keepends``
-    keeps each line's ``\\n``.
-
-    The ONE splitter of text into lines (the coordinator's ruling on commit 3b-1's first
-    report, 2026-10-15): :meth:`str.splitlines` also ends a line at ``\\x0b``, ``\\x0c``,
-    ``\\x1c``-``\\x1e``, ``\\x85``, ``\\u2028`` and ``\\u2029``, where Python ends none, so a
-    string literal holding one would shift every later line off its number."""
-    kept = _universal(text).readlines()
-    return kept if keepends else [line.removesuffix("\n") for line in kept]
 
 
 def text_holding(path: Path, needle: str) -> str | None:
@@ -474,7 +458,7 @@ def read_module(path: Path, rules: CollectRules, relative: str | None = None) ->
     source, ``_helpers`` for an output the tool wrote.
     """
     text = read_text(path)
-    lines = tuple(lines_of(text))
+    lines = tuple(ci_text.lines_of(text))
     where = str(path)
     body = list(parse(text, where).body)
     docstring_end = 0

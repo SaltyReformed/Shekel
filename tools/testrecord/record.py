@@ -3,11 +3,11 @@
 loaded and reads back, for each test, how it ended, the arcs each of its phases executed in
 :data:`MEASURED`, the passing asserts of each phase that pytest rewrote (the plugin names
 which those are), in order, and the exception that ended each phase that raised one.  It
-also holds what every run of the wrapper
-(:data:`tools.ci.arcs.WRAPPER`) shares, whoever starts it: the environment it starts in
-(:func:`wrapper_env`), its run to its end (:func:`wrapper_run`), the last lines of what it
-wrote that a refusal shows (:func:`wrapper_tail`, through :func:`shown`), and how a test ended
-from its phases' reports (:func:`verdict`).
+also holds what every run of the wrapper (:data:`tools.ci.arcs.WRAPPER`) shares, whoever
+starts it: the environment it starts in (:func:`wrapper_env`), its run to its end
+(:func:`wrapper_run`), the last lines of what it wrote that a refusal shows
+(:func:`wrapper_tail`, through :func:`tools.ci.text.shown`), and how a test ended from its
+phases' reports (:func:`verdict`).
 
 A run writes into a directory made for it, which must be empty: each process's files, the
 wrapper's whole output (``wrapper-output.txt``, kept as written, for a refusal to point
@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from tools.ci.arcs import WRAPPER
+from tools.ci import text as ci_text
 
 #: The environment variable naming the directory every process of a run writes into.
 RECORD_ENV = "SHEKEL_TESTRECORD"
@@ -206,20 +207,14 @@ def wrapper_run(args: list[str], root: Path, env: dict[str, str]) -> tuple[int, 
         return proc.returncode, output.read()
 
 
-def shown(data: bytes) -> str:
-    """Bytes a process wrote, made text for a MESSAGE alone (a byte that is not UTF-8 shown
-    escaped), so a refusal's diagnostics never stop it naming why; never read as data."""
-    return data.decode("utf-8", "backslashreplace")
-
-
 def wrapper_tail(output: bytes) -> str:
     """The last :data:`TAIL_LINES` lines of what a run of the wrapper wrote
-    (:func:`wrapper_run`), shown (:func:`shown`): what a refusal of a run that wrote nothing
-    prints, a recorded run's (:func:`record`) and an outcome run's
+    (:func:`wrapper_run`), shown (:func:`tools.ci.text.shown`): what a refusal of a run that
+    wrote nothing prints, a recorded run's (:func:`record`) and an outcome run's
     (:func:`tools.split._run.observe`) alike (the coordinator's ruling on delta review 4's
     n1, 2026-10-16).  A message's lines, which nothing numbers, so no rule about line numbers
     applies to how they are split."""
-    return "\n".join(shown(output).splitlines()[-TAIL_LINES:])
+    return "\n".join(ci_text.shown(output).splitlines()[-TAIL_LINES:])
 
 
 def verdict(phases: dict[str, tuple[str, bool]]) -> str:

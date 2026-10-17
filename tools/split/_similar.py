@@ -42,6 +42,7 @@ from pathlib import Path, PurePosixPath
 import astroid
 from pylint.checkers.symilar import SimilaritiesChecker, Symilar, stripped_lines
 
+from tools.ci.text import lines_of
 from tools.split._classes import mixin_name
 from tools.split._dynamic import DUPLICATE_CODE
 from tools.split._layout import Layout
@@ -51,7 +52,6 @@ from tools.split._source import (
     CollectRules,
     Refusal,
     blocks,
-    lines_of,
     read_ini,
     read_module,
     read_text,

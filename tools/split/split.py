@@ -71,6 +71,7 @@ from pathlib import Path
 from tools.ci import gitcmd
 from tools.ci.arcs import REPO
 from tools.ci.gitcmd import GitError, git
+from tools.ci.text import lines_of
 from tools.split import _dynamic as dynamic
 from tools.split import _run as run
 from tools.split import _similar as similar
@@ -95,7 +96,6 @@ from tools.split._source import (
     CollectRules,
     Refusal,
     collect_rules,
-    lines_of,
     read_json,
     read_module,
     read_text,

@@ -24,10 +24,11 @@ from pathlib import Path
 
 from tools.ci import gitcmd
 from tools.ci.arcs import WRAPPER
+from tools.ci.text import lines_of, shown
 from tools.split._model import Plan, mentions
 from tools.split._observe import OBSERVE_ENV, setup_key, setups_path
-from tools.split._source import decode, lines_of, load_json, read_json, undecodable
-from tools.testrecord.record import shown, wrapper_env, wrapper_run, wrapper_tail
+from tools.split._source import decode, load_json, read_json, undecodable
+from tools.testrecord.record import wrapper_env, wrapper_run, wrapper_tail
 
 #: pylint's exit-status bits for a fatal message and a usage error: either means it did
 #: not lint, so its message list is not an observation.

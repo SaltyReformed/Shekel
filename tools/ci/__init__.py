@@ -5,5 +5,8 @@ so the tracker tool and the plan gate can both import from it and nothing here
 can import back.  :mod:`tools.ci.arcs` is the one home of the arcs and their
 planning documents; :mod:`tools.ci.ci_scope` and :mod:`tools.ci.ci_verdict`
 decide what ``ci.yml`` runs and whether the required ``lint-and-test`` check
-is green.  Standard library only, so CI runs it with no install.
+is green; :mod:`tools.ci.text` holds the newline translation and the line
+splitter :mod:`tools.split` reads by, and the message decoder it shares with
+:mod:`tools.testrecord`.
+Standard library only, so CI runs it with no install.
 """
