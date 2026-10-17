@@ -1,8 +1,8 @@
 """The pytest plugin a recorded run loads (``-p tools.testrecord.plugin``): per test, the
 lines and branches each of its phases executed in the measured directories, the values every
-PASSING ``assert`` compared, and how it ended; each process writes its own file into the
-directory ``$SHEKEL_TESTRECORD`` names.  :func:`tools.testrecord.record.record` starts the
-run and reads them.
+PASSING ``assert`` compared, the exception that ended each phase that raised one, and how it
+ended; each process writes its own file into the directory ``$SHEKEL_TESTRECORD`` names.
+:func:`tools.testrecord.record.record` starts the run and reads them.
 
 **Lines and branches: coverage.py's own API, one dynamic context per test phase**
 (``<node id>|setup``, ``|call``, ``|teardown``), switched by wrappers around pytest's three
@@ -28,11 +28,39 @@ passes unrecorded.  The
 explanation shows each value through pytest's ``saferepr``, which shortens a long one
 unless the assertion verbosity is 2 or more (``verbosity_assertions``, which the runner
 sets).
+
+**How a phase ended: the exception that ended it, its type and its message only**: for each
+phase pytest reports with an exception (``call.excinfo`` in ``pytest_runtest_makereport``, in
+the process that ran the phase), the exception's type's ``__qualname__`` and ``str()`` of the
+exception.  For an assert pytest rewrote, that message is ``assert`` and pytest's
+explanation of the comparison that failed, at the same verbosity as a passing one's, with the
+assert's own message and a newline before it when it has one; for a skip, the reason; for an
+expected failure, the exception the test raised, or pytest's ``XFailed``: its reason when the
+test calls ``pytest.xfail``, and ``[NOTRUN]`` and the reason, in the setup, when the marker
+says not to run it; for a fixture's setup or teardown that broke, its exception (measured on
+pytest 9.1.1, 2026-10-16).  So a test that fails, errors, skips or xfails in both layouts is
+compared on the exception that ended it, which for a failing assert holds what its
+comparison held, and which no passing assert records (the coordinator's ruling on delta
+review 4's H-1, 2026-10-16).  The traceback, the place it was raised, the exception's module
+and a chained ``__cause__`` or ``__context__`` are NOT kept: the first three name the layout
+(a class the moved module defines is another module's after the split), and the last is not
+what ended the phase.  A phase that raised nothing keeps nothing, so a strict ``xfail`` that
+passes, which pytest reports failed though no exception ended it, keeps none; its asserts
+passed, so each is recorded above.
+
+Two shapes keep less than the phase raised (the branch's neutral review of H-1, L1 and L2,
+measured on pytest 9.1.1, 2026-10-16).  An exception GROUP keeps the group's own message
+only, never its members': pytest raises one when two teardowns of one phase fail (two
+finalizers of a fixture, or two yield fixtures of a test).  And pytest's subtests report each
+failing subtest as a ``call`` of its own, of which the LAST is kept.  ``tests/`` holds no
+subtest and no ``addfinalizer`` (grep, 2026-10-16); it holds yield fixtures, whose teardowns
+must both fail in one test for a group to form.
 """
 from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import coverage
@@ -69,11 +97,22 @@ def _started(root: Path, directory: Path, process: str) -> coverage.Coverage:
     return cov
 
 
+@dataclass
+class Seen:
+    """What one process saw of the tests it ran, besides their arcs: each in the order it ran
+    them; for each whose call ran, the file its function is in (``item.location``), of which
+    that call must have measured a line; each phase's passing asserts; and the exception that
+    ended each phase that raised one."""
+
+    ran: list[str] = field(default_factory=list)
+    called: dict[str, str] = field(default_factory=dict)
+    asserts: dict[str, dict[str, list[list]]] = field(default_factory=dict)
+    raised: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+
+
 class Tracer:
-    """One test-running process's measurement: coverage switched per phase, every passing
-    assert per phase, the tests it ran in the order it ran them, the tests it collected,
-    and for each test whose call ran the file its function is in (``item.location``), of
-    which that call must have measured a line; written at session end."""
+    """One test-running process's measurement: coverage switched per phase, what it saw of
+    each test it ran (:class:`Seen`), and the tests it collected; written at session end."""
 
     def __init__(self, root: Path, directory: Path, process: str) -> None:
         """Measure under ``root`` into ``directory`` as ``process``."""
@@ -81,9 +120,7 @@ class Tracer:
         self.path = trace_path(directory, process)
         self.cov = _started(root, directory, process)
         self.phase: tuple[str, str] | None = None
-        self.asserts: dict[str, dict[str, list[list]]] = {}
-        self.ran: list[str] = []
-        self.called: dict[str, str] = {}
+        self.seen = Seen()
 
     def _phase(self, item: pytest.Item, when: str):
         """Measure ``item``'s phase ``when`` under its own context."""
@@ -103,7 +140,7 @@ class Tracer:
     @pytest.hookimpl(wrapper=True, tryfirst=True)
     def pytest_runtest_call(self, item: pytest.Item):
         """The call phase, under its context, the file its function is in noted."""
-        self.called[item.nodeid] = item.location[0]
+        self.seen.called[item.nodeid] = item.location[0]
         return (yield from self._phase(item, PHASES[1]))
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
@@ -114,7 +151,7 @@ class Tracer:
     @pytest.hookimpl(tryfirst=True)
     def pytest_runtest_protocol(self, item: pytest.Item) -> None:
         """Record each test this process RUNS (only that process calls this hook)."""
-        self.ran.append(item.nodeid)
+        self.seen.ran.append(item.nodeid)
 
     @pytest.hookimpl
     def pytest_assertion_pass(self, item: pytest.Item, lineno: int, orig: str,
@@ -122,8 +159,17 @@ class Tracer:
         """Record one passing assert under the phase it passed in: its line, its text and
         pytest's explanation."""
         when = self.phase[1] if self.phase and self.phase[0] == item.nodeid else "outside"
-        self.asserts.setdefault(item.nodeid, {}).setdefault(when, []).append(
+        self.seen.asserts.setdefault(item.nodeid, {}).setdefault(when, []).append(
             [lineno, orig, expl])
+
+    @pytest.hookimpl
+    def pytest_runtest_makereport(self, item: pytest.Item,
+                                  call: pytest.CallInfo[None]) -> None:
+        """Record the exception that ended one phase, when one did: its type's qualified name
+        and its message (the module docstring says why only those)."""
+        if call.excinfo is not None:
+            self.seen.raised.setdefault(item.nodeid, {})[call.when] = [
+                type(call.excinfo.value).__qualname__, str(call.excinfo.value)]
 
     def traces(self) -> dict[str, dict[str, dict[str, list[list[int]]]]]:
         """Every measured phase's arcs, by node id, phase and file relative to the root."""
@@ -142,14 +188,15 @@ class Tracer:
 
     @pytest.hookimpl(trylast=True)
     def pytest_sessionfinish(self, session: pytest.Session) -> None:
-        """Stop measuring and write what this process collected, ran, traced and
-        asserted (an xdist controller collects nothing; each worker collects every
+        """Stop measuring and write what this process collected, ran, traced, asserted and
+        saw raised (an xdist controller collects nothing; each worker collects every
         test)."""
         self.cov.stop()
         self.cov.save()
         self.path.write_text(json.dumps({
-            "ran": self.ran, "collected": [item.nodeid for item in session.items],
-            "called": self.called, "traces": self.traces(), "asserts": self.asserts,
+            "ran": self.seen.ran, "collected": [item.nodeid for item in session.items],
+            "called": self.seen.called, "traces": self.traces(), "asserts": self.seen.asserts,
+            "raised": self.seen.raised,
         }), encoding="utf-8")
 
 

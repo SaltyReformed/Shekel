@@ -23,12 +23,14 @@ SOURCE, PART = "tests/test_big.py", "tests/test_big/test_part.py"
 
 
 def trace(arcs: dict | None = None, asserts: dict | None = None,
-          outcome: str = "passed") -> Trace:
-    """A test as a record holds it: ``arcs`` by phase and file, ``asserts`` by phase."""
+          outcome: str = "passed", raised: dict | None = None) -> Trace:
+    """A test as a record holds it: ``arcs`` by phase and file, ``asserts`` by phase, and
+    ``raised``, the exception that ended each phase that raised one, by phase."""
     return Trace(outcome=outcome,
                  arcs={phase: {path: frozenset(held) for path, held in files.items()}
                        for phase, files in (arcs or {}).items()},
-                 asserts={phase: tuple(held) for phase, held in (asserts or {}).items()})
+                 asserts={phase: tuple(held) for phase, held in (asserts or {}).items()},
+                 raised={phase: tuple(held) for phase, held in (raised or {}).items()})
 
 
 def of(**tests: Trace) -> Record:
@@ -105,6 +107,50 @@ def test_the_same_asserts_in_another_phase_differ():
     other = trace(BASE.arcs, {"setup": [(6, "x == 1", "1 == 1")]})
     assert kinds(differences(of(t=BASE), of(t=other))) == [
         ("asserts", "call"), ("asserts", "setup")]
+
+
+#: An assert failing in a call, as a record holds the exception that ended it.
+FAILING = ("AssertionError", "assert 2 == 3\n +  where 2 = double(1)")
+
+
+@pytest.mark.parametrize("first, second, phase", [
+    (trace(outcome="skipped", raised={"setup": ("Skipped", "on purpose")}),
+     trace(outcome="skipped", raised={"setup": ("Skipped", "in tests.test_big.test_part")}),
+     "setup"),
+    (trace(BASE.arcs, outcome="xfailed", raised={"call": FAILING}),
+     trace(BASE.arcs, outcome="xfailed", raised={"call": (FAILING[0], "assert 2 == 4")}),
+     "call"),
+    (trace(BASE.arcs, outcome="failed", raised={"call": FAILING}),
+     trace(BASE.arcs, outcome="failed", raised={"call": ("ValueError", FAILING[1])}), "call"),
+], ids=["a-skip-reason", "an-xfail-message", "another-type"])
+def test_another_exception_ending_a_phase_is_a_raised_difference(first, second, phase):
+    """The same test ending the same way, its phase ended by another exception: a skip's
+    other reason (in a phase holding no arc and no assert), an expected failure's assert
+    failing on another value, or another type with the same message (the coordinator's
+    ruling on delta review 4's H-1, 2026-10-16)."""
+    found = differences(of(t=first), of(t=second))
+    assert [(d.kind, d.phase, d.first, d.second) for d in found] == [
+        ("raised", phase, first.raised[phase], second.raised[phase])]
+
+
+def test_an_exception_ending_a_phase_in_one_record_only_is_a_raised_difference():
+    """An expected failure whose call failed in one record, and whose setup xfailed before
+    it ran in the other: each phase's exception is the one record's only."""
+    notrun = ("XFailed", "[NOTRUN] reason")
+    found = differences(of(t=trace(BASE.arcs, outcome="xfailed", raised={"call": FAILING})),
+                        of(t=trace(BASE.arcs, outcome="xfailed", raised={"setup": notrun})))
+    assert [(d.kind, d.phase, d.first, d.second) for d in found] == [
+        ("raised", "call", FAILING, ()), ("raised", "setup", (), notrun)]
+
+
+@pytest.mark.parametrize("outcome, phase, raised", [
+    ("failed", "call", FAILING), ("error", "setup", ("RuntimeError", "setup fails")),
+    ("skipped", "setup", ("Skipped", "skipped")), ("xfailed", "call", FAILING)],
+    ids=["failed", "error", "skipped", "xfailed"])
+def test_the_same_exception_ending_a_phase_is_no_difference(outcome, phase, raised):
+    """A test ending the same way in both records, its phase ended by the same exception."""
+    one, other = (trace(BASE.arcs, BASE.asserts, outcome, {phase: raised}) for _ in "12")
+    assert not differences(of(t=one), of(t=other))
 
 
 def test_a_moved_test_is_read_through_the_translation_and_the_id_map():
@@ -279,6 +325,36 @@ def test_each_kind_counts_the_explanations_it_changed():
     kept = found.tests["t"]
     assert (kept.outcome, kept.arcs) == ("failed", held.arcs)
     assert [entry[:2] for entry in kept.asserts["call"]] == [(6, "a"), (7, "b"), (8, "c")]
+
+
+def test_an_exceptions_message_is_normalized_by_the_same_kinds_and_counted():
+    """An exception's message is normalized and counted as an explanation is: a moved
+    object's repr in each layout's failing message is one text normalized, while the records
+    differ as recorded."""
+    moved, kept = (f"assert <{module}.TestRecordTrackingStartRoute object at {address}> is None"
+                   for module, address in ((f"{LOAN}.test_params", "0x7fe08463d450"),
+                                           (LOAN, "0x7fe08463d999")))
+    records = [of(t=trace(outcome="failed", raised={"call": ("AssertionError", message)}))
+               for message in (moved, kept)]
+    assert kinds(differences(*records)) == [("raised", "call")]
+    normal = [normalized(held, ROOT, MOVED) for held in records]
+    assert not differences(normal[0][0], normal[1][0])
+    assert normal[0][0].tests["t"].raised == {"call": (
+        "AssertionError", f"assert <{LOAN}.TestRecordTrackingStartRoute object at 0x?> is None")}
+    assert [kind for kind, n in normal[0][1].items() if n] == ["address", "relocated-repr"]
+
+
+def test_a_failing_set_comparison_is_compared_as_it_was_recorded():
+    """set-order reads a first line that is two sets' reprs around one `` == ``; a failing
+    assert's first line opens with ``assert``, so one set printed in two orders there is a
+    difference after normalization, where the same sides in a passing explanation are sorted
+    (the branch's neutral review of H-1, M1: fail closed)."""
+    records = [of(t=trace(outcome="failed", raised={"call": ("AssertionError", text)}))
+               for text in ("assert {'b', 'a'} == {'c'}", "assert {'a', 'b'} == {'c'}")]
+    normal = [normalized(held, ROOT, MOVED) for held in records]
+    assert kinds(differences(normal[0][0], normal[1][0])) == [("raised", "call")]
+    assert [changed["set-order"] for _, changed in normal] == [0, 0]
+    assert norm("{'b', 'a'} == {'c'}") == ("{'a', 'b'} == {'c'}", ["set-order"])
 
 
 def _set(*names) -> str:

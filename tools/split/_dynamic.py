@@ -166,7 +166,10 @@ def recorded_failures(what: str, first: Record, second: Record,
     within-layout check (the identity maps) and the between-layout check (``ids``, each of the
     second's node ids to the first's, and ``translate``) read (the coordinator's ruling on
     item (4)'s Fork 3, 2026-10-16).  It reads each test's outcome, the arcs each phase ran
-    (the lines follow from them) and its passing asserts in order.
+    (the lines follow from them), its passing asserts in order, and the exception that ended
+    each phase that raised one, by its type's qualified name and its message, never its
+    traceback, place or chained cause (the coordinator's ruling on delta review 4's H-1,
+    2026-10-16).
 
     Between the layouts, only the first run of each is compared: once the two runs of each
     layout show no difference here, their normalized records agree in every field this

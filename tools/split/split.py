@@ -8,7 +8,8 @@
 collection and every test's outcome through ``./scripts/test.sh``, every fixture its tests set
 up (refusing one whose reach the split would change), two runs of it in one process recorded
 test by test (:func:`tools.testrecord.record.record`: each test's outcome, the arcs each of
-its phases ran and its passing asserts), and pylint's messages for it and for each module
+its phases ran, its passing asserts and the exception that ended each phase that raised
+one), and pylint's messages for it and for each module
 that imports it, whose text it fingerprints; each run writes into a directory
 made for it, and its ``meta.json``, which names that directory, is written last, replacing
 the last record's only once the run completed, and ``apply`` and ``prove`` refuse without
@@ -310,7 +311,7 @@ def _importer_record(rewrites: list[Rewrite], root: Path) -> dict[str, dict]:
 class Verdict:
     """The record's arms judged (:func:`_record_verdict`): their failures; how many fixtures
     the source's tests set up; and the source's two recorded runs, normalized, with how many
-    explanations each normalization kind changed in each."""
+    explanations and exception messages each normalization kind changed in each."""
 
     failures: list[str]
     fixtures: int
@@ -320,7 +321,8 @@ class Verdict:
 
 def _normalized(ctx: Context, held: Record) -> tuple[Record, dict[str, int]]:
     """``held`` normalized for this split (:func:`tools.testrecord.compare.normalized`), and
-    how many explanations each kind changed: under ``ctx.root`` resolved, the spelling a
+    how many explanations and exception messages each kind changed: under ``ctx.root``
+    resolved, the spelling a
     recorded run's explanations print even when its wrapper starts in a path reached through
     a symlink (measured 2026-10-16), and with each module the plan writes read as the source
     module (:func:`tools.split._dynamic.relocated`)."""
@@ -531,6 +533,7 @@ def _recorded_arm(ctx: Context, mapping: dict[str, str], runs: Path, origins: di
         "tests": len(first.tests),
         "asserts": sum(len(held) for trace in first.tests.values()
                        for held in trace.asserts.values()),
+        "raised": sum(len(trace.raised) for trace in first.tests.values()),
         "kinds": {kind: sum(changed[kind] for changed in kinds) for kind in kinds[0]}}
 
 
@@ -671,17 +674,19 @@ def _report_moves(ctx: Context, layout: Layout, idmap: Path, runs: Path, seen: d
 
 
 def _report_recorded(recorded: dict) -> list[str]:
-    """The proof block's recorded line: how each layout was run, how many tests and passing
-    asserts were compared, what was compared, and how many explanations each normalization
-    kind rewrote over the four runs, every kind named (the coordinator's ruling on the
-    R-BAL303 pilot's Fork 3, 2026-10-16)."""
+    """The proof block's recorded line: how each layout was run, how many tests, passing
+    asserts and phases ended by an exception were compared, what was compared, and how many
+    explanations and exception messages each normalization kind rewrote over the four runs,
+    every kind named (the coordinator's ruling on the R-BAL303 pilot's Fork 3, 2026-10-16)."""
     kinds = ", ".join(f"{kind} {count}" for kind, count in recorded["kinds"].items())
     return [f"- recorded: each layout run twice in one process ({' '.join(ONE_PROCESS)}, "
             f"PYTHONHASHSEED={HASH_SEED}), the split in the source's order: "
             f"{recorded['tests']} tests alike within each layout and between the layouts (the "
             f"first run of each) in outcome, in the arcs each phase ran in "
-            f"{' and '.join(f'{name}/' for name in MEASURED)} (their lines with them) and in "
-            f"the passing asserts ({recorded['asserts']} per run); explanations each "
+            f"{' and '.join(f'{name}/' for name in MEASURED)} (their lines with them), in "
+            f"the passing asserts ({recorded['asserts']} per run) and in the exception that "
+            f"ended each phase that raised one, by its type's qualified name and its message "
+            f"({recorded['raised']} per run); explanations and exception messages each "
             f"normalization kind rewrote over the four runs: {kinds}"]
 
 

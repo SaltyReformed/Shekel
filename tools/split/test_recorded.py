@@ -20,6 +20,7 @@ from tools.split._render import Origin, line_limit, rendered
 from tools.split.conftest import (
     BEFORE_IDS,
     PACKAGE,
+    RAISED,
     SAMPLE,
     SOURCE,
     accepted,
@@ -35,19 +36,26 @@ from tools.testrecord import record as recorder
 from tools.testrecord.record import Record, RecordError, Trace
 
 #: The recorded line of the sample's proof block: nine tests, four passing asserts a run (one
-#: in a setup), and the explanations each kind rewrites (three holding an address and one the
+#: in a setup), two phases a run ended by an exception (test_c's skip, test_d's failing
+#: assert), and the explanations each kind rewrites (three holding an address and one the
 #: root in every run, and three naming a moved module, a part's, ``_helpers`` and
-#: ``conftest``, in each of the split's two).
+#: ``conftest``, in each of the split's two); neither exception's message holds what a kind
+#: rewrites.
 RECORDED_LINE = (
     "- recorded: each layout run twice in one process (-n 0, PYTHONHASHSEED=0), the split in "
     "the source's order: 9 tests alike within each layout and between the layouts (the first "
     "run of each) in outcome, in the arcs each phase ran in app/ and tests/ (their lines with "
-    "them) and in the passing asserts (4 per run); explanations each normalization kind "
-    "rewrote over the four runs: tree-root 4, address 12, csrf-token 0, session-cookie 0, "
-    "run-socket 0, uuid 0, relocated-repr 6, set-order 0")
+    "them), in the passing asserts (4 per run) and in the exception that ended each phase "
+    "that raised one, by its type's qualified name and its message (2 per run); explanations "
+    "and exception messages each normalization kind rewrote over the four runs: tree-root 4, "
+    "address 12, csrf-token 0, session-cookie 0, run-socket 0, uuid 0, relocated-repr 6, "
+    "set-order 0")
 
 #: test_one's node id before the split, and the line its passing assert's explanation opens.
 TEST_ONE, ONE_EQUALS = f"{SOURCE}::TestFirst::test_one", "1 == 1\n"
+
+#: test_d's node id before the split: its call fails, as an expected failure.
+TEST_D = f"{SOURCE}::TestBig::test_d"
 
 
 def _edit(nodeid: str, step):
@@ -83,8 +91,14 @@ def _dropped(trace: dict, outcomes: dict, nodeid: str) -> None:
     """The run never collected test_one."""
     for held_ids in (trace["ran"], trace["collected"]):
         held_ids.remove(nodeid)
-    for kept in (trace["called"], trace["traces"], trace["asserts"], outcomes["outcomes"]):
+    for kept in (trace["called"], trace["traces"], trace["asserts"], trace["raised"],
+                 outcomes["outcomes"]):
         kept.pop(nodeid, None)
+
+
+def _tore_down_failing(trace: dict, _outcomes: dict, nodeid: str) -> None:
+    """test_d's teardown raises too, after its call failed."""
+    trace["raised"][nodeid]["teardown"] = ["RuntimeError", "teardown fails"]
 
 
 def _reversed(trace: dict, _outcomes: dict) -> None:
@@ -94,15 +108,29 @@ def _reversed(trace: dict, _outcomes: dict) -> None:
 
 def test_a_proved_split_prints_the_recorded_line(split, capsys):
     """Every arm passed: the block's recorded line names how each layout ran (formatted from
-    the recorder's constants), the tests and passing asserts compared, and every kind's count
-    over the four runs, zeros included.  The split's explanations name its moved class's
-    module and its call runs the written copies of the source's lines, so the two layouts
-    agree only through the plan's relocated modules and the verified origins; test_one's
-    line of ``tests/shared.py`` agrees by reading as itself."""
+    the recorder's constants), the tests, passing asserts and raised exceptions compared, and
+    every kind's count over the four runs, zeros included.  The split's explanations name its
+    moved class's module and its call runs the written copies of the source's lines, so the
+    two layouts agree only through the plan's relocated modules and the verified origins;
+    test_one's line of ``tests/shared.py`` agrees by reading as itself."""
     applied(split)
     capsys.readouterr()
     assert split("prove") == 0
     assert RECORDED_LINE in capsys.readouterr().out.splitlines()
+
+
+def test_the_recorded_line_counts_the_phases_an_exception_ended(split, capsys):
+    """test_d's call and teardown each ended by an exception, alike in all four runs: three
+    phases a run, in two tests, and the line counts the phases (the branch's neutral review
+    of H-1, L3)."""
+    for run_name in ("source 1", "source 2", "split 1", "split 2"):
+        split.recording.changed[run_name] = _edit(TEST_D, _tore_down_failing)
+    applied(split)
+    capsys.readouterr()
+    assert split("prove") == 0
+    assert RECORDED_LINE.count("(2 per run)") == 1
+    assert RECORDED_LINE.replace("(2 per run)", "(3 per run)") in (
+        capsys.readouterr().out.splitlines())
 
 
 def test_the_runs_are_taken_in_one_process_the_split_in_the_sources_order(split):
@@ -246,7 +274,7 @@ def test_a_long_side_is_shown_cut_at_the_excerpt():
     :data:`tools.split._dynamic.EXCERPT` characters and marked as cut."""
     def one(explanation: str) -> Record:
         return Record(tests={"t": Trace(outcome="passed", arcs={}, asserts={"call": (
-            (1, "x", explanation),)})}, order=("t",), exitstatus=0)
+            (1, "x", explanation),)}, raised={})}, order=("t",), exitstatus=0)
     line, = dynamic.recorded_failures("here", one("a" * 1000), one("b" * 1000))
     first = repr((("x", "a" * 1000),))[:dynamic.EXCERPT]
     second = repr((("x", "b" * 1000),))[:dynamic.EXCERPT]
@@ -296,7 +324,8 @@ def test_a_record_is_normalized_under_the_root_it_prints(tmp_path):
     real.mkdir()
     (tmp_path / "link").symlink_to(real)
     held_record = Record(tests={"t": Trace(outcome="passed", arcs={}, asserts={"call": (
-        (1, "x", f"PosixPath('{real}/tests') != None"),)})}, order=("t",), exitstatus=0)
+        (1, "x", f"PosixPath('{real}/tests') != None"),)}, raised={})}, order=("t",),
+                         exitstatus=0)
     ctx = Context(plan=plan_of(), root=tmp_path / "link", into=tmp_path / "into")
     found, kinds = _normalized(ctx, held_record)
     assert kinds["tree-root"] == 1
@@ -330,13 +359,18 @@ def _real(split, monkeypatch):
 
 def test_the_sample_split_is_proved_by_its_real_runs(real, capsys):
     """Record, apply and prove through real pytest runs of the sample: the block is printed,
-    its recorded line counting what the real runs recorded."""
+    its recorded line counting what the real runs recorded.  The exceptions a real run of
+    the source records are the stub's (:data:`tools.split.conftest.RAISED`), so the stubbed
+    cases measure what a real run holds (the branch's neutral review of H-1, L3)."""
     applied(real)
     capsys.readouterr()
     assert real("prove") == 0
     out = capsys.readouterr().out
     assert "- recorded: each layout run twice in one process (-n 0, PYTHONHASHSEED=0), the " \
            "split in the source's order: 9 tests alike" in out
+    source = recorder.read(held(real, "before_recorded_1"))
+    assert {nodeid: {phase: list(entry) for phase, entry in trace.raised.items()}
+            for nodeid, trace in source.tests.items() if trace.raised} == RAISED
 
 
 #: test_top_level, asserting on its helper pickled: pickle writes a function by reference,
@@ -363,6 +397,35 @@ def test_a_moved_helper_read_by_its_module_is_flagged_though_the_screen_accepts_
     assert err.startswith(f"FAILED: recorded: between the layouts (the first run of each): "
                           f"{SOURCE}::test_top_level: asserts in call: ")
     line, = err.splitlines()
+    assert r"tests.test_area.test_sample\\x94\\x8c\\x05_make" in line
+    assert r"tests.test_area.test_sample._helpers\\x94\\x8c\\x05_make" in line
+
+
+#: The same known answer FAILING in both layouts (delta review 4's H-1 probe): the assert
+#: compares the pickled helper with nothing, so no passing assert records the value, and only
+#: the exception that ended the call, pytest's explanation, holds the module it names.
+FAILING_PICKLE = PICKLED.replace('    assert pickle.dumps(_make) != b""\n',
+                                 '    assert pickle.dumps(_make) == b""\n', 1)
+
+
+def test_a_moved_helper_read_by_its_module_in_a_failing_assert_is_flagged(real, capsys):
+    """test_top_level FAILS in both layouts, alike in outcome, arcs and the assert that passed
+    before it failed; its failing comparison holds the module the helper is defined in, the
+    source before and ``_helpers`` after.  The recorded arm flags the exception that ended the
+    call (the coordinator's ruling on delta review 4's H-1, 2026-10-16: before it, prove
+    printed its block over this split)."""
+    assert FAILING_PICKLE != PICKLED
+    (real.root / SOURCE).write_text(FAILING_PICKLE, encoding="utf-8")
+    committed(real.root, "the pickled helper, failing")
+    applied(real)
+    capsys.readouterr()
+    assert real("prove") == 1
+    out, err = capsys.readouterr()
+    assert out == "prove: FAILED\n"
+    line, = err.splitlines()
+    assert line.startswith(f"FAILED: recorded: between the layouts (the first run of each): "
+                           f"{SOURCE}::test_top_level: raised in call: the first only "
+                           "('AssertionError', ")
     assert r"tests.test_area.test_sample\\x94\\x8c\\x05_make" in line
     assert r"tests.test_area.test_sample._helpers\\x94\\x8c\\x05_make" in line
 

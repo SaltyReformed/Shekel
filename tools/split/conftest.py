@@ -4,7 +4,8 @@ moves (an autouse fixture, banner comments, a helper, constants, a parametrize l
 classes, a module-level test, and a class split across two parts whose tests pass, skip,
 xfail and xpass), a module it imports from, an importer of one of its helpers, and a plan for
 it; the readers of what the tool refuses or accepts for a source built from the sample; the
-sample's collection and outcomes; and the ``split`` fixture, which runs the command line on
+sample's collection, outcomes and the exceptions its phases raise; and the ``split`` fixture,
+which runs the command line on
 the sample with the arms that start a process stubbed (the suite runs, the recorded runs,
 pylint and the plan gate)."""
 from __future__ import annotations
@@ -55,6 +56,12 @@ IMPORTER, REPOINTED = "tests/test_other.py", 2
 #: How each of the sample's tests ends.
 OUTCOMES = {**dict.fromkeys(BEFORE_IDS, "passed"), f"{SOURCE}::TestBig::test_c": "skipped",
             f"{SOURCE}::TestBig::test_d": "xfailed", f"{SOURCE}::TestBig::test_e": "xpassed"}
+
+#: The exception that ends each of the sample's phases that raises one, as a recorded run of
+#: it holds it (:mod:`tools.testrecord.plugin`): test_c's skip in its setup, by its reason, and
+#: test_d's failing assert in its call, by pytest's explanation.
+RAISED = {f"{SOURCE}::TestBig::test_c": {"setup": ["Skipped", "skipped on purpose"]},
+          f"{SOURCE}::TestBig::test_d": {"call": ["AssertionError", "assert False"]}}
 
 #: Each step of ``record`` a stub can stop, as a process that did not observe would, or a
 #: recorded run that did not record.
@@ -386,7 +393,8 @@ class Recording:
         ran = order or sorted(native, key=lambda nodeid: (nodeid.split("::")[0],
                                                           native.index(nodeid)))
         trace = {"ran": list(ran), "collected": list(ran), "called": {}, "traces": {},
-                 "asserts": {}}
+                 "asserts": {}, "raised": {ids[old]: copy.deepcopy(phases)
+                                           for old, phases in RAISED.items()}}
         for old, nodeid in ids.items():
             if OUTCOMES[old] != "skipped":
                 self._called(trace, nodeid, number, root)

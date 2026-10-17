@@ -18,16 +18,19 @@ pytest's own hook, :mod:`._observe`, and judged again by ``prove``); the same te
 under a total, one-to-one old -> new node-id map; every test ending the same way, skip /
 xfail / xpass included, with all parts run together AND each part run alone; each test
 doing the same in the split as in the source, its outcome, the arcs each phase ran in
-``app/`` and ``tests/`` and its passing asserts' compared values, recorded test by test in
-one process (:mod:`tools.testrecord`; the split in the source's order), after the source's
-own two runs showed the instrument no noise to see past; every pylint
-message in the parts answered by the source line it came from (an import-sequence message by
-the source's import block); every importer ``record`` found, and no other, re-pointed and
-changed on its re-pointed imports alone, with no new message on any other line and each new
-one on those imports named; every
-duplicate-code pair between parts one the split revealed, never one it could have created;
-the plan gate green; and every line of the working tree, tracked or not, still naming the old
-module, listed (:mod:`._dynamic`).
+``app/`` and ``tests/``, its passing asserts' compared values and, for each phase that raised
+an exception (a failing assert, a skip, an expected failure, a fixture that broke), that
+exception's type's qualified name and message, never its traceback, place or chained cause
+(an exception group's members and all but a phase's last failing subtest are not kept:
+:mod:`tools.testrecord.plugin`), recorded test by test in one process
+(:mod:`tools.testrecord`; the split in the source's order), after the source's own two runs
+showed the instrument no noise to see past; every pylint message in the parts answered by
+the source line it came from (an import-sequence message by the source's import block);
+every importer ``record`` found, and no other, re-pointed and changed on its re-pointed
+imports alone, with no new message on any other line and each new one on those imports
+named; every duplicate-code pair between parts one the split revealed, never one it could
+have created; the plan gate green; and every line of the working tree, tracked or not, still
+naming the old module, listed (:mod:`._dynamic`).
 
 **Which pointers to the old path a split commit edits** (the coordinator's ruling on the
 split session's forks, 2026-10-15).  The same commit that moves a file edits every LIVE

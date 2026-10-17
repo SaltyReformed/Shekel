@@ -3,13 +3,13 @@ and not in the other, by kind.  The second record's places are read in the first
 a translation (a moved file's line to the source line it was copied from), and its node ids
 through a map; two runs of one layout compare under the identity of both.
 
-Before two records are compared, each one's assert explanations are normalized by kind
-(:func:`normalized`): a value that differs from run to run, or names the tree or the module
-the record was measured in, is rewritten to one spelling, and Flask's session cookie is read
-as the session it signs.  Each kind is anchored on exactly the context it was measured in
-(the coordinator's rulings on the R-BAL303 pilot's Fork 3 and on PR A's item (3),
-2026-10-16).  A value a kind does not match is compared as it was recorded, so a shape no
-kind was measured on is a difference, never a match.
+Before two records are compared, each one's assert explanations and exception messages are
+normalized by kind (:func:`normalized`): a value that differs from run to run, or names the
+tree or the module the record was measured in, is rewritten to one spelling, and Flask's
+session cookie is read as the session it signs.  Each kind is anchored on exactly the
+context it was measured in (the coordinator's rulings on the R-BAL303 pilot's Fork 3 and on
+PR A's item (3), 2026-10-16).  A value a kind does not match is compared as it was recorded,
+so a shape no kind was measured on is a difference, never a match.
 
 Nothing here starts a process, so every kind can be shown on a hand-built record.
 """
@@ -36,9 +36,11 @@ Translate = Callable[[str, int], tuple[str, int] | None]
 #: The kinds of difference, in the order they are reported for one test: a test only one
 #: record holds; another outcome; a line one phase executed in one record only; an arc
 #: (a transition between two lines both records executed) in one record only; another
-#: sequence of the passing asserts pytest rewrote; and a line of the second record that
-#: stands for none.
-KINDS = ("missing", "outcome", "lines", "arcs", "asserts", "untranslated")
+#: sequence of the passing asserts pytest rewrote; another exception ending a phase (its
+#: type's qualified name and its message; never its traceback, its place, its module or a
+#: chained cause, which the record does not hold), or one ending it in one record only; and
+#: a line of the second record that stands for none.
+KINDS = ("missing", "outcome", "lines", "arcs", "asserts", "raised", "untranslated")
 
 
 @dataclass(frozen=True)
@@ -91,9 +93,21 @@ def _asserts(trace: Trace, phase: str) -> tuple[tuple[str, str], ...]:
     return tuple((orig, expl) for _, orig, expl in trace.asserts.get(phase, ()))
 
 
-def _phase_differences(test: str, phase: str, first: Trace, second: Trace,
-                       translate: Translate) -> list[Difference]:
-    """Every difference of one phase of one test."""
+def _raised(trace: Trace, phase: str) -> tuple[str, ...]:
+    """The exception that ended ``trace``'s ``phase``, as its type's qualified name and its
+    message; empty when the phase raised none."""
+    return trace.raised.get(phase, ())
+
+
+#: What one phase holds that two records must hold alike as it is, by kind, in
+#: :data:`KINDS` order: its passing asserts and the exception that ended it.
+_HELD = (("asserts", _asserts), ("raised", _raised))
+
+
+def _arc_differences(test: str, phase: str, first: Trace, second: Trace, translate: Translate
+                     ) -> tuple[list[Difference], set[tuple[str, int]]]:
+    """One phase's lines and arcs differences, and every line of the second record's phase
+    that no translation stands for."""
     found = []
     first_arcs, _ = _arc_places(first, phase, same_place)
     second_arcs, untranslated = _arc_places(second, phase, translate)
@@ -107,9 +121,17 @@ def _phase_differences(test: str, phase: str, first: Trace, second: Trace,
     if any(only):
         found.append(Difference(test, "arcs", phase, tuple(sorted(only[0])),
                                 tuple(sorted(only[1]))))
-    first_asserts, second_asserts = _asserts(first, phase), _asserts(second, phase)
-    if first_asserts != second_asserts:
-        found.append(Difference(test, "asserts", phase, first_asserts, second_asserts))
+    return found, untranslated
+
+
+def _phase_differences(test: str, phase: str, first: Trace, second: Trace,
+                       translate: Translate) -> list[Difference]:
+    """Every difference of one phase of one test, in :data:`KINDS` order."""
+    found, untranslated = _arc_differences(test, phase, first, second, translate)
+    for kind, held in _HELD:
+        one, other = held(first, phase), held(second, phase)
+        if one != other:
+            found.append(Difference(test, kind, phase, one, other))
     if untranslated:
         found.append(Difference(test, "untranslated", phase, (), tuple(sorted(untranslated))))
     return found
@@ -138,7 +160,8 @@ def differences(first: Record, second: Record, ids: dict[str, str] | None = None
         one, other = first.tests[test], named[test]
         if one.outcome != other.outcome:
             found.append(Difference(test, "outcome", None, (one.outcome,), (other.outcome,)))
-        phases = sorted(set(one.arcs) | set(other.arcs) | set(one.asserts) | set(other.asserts))
+        phases = sorted({phase for held in (one, other)
+                         for phase in (*held.arcs, *held.asserts, *held.raised)})
         for phase in phases:
             found += _phase_differences(test, phase, one, other, translate)
     return found
@@ -297,12 +320,21 @@ def _kinds(root: str, relocated: Mapping[str, str]) -> dict[str, Callable[[str],
 
 def normalized(record: Record, root: str, relocated: Mapping[str, str]
                ) -> tuple[Record, dict[str, int]]:
-    """``record`` with every passing assert's explanation rewritten by each normalization
-    kind in turn (:func:`_kinds`), and how many explanations each kind changed, every kind
-    named, in the order they apply.  ``root`` is the root the record was measured under, in
-    the spelling its explanations hold; ``relocated`` maps each module a move wrote to the
-    module it moved from, by dotted name (empty: nothing moved).  Outcomes, arcs, and each
-    assert's line and text are kept as they are."""
+    """``record`` with every passing assert's explanation and every exception's message
+    rewritten by each normalization kind in turn (:func:`_kinds`), and how many of those
+    texts each kind changed, every kind named, in the order they apply.  ``root`` is the root
+    the record was measured under, in the spelling its texts hold; ``relocated`` maps each
+    module a move wrote to the module it moved from, by dotted name (empty: nothing moved).
+    Outcomes, arcs, each assert's line and text, and each exception's type are kept as they
+    are.  Every record is normalized by this one function, so the same normalization holds
+    within a layout and between two (the coordinator's ruling on delta review 4's H-1,
+    2026-10-16).  A failing assert's message is ``assert`` and pytest's explanation, the
+    assert's own message before it when it has one, and each kind reads it where it reads
+    an explanation, but ``set-order``: that kind reads a first line that is two sets' reprs
+    around one `` == ``, and a failing assert's first line is not, so a failing set
+    comparison is compared as it was recorded, and a set printed in two orders is a
+    difference (the branch's neutral review of H-1, M1: fail closed; widening the kind needs
+    a measured instance and the coordinator's ruling)."""
     kinds = _kinds(root, relocated)
     changed = dict.fromkeys(kinds, 0)
 
@@ -316,5 +348,7 @@ def normalized(record: Record, root: str, relocated: Mapping[str, str]
 
     tests = {nodeid: replace(trace, asserts={
         phase: tuple((line, orig, rewritten(expl)) for line, orig, expl in held)
-        for phase, held in trace.asserts.items()}) for nodeid, trace in record.tests.items()}
+        for phase, held in trace.asserts.items()}, raised={
+        phase: (kind, rewritten(message)) for phase, (kind, message) in trace.raised.items()})
+        for nodeid, trace in record.tests.items()}
     return replace(record, tests=tests), changed

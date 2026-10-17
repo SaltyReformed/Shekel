@@ -67,6 +67,22 @@ SEEDED = textwrap.dedent('''\
     ''')
 SEEDED_ID = "tests/test_seed.py::test_the_hash_seed_is_the_runs"
 
+#: A sample test module raising a nested class's exception from another; and its one test's
+#: id.
+CHAINED = textwrap.dedent('''\
+    class Outer:
+        class Error(Exception):
+            pass
+
+
+    def test_chained():
+        try:
+            raise KeyError("the cause")
+        except KeyError as exc:
+            raise Outer.Error("the error") from exc
+    ''')
+CHAINED_ID = "tests/test_chained.py::test_chained"
+
 #: A sample conftest reordering the tests after every hook that is not itself trylast.
 REVERSING = textwrap.dedent('''\
     import pytest
@@ -139,6 +155,28 @@ class TestARecordedRun:
             '"a" * 300 == "a" * 300', "two == 2"]
         assert [orig for _, orig, _ in test.asserts["teardown"]] == ["value == 2"]
         assert "setup" not in test.asserts
+
+    def test_each_phase_that_raised_holds_the_exception_that_ended_it(self, project, out):
+        """A failing assert's call holds pytest's explanation, a skip's setup its reason, an
+        expected failure's call the assert it failed on and a broken fixture's setup its
+        error, each by its type's name; a test that passed, the xpass included, holds none
+        (the coordinator's ruling on delta review 4's H-1, 2026-10-16)."""
+        found = record(project, ["tests"], out, extra=("-n", "0"))
+        failed = ("AssertionError", "assert 2 == 3\n +  where 2 = double(1)")
+        assert {nodeid: t.raised for nodeid, t in found.tests.items() if t.raised} == {
+            "tests/test_sample.py::test_fails": {"call": failed},
+            "tests/test_sample.py::test_skipped": {"setup": ("Skipped", "skipped")},
+            "tests/test_sample.py::test_xfail": {"call": failed},
+            "tests/test_sample.py::test_error": {"setup": ("RuntimeError", "setup fails")}}
+
+    def test_an_exception_is_kept_by_its_qualified_name_and_its_own_message(self, project,
+                                                                             out):
+        """A nested class's exception raised from another is kept as ``Outer.Error`` and its
+        own message: never by its bare name, and never with its cause's (the branch's neutral
+        review of H-1, L3)."""
+        (project / "tests/test_chained.py").write_text(CHAINED, encoding="utf-8")
+        found = record(project, ["tests/test_chained.py"], out, extra=("-n", "0"))
+        assert found.tests[CHAINED_ID].raised == {"call": ("Outer.Error", "the error")}
 
     def test_a_long_value_is_shown_whole(self, project, out):
         """At assertion verbosity 2 pytest shortens no value: the 300-character string is
@@ -319,7 +357,7 @@ class TestTheReader:
         for process, ran in processes.items():
             trace_path(out, process).write_text(json.dumps(
                 {"ran": ran, "collected": (collected or processes)[process], "called": {},
-                 "traces": {}, "asserts": {}}), encoding="utf-8")
+                 "traces": {}, "asserts": {}, "raised": {}}), encoding="utf-8")
 
     def test_a_collected_test_no_process_ran_is_refused(self, out):
         """A test collected and never run was not recorded: its session stopped early."""
@@ -343,6 +381,17 @@ class TestTheReader:
         """A test some process ran and no process traced was not recorded."""
         self.written(out, {"t": "passed", "u": "passed"}, {"gw0": ["t"]})
         with pytest.raises(RecordError, match="an outcome and no trace"):
+            read(out)
+
+    def test_a_file_written_before_the_recorder_kept_exceptions_is_refused(self, out):
+        """A process file holding no exceptions was written by a recorder that did not keep
+        them: refused by name, never read as a record in which nothing raised (the branch's
+        neutral review of H-1, L4)."""
+        self.written(out, {"t": "passed"}, {"main": ["t"]})
+        held = json.loads(trace_path(out, "main").read_text(encoding="utf-8"))
+        del held["raised"]
+        trace_path(out, "main").write_text(json.dumps(held), encoding="utf-8")
+        with pytest.raises(RecordError, match="holds no exceptions: .*record again"):
             read(out)
 
     def test_a_trace_with_no_outcome_is_refused(self, out):

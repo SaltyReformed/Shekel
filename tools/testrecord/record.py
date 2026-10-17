@@ -1,8 +1,9 @@
 """A recorded run of the suite and what it records, per test (ruling ``balance:R-BAL303``):
 :func:`record` runs tests through the suite wrapper with :mod:`tools.testrecord.plugin`
 loaded and reads back, for each test, how it ended, the arcs each of its phases executed in
-:data:`MEASURED` and the passing asserts of each phase that pytest rewrote (the plugin names
-which those are), in order.  It also holds what every run of the wrapper
+:data:`MEASURED`, the passing asserts of each phase that pytest rewrote (the plugin names
+which those are), in order, and the exception that ended each phase that raised one.  It
+also holds what every run of the wrapper
 (:data:`tools.ci.arcs.WRAPPER`) shares, whoever starts it: the environment it starts in
 (:func:`wrapper_env`), its run to its end (:func:`wrapper_run`), and how a test ended from its
 phases' reports (:func:`verdict`).
@@ -109,12 +110,16 @@ class RecordError(RuntimeError):
 @dataclass(frozen=True)
 class Trace:
     """One test as a run recorded it: how it ended; per phase, the arcs it executed, by
-    file relative to the root; and per phase, its passing asserts that pytest rewrote, in
-    the order they passed, each its line, its source text and pytest's explanation."""
+    file relative to the root; per phase, its passing asserts that pytest rewrote, in the
+    order they passed, each its line, its source text and pytest's explanation; and for each
+    phase that raised an exception, the exception that ended it, as its type's qualified name
+    and its message (:mod:`tools.testrecord.plugin` says what that holds and what it does
+    not)."""
 
     outcome: str
     arcs: dict[str, dict[str, frozenset[tuple[int, int]]]]
     asserts: dict[str, tuple[tuple[int, str, str], ...]]
+    raised: dict[str, tuple[str, str]]
 
 
 @dataclass(frozen=True)
@@ -273,22 +278,30 @@ def record(root: Path, targets: list[str], out: Path, order: list[str] | None = 
 
 def _processes(out: Path) -> tuple[dict[str, dict], set[str], dict[str, str], list[str]]:
     """What the processes of the run in ``out`` wrote: each test some process ran, with its
-    arcs and asserts; every test any of them collected; each test whose call ran, with the
-    file its function is in; and the order the lone process ran its tests in (empty when
-    none did).  Refused when a test ran in two processes."""
+    arcs, asserts and the exceptions its phases raised; every test any of them collected;
+    each test whose call ran, with the file its function is in; and the order the lone
+    process ran its tests in (empty when none did).  Refused when a test ran in two processes,
+    and when a process's file holds no exceptions: the recorder wrote none before it kept
+    them (the coordinator's ruling on delta review 4's H-1, 2026-10-16), so a record taken
+    before then is no record of what a failing test compared (the branch's neutral review of
+    H-1, L4)."""
     traced: dict[str, dict] = {}
     collected: set[str] = set()
     called: dict[str, str] = {}
     order: list[str] = []
     for path in sorted(out.glob(trace_path(out, "*").name)):
         process = json.loads(path.read_text(encoding="utf-8"))
+        if "raised" not in process:
+            raise RecordError(f"{path} holds no exceptions: a recorder that did not keep them "
+                              "wrote it; record again")
         twice = set(process["ran"]) & set(traced)
         if twice:
             raise RecordError(f"{len(twice)} test(s) ran in two processes, e.g. "
                               f"{sorted(twice)[:3]}")
         for nodeid in process["ran"]:
             traced[nodeid] = {"arcs": process["traces"].get(nodeid, {}),
-                              "asserts": process["asserts"].get(nodeid, {})}
+                              "asserts": process["asserts"].get(nodeid, {}),
+                              "raised": process["raised"].get(nodeid, {})}
         collected.update(process["collected"])
         called.update(process["called"])
         if path == trace_path(out, LONE):
@@ -336,5 +349,6 @@ def read(out: Path) -> Record:
                       for path, arcs in files.items()}
               for phase, files in traced[nodeid]["arcs"].items()},
         asserts={phase: tuple(tuple(entry) for entry in entries)
-                 for phase, entries in traced[nodeid]["asserts"].items()})
+                 for phase, entries in traced[nodeid]["asserts"].items()},
+        raised={phase: tuple(entry) for phase, entry in traced[nodeid]["raised"].items()})
         for nodeid in sorted(traced)}, order=tuple(order), exitstatus=held["exitstatus"])
