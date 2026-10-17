@@ -696,7 +696,7 @@ class TestARecordThatMovesMarksItsRow:
     write as its own case: a producer right the first time can be wrong on
     the repeat.  The route-tier controls are the two
     ``test_a_stale_tab_cannot_overwrite_a_figure_correction`` cases
-    (``test_full_edit_settle_door``, ``test_transfers``).
+    (``test_full_edit_settle_door``, ``test_transfers.test_actual_box``).
     """
 
     @staticmethod

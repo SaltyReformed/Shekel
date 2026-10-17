@@ -227,7 +227,7 @@ _CONVERTER_TOKEN = re.compile(r"<(?:[^<>:]+:)?([^<>:]+)>")
 #: in that eight -- ``period`` is id 6 -- so a swap involving one is caught.
 #: The two doors reading two different tables is graded on the doors, in each
 #: blueprint's own ``TestTemplateUpdate::test_edit_template_form`` --
-#: ``tests/test_routes/test_templates.py`` and ``test_transfers.py``.  **The
+#: ``tests/test_routes/test_templates.py`` and ``test_transfers/test_templates.py``.  **The
 #: two are not equally strong and the difference was measured** (2026-08-30):
 #: the transfers one asserts ``b"Monthly Savings"``, which only its own row
 #: supplies, while the templates one asserts ``b"Rent"``, which its fixture

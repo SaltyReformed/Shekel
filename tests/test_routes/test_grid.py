@@ -6142,7 +6142,7 @@ class TestSettleDayLifecycle:
         the old ``second == first`` assertion was true by construction --
         measured, it passed with the preserve arm deleted.  This is the
         transaction-side mirror of
-        ``test_transfers.py::test_re_marking_a_settled_transfer_does_not_re_date_it``,
+        ``test_transfers/test_ad_hoc.py::test_re_marking_a_settled_transfer_does_not_re_date_it``,
         which back-dates through ``update_transfer`` for the same reason.
 
         It asserts the LEDGER as well as the column, because since plan step

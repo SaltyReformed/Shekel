@@ -5,7 +5,7 @@ Through the transfer service's verbs -- the ONE writer of a side's day
 -- on real rows, covering movements and ledger postings.  The pure day function
 is graded in ``test_transfer_side_days.py``; the evidence doors that state a
 side (the statement matcher, the reconcile tick) in their own suites; the
-popover's boxes in ``tests/test_routes/test_transfers.py``.
+popover's boxes in ``tests/test_routes/test_transfers/test_settle_day.py``.
 
 Every case builds a Checking -> Savings transfer whose Savings books open
 before any day used here, so the only refusal a day can meet is the one under

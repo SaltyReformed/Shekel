@@ -189,7 +189,7 @@ class TestMobileCardErrorFragment:
 def _create_transfer(seed_user, seed_periods_today):
     """Create a projected transfer (with shadows) via the service.
 
-    Mirrors the ``test_transfers`` helper: a second Savings account
+    Mirrors the ``test_transfers._helpers`` helper: a second Savings account
     plus one ad-hoc transfer between it and the seeded checking
     account.
     """

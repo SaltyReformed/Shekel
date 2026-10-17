@@ -470,7 +470,7 @@ def settled_contribution(txn) -> Decimal:
     asserted that the row owns its figure.  That is not what this function is
     about and was never what its readers meant, and the stale assertion was
     load-bearing rather than cosmetic: a :class:`~app.models.transfer.Transfer`
-    was handed to it (``tests/test_routes/test_transfers.py``), and a
+    was handed to it (``tests/test_routes/test_transfers/``), and a
     ``Transfer`` defines no ``estimated_amount`` at all, so the Cancelled row's
     ``0`` was the only thing between that call and an ``AttributeError``.
 

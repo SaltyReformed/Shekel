@@ -109,7 +109,8 @@ def _create_regular_txn(seed_user, seed_periods_today):
 # ``tests/test_models/test_a_transfer_is_one_row.py``)
 # and no app code builds one, so no request reaches the fence, which goes with
 # the column at plan step X-bi-6-5.  A transfer's leg doors are the
-# transfer's own, graded in ``test_transfers.py`` (``TestLegContextResponse``).
+# transfer's own, graded in ``test_transfers/test_grid_cells.py``
+# (``TestLegContextResponse``).
 
 
 class TestASoftDeletedRowCannotBeSettled:

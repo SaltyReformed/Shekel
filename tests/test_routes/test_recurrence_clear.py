@@ -614,7 +614,7 @@ class TestClearingATransferTemplatesRecurrence:
         A transfer template with no rule and exactly one materialised Transfer
         is what "one-time transfer" became when ``Once`` was retired.  An
         unrelated edit must leave that Transfer alone.  Built here through the
-        service; ``test_transfers.py`` covers the same property end-to-end
+        service; ``test_transfers/test_one_time.py`` covers the same property end-to-end
         through the create form, which is what now produces this shape.
         """
         savings = _savings_account(seed_user)
