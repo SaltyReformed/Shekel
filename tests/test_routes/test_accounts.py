@@ -29,6 +29,7 @@ from app.models.account import Account, AccountAnchorHistory
 from app.utils import archive_helpers
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    APP_PACKAGE_DIR,
     all_periods,
     an_entered_day,
     append_balance_assertion,
@@ -6167,10 +6168,10 @@ class TestCheckingDetailCanonicalProducer:
         import os  # pylint: disable=import-outside-toplevel
         import re  # pylint: disable=import-outside-toplevel
 
-        package_dir = os.path.join(
-            os.path.dirname(__file__), "..", "..",
-            "app", "routes", "accounts",
-        )
+        # Found from the app package's own location, never from this test's
+        # place in the tree, and the read must hold the three modules the
+        # docstring names: a "not" search over an empty read passes on nothing.
+        package_dir = APP_PACKAGE_DIR / "routes" / "accounts"
         sources = []
         for name in sorted(os.listdir(package_dir)):
             if not name.endswith(".py"):
@@ -6179,6 +6180,11 @@ class TestCheckingDetailCanonicalProducer:
                 os.path.join(package_dir, name), "r", encoding="utf-8",
             ) as fh:
                 sources.append((name, fh.read()))
+        read = dict(sources)
+        assert all(read.get(name) for name in ("crud.py", "anchor.py", "detail.py")), (
+            f"did not read a non-empty crud.py, anchor.py and detail.py from "
+            f"{package_dir}: {sorted(read)}"
+        )
 
         for name, src in sources:
             # Strip comments before matching: documentation that

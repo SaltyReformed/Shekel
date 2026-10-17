@@ -56,6 +56,7 @@ from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
     typed as typed_figure,
+    APP_PACKAGE_DIR,
     all_periods,
     an_entered_day,
     append_balance_assertion,
@@ -6946,12 +6947,9 @@ class TestMobileThisPeriodPartial:
         ``{% include "grid/_mobile_this_period.html" %}`` reference in
         ``_mobile_grid.html`` resolves to.
         """
-        import pathlib  # pylint: disable=import-outside-toplevel
-
-        partial = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "app" / "templates" / "grid" / "_mobile_this_period.html"
-        )
+        # Found from the app package's own location, never from this test's
+        # place in the tree.
+        partial = APP_PACKAGE_DIR / "templates" / "grid" / "_mobile_this_period.html"
         assert partial.is_file()
 
     def test_default_active_tab_is_this_period(
@@ -7168,12 +7166,9 @@ class TestMobileCardActionBar:
         ``{% include "grid/_mobile_plan.html" %}`` reference in
         ``_mobile_grid.html`` resolves to.
         """
-        import pathlib  # pylint: disable=import-outside-toplevel
-
-        partial = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "app" / "templates" / "grid" / "_mobile_plan.html"
-        )
+        # Found from the app package's own location, never from this test's
+        # place in the tree.
+        partial = APP_PACKAGE_DIR / "templates" / "grid" / "_mobile_plan.html"
         assert partial.is_file()
 
     def test_mobile_card_actions_partial_exists(self):
@@ -7183,12 +7178,9 @@ class TestMobileCardActionBar:
         ``{% include "grid/_mobile_card_actions.html" %}`` reference
         in ``_grid_row_macros.html``'s ``render_row_card`` resolves to.
         """
-        import pathlib  # pylint: disable=import-outside-toplevel
-
-        partial = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "app" / "templates" / "grid" / "_mobile_card_actions.html"
-        )
+        # Found from the app package's own location, never from this test's
+        # place in the tree.
+        partial = APP_PACKAGE_DIR / "templates" / "grid" / "_mobile_card_actions.html"
         assert partial.is_file()
 
     def test_action_bar_includes_mark_paid_when_not_settled(
@@ -7651,13 +7643,12 @@ class TestMobileCardActionBar:
         re-introduced an inline ``style="..."`` would silently shrink
         the buttons; this lock catches the regression at the source.
         """
-        import pathlib  # pylint: disable=import-outside-toplevel
-
-        partial = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "app" / "templates" / "grid" / "_mobile_card_actions.html"
-        )
+        # Found from the app package's own location, never from this test's
+        # place in the tree, and the read must hold text: a "not in" over an
+        # empty read passes on nothing.
+        partial = APP_PACKAGE_DIR / "templates" / "grid" / "_mobile_card_actions.html"
         src = partial.read_text(encoding="utf-8")
+        assert src, f"read nothing from {partial}"
         assert "style=" not in src, (
             "Inline style= attribute reintroduced into "
             "_mobile_card_actions.html; the project CSP blocks it. "
@@ -7748,12 +7739,12 @@ class TestMobileNoSwipeAffordances:
         swipe threshold.  This lock catches a revert that
         re-introduces any of those artifacts.
         """
-        import pathlib  # pylint: disable=import-outside-toplevel
-
-        mobile_grid_src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "app" / "static" / "js" / "mobile_grid.js"
-        ).read_text(encoding="utf-8")
+        # Found from the app package's own location, never from this test's
+        # place in the tree, and the read must hold text: a "not in" over an
+        # empty read passes on nothing.
+        js_path = APP_PACKAGE_DIR / "static" / "js" / "mobile_grid.js"
+        mobile_grid_src = js_path.read_text(encoding="utf-8")
+        assert mobile_grid_src, f"read nothing from {js_path}"
 
         # Negative lock on every artifact of the dead panel-swap nav.
         assert "Math.abs(dx) > 50" not in mobile_grid_src
@@ -7776,12 +7767,12 @@ class TestMobileNoSwipeAffordances:
         with no handler, so this lock pins the cleanup at both
         layers.
         """
-        import pathlib  # pylint: disable=import-outside-toplevel
-
-        partial = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "app" / "templates" / "grid" / "_mobile_plan.html"
-        ).read_text(encoding="utf-8")
+        # Found from the app package's own location, never from this test's
+        # place in the tree, and the read must hold text: a "not in" over an
+        # empty read passes on nothing.
+        partial_path = APP_PACKAGE_DIR / "templates" / "grid" / "_mobile_plan.html"
+        partial = partial_path.read_text(encoding="utf-8")
+        assert partial, f"read nothing from {partial_path}"
         assert "mobile-period-panel" not in partial
         assert 'id="mobile-prev-btn"' not in partial
         assert 'id="mobile-next-btn"' not in partial
@@ -8511,12 +8502,9 @@ class TestMobileJumpToPeriod:
         the selector and the scope so a future refactor cannot
         silently drop either guard.
         """
-        import pathlib  # pylint: disable=import-outside-toplevel
-
-        js_path = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "app" / "static" / "js" / "mobile_grid.js"
-        )
+        # Found from the app package's own location, never from this test's
+        # place in the tree.
+        js_path = APP_PACKAGE_DIR / "static" / "js" / "mobile_grid.js"
         src = js_path.read_text(encoding="utf-8")
 
         # The selector targets the jump-to <select>.
@@ -10144,9 +10132,10 @@ class TestTheRangeSelectorIsDerivedFromTheOwnersCadence:
         hardcoded 26s.  The guard reads the template source directly so a
         re-introduction fails here rather than on someone's screen.
         """
+        # Found from the app package's own location, never from this test's
+        # place in the tree.
         source = (
-            Path(__file__).resolve().parents[2]
-            / "app" / "templates" / "grid" / "grid.html"
+            APP_PACKAGE_DIR / "templates" / "grid" / "grid.html"
         ).read_text(encoding="utf-8")
 
         # **The POSITIVE fact, not an enumeration of negative ones.**  The

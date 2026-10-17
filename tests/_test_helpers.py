@@ -40,6 +40,16 @@ from app.tax_law import (
 from app.utils.db_errors import sqlstate_of
 
 
+#: The ``app`` package's directory, read off the package's own import origin,
+#: for a test that reads a file under ``app/`` (a template, a static asset, a
+#: route module).  A read under ``app/`` never counts up from a test file's own
+#: ``__file__``, this module's included: a test module moves (a split puts each
+#: part one directory deeper), and a path counted from where it sat then names
+#: another directory.  This module's two reads OUTSIDE ``app/`` (``migrations/``
+#: and ``scripts/``, below) still count up from it, and wait for its own split.
+APP_PACKAGE_DIR = pathlib.Path(importlib.util.find_spec("app").origin).parent
+
+
 # The synthetic split-loan fixture shared verbatim by the three parallel
 # loan-posting suites (unit / reconciliation-oracle / wiring): a $250,000 loan
 # originated 2025-01-01 at 6%, trued up to $100,000 on 2026-01-10.  The trueup
