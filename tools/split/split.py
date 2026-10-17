@@ -6,8 +6,10 @@
 
 ``record`` refuses the plan or measures the source BEFORE anything moves: a copy of it, its
 collection and every test's outcome through ``./scripts/test.sh``, every fixture its tests set
-up (refusing one whose reach the split would change), and pylint's messages for it and for
-each module that imports it, whose text it fingerprints; each run writes into a directory
+up (refusing one whose reach the split would change), two runs of it in one process recorded
+test by test (:func:`tools.testrecord.record.record`: each test's outcome, the arcs each of
+its phases ran and its passing asserts), and pylint's messages for it and for each module
+that imports it, whose text it fingerprints; each run writes into a directory
 made for it, and its ``meta.json``, which names that directory, is written last, replacing
 the last record's only once the run completed, and ``apply`` and ``prove`` refuse without
 one.  ``apply`` writes
@@ -15,8 +17,9 @@ the package, deletes the source, re-points the importers, runs the static proof 
 the node-id maps, as ONE unit: a failure anywhere in it, the proof's included, Ctrl-C, or a
 ``SIGTERM`` or ``SIGHUP`` undoes every write before it is reported, so no failure it
 reports leaves an unproved split in the tree (:func:`tools.split._render.write`).
-``prove`` runs the static proof again and every run arm, and prints the block a commit body
-quotes when every arm passed.
+``prove`` runs the static proof again and every run arm, the split recorded twice in the
+source's order and compared with the source's runs among them, and prints the block a commit
+body quotes when every arm passed.
 
 A record is judged only in the repository state and the environment its observations were
 made in (the coordinator's ruling on delta review 2, REVISED (B), 2026-10-15), and under the
@@ -45,7 +48,8 @@ tree is not ``HEAD``'s; ``prove``: the tree is not exactly the apply's), recover
 with ``git restore -- <the source> <each importer meta.json names>`` and ``git clean -fdx
 -- <the package directory, the source's path without .py>``, then ``apply`` again.  After
 it passed, only the id maps were left to write, so the tree holds the whole proved split.
-Exit status 0 means proved; 1 means refused or failed, with every reason printed; 2 means
+Exit status 0 means proved; 1 means refused (its reason printed) or failed (every failure
+printed); 2 means
 the command line was refused before anything ran (``apply`` or ``prove`` without
 ``--idmap``, or a plan, record or map inside the repository).
 A record is what this tool wrote: a record file edited by hand into another JSON shape is
@@ -95,6 +99,9 @@ from tools.split._source import (
     read_module,
     read_text,
 )
+from tools.testrecord import record as recorder
+from tools.testrecord.compare import normalized
+from tools.testrecord.record import HASH_SEED, MEASURED, ONE_PROCESS, Record, RecordError
 
 #: The record's files.  ``meta.json``, in the record directory, is the record's completion
 #: token, and names the directory of its run, which holds the rest.
@@ -104,6 +111,11 @@ _BEFORE_PYLINT, _BEFORE_IMPORTERS = "before_pylint.json", "before_importers_pyli
 
 #: A prove's observations of the split, in its own directory (with one per part run alone).
 _AFTER_COLLECT, _AFTER_RUN = "after_collect.json", "after_run.json"
+
+#: The two runs of each layout recorded test by test, each a directory made in the run's own:
+#: the source's in the record's (``record``), the split's in the prove's (``prove``).
+_BEFORE_RECORDED = ("before_recorded_1", "before_recorded_2")
+_AFTER_RECORDED = ("after_recorded_1", "after_recorded_2")
 
 #: The node-id map ``apply`` keeps in the record: written inside the apply's unit, LAST,
 #: after its proof passed, so it stays only when the whole apply succeeded and, a process
@@ -294,15 +306,40 @@ def _importer_record(rewrites: list[Rewrite], root: Path) -> dict[str, dict]:
     return importers
 
 
-def _record_verdict(ctx: Context, layout: Layout) -> tuple[list[str], int]:
-    """The record's arms, judged from the record's own files against ``layout``: its
-    failures, and how many fixtures the source's tests set up.
+@dataclass(frozen=True)
+class Verdict:
+    """The record's arms judged (:func:`_record_verdict`): their failures; how many fixtures
+    the source's tests set up; and the source's two recorded runs, normalized, with how many
+    explanations each normalization kind changed in each."""
+
+    failures: list[str]
+    fixtures: int
+    recorded: tuple[Record, Record]
+    kinds: tuple[dict[str, int], dict[str, int]]
+
+
+def _normalized(ctx: Context, held: Record) -> tuple[Record, dict[str, int]]:
+    """``held`` normalized for this split (:func:`tools.testrecord.compare.normalized`), and
+    how many explanations each kind changed: under ``ctx.root`` resolved, the spelling a
+    recorded run's explanations print even when its wrapper starts in a path reached through
+    a symlink (measured 2026-10-16), and with each module the plan writes read as the source
+    module (:func:`tools.split._dynamic.relocated`)."""
+    return normalized(held, str(ctx.root.resolve()), dynamic.relocated(ctx.plan))
+
+
+def _record_verdict(ctx: Context, layout: Layout) -> Verdict:
+    """The record's arms, judged from the record's own files against ``layout``.
 
     One home for the verdict (the branch's neutral review of this leaf, H1: the fixture arm
     refused at ``record`` and nothing downstream knew).  ``record`` reports it, ``apply``
     refuses a record that failed it, and ``prove`` judges it again as an arm of the proof.
     Each run must be one pytest ran to its end over every test of the source
-    (:func:`tools.split._dynamic.run_failures`)."""
+    (:func:`tools.split._dynamic.run_failures`), and the source's two recorded runs must
+    measure it: each read back whole (:func:`tools.testrecord.record.read`), run in one
+    order, over exactly the tests its collection names, and alike after normalization
+    (:func:`tools.split._dynamic.recorded_source_failures`; the coordinator's ruling on item
+    (4)'s Fork 1, 2026-10-16).  So a source the instrument sees noise in is refused at
+    ``record``, before ``apply`` writes anything."""
     collected, ran = ctx.read(_BEFORE_COLLECT), ctx.read(_BEFORE_RUN)
     setups, setups_ran = run.merged_setups(ctx.held(_BEFORE_RUN))
     failures = (dynamic.run_failures(layout, collected, "the source's collection")
@@ -315,7 +352,10 @@ def _record_verdict(ctx: Context, layout: Layout) -> tuple[list[str], int]:
     failures += dynamic.fixture_failures(
         {"outcomes": ran["outcomes"], "setups": setups, "setups_ran": setups_ran},
         str(ctx.plan.source), str((ctx.root / ctx.plan.source).resolve()))
-    return failures, len(setups)
+    (first, first_kinds), (second, second_kinds) = (
+        _normalized(ctx, recorder.read(ctx.held(name))) for name in _BEFORE_RECORDED)
+    failures += dynamic.recorded_source_failures(first, second, collected["collected"])
+    return Verdict(failures, len(setups), (first, second), (first_kinds, second_kinds))
 
 
 def record(ctx: Context) -> list[str]:
@@ -329,11 +369,15 @@ def record(ctx: Context) -> list[str]:
     leaves the last record whole, and its own files where no token names them, which nothing
     reads; and a pytest that outlived a killed run writes into that run's directory, never
     into a later run's (the orphan race, ruled on 3B-2b's condition (c), 2026-10-15).  Nothing
-    deletes a directory no token names.  A run that completes but observed no session of the
-    tests is a complete record whose verdict fails, which ``apply`` refuses (the
-    coordinator's ruling on the delta review's H-A, 2026-10-15: the token was written before
-    pylint and the runs, so a record that stopped there reached ``apply`` holding the
-    previous source's observations).
+    deletes a directory no token names.  A run whose outcome runs observed no session of the
+    tests, while its recorded runs recorded one, is a complete record whose verdict fails,
+    which ``apply`` refuses (the coordinator's ruling on the delta review's H-A, 2026-10-15:
+    the token was written before pylint and the runs, so a record that stopped there reached
+    ``apply`` holding the previous source's observations); a session the recorded runs
+    cannot record either (an interrupted collection) ends the run before its token, refused.
+    The source's two recorded runs are runs of this command too, each into a fresh directory
+    inside its run's, made before the token is written (the coordinator's ruling on item
+    (4)'s Fork 1, (i), 2026-10-16).
 
     A record whose split is applied is never replaced, because it is the evidence that
     split's commit cites and what ``prove`` judges the split by; a split reverted by hand is
@@ -370,9 +414,12 @@ def record(ctx: Context) -> list[str]:
     run.observe(ctx.root, [str(ctx.plan.source)], ctx.held(_BEFORE_COLLECT),
                 collect_only=True)
     run.observe(ctx.root, [str(ctx.plan.source)], ctx.held(_BEFORE_RUN), collect_only=False)
+    for name in _BEFORE_RECORDED:
+        ctx.held(name).mkdir()
+        recorder.record(ctx.root, [str(ctx.plan.source)], ctx.held(name), extra=ONE_PROCESS)
     _unmoved(ctx, (head, ctx.meta["environment"], set()), "nothing is recorded")
     _save(ctx.into / _META, ctx.meta)
-    return _record_verdict(ctx, layout)[0]
+    return _record_verdict(ctx, layout).failures
 
 
 def apply(ctx: Context, idmap: Path) -> None:
@@ -392,7 +439,7 @@ def apply(ctx: Context, idmap: Path) -> None:
     _held_to(ctx, "record again; nothing is applied")
     _clean(ctx.root, "undo them, or commit them and record again; nothing is applied")
     layout = ctx.layout(ctx.root / ctx.plan.source)
-    refused, _ = _record_verdict(ctx, layout)
+    refused = _record_verdict(ctx, layout).failures
     if refused:
         raise Refusal(f"the record did not pass ({len(refused)} failure(s), first: "
                       f"{refused[0]}); nothing is applied")
@@ -447,6 +494,46 @@ def _run_arms(ctx: Context, layout: Layout, mapping: dict[str, str], runs: Path
     return failures, {"collected": len(collected["collected"]), "outcomes": ran["outcomes"]}
 
 
+def _recorded_arm(ctx: Context, mapping: dict[str, str], runs: Path, origins: dict,
+                  verdict: Verdict) -> tuple[list[str], dict]:
+    """The split recorded twice in one process, into ``runs``, this prove's directory, each
+    run given the order the source's first recorded run ran in, read through ``mapping``;
+    the failures, and what the block reports.  Each record is normalized
+    (:func:`_normalized`); the split's two are compared with each other, and its first with
+    the source's first, through ``mapping`` and the written lines' verified ``origins``
+    (:func:`tools.split._dynamic.recorded_failures`).  When the source's first run did not
+    run exactly the tests the map names (the record's verdict says why), the split is not
+    run: there is no one order to give it.  A run of the split that does not record (its
+    collection is not the source's under the map, so the order is refused, or its session was
+    interrupted: :class:`tools.testrecord.record.RecordError`) is this arm's failure, so every
+    other arm's reasons are still printed beside it (the branch's neutral review of item (4),
+    M1); at ``record`` the source's is a refusal, because no record exists without it."""
+    first = verdict.recorded[0]
+    if set(first.order) != set(mapping):
+        return ["recorded: the split was not recorded: the source's first recorded run did "
+                "not run exactly the tests the plan's node-id map names"], {}
+    order = [mapping[old] for old in first.order]
+    after, kinds = [], list(verdict.kinds)
+    for number, name in enumerate(_AFTER_RECORDED, start=1):
+        (runs / name).mkdir()
+        try:
+            held, changed = _normalized(ctx, recorder.record(
+                ctx.root, [str(ctx.plan.package)], runs / name, order=order))
+        except RecordError as exc:
+            return [f"recorded: the split's recorded run {number} did not record: {exc}"], {}
+        after.append(held)
+        kinds.append(changed)
+    failures = dynamic.recorded_failures("within the split's layout", after[0], after[1])
+    failures += dynamic.recorded_failures(
+        "between the layouts (the first run of each)", first, after[0],
+        {new: old for old, new in mapping.items()}, dynamic.translation(ctx.plan, origins))
+    return failures, {
+        "tests": len(first.tests),
+        "asserts": sum(len(held) for trace in first.tests.values()
+                       for held in trace.asserts.values()),
+        "kinds": {kind: sum(changed[kind] for changed in kinds) for kind in kinds[0]}}
+
+
 def _static_arms(ctx: Context, layout: Layout) -> tuple[list[str], dict]:
     """The static proof's failures, and each written line's origin (with a failure for any
     origin the files do not bear out), which the pylint arm judges every message by."""
@@ -467,22 +554,26 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     the split, which no arm is judging (REVISED (B)).  The same is judged again after every
     arm ran, before the block is printed.  Once those refusals pass, every file the prove
     writes goes into a directory made for it (:func:`_run_directory`), which its block
-    names."""
+    names.  Every arm reads the node-id map the PLAN produces, computed once; the ``--idmap``
+    file is judged against it, and a file edited by hand is that arm's failure, never another
+    arm's input (the coordinator's ruling on item (4)'s Fork 3, 2026-10-16)."""
     ctx = ctx.bound()
     _held_to(ctx, "a split is proved where it was recorded, before it is committed")
     layout = ctx.layout(ctx.held(_SOURCE))
     written = _write_set(ctx, layout)
     _written_alone(ctx, written)
     runs = _run_directory(ctx, "prove")
-    recorded = _record_verdict(ctx, layout)
+    verdict = _record_verdict(ctx, layout)
     failures, origins = _static_arms(ctx, layout)
-    failures = [f"record: {f}" for f in recorded[0]] + failures
-    mapping = read_json(idmap)
-    if mapping != dynamic.id_map(layout, ctx.read(_BEFORE_COLLECT)["collected"]):
+    failures = [f"record: {f}" for f in verdict.failures] + failures
+    mapping = dynamic.id_map(layout, ctx.read(_BEFORE_COLLECT)["collected"])
+    if read_json(idmap) != mapping:
         failures.append(f"{idmap} is not the map this plan produces")
     arms, seen = _run_arms(ctx, layout, mapping, runs)
     failures += arms
-    seen["fixtures"] = recorded[1]
+    seen["fixtures"] = verdict.fixtures
+    arms, seen["recorded"] = _recorded_arm(ctx, mapping, runs, origins, verdict)
+    failures += arms
     arms, after_pylint = _pylint_arms(ctx, layout, runs, origins, seen)
     failures += arms
     arms, named = _importer_arm(ctx)
@@ -493,6 +584,7 @@ def prove(ctx: Context, idmap: Path) -> list[str]:
     _unmoved(ctx, (ctx.meta["head"], ctx.meta["environment"], written), "no block is printed")
     if not failures:
         print("\n".join(_report_moves(ctx, layout, idmap, runs, seen)
+                        + _report_recorded(seen["recorded"])
                         + _report_lint(ctx, after_pylint, named)
                         + _report_duplicates(ctx, seen)
                         + _report_pointers(gate_line, hits)))
@@ -578,6 +670,21 @@ def _report_moves(ctx: Context, layout: Layout, idmap: Path, runs: Path, seen: d
     ]
 
 
+def _report_recorded(recorded: dict) -> list[str]:
+    """The proof block's recorded line: how each layout was run, how many tests and passing
+    asserts were compared, what was compared, and how many explanations each normalization
+    kind rewrote over the four runs, every kind named (the coordinator's ruling on the
+    R-BAL303 pilot's Fork 3, 2026-10-16)."""
+    kinds = ", ".join(f"{kind} {count}" for kind, count in recorded["kinds"].items())
+    return [f"- recorded: each layout run twice in one process ({' '.join(ONE_PROCESS)}, "
+            f"PYTHONHASHSEED={HASH_SEED}), the split in the source's order: "
+            f"{recorded['tests']} tests alike within each layout and between the layouts (the "
+            f"first run of each) in outcome, in the arcs each phase ran in "
+            f"{' and '.join(f'{name}/' for name in MEASURED)} (their lines with them) and in "
+            f"the passing asserts ({recorded['asserts']} per run); explanations each "
+            f"normalization kind rewrote over the four runs: {kinds}"]
+
+
 def _report_lint(ctx: Context, after_pylint: list[dict], named: list[str]) -> list[str]:
     """The proof block's pylint lines: the source's counts, the parts', and each message on
     an importer's re-pointed import that the line did not hold before."""
@@ -633,7 +740,8 @@ def main(argv: list[str] | None = None, root: Path = REPO) -> int:
     the rest, never a traceback; a decode, JSON or ini error is refused where it is read
     (:mod:`tools.split._source`), naming the file.  A failed git command
     (:class:`tools.ci.gitcmd.GitError`, as a repository with no commit gives ``record``) is
-    caught here too, for every git call at once.
+    caught here too, for every git call at once, and so is a recorded run that did not record
+    what it exists to record (:class:`tools.testrecord.record.RecordError`).
 
     While the command runs, ``SIGTERM`` and ``SIGHUP`` raise :class:`Signalled`, which an
     apply's unit undoes as it does Ctrl-C, and which stops a suite run through the wrapper's
@@ -670,7 +778,7 @@ def _command(args: argparse.Namespace, root: Path) -> int:
             failures = []
         else:
             failures = prove(ctx, args.idmap)
-    except (PlanError, Refusal, run.RunError, GitError, OSError) as exc:
+    except (PlanError, Refusal, run.RunError, RecordError, GitError, OSError) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 1
     for failure in failures:

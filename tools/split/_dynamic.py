@@ -1,7 +1,8 @@
 """The RUN half of the proof, as pure comparisons of what the runs observed: the old -> new
-node-id map, the collection, every test's outcome, pylint's messages and the census of the
-old module's name.  The runs themselves are :mod:`tools.split._run`'s; nothing here starts a
-process, so every arm can be shown failing on a hand-built observation.
+node-id map, the collection, every test's outcome, what each test did in the recorded runs of
+both layouts, pylint's messages and the census of the old module's name.  The runs themselves
+are :mod:`tools.split._run`'s and :func:`tools.testrecord.record.record`'s; nothing here
+starts a process, so every arm can be shown failing on a hand-built observation.
 """
 from __future__ import annotations
 
@@ -15,8 +16,11 @@ from pylint.checkers.imports import MSGS as IMPORT_MESSAGES
 
 from tools.ci.archive import declares_archived, in_archived_dir
 from tools.split._layout import Layout
+from tools.split._model import CONFTEST, HELPERS, Plan
 from tools.split._render import Mark, Origin, Provenance
 from tools.split._source import Kind, Refusal, read_text
+from tools.testrecord.compare import Difference, Translate, differences, same_place
+from tools.testrecord.record import Record
 
 #: pylint's symbol for the cross-file duplicate check, judged pair by pair in
 #: :mod:`tools.split._similar` (the coordinator's correction to Fork 5 item 4).
@@ -111,6 +115,84 @@ def compare_outcomes(mapping: dict[str, str], before: dict[str, str], after: dic
     for new in sorted(set(after) - produced)[:10]:
         failures.append(f"ran after the split, mapped from nothing: {new}")
     return failures
+
+
+#: The longest stretch of each side of a recorded difference one failure line shows: each
+#: side's repr, cut there.  The records stay whole in the run directories, for a reader.
+EXCERPT = 300
+
+
+def relocated(plan: Plan) -> dict[str, str]:
+    """Each module the split writes, by dotted name, to the source module whose code it holds:
+    each part's, the helpers' and the conftest's (:mod:`tools.split._model`'s names).  It is
+    what :func:`tools.testrecord.compare.normalized` reads a moved object's repr through, and
+    the PLAN supplies it, so ``tools/testrecord`` never imports ``tools/split`` (the
+    coordinator's ruling on PR A's item (3), 2026-10-16)."""
+    return {f"{plan.dotted}.{module}": plan.dotted
+            for module in (*(part.module for part in plan.parts), HELPERS, CONFTEST)}
+
+
+def translation(plan: Plan, origins: dict[str, list[Mark]]) -> Translate:
+    """A place of the split's recorded run, read as the source's.  A line of the package that
+    ``origins`` (each written file's line marks, by repository-relative path, which
+    :func:`tools.split._prove.line_origins` verified against the files) calls a COPY reads as
+    that source line.  Every other line of the package (one the writer composed, or an import
+    it filtered from a source statement) stands for none, so a phase that ran one is an
+    untranslated difference, which fails closed.  A line of any other file reads as itself:
+    the importers' lines included, which the re-point moved none of
+    (:func:`tools.split._prove.importer_lines`)."""
+    source, package = str(plan.source), f"{plan.package}/"
+
+    def translate(path: str, line: int) -> tuple[str, int] | None:
+        if not path.startswith(package):
+            return path, line
+        marks = origins.get(path, [])
+        mark = marks[line - 1] if 0 < line <= len(marks) else None
+        return (source, mark.first) if isinstance(mark, Origin) and mark.copied else None
+    return translate
+
+
+def _excerpt(side: tuple) -> str:
+    """One side of a difference, as its repr cut at :data:`EXCERPT`."""
+    shown = repr(side)
+    return shown if len(shown) <= EXCERPT else f"{shown[:EXCERPT]}..."
+
+
+def recorded_failures(what: str, first: Record, second: Record,
+                    ids: dict[str, str] | None = None, translate: Translate = same_place
+                    ) -> list[str]:
+    """Each difference between two normalized records, ``what`` naming the two runs,
+    as a failure: :func:`tools.testrecord.compare.differences`, the ONE comparison both the
+    within-layout check (the identity maps) and the between-layout check (``ids``, each of the
+    second's node ids to the first's, and ``translate``) read (the coordinator's ruling on
+    item (4)'s Fork 3, 2026-10-16).  It reads each test's outcome, the arcs each phase ran
+    (the lines follow from them) and its passing asserts in order.
+
+    Between the layouts, only the first run of each is compared: once the two runs of each
+    layout show no difference here, their normalized records agree in every field this
+    reads, so the second runs' comparison would be the first's again, every difference
+    printed twice."""
+    found: list[Difference] = differences(first, second, ids, translate)
+    return [f"recorded: {what}: {d.test}: {d.kind}{f' in {d.phase}' if d.phase else ''}: "
+            f"the first only {_excerpt(d.first)}; the second only {_excerpt(d.second)}"
+            for d in found]
+
+
+def recorded_source_failures(first: Record, second: Record, collected: list[str]) -> list[str]:
+    """Why the source's two recorded runs, normalized, are no measurement of it to prove a split
+    against: they ran its tests in two orders (the split's runs are given ONE, the first's);
+    either ran other tests than its collection, from which the node-id map is made; or the
+    two differ (:func:`recorded_failures`), so the instrument cannot see past its own noise."""
+    failures = []
+    if first.order != second.order:
+        failures.append("the source's two recorded runs ran its tests in two orders, and the "
+                        "split's runs are given one")
+    for number, held in enumerate((first, second), start=1):
+        if set(held.tests) != set(collected):
+            failures.append(f"the source's recorded run {number} ran other tests than its "
+                            f"collection: {len(set(held.tests) ^ set(collected))} test(s) in "
+                            f"one only, e.g. {sorted(set(held.tests) ^ set(collected))[:3]}")
+    return failures + recorded_failures("within the source's layout", first, second)
 
 
 #: The fixture scopes a package cuts: one instance per module, class or package becomes one

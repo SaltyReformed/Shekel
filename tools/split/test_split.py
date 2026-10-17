@@ -276,7 +276,10 @@ def test_carriage_returns_in_a_module_the_writer_leaves_alone_are_accepted(split
 
 def test_a_record_whose_runs_observed_nothing_is_refused_at_record_and_apply(split, capsys):
     """The delta review's M-A shape (every run collected nothing, pytest interrupted):
-    record fails it, and apply refuses it with nothing written."""
+    record fails it, and apply refuses it with nothing written.  The source's two recorded
+    runs ran its nine tests, so each also fails for running other tests than the empty
+    collection (the coordinator's ruling on item (4)'s Fork 1 (ii), 2026-10-16, which took
+    the count from 4 to 6)."""
     split.stubs.changed = {"source collect": EMPTY, "source run": EMPTY}
     assert split("record") == 1
     err = capsys.readouterr().err
@@ -284,9 +287,12 @@ def test_a_record_whose_runs_observed_nothing_is_refused_at_record_and_apply(spl
             "end") in err
     assert ("FAILED: the source's run: no id for 7 test(s) of the source, e.g. "
             "['TestFirst', 'test_top_level', 'TestBig::test_a']") in err
+    for number in (1, 2):
+        assert (f"FAILED: the source's recorded run {number} ran other tests than its "
+                "collection: 9 test(s) in one only") in err
     before = tree(split.root)
     assert split("apply") == 1
-    assert "REFUSED: the record did not pass (4 failure(s)" in capsys.readouterr().err
+    assert "REFUSED: the record did not pass (6 failure(s)" in capsys.readouterr().err
     assert tree(split.root) == before
     assert not split.idmap.exists()
 

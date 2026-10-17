@@ -16,7 +16,11 @@ parent conftest's or plugin's scoped to a module, class or package, or one regis
 source but defined in another file, as an imported one is (observed at ``record`` through
 pytest's own hook, :mod:`._observe`, and judged again by ``prove``); the same tests collected
 under a total, one-to-one old -> new node-id map; every test ending the same way, skip /
-xfail / xpass included, with all parts run together AND each part run alone; every pylint
+xfail / xpass included, with all parts run together AND each part run alone; each test
+doing the same in the split as in the source, its outcome, the arcs each phase ran in
+``app/`` and ``tests/`` and its passing asserts' compared values, recorded test by test in
+one process (:mod:`tools.testrecord`; the split in the source's order), after the source's
+own two runs showed the instrument no noise to see past; every pylint
 message in the parts answered by the source line it came from (an import-sequence message by
 the source's import block); every importer ``record`` found, and no other, re-pointed and
 changed on its re-pointed imports alone, with no new message on any other line and each new

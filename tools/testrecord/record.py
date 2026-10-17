@@ -50,6 +50,11 @@ ORDER_ENV = "SHEKEL_TESTRECORD_ORDER"
 WORKER = "PYTEST_XDIST_WORKER"
 XDIST_IDENTITY = (WORKER, "PYTEST_XDIST_WORKER_COUNT", "PYTEST_XDIST_TESTRUNUID")
 
+#: The xdist option that runs every test in ONE process, in its order: what a run given an
+#: order passes (:func:`record`), and what a caller passes to run a layout natively in one
+#: process (the split tool's traced source runs).
+ONE_PROCESS = ("-n", "0")
+
 #: The directories measured, relative to the root the run starts in.
 MEASURED = ("app", "tests")
 
@@ -250,7 +255,7 @@ def record(root: Path, targets: list[str], out: Path, order: list[str] | None = 
         held = out / "order.json"
         held.write_text(json.dumps(order), encoding="utf-8")
         env[ORDER_ENV] = str(held)
-        args += ["-n", "0"]
+        args += ONE_PROCESS
     args += list(extra)
     returncode, output = wrapper_run(args, root, env)
     (out / "wrapper-output.txt").write_bytes(output)
