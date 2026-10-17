@@ -29,8 +29,7 @@ Exit codes:
     2   One or more WARNING checks flagged issues (no critical failures)
     3   Script error (bad arguments, database connection failure)
 
-Cron example (weekly, after backup verification):
-    0 3 * * 0 docker exec shekel-prod-app python scripts/integrity_check.py
+Its cron line: docs/backup_runbook.md, section 3.1.
 """
 
 import argparse

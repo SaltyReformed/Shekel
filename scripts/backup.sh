@@ -22,8 +22,7 @@
 # backup name for retention/verification to mistake for a real one.  Every
 # file is created 0600 (finding BAL-663).
 #
-# Cron example (daily at 2:00 AM; the line carries no secret):
-#     0 2 * * * /path/to/shekel/scripts/backup.sh >> /var/log/shekel_backup.log 2>&1
+# Its cron line: docs/backup_runbook.md, section 3.1.
 
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"

@@ -17,10 +17,7 @@
 #     1   One or more checks failed
 #     2   Warnings only (no critical failures)
 #
-# Cron example (weekly, Sunday at 3:00 AM):
-#     0 3 * * 0 /path/to/shekel/scripts/verify_backup.sh \
-#         $(ls -t /var/backups/shekel/shekel_backup_*.sql.gz* | head -1) \
-#         >> /var/log/shekel_backup.log 2>&1
+# Its cron line: docs/backup_runbook.md, section 3.1.
 
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"

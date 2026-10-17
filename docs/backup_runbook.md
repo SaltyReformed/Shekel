@@ -10,20 +10,23 @@ compression and GPG encryption, tiered retention, and optional NAS replication.
 
 | Script | Purpose | Schedule |
 |--------|---------|----------|
-| `scripts/backup.sh` | Create compressed database backup | Daily, 2:00 AM |
-| `scripts/backup_retention.sh` | Prune old backups per retention policy | Daily, 2:30 AM |
+| `scripts/backup.sh` | Create compressed database backup | cron (§3.1) |
+| `scripts/backup_retention.sh` | Prune old backups per retention policy | cron (§3.1) |
 | `scripts/restore.sh` | Restore database from a backup file | Manual |
-| `scripts/verify_backup.sh` | Verify backup integrity via temp database | Weekly, Sunday 3:00 AM |
-| `scripts/integrity_check.py` | Validate database referential and logical integrity | Weekly, Sunday 3:30 AM |
+| `scripts/verify_backup.sh` | Verify backup integrity via temp database | cron (§3.1) |
+| `scripts/integrity_check.py` | Validate database referential and logical integrity | cron (§3.1) |
 
 ### Backup Strategy
 
-- **Daily automated backups** at 2:00 AM via cron
-- **Tiered retention**: daily (7 days), weekly/Sunday (4 weeks), monthly/1st (6 months)
-- **Local + NAS storage**: backups copied to both `/var/backups/shekel/` and the NAS mount
+- **Automated backups** via cron (§3.1)
+- **Tiered retention**: daily, weekly (Sunday) and monthly (the 1st) tiers, each kept for its own
+  period (§5)
+- **Local + NAS storage**: backups written to the local backup directory (`BACKUP_LOCAL_DIR`) and
+  copied to the NAS mount (`BACKUP_NAS_DIR`)
 - **Encryption**: AES-256 via GPG symmetric encryption, keyed by one private key file (§3.3); an
   unencrypted backup is written only when `--no-encrypt` asks for one
-- **Weekly verification**: automated restore to a temp database with sanity and integrity checks
+- **Scheduled verification** via cron (§3.1): a restore to a temp database with sanity and integrity
+  checks
 
 ---
 
@@ -31,9 +34,10 @@ compression and GPG encryption, tiered retention, and optional NAS replication.
 
 - **Host**: Arch Linux with Docker, Docker Compose and GnuPG (`gpg`) installed
 - **Key file**: `/etc/shekel/backup-passphrase` (§3.3), unless every backup is `--no-encrypt`
-- **Containers**: `shekel-prod-db` (PostgreSQL 16) running via `docker-compose.yml`
+- **Containers**: `shekel-prod-db` (the PostgreSQL image `docker-compose.yml` pins) running via
+  `docker-compose.yml`
 - **App container** (production only): `shekel-prod-app` running via `docker-compose.yml`
-- **Disk space**: sufficient local storage for 7+ days of backups
+- **Disk space**: sufficient local storage for every backup the retention tiers keep (§5)
 - **NAS** (optional): network share mounted on the host
 
 ---
@@ -50,8 +54,8 @@ Add these entries to the host's crontab (`crontab -e`):
 # Daily backup at 2:00 AM.  No secret on this line: backup.sh reads the key file (§3.3).
 0 2 * * * /path/to/shekel/scripts/backup.sh >> /var/log/shekel_backup.log 2>&1
 
-# Daily retention cleanup at 2:30 AM.
-30 2 * * * /path/to/shekel/scripts/backup_retention.sh >> /var/log/shekel_backup.log 2>&1
+# Daily retention cleanup at 2:30 AM.  --force is what deletes: without it every run is a dry run.
+30 2 * * * /path/to/shekel/scripts/backup_retention.sh --force >> /var/log/shekel_backup.log 2>&1
 
 # Weekly backup verification (Sunday 3:00 AM).
 0 3 * * 0 /path/to/shekel/scripts/verify_backup.sh $(ls -t /var/backups/shekel/shekel_backup_*.sql.gz* | head -1) >> /var/log/shekel_backup.log 2>&1
@@ -64,6 +68,10 @@ Add these entries to the host's crontab (`crontab -e`):
 ```
 
 Replace `/path/to/shekel/` with the actual path to the Shekel project directory on the host.
+
+An install whose retention line ran without `--force` (as earlier versions of this runbook had it)
+has never pruned: run `./scripts/backup_retention.sh --dry-run` first and read what the first
+`--force` run will delete.
 
 ### 3.2 NAS Mount Configuration
 
@@ -193,9 +201,12 @@ creates is `0700`; an existing directory keeps its mode.
 
 | Tier | Criteria | Kept For |
 |------|----------|----------|
-| Daily | All backups | 7 days |
-| Weekly | Backups from Sundays | 4 weeks |
-| Monthly | Backups from the 1st of the month | 6 months |
+| Daily | All backups | `RETENTION_DAILY_DAYS` days |
+| Weekly | Backups from Sundays | `RETENTION_WEEKLY_WEEKS` weeks |
+| Monthly | Backups from the 1st of the month | `RETENTION_MONTHLY_MONTHS` months |
+
+`./scripts/backup_retention.sh --help` prints each setting's default and the periods a run would
+use.
 
 Classification is based on the date in the backup filename (`shekel_backup_YYYYMMDD_HHMMSS.sql.gz`),
 not the file modification time. A file that qualifies for a higher tier (e.g., a Sunday that is also
@@ -205,11 +216,11 @@ the 1st) is always retained by the highest applicable tier.
 # Preview what would be deleted.
 ./scripts/backup_retention.sh --dry-run
 
-# Run retention cleanup.
-./scripts/backup_retention.sh
+# Run retention cleanup.  --force is what deletes: without it every run is a dry run.
+./scripts/backup_retention.sh --force
 
-# Adjust retention periods via environment variables.
-RETENTION_DAILY_DAYS=14 RETENTION_WEEKLY_WEEKS=8 ./scripts/backup_retention.sh
+# Preview with other retention periods (environment variables); --force to delete.
+RETENTION_DAILY_DAYS=14 RETENTION_WEEKLY_WEEKS=8 ./scripts/backup_retention.sh --dry-run
 ```
 
 ---
@@ -248,7 +259,7 @@ The restore script will:
 
 1. Validate the backup file end to end (decrypt, gzip integrity, non-empty) before anything else
 2. Save a safety dump of the CURRENT database, encrypted with the key file, as
-   `/var/backups/shekel/pre_restore_safety_<timestamp>.sql.gz.gpg`
+   `pre_restore_safety_<timestamp>.sql.gz.gpg` in the local backup directory (`BACKUP_LOCAL_DIR`)
 3. Stop the application container (if it exists)
 4. Drop and recreate the database
 5. Restore from the backup file
@@ -288,9 +299,10 @@ rm /tmp/shekel_backup_20260315_020000.sql.gz.gpg
 
 ## 7. Backup Verification
 
-The verification script restores a backup to a temporary database (`shekel_verify`), runs sanity
-queries and integrity checks, then drops the temporary database. The production database is never
-touched.
+The verification script restores a backup to a temporary database (the `VERIFY_DB` setting;
+`./scripts/verify_backup.sh --help` prints its default, a name no two runs at the same time share),
+runs sanity queries and integrity checks, then drops the temporary database. The production database
+is never touched.
 
 ```bash
 # Verify the most recent backup.
@@ -324,7 +336,7 @@ touched.
 | **PASS WITH WARNINGS** | Sanity checks passed; integrity checks found warnings but no critical failures |
 | **FAIL** | One or more sanity or critical integrity checks failed |
 
-**Recommended schedule**: weekly, Sunday at 3:00 AM (after the daily backup and retention run).
+**Schedule**: cron (§3.1).
 
 ---
 
@@ -389,7 +401,7 @@ DATABASE_URL=postgresql://shekel_user:shekel_pass@localhost:5432/shekel \
 | "BACKUP_ENCRYPTION_PASSPHRASE is set, but no backup script reads it" | The retired variable is still set (crontab, profile, wrapper) | Write the variable's value into the key file (§3.3, "Moving from the retired variable"), then remove the variable |
 | "Restore failed: permission denied" | `PGUSER` lacks CREATEDB privilege | Run: `docker exec shekel-prod-db psql -U postgres -c "ALTER USER shekel_user CREATEDB;"` |
 | "Integrity CRITICAL failures after restore" | Corrupt or partial backup | Try restoring from an older backup |
-| "verify_backup.sh: shekel_verify not cleaned up" | Previous run crashed before trap | Script auto-cleans on next run; or manually: `docker exec shekel-prod-db psql -U shekel_user -d postgres -c "DROP DATABASE IF EXISTS shekel_verify;"` |
+| A `shekel_verify_<pid>` database left behind | A verify run ended without dropping its temporary database: it was killed with `SIGKILL` or the host went down, so its exit cleanup never ran, or that cleanup's `DROP` failed, its error not shown (for example, a signal stopped the run mid-restore while the restore still held the database). Each run names its database for its own process id, so a later run drops a leftover only if it reuses that id | List them: `docker exec shekel-prod-db psql -U shekel_user -d postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'shekel\_verify\_%'"`; skip any whose `<pid>` is a verify run still going (`ps -p <pid> -o args=`), then drop each by name: `docker exec shekel-prod-db psql -U shekel_user -d postgres -c "DROP DATABASE shekel_verify_<pid>;"` |
 
 ### Log Files
 
@@ -403,15 +415,17 @@ DATABASE_URL=postgresql://shekel_user:shekel_pass@localhost:5432/shekel \
 
 ## 10. Environment Variables Reference
 
-| Variable | Default | Used By | Description |
-|----------|---------|---------|-------------|
-| `BACKUP_LOCAL_DIR` | `/var/backups/shekel` | backup.sh, retention.sh | Local backup storage directory |
-| `BACKUP_NAS_DIR` | `/mnt/nas/backups/shekel` | backup.sh, retention.sh | NAS backup storage directory |
-| `DB_CONTAINER` | `shekel-prod-db` | backup.sh, restore.sh, verify_backup.sh | PostgreSQL Docker container name. No other script reads this name: `deploy/shekel-deploy.sh` reads `SHEKEL_DB_CONTAINER` and `scripts/test.sh` reads `TEST_DB_CONTAINER`. Pointing it at a non-production container is still the documented purpose of the override -- what it can no longer do is reach the deploy pipeline or the test runner |
-| `APP_CONTAINER` | `shekel-prod-app` | restore.sh, verify.sh | Application Docker container name |
-| `PGUSER` | `shekel_user` | all scripts | PostgreSQL user |
-| `PGDATABASE` | `shekel` | all scripts | PostgreSQL database name |
-| `VERIFY_DB` | `shekel_verify` | verify.sh | Temporary database name for verification |
-| `RETENTION_DAILY_DAYS` | `7` | retention.sh | Days to keep daily backups |
-| `RETENTION_WEEKLY_WEEKS` | `4` | retention.sh | Weeks to keep Sunday backups |
-| `RETENTION_MONTHLY_MONTHS` | `6` | retention.sh | Months to keep 1st-of-month backups |
+The backup scripts read their settings from the environment of the shell, or the cron line, that
+runs them, never from `.env` (the passphrase is no setting: it is the key file, §3.3). Each one's
+`--help` lists every setting it reads, with its default:
+
+```bash
+./scripts/backup.sh --help
+./scripts/backup_retention.sh --help
+./scripts/restore.sh --help
+./scripts/verify_backup.sh --help
+```
+
+Each default's one home is the table `SHEKEL_SETTING_DEFAULTS` in `scripts/_backup_lib.sh` (the
+production containers' names come from `scripts/_docker_lib.sh`); the paths in this runbook's
+commands are examples.

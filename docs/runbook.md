@@ -86,10 +86,10 @@ Measured against the running maintainer host 2026-08-08. The nginx row differs b
 | `shekel-deploy` | **Production deploy** (digest-pinned GHCR image + cosign) | `shekel-deploy [sha256:... ] [--dry-run] [--no-verify]`, or `shekel-deploy --dump-only` |
 | `deploy/verify_prod_deploy.sh` | Read-only check of production after a deploy | `deploy/verify_prod_deploy.sh [SINCE]` |
 | `scripts/deploy.sh` | Self-hosted **source-build** deploy (NOT the production path) | `./scripts/deploy.sh [--skip-pull] [--skip-backup]` |
-| `scripts/backup.sh` | Create database backup | `./scripts/backup.sh [--no-nas] [--local-dir DIR]` |
-| `scripts/restore.sh` | Restore database from backup | `./scripts/restore.sh <backup_file>` |
-| `scripts/verify_backup.sh` | Verify backup integrity | `./scripts/verify_backup.sh <backup_file>` |
-| `scripts/backup_retention.sh` | Prune old backups | `./scripts/backup_retention.sh [--dry-run]` |
+| `scripts/backup.sh` | Create database backup | `./scripts/backup.sh --help` lists its options and settings |
+| `scripts/restore.sh` | Restore database from backup | `./scripts/restore.sh --help` lists its options and settings |
+| `scripts/verify_backup.sh` | Verify backup integrity | `./scripts/verify_backup.sh --help` lists its options and settings |
+| `scripts/backup_retention.sh` | Prune old backups | `./scripts/backup_retention.sh --help` lists its options and settings |
 | `scripts/integrity_check.py` | Validate database integrity | `docker exec shekel-prod-app python scripts/integrity_check.py [--verbose] [--category CAT]` |
 | `scripts/audit_cleanup.py` | Clean old audit log entries | `docker exec shekel-prod-app python scripts/audit_cleanup.py [--days N] [--dry-run]` |
 | `scripts/reset_mfa.py` | Emergency MFA reset for a user | `docker exec shekel-prod-app python scripts/reset_mfa.py <email>` |
@@ -98,24 +98,8 @@ Measured against the running maintainer host 2026-08-08. The nginx row differs b
 
 ### Cron Schedule
 
-| Time | Script | Purpose |
-|------|--------|---------|
-| 2:00 AM daily | `backup.sh` | Database backup (local + NAS) |
-| 2:30 AM daily | `backup_retention.sh` | Prune old backups per retention policy |
-| 3:00 AM daily | `audit_cleanup.py` | Delete audit log rows older than 365 days |
-| 3:00 AM Sunday | `verify_backup.sh` | Restore latest backup to temp DB, run checks |
-| 3:30 AM Sunday | `integrity_check.py` | Validate production DB integrity |
-
-Crontab entries (replace `/opt/shekel` with your actual path):
-
-```cron
-# ── Shekel Backups & Maintenance ─────────────────────────────────
-0 2 * * * /opt/shekel/scripts/backup.sh >> /var/log/shekel_backup.log 2>&1
-30 2 * * * /opt/shekel/scripts/backup_retention.sh >> /var/log/shekel_backup.log 2>&1
-0 3 * * * docker exec shekel-prod-app python scripts/audit_cleanup.py >> /var/log/shekel_backup.log 2>&1
-0 3 * * 0 /opt/shekel/scripts/verify_backup.sh $(ls -t /var/backups/shekel/shekel_backup_*.sql.gz* | head -1) >> /var/log/shekel_backup.log 2>&1
-30 3 * * 0 docker exec shekel-prod-app python scripts/integrity_check.py >> /var/log/shekel_backup.log 2>&1
-```
+The crontab for the backup and maintenance jobs, with when each runs, is `docs/backup_runbook.md`
+§3.1.
 
 ---
 
@@ -691,10 +675,11 @@ encryption configuration, retention policy mechanics, and verification internals
 ./scripts/backup.sh --local-dir /tmp/my_backup --no-nas
 ```
 
-Backups are written to `/var/backups/shekel/` as `shekel_backup_YYYYMMDD_HHMMSS.sql.gz.gpg`,
-encrypted with GPG using the passphrase in the key file `/etc/shekel/backup-passphrase`. Without a
-usable key file the script writes nothing and exits 1, unless `--no-encrypt` asks for an unencrypted
-backup (`.sql.gz`). Setting up the key file: `docs/backup_runbook.md` §3.3.
+Backups are written to the local backup directory (`BACKUP_LOCAL_DIR`; `./scripts/backup.sh --help`
+prints its default) as `shekel_backup_YYYYMMDD_HHMMSS.sql.gz.gpg`, encrypted with GPG using the
+passphrase in the key file `/etc/shekel/backup-passphrase`. Without a usable key file the script
+writes nothing and exits 1, unless `--no-encrypt` asks for an unencrypted backup (`.sql.gz`).
+Setting up the key file: `docs/backup_runbook.md` §3.3.
 
 ### 3.2 Restoring from a Backup
 
@@ -748,26 +733,31 @@ rm /tmp/shekel_backup_20260315_020000.sql.gz.gpg
 ./scripts/verify_backup.sh $(ls -t /var/backups/shekel/shekel_backup_*.sql.gz* | head -1)
 ```
 
-This restores the backup to a temporary database (`shekel_verify`), runs sanity queries and
-integrity checks, then drops the temporary database. The production database is never touched.
+This restores the backup to a temporary database (the `VERIFY_DB` setting;
+`./scripts/verify_backup.sh --help` prints its default, a name no two runs at the same time share),
+runs sanity queries and integrity checks, then drops the temporary database. The production database
+is never touched.
 
 ### 3.5 Retention Policy
 
 | Tier | Criteria | Kept For |
 |------|----------|----------|
-| Daily | All backups | 7 days |
-| Weekly | Sunday backups | 4 weeks |
-| Monthly | 1st of month backups | 6 months |
+| Daily | All backups | `RETENTION_DAILY_DAYS` days |
+| Weekly | Sunday backups | `RETENTION_WEEKLY_WEEKS` weeks |
+| Monthly | 1st of month backups | `RETENTION_MONTHLY_MONTHS` months |
+
+`./scripts/backup_retention.sh --help` prints each setting's default and the periods a run would
+use.
 
 ```bash
 # Preview what would be deleted.
 ./scripts/backup_retention.sh --dry-run
 
-# Run retention cleanup.
-./scripts/backup_retention.sh
+# Run retention cleanup.  --force is what deletes: without it every run is a dry run.
+./scripts/backup_retention.sh --force
 
-# Override retention periods.
-RETENTION_DAILY_DAYS=14 RETENTION_WEEKLY_WEEKS=8 ./scripts/backup_retention.sh
+# Preview with other retention periods (environment variables); --force to delete.
+RETENTION_DAILY_DAYS=14 RETENTION_WEEKLY_WEEKS=8 ./scripts/backup_retention.sh --dry-run
 ```
 
 ### 3.6 Integrity Checks
@@ -866,8 +856,8 @@ See [§5.3 Key LogQL Queries](#53-key-logql-queries).
 
 ### 4.7 Audit Log Retention
 
-Old audit log rows are cleaned up automatically by cron (daily at 3:00 AM). The default retention
-period is 365 days, configurable via the `AUDIT_RETENTION_DAYS` environment variable.
+Old audit log rows are cleaned up automatically by cron (`docs/backup_runbook.md` §3.1). The default
+retention period is 365 days, configurable via the `AUDIT_RETENTION_DAYS` environment variable.
 
 ```bash
 # Preview what would be deleted.

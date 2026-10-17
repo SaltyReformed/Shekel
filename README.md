@@ -241,7 +241,7 @@ backups before entering real financial data.
 
 See [docs/backup_runbook.md](docs/backup_runbook.md) for complete instructions covering:
 
-- Automated daily backups via `pg_dump` with configurable retention
+- Automated backups via `pg_dump` with configurable retention
 - Off-site backup to NAS or remote storage
 - Backup encryption with GPG
 - Restore procedures and verification
@@ -249,15 +249,14 @@ See [docs/backup_runbook.md](docs/backup_runbook.md) for complete instructions c
 ### Quick Backup Setup
 
 ```bash
-# Run a manual backup now
+# Run a manual backup now (it needs the backup key file first: docs/backup_runbook.md §3.3)
 ./scripts/backup.sh
-
-# Add to crontab for daily automated backups (2:00 AM)
-crontab -e
-# Add: 0 2 * * * /path/to/shekel/scripts/backup.sh >> /var/log/shekel_backup.log 2>&1
 ```
 
-See the runbook for retention policies, NAS configuration, and encryption setup.
+For automated backups, add the crontab in
+[docs/backup_runbook.md §3.1](docs/backup_runbook.md#31-cron-configuration), retention job included:
+without it old backups are never pruned. See the runbook for retention policies, NAS configuration,
+and encryption setup.
 
 ---
 

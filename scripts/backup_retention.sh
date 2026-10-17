@@ -31,8 +31,7 @@
 #     0   Retention cleanup completed (missing directories produce warnings)
 #     1   Fatal error (bad arguments) OR staleness alarm tripped
 #
-# Cron example (daily at 2:30 AM, after backup at 2:00 AM):
-#     30 2 * * * /path/to/shekel/scripts/backup_retention.sh --force >> /var/log/shekel_backup.log 2>&1
+# Its cron line: docs/backup_runbook.md, section 3.1.
 
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_backup_lib.sh"
