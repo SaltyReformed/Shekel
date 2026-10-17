@@ -13,8 +13,9 @@ thing still stored per side (ruling R-BAL290 part 1, the developer,
 that step's checkpoint 2e-2b-1b-1, and the create and figure groups,
 :class:`TestCreateTransfer` and :class:`TestTheFigureCorrectionDoorOnAPair`,
 since its checkpoint 2e-2b-1b-2, and the move group,
-:class:`TestMovingATransferBetweenAccounts`, since its checkpoint 2e-2b-1b-3;
-the restore group moves onto the same reads at a later checkpoint.  The
+:class:`TestMovingATransferBetweenAccounts`, since its checkpoint 2e-2b-1b-3,
+and the restore and due-date groups, :class:`TestRestoreTransfer` and
+:class:`TestDueDateAndSettleDayShadows`, since its checkpoint 2e-2b-2b.  The
 delete group, :class:`TestDeleteTransfer`, holds one case per state of the
 transfer and kind of delete since that step's checkpoint 2e-2b-2a (ruling
 R-BAL290 part 2), where it took in the already-hidden and paid groups.  What
@@ -38,7 +39,6 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-import sqlalchemy.exc
 
 from app import ref_cache
 from app.enums import (
@@ -50,7 +50,6 @@ from app.models.account import Account
 from app.models.category import Category
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ref import AccountType, Status
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
     account_posting_service,
@@ -58,10 +57,7 @@ from app.services import (
     loan_posting_service,
     transfer_service,
 )
-from app.services.transfer_legs import (
-    grid_transfer_leg,
-    planned_transfer_legs,
-)
+from app.services.transfer_legs import planned_transfer_legs
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
@@ -72,16 +68,13 @@ from tests._test_helpers import (
     on_both_sides,
     record_paydays_across_a_hole,
     rhythm_of,
-    shadow_amount,
     transfer_amount,
     transfer_family_journal_filter,
     transfer_side_figure,
     transfer_side_record,
     transfer_side_settle_day,
     typed,
-    write_past_the_amount_seam,
 )
-from app.services.settle_day import record_settle_day
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -1444,151 +1437,122 @@ class TestDeleteTransfer:
 
 
 class TestRestoreTransfer:
-    """Tests for transfer_service.restore_transfer."""
+    """``transfer_service.restore_transfer``: a hidden transfer comes back unhidden, unchanged.
 
-    def test_restores_transfer_and_shadows(self, app, db, transfer_data):
-        """Verify that restore_transfer reverses a soft-delete by setting
-        is_deleted=False on the transfer and both shadow transactions.
-        This is the inverse of delete_transfer(soft=True) and must restore
-        all three entities atomically.
+    A restore brings a hidden transfer back unhidden, its amount, status and
+    pay period unchanged and back in both accounts' plans; refuses while
+    either account is archived, leaving the transfer hidden; and answers not
+    found for someone else's transfer or none (ruling R-BAL290 part 3, the
+    developer, 2026-10-14, "Delete the seven").  Each case that reads the
+    transfer reads the row re-read from the database since plan step
+    ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2b, where they read the
+    object in the session and the transfer's two shadow rows (ruling
+    R-BAL290 part 1); the not-found cases and the both-archived refusal
+    read no row.  "Unchanged" is the ruling's three fields: no case here
+    reads a restored transfer's due date, category, override flag or notes,
+    and a restore that moved its due date or cleared its category fails
+    none (measured by the review of that checkpoint).
+
+    Every case holds an AD-HOC transfer.  The shape production restores is
+    a transfer of a definition (un-archiving a template restores its
+    transfers), and a restore that un-hid ad-hoc transfers only fails six
+    route cases (two in the templates' route tests, two in
+    ``test_archived_rows_bound_the_books.py``, one each in
+    ``test_archived_definition_edit.py`` and
+    ``test_a_revert_below_the_books.py``; measured by that review).  A PAID transfer
+    hidden and restored comes back a plan, and a ``$0.00`` close comes back
+    Paid: :class:`TestDeleteTransfer`'s
+    ``test_a_paid_transfer_comes_off_as_a_hidden_plan_and_restores_as_one``
+    and ``test_a_zero_close_held_nothing_and_keeps_paid`` (ruling R-BAL246).
+
+    Eight cases were deleted at that checkpoint.  Seven planted a WRONG
+    value on a hidden transfer's stored side row and checked that the
+    restore repaired it or that nothing read it:
+    ``test_repairable_status_drift_is_still_repaired``,
+    ``test_a_repair_into_a_projected_status_clears_the_instant`` and
+    ``test_corrects_drifted_shadow_status`` (its status),
+    ``test_corrects_drifted_shadow_due_date``,
+    ``test_corrects_drifted_shadow_category``,
+    ``test_corrects_drifted_shadow_is_override`` and
+    ``test_a_shadow_amount_CANNOT_drift_from_its_transfer`` (its amount).
+    No side row can be stored since that step's create door
+    (``ck_transactions_names_no_transfer``, ruling R-BAL258), so there is
+    nothing to plant; the refusal is ``test_a_transfer_is_one_row.py``'s
+    ``test_the_database_refuses_a_twin`` (the expense side) and
+    ``test_a_transfer_shadow_is_derived.py``'s
+    ``test_the_transfer_owns_its_figure_and_neither_twin_can_be_stored``
+    (both sides) until plan step ``balance:X-bi-6-5`` deletes the column
+    it guards.  The eighth,
+    ``test_raises_on_missing_shadows``, asked the restore to refuse a
+    transfer with no side rows, which every transfer is now (ruling
+    R-BAL273, "Delete it").
+
+    Three of the seven also read a side of the restored transfer as the grid
+    draws it, and the amount case priced both shadow rows (none of those
+    reads ran after that step's create door: each case failed at its
+    plant).  The restored transfer's amount is
+    :meth:`test_restores_transfer_and_shadows`'s, and what a side shows of
+    it ``test_transfer_legs.py``'s ``TestBothSidesShowTheTransfer``.  Each
+    state the side reads asked is asked elsewhere, failing under a mutant
+    gated on that state and side (measured at that checkpoint), with one
+    exception.  A restored ``$0.00`` close's side reads Paid: on the expense
+    side, ``test_transfer_legs.py``'s ``TestTheLegMapProducers`` and
+    ``TestTheLegContributionTwins`` cases
+    ``test_a_settled_leg_with_no_movement_is_the_zero_record`` and
+    ``test_routes/test_a_zero_close_has_no_day.py``.  On the INCOME side no
+    case reads it: the mutant fails only ``test_loan_settled_legs.py``'s
+    loan payments, each while building its data rather than at a read of
+    the side, and limited to a destination that is not a loan it fails
+    none (measured by the review of that checkpoint).  The close's own
+    Paid is :class:`TestDeleteTransfer`'s
+    ``test_a_zero_close_held_nothing_and_keeps_paid``.  A restored planned
+    transfer's sides read Projected: that file's
+    ``TestBothSidesShowTheTransfer``, each side.  They hold no settle day:
+    that file's ``test_a_planned_and_an_undated_leg_answer_none`` on the
+    expense side, and ``test_statement_match/test_leg_candidates.py``'s
+    ``test_each_side_is_offered_on_its_own_account_keyed_by_the_transfer``
+    on the income side.
+    """
+
+    def test_restores_transfer_and_shadows(self, app, transfer_data):
+        """A hidden planned transfer comes back unhidden, unchanged, and in both plans.
+
+        The restore un-hides the row and returns it; its amount ($250.00, as
+        created), status (Projected) and pay period (the first) are unchanged
+        (ruling R-BAL273's condition), and each endpoint's plan holds a leg
+        of it again (ruling R-BAL290 part 3).  The plan read is a PROJECTION
+        read: that a live transfer is in both plans and a hidden one in
+        neither is the plan loader's fact, and a loader that kept hidden
+        transfers and dropped live ones fails this case first at it
+        (measured at plan step ``balance:X-bi-6-4d-3``'s checkpoint
+        2e-2b-2b).  Until that checkpoint it read the object in the session
+        and asked the transfer's two shadow rows for their delete flags
+        (ruling R-BAL290 part 1).  The name is kept: ruling R-BAL273 names
+        it.
         """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
             xfer_id = xfer.id
-
+            endpoints = (xfer.from_account_id, xfer.to_account_id)
             transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            db.session.flush()
+            assert _reread(xfer_id).is_deleted is True, "precondition: hidden"
 
-            # Confirm all three are soft-deleted.
-            assert xfer.is_deleted is True
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id
-            ).all()
-            assert all(s.is_deleted for s in shadows)
+            restored = transfer_service.restore_transfer(xfer_id, td["user"].id)
 
-            # Restore.
-            result = transfer_service.restore_transfer(xfer_id, td["user"].id)
-
-            assert result.is_deleted is False
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id
-            ).all()
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.is_deleted is False
-            # Amount, status, period unchanged.
-            assert result.amount == Decimal("250.00")
-
-    def test_repairable_status_drift_is_still_repaired(
-        self, app, db, transfer_data,
-    ):
-        """A shadow drifted to another status restores, and nothing reads the drift.
-
-        It graded the REPAIR until plan step ``balance:X-bi-6-4d-2``: the
-        restore pulled a shadow drifted to a legally reachable status back
-        into line with its parent.  That step stopped keeping a shadow's
-        status at all -- the transfer's status is the one status, and the side
-        a grid draws reads it -- so the restore repairs none, and the drift is
-        still planted and graded as read by nothing: the restore succeeds and
-        the drifted shadow's side reads the TRANSFER's Paid (ruling R-BAL167
-        class 3, plan step balance:X-bi-6-4d-2).  The name is kept as history.
-
-        **The Paid transfer is a ``$0.00`` close**, a typed ``$0.00`` taking
-        both sides' records off before the delete: a delete that takes a
-        Paid transfer's payments off sets it back to Projected (ruling
-        R-BAL246), and a ``$0.00`` close held none, so it stays Paid hidden
-        and comes back Paid.  A setup change only, every assertion unchanged
-        (a rule-5 re-expression the developer approved 2026-10-09, "Approve
-        both").
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-            paid_id = ref_cache.status_id(StatusEnum.DONE)
-            transfer_service.update_transfer(
-                xfer_id, td["user"].id, status_id=paid_id,
+            row = _reread(xfer_id)
+            assert restored is row, "the door returns the session's row, the one it restored"
+            assert row.is_deleted is False
+            # As created: $250.00, Projected, in the first period.
+            assert (transfer_amount(row), row.status_id, row.pay_period_id) == (
+                Decimal("250.00"), td["projected_status"].id, td["periods"][0].id,
             )
-            transfer_service.update_transfer(
-                xfer_id, td["user"].id, figure=typed(Decimal("0")),
-            )
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            db.session.flush()
-
-            # Drift ONE shadow backwards to Projected.  Written directly,
-            # which is what such a drift looks like.
-            drifted = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer_id).first()
-            )
-            drifted.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            db.session.flush()
-
-            transfer_service.restore_transfer(xfer_id, td["user"].id)
-
-            db.session.refresh(drifted)
-            assert drifted.is_deleted is False
-            # The plant stands (no restore repairs a shadow's status), so the
-            # read below is not the shadow's.
-            assert drifted.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
-            assert xfer.status_id == paid_id
-            assert grid_transfer_leg(
-                xfer, drifted.account_id,
-            ).status_id == paid_id
-
-    def test_a_repair_into_a_projected_status_clears_the_instant(
-        self, app, db, transfer_data,
-    ):
-        """A shadow drifted UP to Paid restores, and no side reads its payment time.
-
-        A side that is not settled must not carry a settle day, or
-        ``days_paid_before_due`` and the paid-on-time indicator read a payment
-        that has not happened.  It graded the restore's REPAIR of the drifted
-        shadow until plan step ``balance:X-bi-6-4d-2``, which stopped keeping
-        a shadow's status and day: the restore repairs neither, and the side a
-        grid draws reads the TRANSFER's status and its side record's day.  So
-        the drift is still planted and graded as read by nothing (ruling
-        R-BAL167 class 3, plan step balance:X-bi-6-4d-2).  The name is kept as
-        history.
-
-        **The shadow no longer holds a payment beside its drift** (ruling
-        R-BAL167 class 2): a side's payment record hangs off the TRANSFER since
-        that step, and a shadow hidden holding one -- the state the soft
-        delete then left -- is refused at commit by the deleted-row rule's row
-        arm (ruling R-CC92; measured: "transaction 2 was deleted while it still
-        holds a recorded payment or purchase").  So the coherent drift is the
-        status and the day alone.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-
-            # Parent stays Projected; drift ONE shadow up to Paid with a day.
-            drifted = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer_id).order_by(Transaction.id).first()
-            )
-            drifted.status_id = ref_cache.status_id(StatusEnum.DONE)
-            record_settle_day(drifted, an_entered_day(date(2026, 3, 20)))
-            db.session.flush()
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            db.session.flush()
-            assert drifted.is_deleted is True
-
-            transfer_service.restore_transfer(xfer_id, td["user"].id)
-            db.session.flush()
-            db.session.refresh(drifted)
-
-            # The plant stands (no restore repairs a shadow), so the reads
-            # below are not the shadow's.
-            assert drifted.settled_on == date(2026, 3, 20)
-            side = grid_transfer_leg(xfer, drifted.account_id)
-            assert side.status_id == td["projected_status"].id
-            assert side.settled_on is None, (
-                f"a Projected side kept a payment time: {side.settled_on}"
-            )
+            for account_id in endpoints:
+                assert [
+                    leg.transfer.id for leg in planned_transfer_legs(
+                        account_id, td["scenario"].id, options=(),
+                    )
+                ] == [xfer_id]
 
     def test_rejects_nonexistent_transfer(self, app, db, transfer_data):
         """Verify that restore_transfer raises NotFoundError for a transfer
@@ -1619,257 +1583,31 @@ class TestRestoreTransfer:
                     xfer.id, second_user["user"].id
                 )
 
-    def test_idempotent_on_active_transfer(self, app, db, transfer_data):
+    def test_idempotent_on_active_transfer(self, app, transfer_data):
         """Verify that calling restore_transfer on an already-active
         transfer completes without error.  This idempotency ensures that
         bulk reactivation workflows do not fail when processing a mix of
         deleted and active transfers.
+
+        The row it leaves is read re-read from the database since plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2b, where it read the
+        object the door returned (ruling R-BAL290 part 1); the door returns
+        the session's own row.
         """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
 
             # Not deleted -- restore is a no-op.
-            result = transfer_service.restore_transfer(
+            restored = transfer_service.restore_transfer(
                 xfer.id, td["user"].id
             )
-            assert result.is_deleted is False
-            assert result.amount == Decimal("250.00")
 
-    def test_a_shadow_amount_CANNOT_drift_from_its_transfer(
-        self, app, db, transfer_data,
-    ):
-        """The drift ``restore_transfer`` used to repair is now unconstructible.
-
-        **This case graded the repair until plan step X-au-g-2c-2 and grades
-        its ABSENCE now**, which is the cutover in one assertion.  It soft-
-        deleted a transfer, wrote ``$999.00`` onto one shadow to simulate drift
-        during the deleted period, restored, and checked both shadows had been
-        put back to ``$250.00`` -- a hand-written corrector that logged a
-        warning and rewrote the copy.
-
-        A shadow stores no figure at all now: it declares ``PARENT_TRANSFER``
-        and reads its parent through the amount model, so the SIMULATION is
-        what fails.  ``ck_transactions_amount_ownership`` refuses a row holding
-        both a declaration and a figure, and the refusal arrives at the flush --
-        so there is no window, deleted or otherwise, in which the two can
-        disagree, and nothing left for a restore to correct.
-
-        Both halves are asserted: that the write is refused, and that a restore
-        over an untouched pair still leaves both legs worth the transfer.  The
-        first alone would pass on a schema that had stopped storing shadows at
-        all.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            db.session.flush()
-
-            shadow = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id
-            ).first()
-            # A SAVEPOINT, so the refused write is undone without taking the
-            # fixture's own transfer with it -- the whole case runs in one
-            # transaction, and a bare rollback here would leave nothing to
-            # restore.
-            attempt = db.session.begin_nested()
-            # Past the MAPPING, for the reason
-            # ``test_a_leg_cannot_hold_a_figure_while_it_declares_a_parent``
-            # states: since plan step X-au-k the seam would release the
-            # shadow's declaration instead of drifting it.
-            write_past_the_amount_seam(shadow, Decimal("999.00"))
-            # ``match`` names the constraint that IS the claim; a bare
-            # ``IntegrityError`` would pass on an FK or a unique index too.
-            with pytest.raises(
-                sqlalchemy.exc.IntegrityError,
-                match="ck_transactions_amount_ownership",
-            ):
-                db.session.flush()
-            attempt.rollback()
-
-            transfer_service.restore_transfer(xfer_id, td["user"].id)
-
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id
-            ).all()
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.estimated_amount is None
-                assert shadow_amount(s) == Decimal("250.00")
-
-    def test_corrects_drifted_shadow_status(self, app, db, transfer_data):
-        """Verify that a shadow status drifted during the soft-deleted period
-        is read by nothing once restore_transfer brings the pair back.
-
-        It graded the restore's CORRECTION of the drifted status until plan
-        step ``balance:X-bi-6-4d-2``, which stopped keeping a shadow's status:
-        the transfer's status is the one status and both sides a grid draws
-        read it, so the restore corrects none (ruling R-BAL167 class 3, plan
-        step balance:X-bi-6-4d-2).  The name is kept as history.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            db.session.flush()
-
-            # Simulate drift: change one shadow's status.
-            done_status = db.session.query(Status).filter_by(name="Paid").one()
-            shadow = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id
-            ).first()
-            shadow.status_id = done_status.id
-            db.session.flush()
-
-            transfer_service.restore_transfer(xfer_id, td["user"].id)
-
-            # The plant stands (no restore corrects a shadow's status), so the
-            # reads below are not the shadow's.
-            assert shadow.status_id == done_status.id
-            # Both sides read the transfer's projected status.
-            for account_id in (xfer.from_account_id, xfer.to_account_id):
-                assert grid_transfer_leg(
-                    xfer, account_id,
-                ).status_id == td["projected_status"].id
-
-    def test_corrects_drifted_shadow_due_date(self, app, db, transfer_data):
-        """Verify that restore_transfer re-syncs a shadow due_date that
-        drifted from the transfer's canonical due_date during the
-        soft-deleted period.  The parent due_date is the source of truth
-        (see ``models/transfer.py``); calendar/dashboard/year-end/
-        spending-trend consumers read the shadow due_date, so a drifted
-        shadow would display a wrong due date after restore.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-
-            # Give the transfer a canonical due_date, mirrored to both
-            # shadows through the service.
-            transfer_service.update_transfer(
-                xfer_id, td["user"].id, due_date=date(2026, 6, 15)
+            row = _reread(xfer.id)
+            assert restored is row, "the door returns the session's row"
+            assert (row.is_deleted, transfer_amount(row)) == (
+                False, Decimal("250.00"),
             )
-            db.session.flush()
-
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            db.session.flush()
-
-            # Simulate drift: directly change one shadow's due_date.
-            shadow = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id
-            ).first()
-            shadow.due_date = date(2026, 12, 25)
-            db.session.flush()
-
-            transfer_service.restore_transfer(xfer_id, td["user"].id)
-
-            # Both shadows must match the transfer's canonical due_date,
-            # not the drifted 2026-12-25.
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id
-            ).all()
-            for s in shadows:
-                assert s.due_date == date(2026, 6, 15)
-
-    def test_corrects_drifted_shadow_category(self, app, db, transfer_data):
-        """Verify that restore_transfer re-syncs a shadow category_id that
-        drifted from the transfer's canonical category during the
-        soft-deleted period.  Category is mirrored to both shadows so
-        each account grid attributes the entry to the same category.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-            rent_cat_id = td["categories"]["Rent"].id
-
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            db.session.flush()
-
-            # Simulate drift: change one shadow's category to a different
-            # owned category (Transfers: Incoming).
-            shadow = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id
-            ).first()
-            shadow.category_id = td["incoming_cat"].id
-            db.session.flush()
-
-            transfer_service.restore_transfer(xfer_id, td["user"].id)
-
-            # Both shadows must match the transfer's canonical category.
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id
-            ).all()
-            for s in shadows:
-                assert s.category_id == rent_cat_id
-
-    def test_corrects_drifted_shadow_is_override(
-        self, app, db, transfer_data
-    ):
-        """Verify that restore_transfer re-syncs a shadow is_override flag
-        that drifted from the transfer's canonical value during the
-        soft-deleted period.  The override flag is mirrored to both
-        shadows so the carry-forward/dedupe state stays coherent across
-        the parent transfer and its two shadows.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-            # create_transfer always sets is_override=False on the parent.
-            assert xfer.is_override is False
-
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            db.session.flush()
-
-            # Simulate drift: flip one shadow's override flag.
-            shadow = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id
-            ).first()
-            shadow.is_override = True
-            db.session.flush()
-
-            transfer_service.restore_transfer(xfer_id, td["user"].id)
-
-            # Both shadows must match the transfer's canonical (False)
-            # override flag, not the drifted True.
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id
-            ).all()
-            for s in shadows:
-                assert s.is_override is False
-
-    def test_raises_on_missing_shadows(self, app, db, transfer_data):
-        """Verify that restore_transfer raises ValidationError when a
-        soft-deleted transfer has no shadow transactions, indicating data
-        corruption that cannot be automatically repaired.  The error
-        message must clearly identify this as a data integrity issue.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-            db.session.commit()
-
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            db.session.commit()
-
-            # Simulate corruption: hard-delete shadows directly.
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id
-            ).all()
-            for s in shadows:
-                db.session.delete(s)
-            db.session.commit()
-
-            with pytest.raises(ValidationError, match="integrity"):
-                transfer_service.restore_transfer(xfer_id, td["user"].id)
 
     def test_rejects_when_source_account_archived(
         self, app, db, transfer_data,
@@ -1879,10 +1617,19 @@ class TestRestoreTransfer:
 
         Soft-delete a transfer, then archive the source account.  The
         next ``restore_transfer`` must raise ``ValidationError`` and
-        leave the transfer + shadows soft-deleted (rollback the
-        ``is_deleted`` flip applied at the top of the function).  This
-        prevents the user from silently resurrecting balance entries
-        against an account they have withdrawn from active projections.
+        leave the transfer hidden.  This prevents the user from silently
+        resurrecting balance entries against an account they have
+        withdrawn from active projections.
+
+        The refusal runs before the restore un-hides anything
+        (``assert_restorable``, plan step X-aj1), so the row is read
+        re-read after a COMMIT, which writes whatever the refused restore
+        staged: a restore that un-hid the row before refusing fails it
+        (measured at plan step ``balance:X-bi-6-4d-3``'s checkpoint
+        2e-2b-2b).  Until that checkpoint it rolled the session back before
+        re-reading, which discards such a staged un-hide, and asked the
+        transfer's two shadow rows for their delete flags (ruling R-BAL290
+        part 1).
         """
         with app.app_context():
             td = transfer_data
@@ -1904,19 +1651,7 @@ class TestRestoreTransfer:
             with pytest.raises(ValidationError, match="archived"):
                 transfer_service.restore_transfer(xfer_id, td["user"].id)
 
-            # Rollback to clear the dirty session state from the failed
-            # restore, then re-fetch and confirm soft-delete persisted.
-            db.session.rollback()
-            xfer_after = db.session.get(Transfer, xfer_id)
-            assert xfer_after.is_deleted is True
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer_id)
-                .all()
-            )
-            assert len(shadows) == 2
-            for shadow in shadows:
-                assert shadow.is_deleted is True
+            assert _reread(xfer_id).is_deleted is True
 
     def test_rejects_when_destination_account_archived(
         self, app, db, transfer_data,
@@ -1927,7 +1662,8 @@ class TestRestoreTransfer:
         Symmetric counterpart to
         ``test_rejects_when_source_account_archived``: archives the
         ``to_account`` instead of the ``from_account`` and verifies the
-        same refusal-with-rollback behaviour.
+        same refusal, read the same way, off the row re-read after a
+        commit.
         """
         with app.app_context():
             td = transfer_data
@@ -1949,17 +1685,7 @@ class TestRestoreTransfer:
             with pytest.raises(ValidationError, match="archived"):
                 transfer_service.restore_transfer(xfer_id, td["user"].id)
 
-            db.session.rollback()
-            xfer_after = db.session.get(Transfer, xfer_id)
-            assert xfer_after.is_deleted is True
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer_id)
-                .all()
-            )
-            assert len(shadows) == 2
-            for shadow in shadows:
-                assert shadow.is_deleted is True
+            assert _reread(xfer_id).is_deleted is True
 
     def test_rejects_when_both_accounts_archived(
         self, app, db, transfer_data,
@@ -1995,41 +1721,66 @@ class TestRestoreTransfer:
         """F-164 / C-20 sanity check: the active-account guard does
         not regress the happy path.
 
-        With both accounts active (the default), ``restore_transfer``
-        must continue to undo the soft-delete and return the live
-        transfer.  Companion to
-        ``test_restores_transfer_and_shadows`` -- this one exists
-        explicitly to verify the new guard does not break the baseline.
+        The archived refusals' control, set up as they are (the transfer
+        hidden and committed) with neither account archived, so each of
+        their refusals is the archive's: the restore lands, returns the
+        row, and leaves it unhidden with its amount, status and pay period
+        unchanged (ruling R-BAL273's condition).  Read off the row re-read
+        from the database since plan step ``balance:X-bi-6-4d-3``'s
+        checkpoint 2e-2b-2b, where it read the object the door returned and
+        the transfer's two shadow rows (ruling R-BAL290 part 1).  The name
+        is kept: ruling R-BAL273 names it.
         """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
             xfer_id = xfer.id
+            db.session.commit()
 
             transfer_service.delete_transfer(
                 xfer_id, td["user"].id, soft=True,
             )
-            db.session.flush()
+            db.session.commit()
 
-            result = transfer_service.restore_transfer(
+            restored = transfer_service.restore_transfer(
                 xfer_id, td["user"].id,
             )
-            assert result.is_deleted is False
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer_id)
-                .all()
+
+            row = _reread(xfer_id)
+            assert restored is row, "the door returns the session's row"
+            # Unhidden, and as created: $250.00, Projected, the first period.
+            assert (
+                row.is_deleted, transfer_amount(row), row.status_id,
+                row.pay_period_id,
+            ) == (
+                False, Decimal("250.00"), td["projected_status"].id,
+                td["periods"][0].id,
             )
-            assert len(shadows) == 2
-            for shadow in shadows:
-                assert shadow.is_deleted is False
 
 
 class TestDueDateAndSettleDayShadows:
-    """Tests for due_date and settled_on propagation to shadow transactions."""
+    """A transfer's due date and each side's settle day, as the doors write them.
 
-    def test_shadow_due_date_propagation(self, app, db, transfer_data):
-        """create_transfer with due_date sets the parent and both shadows."""
+    The due date is a column of the transfer's row, read re-read from the
+    database; each side's settle day is its payment record's, read by its
+    own SQL (:func:`tests._test_helpers.transfer_side_record`).  What a side
+    shows of the row's due date is ``test_transfer_legs.py``'s
+    ``TestBothSidesShowTheTransfer``, both sides.  Until plan step
+    ``balance:X-bi-6-4d-3`` each due-date case also read the transfer's two
+    shadow rows, which that step's create door no longer writes (ruling
+    R-BAL290 part 1).  The name is kept as history.
+    """
+
+    def test_a_due_date_at_create_is_written_on_the_transfer(
+        self, app, transfer_data,
+    ):
+        """create_transfer with a due date writes it on the transfer's row.
+
+        Read off the row re-read from the database since plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2b, where it read the
+        object the door returned and both shadow rows' due dates (ruling
+        R-BAL290 part 1).  Renamed from ``test_shadow_due_date_propagation``.
+        """
         with app.app_context():
             td = transfer_data
             xfer = transfer_service.create_transfer(
@@ -2045,22 +1796,21 @@ class TestDueDateAndSettleDayShadows:
                     due_date=date(2026, 1, 15),
                 ),
             )
-            db.session.flush()
 
-            # Parent is canonical and carries the due date.
-            assert xfer.due_date == date(2026, 1, 15)
+            assert _reread(xfer.id).due_date == date(2026, 1, 15)
 
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            )
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.due_date == date(2026, 1, 15)
+    def test_no_due_date_at_create_leaves_the_transfer_undated(
+        self, app, transfer_data,
+    ):
+        """create_transfer with no due date leaves the transfer's due date empty.
 
-    def test_shadow_due_date_null_propagation(self, app, db, transfer_data):
-        """create_transfer with due_date=None produces shadows with due_date=None."""
+        Read off the row re-read from the database since plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2b, where it read the
+        object the door returned and both shadow rows' due dates (ruling
+        R-BAL290 part 1); a create that dated an undated transfer fails it
+        (measured there).  Renamed from
+        ``test_shadow_due_date_null_propagation``.
+        """
         with app.app_context():
             td = transfer_data
             xfer = transfer_service.create_transfer(
@@ -2076,41 +1826,30 @@ class TestDueDateAndSettleDayShadows:
                     due_date=None,
                 ),
             )
-            db.session.flush()
 
-            assert xfer.due_date is None
+            assert _reread(xfer.id).due_date is None
 
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            )
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.due_date is None
+    def test_a_due_date_edit_writes_the_transfers_due_date(
+        self, app, transfer_data,
+    ):
+        """An edit naming a due date writes it on the transfer's row.
 
-    def test_shadow_due_date_update(self, app, db, transfer_data):
-        """update_transfer with due_date sets the parent and both shadows."""
+        The transfer is created with none, so the edit moves it.  Read off
+        the row re-read from the database since plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2b, where it read the
+        object in the session and both shadow rows' due dates (ruling
+        R-BAL290 part 1).  Renamed from ``test_shadow_due_date_update``.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
-            db.session.flush()
+            assert xfer.due_date is None, "precondition: created undated"
 
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, due_date=date(2026, 2, 1)
             )
 
-            # Parent mirrors the new due date alongside the shadows.
-            assert xfer.due_date == date(2026, 2, 1)
-
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            )
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.due_date == date(2026, 2, 1)
+            assert _reread(xfer.id).due_date == date(2026, 2, 1)
 
     def test_a_settle_day_correction_lands_on_both_shadows(
         self, app, db, transfer_data,
@@ -2166,6 +1905,19 @@ class TestDueDateAndSettleDayShadows:
         breaking the settled-iff-dated invariant this step establishes and
         leaving a fold that would read a settle day off an unsettled row.  The
         write goes through the status seam now, which refuses it.
+
+        It also asked the transfer's shadow rows for a day after the refusal
+        until plan step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2b.  From
+        that step's create door no row can name a transfer
+        (``ck_transactions_names_no_transfer``), so the loop ran over none
+        (a vacuous read, structurally empty), and it is dropped, not moved
+        onto each side's record: with the three refusals the update asks
+        deleted (its own before the first write, the transfer status
+        writer's and the status seam's), the update raises nothing, writes
+        no record or day on either side and leaves the transfer Projected,
+        so this case fails first at the raise; with its own refusal alone
+        deleted, the transfer status writer's refuses (all measured at that
+        checkpoint).
         """
         with app.app_context():
             td = transfer_data
@@ -2180,13 +1932,6 @@ class TestDueDateAndSettleDayShadows:
                     ),),
                 )
             assert "not a settled status" in str(exc.value)
-
-            for s in (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            ):
-                assert s.settled_on is None
 
     def test_a_settled_transfer_refuses_to_have_its_day_CLEARED(
         self, app, db, transfer_data,
@@ -2241,32 +1986,34 @@ class TestDueDateAndSettleDayShadows:
                     db.session, xfer.id, account_id,
                 ) is None
 
-    def test_an_undated_projected_transfer_stays_undated(self, app, db, transfer_data):
-        """Stating NO day on a PROJECTED transfer leaves both shadows None.
+    def test_an_undated_projected_transfer_stays_undated(self, app, transfer_data):
+        """Stating NO day on a PROJECTED transfer is a no-op: it stays Projected.
 
         A no-op rather than a refusal: the submitted value agrees with the row's
         state (no money has moved, so there is no day), and refusing an edit
         that asks for what is already true would reject an ordinary form
         round-trip that carried an empty date field.
+
+        The status is read off the row re-read from the database since plan
+        step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2b, where it asked
+        the transfer's two shadow rows for a day (ruling R-BAL290 part 1):
+        an update that read the empty statement as a settle fails it first
+        (measured there).  No side's day is read.  The status seam writes no
+        day for a change that neither enters nor leaves the settled band, so
+        an update that dated a side would have settled the transfer and
+        failed the status read first, and with every refusal of a day on an
+        unsettled transfer deleted, an update stating one still writes no
+        record or day on either side (measured there).
         """
         with app.app_context():
             td = transfer_data
-            xfer = _create_basic_transfer(td)
-            db.session.flush()
+            xfer_id = _create_basic_transfer(td).id
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, side_days=(),
+                xfer_id, td["user"].id, side_days=(),
             )
-            db.session.flush()
 
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            )
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.settled_on is None
+            assert _reread(xfer_id).status_id == td["projected_status"].id
 
 
 class TestTheFigureCorrectionDoorOnAPair:

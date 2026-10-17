@@ -20,7 +20,6 @@ from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.amount_ownership import AmountOwnership
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import transfer_service
 from tests._test_helpers import create_account_of_type
@@ -80,7 +79,15 @@ class TestTheCreateDoor:
         A transfer OUT of a card is a cash advance or a balance transfer,
         which the card refuses rather than models (design 3.8).  The guard
         fires with the loan's, ahead of the first ``db.session.add``, so no
-        transfer and no shadow exists afterwards.
+        transfer exists afterwards.
+
+        It also counted the card's ``Transaction`` rows (none) until plan
+        step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2b.  No transfer door
+        writes a ``Transaction`` row since that step's create door, so the
+        count read none whether the guard fired or not (a vacuous read, the
+        mutant M-NOCARDGUARD of the review of its checkpoint 2e-1), and a
+        guard asked after the create's first write fails the transfer count
+        above first (measured at checkpoint 2e-2b-2b); it is dropped.
         """
         with app.app_context():
             td = seed_full_user_data
@@ -94,10 +101,6 @@ class TestTheCreateDoor:
                 ))
 
             assert db.session.query(Transfer).count() == transfers_before
-            assert (
-                db.session.query(Transaction)
-                .filter_by(account_id=card.id).count() == 0
-            )
 
     def test_a_transfer_into_a_card_is_its_payment_and_is_allowed(
         self, app, db, seed_full_user_data,
