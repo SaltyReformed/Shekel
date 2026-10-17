@@ -1,4 +1,4 @@
-"""The tracker's cards, board order and claims, read and written as quill's App.
+"""The tracker's cards, board order and claims, read and written by quill.
 
 Every card write goes through quill's GitHub App (ruling
 ``balance:R-BAL170``), a separate identity from the developer's login, so a
@@ -58,6 +58,12 @@ L5); read by number alone, such a link would name the tracker's card of that
 number instead.  So every link and every board item is asked which repository
 it names (:func:`_is_tracker_issue`, the one test), and a card keeps its
 outside links apart (:attr:`Card.outside`) for the plan to report.
+
+**A card can be read without the board** (:class:`CardReader`), by a token that may read
+the tracker's issues and nothing else (built for CI's landing check, X-cx L9d).  Such a
+card is a :class:`BareCard`, which has no board item at all, so a decision about the board
+handed one raises instead of reading it as a card off the board; :class:`Tracker` is the
+reader that reads each card with its board item, a :class:`Card`.
 """
 from __future__ import annotations
 
@@ -66,8 +72,10 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
+from typing import overload
 from urllib.parse import quote
 
+from tools.quill import _queries
 from tools.quill._github import (
     GitHub,
     GitHubError,
@@ -76,7 +84,14 @@ from tools.quill._github import (
     app_jwt,
     installation_token,
 )
-from tools.quill.setup_tracker import FILING, LINKED_REPOSITORIES, Place, find_board, linked
+from tools.quill.setup_tracker import (
+    APP_LOGIN,
+    FILING,
+    Place,
+    another_app,
+    find_board,
+    linked,
+)
 
 CLAIM_PREFIX = "refs/claims/"
 #: How long a write waits for the board to show what it placed: three times
@@ -90,97 +105,6 @@ _PAGE = 100
 #: GitHub's issue search serves at most this many results of one query, whatever its
 #: ``total_count`` says.
 _SEARCH_CAP = 1000
-
-_CARD_FIELDS = """
-  id number fullDatabaseId title state stateReason
-  issueType { name }
-  labels(first: 100) { totalCount nodes { name } }
-  parent { number repository { nameWithOwner } }
-  subIssues(first: 100) { totalCount nodes {
-    number state issueType { name } repository { nameWithOwner } } }
-  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }
-  projectItems(first: 100) { totalCount nodes { id project { id } } }
-  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {
-    __typename
-    ... on ClosedEvent { actor { login } }
-    ... on ReopenedEvent { actor { login } } } }
-"""
-
-def _open_cards(place: Place) -> str:
-    """The listing of every open card of ``place``."""
-    return (
-        """query($after: String) { repository(owner: "%s", name: "%s") {
-  issues(first: 100, after: $after, states: [OPEN]) {
-    pageInfo { hasNextPage endCursor } nodes { %s } } } }"""
-        % (place.owner, place.name, _CARD_FIELDS)
-    )
-
-
-def _marked_cards(place: Place) -> str:
-    """The listing of every card of ``place`` carrying the :data:`setup_tracker.FILING`
-    mark, open or closed: a ruling's filing closes it before its last write removes the
-    mark, and a ruling closed as completed by anyone is still unfinished (R-BAL206)."""
-    return (
-        """query($after: String) { repository(owner: "%s", name: "%s") {
-  issues(first: 100, after: $after, labels: ["%s"], states: [OPEN, CLOSED]) {
-    pageInfo { hasNextPage endCursor } nodes { %s } } } }"""
-        % (place.owner, place.name, FILING, _CARD_FIELDS)
-    )
-
-
-#: What quill reads of a comment (:func:`_comment`).
-_COMMENT_FIELDS = "author { login } createdAt body"
-
-
-def _all_cards(place: Place) -> str:
-    """The listing of every card of ``place``, open and closed, each with its body, its
-    milestone's number and its first hundred comments (and how many it has).
-
-    Only X-cx's migration reads it, and only it reads a milestone (L7 draft 4 s.12): the
-    milestone is selected HERE, not in :data:`_CARD_FIELDS`, which every other query
-    selects and whose text the recordings replay word for word."""
-    return (
-        """query($after: String) { repository(owner: "%s", name: "%s") {
-  issues(first: 100, after: $after, states: [OPEN, CLOSED]) {
-    pageInfo { hasNextPage endCursor } nodes { %s body
-      milestone { number }
-      comments(first: 100) { totalCount nodes { %s } } } } } }"""
-        % (place.owner, place.name, _CARD_FIELDS, _COMMENT_FIELDS)
-    )
-
-_BOARD = """query($id: ID!, $after: String) { node(id: $id) { ... on ProjectV2 {
-  items(first: 100, after: $after, orderBy: {field: POSITION, direction: ASC}) {
-    pageInfo { hasNextPage endCursor }
-    nodes { id content { ... on Issue { number repository { nameWithOwner } } } } } } } }"""
-
-def _edits(place: Place) -> str:
-    """The read of one card's saved versions, a page at a time."""
-    return (
-        """query($number: Int!, $after: String) { repository(owner: "%s", name: "%s") {
-  issue(number: $number) { number body createdAt author { login }
-    userContentEdits(first: 100, after: $after) {
-      pageInfo { hasNextPage endCursor }
-      nodes { id editedAt editor { login } diff } } } } }"""
-        % (place.owner, place.name)
-    )
-
-
-def _comments(place: Place) -> str:
-    """The read of one card's comments, a page at a time."""
-    return (
-        """query($number: Int!, $after: String) { repository(owner: "%s", name: "%s") {
-  issue(number: $number) { number
-    comments(first: 100, after: $after) {
-      pageInfo { hasNextPage endCursor }
-      nodes { %s } } } } }"""
-        % (place.owner, place.name, _COMMENT_FIELDS)
-    )
-
-
-#: The repositories a board is linked to, read when quill connects (:func:`board_of`).
-_BOARD_REPOSITORIES = """query($id: ID!) { node(id: $id) { ... on ProjectV2 {
-  %s } } }""" % LINKED_REPOSITORIES
-
 
 #: The board's writes, the only GraphQL mutations quill sends (a recording
 #: sends no other: ``_recorded.refusal``), each sent by :meth:`Board._write` alone.
@@ -223,12 +147,15 @@ class OutsideLink:
 
 
 @dataclass(frozen=True)
-class Card:  # pylint: disable=too-many-instance-attributes
-    """One card, as the plan reads it.
+class BareCard:  # pylint: disable=too-many-instance-attributes
+    """One card, as the plan reads it without the board (:class:`CardReader`): every fact
+    of a :class:`Card` but its board item, which it does not have at all, so a decision
+    about the board that is handed one raises AttributeError, never reads it as off the
+    board.
 
-    Pylint: too-many-instance-attributes (15/7) -- **fifteen because a card
-    states fifteen facts the plan reads**, each its own GitHub field, and no
-    subset travels apart from the others.
+    Pylint: too-many-instance-attributes (14/7) -- **fourteen because a card
+    states fourteen facts the plan reads without the board**, each its own GitHub
+    field, and no subset of them travels apart from the others.
 
     ``parent``, ``children`` and ``blocked_by`` name cards of the tracker only;
     ``outside`` holds every link to an issue anywhere else (R-BAL188).
@@ -253,7 +180,6 @@ class Card:  # pylint: disable=too-many-instance-attributes
     parent: int | None
     children: tuple[Child, ...]
     blocked_by: tuple[int, ...]
-    board_item: str | None
     closed_by_tool: bool
     touched_by_hand: bool
     outside: tuple[OutsideLink, ...]
@@ -263,6 +189,15 @@ class Card:  # pylint: disable=too-many-instance-attributes
         """The steps linked under this card, as GitHub lists them: each a leaf of it unless
         the plan says otherwise (``_state.leaves``, the one spelling of a leaf)."""
         return tuple(child.number for child in self.children if child.kind == "step")
+
+
+@dataclass(frozen=True)
+class Card(BareCard):
+    """One card, as the plan reads it with the board (:class:`Tracker`): a
+    :class:`BareCard` and ``board_item``, its item on the tracker's board, None when the
+    board does not hold it."""
+
+    board_item: str | None
 
 
 @dataclass(frozen=True)
@@ -357,7 +292,7 @@ def _is_tracker_issue(node: dict, place: Place) -> bool:
 
 
 def _comment(node: dict) -> Comment:
-    """A :class:`Comment` from one GraphQL comment node (:data:`_COMMENT_FIELDS`)."""
+    """A :class:`Comment` from one GraphQL comment node (:data:`_queries.COMMENT_FIELDS`)."""
     return Comment((node["author"] or {}).get("login"), node["createdAt"], node["body"])
 
 
@@ -366,14 +301,17 @@ def _outside(node: dict, what: str) -> OutsideLink:
     return OutsideLink(what, f"{node['repository']['nameWithOwner']}#{node['number']}")
 
 
-def card_from(node: dict, place: Place, board_id: str, app_login: str) -> Card:
-    """A :class:`Card` of ``place``'s tracker from one GraphQL issue node
-    (:data:`_CARD_FIELDS`)."""
+@overload
+def card_from(node: dict, place: Place, board_id: str, app_login: str) -> Card: ...
+@overload
+def card_from(node: dict, place: Place, board_id: None, app_login: str) -> BareCard: ...
+def card_from(node: dict, place: Place, board_id: str | None, app_login: str) -> BareCard:
+    """A card of ``place``'s tracker from one GraphQL issue node, of the type its reader
+    read: a :class:`Card`, its item on the board ``board_id`` read too
+    (:data:`_queries.CARD_FIELDS`), or, for a reader that reads no board (``board_id``
+    None), a :class:`BareCard` (:data:`_queries.BARE_CARD_FIELDS`).  ``app_login`` is the
+    reader's: a close by it is the tool's."""
     number = node["number"]
-    items = [
-        item["id"] for item in _counted(node["projectItems"], "board items", number)
-        if item["project"]["id"] == board_id
-    ]
     events = node["timelineItems"]["nodes"]
     last_actor = ((events[-1].get("actor") or {}).get("login")) if events else None
     is_open = node["state"] == "OPEN"
@@ -382,27 +320,33 @@ def card_from(node: dict, place: Place, board_id: str, app_login: str) -> Card:
     links += [(blocker, "blocker")
               for blocker in _counted(node["blockedBy"], "blockers", number)]
     inside = [(link, what) for link, what in links if _is_tracker_issue(link, place)]
-    return Card(
-        number=number,
-        id=int(node["fullDatabaseId"]),
-        node_id=node["id"],
-        title=node["title"],
-        kind=(node["issueType"] or {}).get("name"),
-        labels=tuple(label["name"] for label in _counted(node["labels"], "labels", number)),
-        is_open=is_open,
-        state_reason=node["stateReason"],
-        parent=next((link["number"] for link, what in inside if what == "parent"), None),
-        children=tuple(
+    facts = {
+        "number": number,
+        "id": int(node["fullDatabaseId"]),
+        "node_id": node["id"],
+        "title": node["title"],
+        "kind": (node["issueType"] or {}).get("name"),
+        "labels": tuple(label["name"] for label in _counted(node["labels"], "labels", number)),
+        "is_open": is_open,
+        "state_reason": node["stateReason"],
+        "parent": next((link["number"] for link, what in inside if what == "parent"), None),
+        "children": tuple(
             Child(link["number"], (link["issueType"] or {}).get("name"), link["state"] == "OPEN")
             for link, what in inside if what == "sub-issue"
         ),
-        blocked_by=tuple(link["number"] for link, what in inside if what == "blocker"),
-        board_item=items[0] if items else None,
-        closed_by_tool=not is_open and last_actor == app_login,
-        touched_by_hand=bool(events) and last_actor != app_login,
-        outside=tuple(_outside(link, what) for link, what in links
-                      if not _is_tracker_issue(link, place)),
-    )
+        "blocked_by": tuple(link["number"] for link, what in inside if what == "blocker"),
+        "closed_by_tool": not is_open and last_actor == app_login,
+        "touched_by_hand": bool(events) and last_actor != app_login,
+        "outside": tuple(_outside(link, what) for link, what in links
+                         if not _is_tracker_issue(link, place)),
+    }
+    if board_id is None:
+        return BareCard(**facts)
+    items = [
+        item["id"] for item in _counted(node["projectItems"], "board items", number)
+        if item["project"]["id"] == board_id
+    ]
+    return Card(**facts, board_item=items[0] if items else None)
 
 
 _CLAIM_BRANCH = re.compile(r"^branch: (.+)$", re.MULTILINE)
@@ -469,7 +413,8 @@ def board_of(github: GitHub, place: Place) -> str:
     if board_id is None:
         raise TrackerError(f"{place.full_name} has no board titled {place.board_title!r}; "
                            "run python -m tools.quill.setup_tracker")
-    repositories = github.graphql(_BOARD_REPOSITORIES, id=board_id)["node"]["repositories"]
+    repositories = github.graphql(_queries.BOARD_REPOSITORIES,
+                                  id=board_id)["node"]["repositories"]
     link = linked(place, repositories)
     if link is not True:
         names = [node["nameWithOwner"] for node in repositories["nodes"]]
@@ -522,7 +467,8 @@ class Board:
         """The board's cards in their drag order: ``(card number, board item id)``."""
         order, after = [], None
         while True:
-            items = self.github.graphql(_BOARD, id=self.board_id, after=after)["node"]["items"]
+            items = self.github.graphql(_queries.BOARD_ORDER, id=self.board_id,
+                                        after=after)["node"]["items"]
             order += [
                 (item["content"]["number"], item["id"]) for item in items["nodes"]
                 if _is_tracker_issue(item["content"] or {}, self.location)
@@ -560,8 +506,58 @@ class Board:
         return read_until(self.order, placed, self._sleep)[1]
 
 
-class Tracker:  # pylint: disable=too-many-public-methods
-    """A tracker as the App sees it: its cards and claims, and its :class:`Board`.
+class CardReader:
+    """A tracker's cards, read by number and without the board: what a token that may read
+    the tracker's issues and nothing else reads (built for CI's landing check, X-cx L9d),
+    each a :class:`BareCard`.  :class:`Tracker` is one that reads each card's board item too.
+
+    ``github`` is any object with :class:`_github.GitHub`'s ``graphql_lookup``, and
+    ``place`` the tracker's :class:`setup_tracker.Place`.  ``app_login``, by which a close is
+    the tool's or a person's (:func:`card_from`), is :data:`setup_tracker.APP_LOGIN` unless
+    given: a token that is no App's cannot ask GitHub which App is quill's, so this reader
+    takes the declared login, which every :meth:`Tracker.connect` checks against GitHub.
+    Whether such a token can read every field it asks for is unmeasured until X-cx L9d a3
+    reads the tracker with one.
+    """
+
+    def __init__(self, github: GitHub, place: Place, app_login: str = APP_LOGIN) -> None:
+        """Read ``place``'s cards through ``github`` as ``app_login`` reads closes."""
+        self.github = github
+        self.place = place
+        self.app_login = app_login
+
+    def _card(self, node: dict) -> BareCard:
+        """A :class:`BareCard` of this tracker from one GraphQL issue node."""
+        return card_from(node, self.place, None, self.app_login)
+
+    def cards(self, numbers: Iterable[int]) -> dict[int, BareCard]:
+        """The cards numbered ``numbers``, open or closed; one that does not exist is
+        absent from the answer (a trailer can name a number nobody filed)."""
+        return self._lookup(numbers, _queries.BARE_CARD_FIELDS, self._card)
+
+    def _lookup[CardT: BareCard](self, numbers: Iterable[int], card_fields: str,
+                                 card: Callable[[dict], CardT]) -> dict[int, CardT]:
+        """The cards numbered ``numbers`` that exist, each read with ``card_fields`` and
+        built by ``card``: the one walk of a read by number, which each reader's
+        :meth:`cards` names its fields and its card type to."""
+        wanted = sorted(set(numbers))
+        found = {}
+        for start in range(0, len(wanted), _PAGE // 2):
+            batch = wanted[start:start + _PAGE // 2]
+            fields = " ".join(f"c{n}: issue(number: {n}) {{ {card_fields} }}" for n in batch)
+            answer = self.github.graphql_lookup(
+                f'query {{ repository(owner: "{self.place.owner}", name: "{self.place.name}") '
+                f'{{ {fields} }} }}'
+            )["repository"]
+            for number in batch:
+                if answer[f"c{number}"] is not None:
+                    found[number] = card(answer[f"c{number}"])
+        return found
+
+
+class Tracker(CardReader):  # pylint: disable=too-many-public-methods
+    """A tracker as the App sees it: its cards, each with its board item, its claims, and
+    its :class:`Board`.
 
     Pylint: ``too-many-public-methods`` (29/20) -- ``connect``, then **one
     method per read or write quill makes of the tracker** (most one
@@ -582,28 +578,36 @@ class Tracker:  # pylint: disable=too-many-public-methods
 
     def __init__(self, github: GitHub, board: Board, app_login: str) -> None:
         """Read and write through ``github`` as ``app_login``, on ``board``'s place."""
-        self.github = github
+        super().__init__(github, board.location, app_login)
         self.board = board
         self.board_id = board.board_id
-        self.place = board.location
-        self.app_login = app_login
 
     @classmethod
     def connect(cls, place: Place) -> Tracker:
         """``place``'s tracker, through a fresh installation token of quill's App narrowed to
-        the place's repository, and its board (:func:`board_of`)."""
+        the place's repository, and its board (:func:`board_of`).
+
+        Raises:
+            TrackerError: Before it asks GitHub for an installation or a token, when the
+                App's credentials sign in as an App that is not quill's
+                (:func:`setup_tracker.another_app`): its closes would be read as a person's,
+                and the card-only reader, which reads the declared login, would disagree.
+        """
         client_id, key = app_credentials()
         jwt = app_jwt(client_id, key, int(time.time()))
         login = GitHub(jwt).rest("GET", "/app")["slug"]
+        if wrong := another_app(login):
+            raise TrackerError(wrong)
         installation = app_installation(place.owner, jwt)["id"]
         github = GitHub(installation_token(installation, jwt, repository=place.name))
-        return cls(github, Board(github, place, board_of(github, place)), login)
+        return cls(github, Board(github, place, board_of(github, place)), APP_LOGIN)
 
     # -- reads ---------------------------------------------------------------
 
     def _nodes(self, query: str) -> Iterator[dict]:
-        """Every issue node a listing ``query`` (:func:`_open_cards`, :func:`_marked_cards`,
-        :func:`_all_cards`) holds, read page by page: the one walk of a listing."""
+        """Every issue node a listing ``query`` (:func:`_queries.open_cards`,
+        :func:`_queries.marked_cards`, :func:`_queries.all_cards`) holds, read page by page:
+        the one walk of a listing."""
         after = None
         while True:
             page = self.github.graphql(query, after=after)["repository"]["issues"]
@@ -613,8 +617,14 @@ class Tracker:  # pylint: disable=too-many-public-methods
             after = page["pageInfo"]["endCursor"]
 
     def _card(self, node: dict) -> Card:
-        """A :class:`Card` of this tracker from one GraphQL issue node."""
+        """A :class:`Card` of this tracker from one GraphQL issue node, its board item read."""
         return card_from(node, self.place, self.board_id, self.app_login)
+
+    def cards(self, numbers: Iterable[int]) -> dict[int, Card]:
+        """The cards numbered ``numbers``, open or closed, each with its board item; one that
+        does not exist is absent from the answer (a trailer can name a number nobody
+        filed)."""
+        return self._lookup(numbers, _queries.CARD_FIELDS, self._card)
 
     def _listing(self, query: str) -> dict[int, Card]:
         """Every card a listing ``query`` holds, by number."""
@@ -622,13 +632,13 @@ class Tracker:  # pylint: disable=too-many-public-methods
 
     def open_cards(self) -> dict[int, Card]:
         """Every open card, by number."""
-        return self._listing(_open_cards(self.place))
+        return self._listing(_queries.open_cards(self.place))
 
     def marked(self) -> dict[int, Card]:
         """Every card carrying the :data:`setup_tracker.FILING` mark, open or closed, by
         number: each a filing quill began; whether it is still unfinished is
         ``_state.filing_unfinished``'s answer (one dropped while marked is not)."""
-        return self._listing(_marked_cards(self.place))
+        return self._listing(_queries.marked_cards(self.place))
 
     def all_cards(self) -> dict[int, WholeCard]:
         """Every card, open and closed, by number, each WHOLE: its body and every comment.
@@ -637,7 +647,7 @@ class Tracker:  # pylint: disable=too-many-public-methods
         all read by :meth:`comments`, so no card's comments are cut short.
         """
         cards = {}
-        for node in self._nodes(_all_cards(self.place)):
+        for node in self._nodes(_queries.all_cards(self.place)):
             number, held = node["number"], node["comments"]
             comments = ([_comment(each) for each in held["nodes"]]
                         if held["totalCount"] <= len(held["nodes"]) else self.comments(number))
@@ -692,23 +702,6 @@ class Tracker:  # pylint: disable=too-many-public-methods
             raise
         return NumberState.PULL_REQUEST if "pull_request" in issue else NumberState.ISSUE
 
-    def cards(self, numbers: Iterable[int]) -> dict[int, Card]:
-        """The cards numbered ``numbers``, open or closed; one that does not exist is
-        absent from the answer (a trailer can name a number nobody filed)."""
-        wanted = sorted(set(numbers))
-        found = {}
-        for start in range(0, len(wanted), _PAGE // 2):
-            batch = wanted[start:start + _PAGE // 2]
-            fields = " ".join(f"c{n}: issue(number: {n}) {{ {_CARD_FIELDS} }}" for n in batch)
-            answer = self.github.graphql_lookup(
-                f'query {{ repository(owner: "{self.place.owner}", name: "{self.place.name}") '
-                f'{{ {fields} }} }}'
-            )["repository"]
-            for number in batch:
-                if answer[f"c{number}"] is not None:
-                    found[number] = self._card(answer[f"c{number}"])
-        return found
-
     def body(self, number: int) -> str:
         """A card's body as it stands."""
         return self.github.rest("GET", f"{self.place.path}/issues/{number}")["body"] or ""
@@ -748,7 +741,7 @@ class Tracker:  # pylint: disable=too-many-public-methods
         """
         versions, after = [], None
         while True:
-            issue = self.github.graphql(_edits(self.place), number=number,
+            issue = self.github.graphql(_queries.edits(self.place), number=number,
                                         after=after)["repository"]["issue"]
             if issue is None:
                 raise TrackerError(f"plan#{number} does not exist")
@@ -771,7 +764,8 @@ class Tracker:  # pylint: disable=too-many-public-methods
         filed is GitHub's NOT_FOUND error, which :meth:`_github.GitHub.graphql` raises."""
         comments, after = [], None
         while True:
-            answer = self.github.graphql(_comments(self.place), number=number, after=after)
+            answer = self.github.graphql(_queries.comments(self.place), number=number,
+                                         after=after)
             page = answer["repository"]["issue"]["comments"]
             comments += [_comment(node) for node in page["nodes"]]
             if not page["pageInfo"]["hasNextPage"]:

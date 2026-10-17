@@ -581,8 +581,10 @@ def test_check_mode_sends_no_mutation_even_to_a_public_unlinked_board():
     assert report.differences == 6
 
 
-def _app_setup(monkeypatch, *, owner="saltyreformed-labs", installation=None, repos=None):
-    """Point ``check_app`` at a recorded App; nothing reads a key or calls GitHub."""
+def _app_setup(monkeypatch, *, owner="saltyreformed-labs", installation=None, repos=None,
+               slug="shekel-quill"):
+    """Point ``check_app`` at a recorded App whose login is ``slug``; nothing reads a key or
+    calls GitHub."""
     monkeypatch.setattr(setup_tracker, "app_credentials", lambda: ("Iv23client", b"pem"))
     monkeypatch.setattr(setup_tracker, "app_jwt", lambda *_: "jwt")
     def whole_installation(*_, repository):
@@ -600,7 +602,7 @@ def _app_setup(monkeypatch, *, owner="saltyreformed-labs", installation=None, re
 
     monkeypatch.setattr(setup_tracker, "app_installation", installed)
     answers = {
-        "jwt": {("GET", "/app"): {"slug": "shekel-quill", "owner": {"login": owner}}},
+        "jwt": {("GET", "/app"): {"slug": slug, "owner": {"login": owner}}},
         "installation": {("GET", "/installation/repositories"): {
             "repositories": [{"name": name} for name in (repos or ["shekel-plan"])]
         }},
@@ -637,6 +639,19 @@ def test_an_app_registered_by_another_account_is_a_difference(monkeypatch):
     report = Report()
     setup_tracker.check_app(report)
     assert report.differences == 1
+
+
+def test_credentials_of_another_app_are_a_difference(monkeypatch):
+    """L9d a1: the App the credentials sign in as is the one quill declares (``APP_LOGIN``),
+    which CI's card-only reader reads without asking GitHub; another is a difference naming
+    both logins, and the other checks still run."""
+    _app_setup(monkeypatch, installation=_installation(), slug="shekel-plan-tool")
+    report = Report()
+    setup_tracker.check_app(report)
+    assert report.differences == 1
+    assert ("sign in as 'shekel-plan-tool', not as quill's App 'shekel-quill'"
+            in "\n".join(report.lines))
+    assert report.lines[-1].startswith("ok      App 'shekel-plan-tool': installed on")
 
 
 def test_an_app_not_yet_installed_is_a_difference_not_a_crash(monkeypatch):

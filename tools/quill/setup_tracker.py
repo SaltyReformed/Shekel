@@ -167,6 +167,14 @@ APP_PERMISSIONS = {
     "organization_projects": "write",
 }
 
+#: Quill's App's login, its slug, as GitHub's GraphQL names it when the App closes a card
+#: (ruling ``balance:R-BAL227`` renamed the App "Shekel quill"): a close by any other
+#: login is a person's (``_tracker.card_from``).  ``Tracker.connect`` refuses credentials
+#: that sign in as another App and :func:`check_app` reports one, so every local quill run
+#: checks it against GitHub; the card-only reader, whose token is no App's, cannot ask
+#: GitHub and reads it from here.
+APP_LOGIN = "shekel-quill"
+
 #: What quill reads of the repositories a board is linked to (:func:`linked`).
 LINKED_REPOSITORIES = "repositories(first: 100) { totalCount nodes { nameWithOwner } }"
 
@@ -698,8 +706,19 @@ def check_board(github: GitHub, repository: dict | None, apply: bool, report: Re
         )
 
 
+def another_app(slug: str) -> str | None:
+    """Why credentials that sign in as the App ``slug`` are not quill's, in plain words; None
+    when ``slug`` is :data:`APP_LOGIN`.  The one test, for :func:`check_app`'s difference
+    and ``Tracker.connect``'s refusal."""
+    if slug == APP_LOGIN:
+        return None
+    return (f"the App's credentials in {APP_DIR} sign in as {slug!r}, not as quill's App "
+            f"{APP_LOGIN!r}: put its credentials there")
+
+
 def check_app(report: Report) -> None:
-    """Check quill's App: registered by the organization, installed on the tracker only."""
+    """Check quill's App: the one :data:`APP_LOGIN` names, registered by the organization,
+    installed on the tracker only."""
     try:
         client_id, private_key = app_credentials()
         token = app_jwt(client_id, private_key, int(time.time()))
@@ -710,6 +729,8 @@ def check_app(report: Report) -> None:
         report.differs(f"the App's credentials in {APP_DIR} cannot be used: {error}")
         return
     app = GitHub(token).rest("GET", "/app")
+    if wrong := another_app(app["slug"]):
+        report.differs(wrong)
     if app["owner"]["login"] != ORG:
         report.differs(f"the App {app['slug']!r} is registered by {app['owner']['login']}")
     try:

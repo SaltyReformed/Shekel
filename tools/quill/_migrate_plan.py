@@ -397,7 +397,7 @@ def _later_writes(number: int, tracked: Tracked) -> list[str]:
     the tool reads, off the board, with no comment.
 
     The tool reads no issue OUTSIDE the tracker that the card blocks: a card's read holds
-    its blockers, never what it blocks (:data:`_tracker._CARD_FIELDS`), so "blocking" is
+    its blockers, never what it blocks (:data:`_queries.CARD_FIELDS`), so "blocking" is
     told from the tracker's own cards' blockers alone, and a card blocking an issue outside
     the tracker reads as blocking nothing."""
     whole = tracked.cards[number]
