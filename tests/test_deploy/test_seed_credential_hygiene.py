@@ -440,6 +440,7 @@ class TestDockerignoreCoverage:
         # Test infrastructure
         "tests/",
         ".pytest_cache",
+        "conftest.py",
         # Build context noise
         ".git",
         ".github/",
