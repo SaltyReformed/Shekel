@@ -107,11 +107,12 @@
 #     exits 2 without running pytest: no python interpreter, no docker, a
 #     daemon that is not rootless or cannot be reached, a socket path over
 #     the kernel's 107-byte limit, an image that cannot be prepared, a
-#     cluster that does not accept connections within
-#     READINESS_TIMEOUT_SECONDS, and one that reports ready without leaving
-#     a socket (``scripts/private_cluster.py`` refuses the socket path, the
-#     readiness and the missing socket, and any other start it cannot
-#     finish).  NO COUNT IS GIVEN: every attempt to count them in a comment
+#     cluster name a container already holds, a cluster that does not
+#     accept connections within READINESS_TIMEOUT_SECONDS, and one that
+#     reports ready without leaving a socket (``scripts/private_cluster.py``
+#     refuses the socket path, the name, the readiness and the missing
+#     socket, and any other start it cannot finish).  NO COUNT IS GIVEN:
+#     every attempt to count them in a comment
 #     has been wrong.  Other non-pytest statuses are docker's or the shell's,
 #     not this script's.
 
@@ -376,8 +377,10 @@ _stop_run() {
 # every exit path was covered.  Adding the arm was the way to make that
 # sentence true.  The traps are armed BEFORE the start.  A start ended by
 # Ctrl-C stops what it made itself; one killed by TERM or HUP cannot, and
-# the trap's stop finds its cluster by the name chosen above.  A stop of a
-# cluster that was never made finds nothing and says nothing.
+# the trap's stop finds its cluster by the name chosen above.  A start that
+# refuses before it makes anything has the traps DISARMED before this exits
+# (below), so the wrapper never stops a name its start refused; a signal
+# that lands before that refusal still stops by the name.
 trap '_teardown_run_container' EXIT
 trap '_teardown_run_container; exit 130' INT
 trap '_teardown_run_container; exit 143' TERM
@@ -385,16 +388,28 @@ trap '_teardown_run_container; exit 129' HUP
 
 # The start prints the socket directory, then the container's id, once the
 # cluster accepts connections on a socket it has checked is there; a start
-# that cannot finish names why, and what its own stop left behind, and exits
-# 2.  While it runs, bash holds a TERM or HUP until it returns (a command
-# substitution defers traps), so a signal then is served within the
-# readiness cap.
-if ! _cluster="$("$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" \
-    start "$_run_container" "$_image")"; then
+# that cannot finish names why, and what its own stop left behind.  It exits
+# 3 when it refused before making anything (a bad readiness cap, a socket
+# path too long, a name a container already holds, a daemon it cannot ask
+# about the name), and the traps are disarmed before this exits 2: nothing
+# of this run exists, and a stop by its name would remove a container
+# another run holds.  While the start runs, bash holds a TERM or HUP until it
+# returns (bash services no trap while a foreground child runs), so a signal
+# then waits for the whole start -- up to a minute for each docker command,
+# then the readiness cap, then a failed start's own stop -- and a KILL in
+# that wait leaves what the start made, since the start goes on without its
+# wrapper.
+_start_status=0
+_cluster="$("$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" \
+    start "$_run_container" "$_image")" || _start_status=$?
+if [ "$_start_status" -ne 0 ]; then
+    if [ "$_start_status" -eq 3 ]; then
+        trap - EXIT INT TERM HUP
+    fi
     exit 2
 fi
 read -r _run_sockdir <<<"$_cluster"
-unset _cluster
+unset _cluster _start_status
 
 # libpq reads a ``host`` beginning with ``/`` as a socket DIRECTORY, and
 # SQLAlchemy passes the query string through untouched, so one URL shape

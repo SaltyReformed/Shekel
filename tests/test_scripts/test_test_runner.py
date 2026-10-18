@@ -56,7 +56,7 @@ _TEST_RUNNER = _REPO_ROOT / "scripts/test.sh"
 
 def _stub_tree(
     tmp_path: Path, *, rootless: bool = True, make_socket: bool = True,
-    survives: bool = False,
+    survives: bool = False, pytest_status: int = 0,
 ) -> Path:
     """Write a stub ``docker`` and ``pytest`` into a directory for ``PATH``.
 
@@ -76,6 +76,8 @@ def _stub_tree(
             holds it as a file that ``run`` makes and ``rm`` removes, and
             ``ps`` lists it while it exists, as the cluster's start and stop
             ask by its exact name.
+        pytest_status: The status the stub pytest exits with, which the
+            wrapper must exit with too.
 
     Returns:
         The directory to prepend to ``PATH``.
@@ -128,7 +130,7 @@ def _stub_tree(
         "#!/usr/bin/env python3\n"
         "import json, os, sys\n"
         f"json.dump(dict(os.environ), open({str(env_dump)!r}, 'w'))\n"
-        "sys.exit(0)\n",
+        f"sys.exit({pytest_status})\n",
         encoding="utf-8",
     )
     for name in ("docker", "pytest"):
@@ -262,8 +264,11 @@ class TestTheWrapperItself:
         assert any("scripts/private_cluster.py" in line for line in code) and any(
             line.strip().startswith('start "$_run_container" "$_image"') for line in code
         ), "the cluster is no longer started through the module"
+        # Global flags may come before the subcommand (``docker -H <host> rm``,
+        # ``docker --context=x run``); the delta review's D17 slipped one past.
         spelled = [line for line in code if re.search(
-            r"\bdocker\s+(container\s+)?(run|create|start|stop|kill|rm|exec|inspect)\b",
+            r"\bdocker\s+(-\S+\s+(?:[^-\s]\S*\s+)?)*(container\s+)?"
+            r"(run|create|start|stop|kill|rm|exec|inspect)\b",
             line)]
         assert not spelled, (
             f"scripts/test.sh spells a container command of its own again: {spelled}"
@@ -385,11 +390,40 @@ class TestThePrivateClusterIsCleanedUp:
         the teardown at the end of the wrapper would then end the run with
         that 1 instead of pytest's status, unless it is told not to (``||
         true``); what survived is reported by the WARNING, not by the exit.
+        The stub pytest exits 3, a status nothing else here gives, so a
+        wrapper that dropped pytest's status for any other would be seen: the
+        delta review's MEDIUM-2 measured ``exit 0`` passing a stub exiting 0.
         """
-        result = _run_wrapper(_stub_tree(tmp_path, survives=True), {})
+        result = _run_wrapper(
+            _stub_tree(tmp_path, survives=True, pytest_status=3), {})
 
-        assert result.returncode == 0, result.stderr
+        assert result.returncode == 3, result.stderr
         assert "survived teardown" in result.stderr, result.stderr
+
+    def test_a_name_another_container_holds_is_left_to_it(
+        self, tmp_path: Path
+    ) -> None:
+        """A start refused because a container already holds this run's name
+        leaves that container alone, and so does the wrapper.
+
+        The delta review's MEDIUM-1: the start refuses before it makes
+        anything and says so by exiting 3, and the wrapper DISARMS its
+        teardown on that and exits 2.  With the teardown armed, the EXIT
+        trap's stop by name removed the container the start had just refused
+        to take over -- a leaked cluster of a reused PID, or a live one of a
+        run in another PID namespace on the same daemon.
+        """
+        held = tmp_path / "stub-container"
+        binaries = _stub_tree(tmp_path)
+        held.write_text("", encoding="utf-8")
+
+        result = _run_wrapper(binaries, {})
+        calls = (tmp_path / "docker-calls").read_text(encoding="utf-8")
+
+        assert result.returncode == 2, result.stderr
+        assert "already exists" in result.stderr, result.stderr
+        assert held.exists(), f"the held container was removed; docker saw:\n{calls}"
+        assert not [line for line in calls.splitlines() if line.startswith("rm ")], calls
 
     def test_the_container_is_removed_with_its_volume(
         self, tmp_path: Path
@@ -797,14 +831,14 @@ class TestThePeerNoteNamesEveryRunningPytest:
         python3 = shutil.which("python3")
         assert python3 is not None, "the stand-in peer needs a python3"
         binaries = _stub_tree(tmp_path)
-        peer = subprocess.Popen(
+        with subprocess.Popen(
             [python3, "-c", "import time; time.sleep(60)", "pytest"],
             start_new_session=True,
-        )
-        try:
-            result = _run_wrapper(binaries, {})
-        finally:
-            self._stop(peer)
+        ) as peer:
+            try:
+                result = _run_wrapper(binaries, {})
+            finally:
+                self._stop(peer)
 
         assert result.returncode == 0, result.stderr
         assert f"pid {peer.pid}  " in result.stderr, result.stderr

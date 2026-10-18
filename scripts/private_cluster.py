@@ -14,19 +14,23 @@ Usage::
     python scripts/private_cluster.py stop <name>
 
 ``start`` prints the socket directory, then the container's id, one per line, once the
-cluster accepts connections there.  It refuses a name a container already holds, and a
-start that fails stops what it made, naming anything that stop left behind; one killed
-outright (TERM, HUP, KILL) cannot, which is why the caller NAMES the cluster before
-starting it and stops it by that name (``test.sh`` names its cluster after its own PID).
-``stop`` removes the container with its anonymous volume and the socket directory, and
-names on stderr anything that survived or could not be asked about; it is safe to run on
-a cluster that never started, or twice, which is what lets a caller's signal traps call it
-whenever they fire.
+cluster accepts connections there.  It makes nothing until the readiness cap, the socket
+path's length and the name are known good, and refuses a name a container already holds.
+A start that fails after that stops what it made, naming anything that stop left behind;
+one killed outright (TERM, HUP, KILL) cannot, which is why the caller NAMES the cluster
+before starting it and stops it by that name (``test.sh`` names its cluster after its own
+PID).  ``stop`` removes the container with its anonymous volume and the socket directory,
+and names on stderr anything that survived or could not be asked about; it is safe to run
+on a cluster that never started, or twice, which is what lets a caller's signal traps call
+it whenever they fire.
 
-Exit status: 0 done; 1 ``stop`` left something behind, each named; 2 ``start`` could not
-give a cluster that accepts connections (each reason printed, and anything its own stop
-left behind), or the command line was wrong; 130 ``start`` was ended by Ctrl-C, having
-stopped what it made.
+Exit status: 0 done; 1 ``stop`` left something behind, each named; 2 ``start`` made
+something and could not give a cluster that accepts connections (each reason printed, and
+anything its own stop left behind), or the command line was wrong; 3 ``start`` refused
+before it made anything (the reason printed), so nothing of it exists to stop, and a stop by
+its name could remove a container another holds.  Ctrl-C ends ``start`` BY SIGINT, as
+Python itself ends on one, once it has stopped what it made and named what that stop left,
+so a calling shell sees the signal and stops too.
 
 Environment variables read:
     XDG_RUNTIME_DIR    Where the socket directory is made.  Default ``/run/user/<uid>``.
@@ -44,6 +48,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -160,10 +165,24 @@ _DEFAULT_READINESS_SECONDS = 15
 _DOCKER_TIMEOUT_SECONDS = 60
 # The conventional exit status of a process ended by Ctrl-C (128 + SIGINT).
 _INTERRUPTED = 130
+# A start refused before it made anything: distinct from 2, because a caller that stops by
+# name after 2 must NOT after this (:class:`Refused`).
+_REFUSED = 3
 
 
 class ClusterError(RuntimeError):
     """The cluster could not be started, or is not usable; the message says which and why."""
+
+
+class Refused(ClusterError):
+    """A start refused before it made anything.  Nothing of it exists to stop, and a stop by
+    its name could remove a container another caller holds, so its caller must not."""
+
+
+class Interrupted(KeyboardInterrupt):
+    """Ctrl-C ended a start after it began making the cluster.  The start has stopped what it
+    made, and the arguments are what that stop could not remove, one sentence each.  It is a
+    KeyboardInterrupt still, so whatever catches one catches this."""
 
 
 @dataclass(frozen=True)
@@ -219,8 +238,8 @@ def _readiness_seconds() -> float:
     """The cap on the readiness wait, from ``READINESS_TIMEOUT_SECONDS``.
 
     Raises:
-        ClusterError: when the variable is set to anything but a finite, non-negative
-            number of seconds (``nan`` and ``inf`` would make the wait endless).
+        Refused: when the variable is set to anything but a finite, non-negative number of
+            seconds (``nan`` and ``inf`` would make the wait endless).
     """
     given = os.environ.get("READINESS_TIMEOUT_SECONDS", "")
     if not given:
@@ -228,11 +247,11 @@ def _readiness_seconds() -> float:
     try:
         seconds = float(given)
     except ValueError as exc:
-        raise ClusterError(f"READINESS_TIMEOUT_SECONDS={given!r} is not a number of "
-                           "seconds") from exc
+        raise Refused(f"READINESS_TIMEOUT_SECONDS={given!r} is not a number of "
+                      "seconds") from exc
     if not math.isfinite(seconds) or seconds < 0:
-        raise ClusterError(f"READINESS_TIMEOUT_SECONDS={given!r} is not a finite, "
-                           "non-negative number of seconds")
+        raise Refused(f"READINESS_TIMEOUT_SECONDS={given!r} is not a finite, "
+                      "non-negative number of seconds")
     return seconds
 
 
@@ -242,12 +261,29 @@ def _refuse_a_socket_dir_too_long(directory: Path) -> None:
     the limit surface as a connection error from deep inside the caller.
 
     Raises:
-        ClusterError: when the directory is too long.
+        Refused: when the directory is too long.
     """
     if len(os.fsencode(directory)) > _SOCKET_DIR_BYTES:
-        raise ClusterError(f"socket directory {directory} is too long; a unix socket path "
-                           f"cannot exceed {_SUN_PATH_BYTES} bytes.  Set XDG_RUNTIME_DIR to "
-                           "something shorter.")
+        raise Refused(f"socket directory {directory} is too long; a unix socket path "
+                      f"cannot exceed {_SUN_PATH_BYTES} bytes.  Set XDG_RUNTIME_DIR to "
+                      "something shorter.")
+
+
+def _refuse_a_name_in_use(name: str) -> None:
+    """Refuse a name a container already holds, running or not: a start never takes one
+    over, so a start only ever stops what it made.
+
+    Raises:
+        Refused: when a container holds ``name``, or docker cannot be asked whether one
+            does.
+    """
+    try:
+        held = _present(name)
+    except ClusterError as unasked:
+        raise Refused(str(unasked)) from unasked
+    if held:
+        raise Refused(f"a container named {name} already exists, and a start never takes "
+                      "over a name in use: stop that cluster, or name another")
 
 
 def _make_socket_dir(directory: Path) -> None:
@@ -339,23 +375,28 @@ def start(name: str, image: str) -> Cluster:
 
     ``image`` ships a populated PGDATA at :data:`_PGDATA`, as the baked test image does
     (:func:`_wait_ready` says why readiness depends on it).  Nothing is made until the
-    readiness cap, the socket path's length and the name are known good: a name a container
-    already holds is refused, never taken over, so a start only ever stops what it made.  A
-    start refused after that stops what it made, and its error names anything that stop
-    left behind.  One ended by Ctrl-C stops what it made and re-raises; what that stop
-    could not remove, the caller's own stop names.  One killed outright (TERM, HUP) stops
-    nothing, so its caller, which named the cluster, stops it by that name.
+    readiness cap, the socket path's length and the name are known good, and a refusal
+    there is :class:`Refused`: a name a container already holds is never taken over, and as
+    nothing of this start exists, its caller must not stop that name either.  A start
+    refused after that stops what it made, and its error names anything that stop left
+    behind.  One ended by Ctrl-C after that stops what it made too, and raises
+    :class:`Interrupted` carrying what that stop could not remove.  One killed outright
+    (TERM, HUP) stops nothing, so its caller, which named the cluster, stops it by that name.
+
+    One window stays open: a container given the name after the check and before ``docker
+    run`` makes the run fail, and this start's stop then removes that container by name.
+    Only another process choosing the same name inside that window opens it, which
+    ``test.sh`` cannot: its names carry its PID.
 
     Raises:
-        ClusterError: when any step fails, naming it.
-        KeyboardInterrupt: when Ctrl-C ends the start, after it stops what it made.
+        Refused: when the start is refused before it makes anything, naming why.
+        ClusterError: when a later step fails, naming it and what its stop left behind.
+        Interrupted: when Ctrl-C ends the start once it has begun making the cluster.
     """
     seconds = _readiness_seconds()
     directory = socket_dir(name)
     _refuse_a_socket_dir_too_long(directory)
-    if _present(name):
-        raise ClusterError(f"a container named {name} already exists, and a start never "
-                           "takes over a name in use: stop that cluster, or name another")
+    _refuse_a_name_in_use(name)
     try:
         _make_socket_dir(directory)
         container = _run_container(name, image, directory)
@@ -366,9 +407,8 @@ def start(name: str, image: str) -> Cluster:
             raise ClusterError(f"{refused}.  Stopping it left something behind: "
                                + " ".join(survived)) from refused
         raise
-    except KeyboardInterrupt:
-        stop(name)
-        raise
+    except KeyboardInterrupt as interrupted:
+        raise Interrupted(*stop(name)) from interrupted
     return Cluster(container, directory)
 
 
@@ -403,6 +443,27 @@ def stop(name: str) -> list[str]:
     return survived
 
 
+def _warn(survived: list[str]) -> None:
+    """Name on stderr each thing a stop left behind."""
+    for line in survived:
+        print(f"[private_cluster] WARNING: {line}", file=sys.stderr)
+
+
+def _end_by_sigint() -> int:
+    """End this process BY SIGINT, as Python ends on a Ctrl-C nothing handled, so a calling
+    shell sees the signal and stops too: an exit status of 130 tells a shell the child dealt
+    with the Ctrl-C itself, and the shell carries on with its next command.
+
+    The default disposition skips the interpreter's own flush, and nothing needs it here:
+    no arm that ends this way has printed to stdout, and stderr is line-buffered, so each
+    warning is written as it is printed.  The status is returned only should the signal not
+    end the process, which is CPython's own fallback in ``exit_sigint`` (128 + SIGINT).
+    """
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    os.kill(os.getpid(), signal.SIGINT)
+    return _INTERRUPTED
+
+
 def main(argv: list[str] | None = None) -> int:
     """Start or stop a cluster, as the module says; its exit status."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -417,18 +478,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "start":
         try:
             cluster = start(args.name, args.image)
+        except Refused as exc:
+            print(f"[private_cluster] {exc}", file=sys.stderr)
+            return _REFUSED
         except ClusterError as exc:
             print(f"[private_cluster] {exc}", file=sys.stderr)
             return 2
+        except Interrupted as interrupted:
+            _warn(list(interrupted.args))
+            return _end_by_sigint()
         except KeyboardInterrupt:
-            # The start stopped what it made; a traceback here would say nothing more.
-            return _INTERRUPTED
+            # Ctrl-C where the start could not stop what it made: before it made anything,
+            # or inside a failed start's own stop, which the caller's stop by name finishes.
+            # A traceback would say nothing more.
+            return _end_by_sigint()
         print(cluster.socket_dir)
         print(cluster.container)
         return 0
     survived = stop(args.name)
-    for line in survived:
-        print(f"[private_cluster] WARNING: {line}", file=sys.stderr)
+    _warn(survived)
     return 1 if survived else 0
 
 
