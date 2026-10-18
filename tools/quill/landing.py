@@ -47,9 +47,9 @@ own; of a push to ``main``, which ``main`` then holds, none.  A change set wholl
 ``dev`` or ``main`` judges nothing and says so; a checkout that cannot read either
 refuses to judge.  Never judged here, since it lands without a pull request judging it,
 and once landed it is never judged: a commit pushed straight to ``dev`` (which its
-ruleset lets an administrator do), and, while no merge queue runs, the merge commit
-GitHub writes when it merges a pull request into ``dev`` or ``main`` (a queued group's
-merge commits are in its change set, and judged).  Nor is a pull request into ``dev``
+ruleset lets an administrator do), and the merge commit GitHub writes when it merges a
+pull request into ``dev`` or ``main`` outside a merge queue (a queued group's merge
+commits are in its change set, and judged).  Nor is a pull request into ``dev``
 held to what this check says: no merge into ``dev`` requires it.  The merge commit
 carries no trailer unless whoever merges writes it a body: its message is by default one
 line made from the pull request's title (``R-BAL319``, 2026-10-18), and git reads no
@@ -65,12 +65,18 @@ through ``main``, so the shipped set is the history of ``dev``, ``main`` and ``h
 together, read as one (:func:`tools.ci.trailers.shipped`), judged or not and whatever the
 change set's base.  So a hotfix ``main`` holds counts though ``head`` was built before it
 merged, and a ``Reopens:`` ``main`` holds undoes a ``Ships:`` though ``dev`` lacks it
-yet.  Between a pull request landing on ``dev`` and ``main`` coming back into ``dev``,
-``dev`` alone can answer otherwise; the check answers for once ``main`` is back.  A pull
-request into a branch other than ``dev`` or ``main`` (one stacked on another pull
-request's), whose head reaches ``dev`` only beside whatever else that branch holds, is
-judged again when that branch's pull request carries its commits into ``dev`` or
-``main``, since they have not landed.
+yet.  Until ``main`` is brought back into ``dev`` after the change set lands, ``dev``
+alone can answer otherwise; the check answers for once it is.  The answer is for ``dev``
+and ``main`` as this run reads them: a pull request that merges after either has moved,
+with no new push to run the check again, keeps this run's verdict, since ``main``'s
+protection does not require a branch to be up to date before it merges (its ``strict``
+is false, read 2026-10-18) and no merge into ``dev`` requires the check.  A pull request
+into a branch other than ``dev`` or ``main`` (one stacked on another pull request's),
+whose head reaches ``dev`` only beside whatever else that branch holds, is judged again
+when that branch's pull request carries its commits into ``dev`` or ``main``, since they
+have not landed; unless that branch's pull request merges first, when GitHub, deleting
+the merged branch, moves this one onto that branch's base, which runs nothing, so this
+run's verdict stands.
 
 **The tracker is read only when a trailer names a card**, through the card-only reader
 (:class:`_tracker.CardReader`) and the token :data:`TOKEN_VARIABLE` holds: never quill's
@@ -140,9 +146,10 @@ def reader_from_environment() -> CardReader:
 
 
 def _shipped_once_landed(root: Path, head: str) -> set[int]:
-    """Every card git says shipped once ``head`` and ``main`` have both reached ``dev``:
-    over the history of ``dev``, ``main`` and ``head`` together, read as one, the two
-    branches by their full names (:func:`tools.ci.trailers.tracking`)."""
+    """Every card git says shipped once ``head`` and ``main`` have both reached ``dev``, as
+    this run reads ``dev`` and ``main``: over the history of ``dev``, ``main`` and ``head``
+    together, read as one, the two branches by their full names
+    (:func:`tools.ci.trailers.tracking`)."""
     return set(trailers.shipped(root, trailers.history(
         root, trailers.tracking(trailers.DEV), trailers.tracking(trailers.MAIN), head))[0])
 
@@ -153,7 +160,7 @@ def _wrong(number: int, key: str, card: BareCard | None, cards: Mapping[int, Bar
     card is ``card`` (None when the tracker does not hold it), as the end of a sentence;
     None when nothing is.  ``cards`` holds every card a decision over a ``Ships:``-named
     card reads (:func:`_command.with_closure`), and ``shipped`` git's answer once the change
-    set's head and ``main`` have both reached ``dev``."""
+    set's head and ``main`` have both reached ``dev``, as this run reads them."""
     if card is None:
         fix = ("" if key == trailers.REOPENS else
                ", or file the card with quill file first and name the number it is given")
@@ -178,8 +185,8 @@ def refusals(named: Mapping[tuple[int, str], Sequence[trailers.Trailer]], shippe
     """One sentence for each ``(card, key)`` in ``named`` the tracker refuses (the module's
     rules), each naming every commit that carries it, by card; ``named`` holds the card
     trailers of the change set's commits that have not landed, and ``shipped`` git's
-    answer once the change set's head and ``main`` have both reached ``dev``.  The tracker
-    is read through the reader ``connect`` makes.
+    answer once the change set's head and ``main`` have both reached ``dev``, as this run
+    reads them.  The tracker is read through the reader ``connect`` makes.
 
     Raises:
         NoToken: when ``connect`` has no token to read with.

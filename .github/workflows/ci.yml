@@ -307,9 +307,9 @@ jobs:
       # or one naming a card that carries the filing mark (still being filed,
       # or dropped while it was) is refused, each trailer judged once, by the
       # pull request or merge group that lands its commit on dev or main (step
-      # X-cx's L9d).  Never judged: a commit pushed straight to dev, and, while
-      # no merge queue runs, the merge commit GitHub writes when it merges a
-      # pull request (main's protection binds administrators, R-BAL319, so no
+      # X-cx's L9d).  Never judged: a commit pushed straight to dev, and the
+      # merge commit GitHub writes when it merges a pull request outside a
+      # merge queue (main's protection binds administrators, R-BAL319, so no
       # commit is pushed straight to main).
       # The tracker is read only when a trailer names a card.  No condition:
       # with the mint skipped the token is empty, and the check decides.

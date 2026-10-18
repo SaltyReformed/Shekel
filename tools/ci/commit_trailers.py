@@ -69,10 +69,10 @@ the one reader and the one ``shipped`` rule the tracker tool also asks:
    ``main`` then holds, none.  A commit ``dev`` or ``main`` holds was judged
    at the pull request or merge group that first brought it to either, or
    got there past this check, as two kinds of commit do: a commit pushed
-   straight to ``dev`` (which its ruleset lets an administrator do), and,
-   while no merge queue runs, the merge commit GitHub writes when it merges
-   a pull request into ``dev`` or ``main`` (a queued group's merge commits
-   are in its change set, and judged).  Each of those lands without a pull
+   straight to ``dev`` (which its ruleset lets an administrator do), and the
+   merge commit GitHub writes when it merges a pull request into ``dev`` or
+   ``main`` outside a merge queue (a queued group's merge commits are in its
+   change set, and judged).  Each of those lands without a pull
    request judging it, and once landed it is never judged.  Either way no
    commit can change it (``R-BAL184``), so judging it again could only
    refuse it for good, never stop it landing.  The merge commit carries no
@@ -84,10 +84,10 @@ the one reader and the one ``shipped`` rule the tracker tool also asks:
    refuses a later pull request for a stray that reached ``dev`` or
    ``main`` without it (none had: neither held a ``plan#`` trailer on
    2026-10-18), or past a check no merge requires, and undoing one owes
-   nothing (rule 2).  The release tool
-   still counts such a stray: a money one that reached ``dev`` beside another
-   money change blocks every release, which only a check every merge into
-   ``dev`` requires can prevent.  ``dev`` and ``main`` are read only when the
+   nothing (rule 2).  The release tool still counts such a stray: a money
+   one that reached ``dev`` beside another money change blocks every
+   release, which only a check every merge into ``dev`` requires can
+   prevent.  ``dev`` and ``main`` are read only when the
    change set carries a ``Reopens:``, and a checkout that cannot read either
    refuses to judge.  The old ``<arc>:<id>`` form is not read
    here: it ends at the cutover (``R-BAL287``), and no ``Reopens:`` in it

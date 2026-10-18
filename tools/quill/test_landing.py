@@ -458,7 +458,8 @@ def test_the_shipped_set_holds_every_commit_dev_lacks_judged_or_not(capsys, code
     #5 only once shipped) and reaches main; a hotfix branch built on main ships #5, and its
     pull request into dev carries F.  F is main's, so it is not judged again, but dev holds
     it once the pull request lands, and #6 then splits #5: the Ships: of #5 is refused.
-    Over the judged commits alone, #6 never shipped and it would land."""
+    Over the judged commits alone, #6 never shipped and it would land.  (main holds F too,
+    so it is the stacked case below that tells the head's other commits from main's.)"""
     root, start = code
     work = commit(root, "dev's work", parents=[start])
     point_dev(root, work)
@@ -495,6 +496,25 @@ def test_the_shipped_set_holds_a_hotfix_main_holds_that_dev_lacks(capsys, code):
         "plan#5 is a container, which no commit ships: name the step or finding the commit "
         "builds (a step split into smaller steps is built as them)",
         f"landing check: 1 commit(s) in {merged[:12]}..{second[:12]}, 1 refused"]
+
+
+def test_the_shipped_set_holds_a_commit_of_the_head_that_has_not_landed(capsys, code):
+    """The review of the delta review 3 fix, MEDIUM-1 (its mutant N16; r1's history H3): the
+    shipped set holds every commit the head holds, judged or not, landed or not.  Pull
+    request B is stacked on branch A, whose commit ships #6 (closed while still being filed,
+    so a leaf of #5 only once shipped) and is on neither dev nor main; B, built on it, ships
+    #5 into A, checked as ``<A>..<B>``.  B reaches dev only beside A's commit, and #6 then
+    splits #5, so the Ships: of #5 is refused.  Over dev, main and the judged commits alone,
+    #6 never shipped and it would land."""
+    root, start = code
+    branch = commit(root, "A", "Ships: plan#6", parents=[start])
+    stacked = commit(root, "B", "Ships: plan#5", parents=[branch])
+    assert main([branch, stacked], _reader(_Lookup(_dropped_leaf())), root) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        f"REFUSED -- {stacked[:12]} (B) carries `Ships: plan#5`, but plan#5 is a container, "
+        "which no commit ships: name the step or finding the commit builds (a step split into "
+        "smaller steps is built as them)",
+        f"landing check: 1 commit(s) in {branch[:12]}..{stacked[:12]}, 1 refused"]
 
 
 def test_the_shipped_set_holds_what_main_holds_though_the_head_lacks_it(capsys, code):
@@ -563,6 +583,23 @@ def test_a_tag_named_like_dev_or_main_stands_in_for_it_in_no_shipped_set(capsys,
     assert run(root, "rev-parse", branch) == shadow, "control: the short name is shadowed"
     assert main([start, head], _reader(_Lookup(_dropped_leaf())), root) == 1
     assert "plan#5 is a container" in capsys.readouterr().out
+
+
+def test_a_merge_commit_the_change_set_holds_is_judged(capsys, code):
+    """The review of the delta review 3 fix, LOW-2 (its mutant N12): a merge commit in the
+    change set, a queued group's or one a pull request into another branch brought in, is
+    judged as any commit is, its body's trailers read: one carrying ``Ships: plan#999`` is
+    refused."""
+    root, start = code
+    work = commit(root, "the pull request's work", "Ships: plan#7", parents=[start])
+    merged = commit(root, "Merge pull request #9 from work", "Ships: plan#999",
+                    parents=[start, work])
+    assert main([start, merged], _reader(_Lookup(_tracker(_card(7)))), root) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        f"REFUSED -- {merged[:12]} (Merge pull request #9 from work) carries `Ships: plan#999`, "
+        "but the tracker holds no plan#999 (a mistyped number?): correct the number, or file "
+        "the card with quill file first and name the number it is given",
+        f"landing check: 2 commit(s) in {start[:12]}..{merged[:12]}, 1 refused"]
 
 
 def test_a_number_past_graphqls_int_is_never_asked_and_is_not_held(capsys, code):
