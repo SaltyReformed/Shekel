@@ -778,16 +778,19 @@ class TestTheCommandLine:
             f"commit trailers: {missing} cannot be read in this checkout, so which commits "
             "have landed already is unknown (in CI, check out with fetch-depth: 0)\n")
 
+    @pytest.mark.parametrize("full", [False, True], ids=["short name", "full name"])
     @pytest.mark.parametrize("missing", [DEV, MAIN])
     def test_a_tag_named_like_a_missing_branch_does_not_stand_in_for_it(self, repo, capsys,
-                                                                       missing):
+                                                                       missing, full):
         """The L9d delta review 2's LOW-2, at the read of whether each branch exists: with
-        the branch missing and a tag of its name present, git's full name is still asked, so
-        the check names the branch it cannot read, as when nothing has that name."""
+        the branch missing and a tag of its name present, short (``origin/main``) or full
+        (``refs/remotes/origin/main``, which git resolves to that tag when the branch is
+        missing: the review of its fix, nit 2), the exact reference is still asked, so the
+        check names the branch it cannot read, as when nothing has that name."""
         base = _head(repo)
         point_dev(repo, base)
         _run(repo, "update-ref", "-d", tracking(missing))
-        _run(repo, "tag", missing, base)
+        _run(repo, "tag", tracking(missing) if full else missing, base)
         _change(repo, "undo", "undo by hand", "Reopens: plan#9")
         assert main([base, _head(repo)], root=repo) == 2
         assert capsys.readouterr().err == (

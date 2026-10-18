@@ -452,8 +452,8 @@ def test_the_shipped_set_is_devs_history_whatever_the_base(capsys, code):
 
 
 def test_the_shipped_set_holds_every_commit_dev_lacks_judged_or_not(capsys, code):
-    """The L9d delta review 2's LOW-1: git's answer once the change set reaches dev is over
-    dev's history and EVERY commit of it dev does not hold yet, never the judged commits
+    """The L9d delta review 2's LOW-1: git's answer once the head reaches dev is over dev's
+    history and EVERY commit the head holds that dev does not, never the judged commits
     alone.  Release branch commit F ships #6 (closed while still being filed, so a leaf of
     #5 only once shipped) and reaches main; a hotfix branch built on main ships #5, and its
     pull request into dev carries F.  F is main's, so it is not judged again, but dev holds
@@ -476,19 +476,49 @@ def test_the_shipped_set_holds_every_commit_dev_lacks_judged_or_not(capsys, code
         f"landing check: 3 commit(s) in {work[:12]}..{hotfix[:12]}, 1 refused"]
 
 
-def test_a_tag_named_like_dev_stands_in_for_it_in_no_shipped_set(capsys, code):
+def test_the_shipped_set_holds_what_the_base_holds_that_dev_lacks(capsys, code):
+    """The review of the delta review 2 fix, LOW-B (the coordinator's Y): the shipped set
+    is over dev's history and dev..head, whatever the change set's base.  Hotfix 1 ships #6
+    (closed while still being filed, so a leaf of #5 only once shipped) and merges into
+    main; before main is brought back into dev, hotfix 2, built on main, ships #5 by a pull
+    request into main, whose base holds hotfix 1.  Once main is back in dev, dev holds both
+    and #6 splits #5, so the Ships: of #5 is refused now, the one time it is judged.  Over
+    the change set alone (``head ^base ^dev``), #6 never shipped and it would land."""
+    root, start = code
+    point_dev(root, commit(root, "dev's work", parents=[start]))
+    first = commit(root, "hotfix 1", "Ships: plan#6", parents=[start])
+    merged = commit(root, "Merge pull request #1 from hotfix-1", parents=[start, first])
+    point_main(root, merged)
+    second = commit(root, "hotfix 2 built on main", "Ships: plan#5", parents=[merged])
+    assert main([merged, second], _reader(_Lookup(_dropped_leaf())), root) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        f"REFUSED -- {second[:12]} (hotfix 2 built on main) carries `Ships: plan#5`, but "
+        "plan#5 is a container, which no commit ships: name the step or finding the commit "
+        "builds (a step split into smaller steps is built as them)",
+        f"landing check: 1 commit(s) in {merged[:12]}..{second[:12]}, 1 refused"]
+
+@pytest.mark.parametrize("at", ["dev's base", "the head"])
+def test_a_tag_named_like_dev_stands_in_for_it_in_no_shipped_set(capsys, code, at):
     """The L9d delta review 2's LOW-2, at the shipped set: git resolves ``origin/dev`` to a
     tag of that name before the remote-tracking branch, and CI's checkout fetches every tag.
-    dev shipped #6, which splits #5, so a Ships: of #5 is refused; a tag named ``origin/dev``
-    on dev's base, before #6 shipped, does not make git's answer read #5 as plain work,
-    since dev's history is read by its full name (:func:`tools.ci.trailers.tracking`)."""
+    #6 ships, in dev's history or in the change set, and splits #5, so a Ships: of #5 is
+    refused.  A tag named ``origin/dev`` on dev's base, before #6 shipped, would drop #6
+    from dev's history; one at the head would make ``dev..head`` empty and drop the change
+    set's own ships.  Neither makes git's answer read #5 as plain work, since both reads
+    name dev by its full name (:func:`tools.ci.trailers.tracking`)."""
     root, start = code
-    leaf = commit(root, "leaf", "Ships: plan#6", parents=[start])
-    run(root, "tag", DEV, start)
-    status, out, _, _ = _land(capsys, code, _Lookup(_dropped_leaf()), ("step", "Ships: plan#5"),
-                              base=leaf)
-    assert run(root, "rev-parse", DEV) == start, "control: the short name is shadowed"
-    assert status == 1 and "plan#5 is a container" in out
+    if at == "dev's base":
+        base = commit(root, "leaf", "Ships: plan#6", parents=[start])
+        point_dev(root, base)
+        head = _on(root, base, ("step", "Ships: plan#5"))[-1]
+        shadow = start
+    else:
+        base = start
+        head = shadow = _on(root, base, ("leaf", "Ships: plan#6"), ("step", "Ships: plan#5"))[-1]
+    run(root, "tag", DEV, shadow)
+    assert run(root, "rev-parse", DEV) == shadow, "control: the short name is shadowed"
+    assert main([base, head], _reader(_Lookup(_dropped_leaf())), root) == 1
+    assert "plan#5 is a container" in capsys.readouterr().out
 
 
 def test_a_number_past_graphqls_int_is_never_asked_and_is_not_held(capsys, code):
@@ -562,9 +592,11 @@ def test_a_list_github_answers_as_null_refuses_to_judge(capsys, code, null, what
 
 @pytest.mark.parametrize(("null", "what"), [
     (lambda node: node["labels"].update(nodes=[None], totalCount=1), "labels"),
+    (lambda node: node["labels"].update(nodes=[{"name": "balance"}, None], totalCount=2),
+     "labels"),
     (lambda node: node["subIssues"].update(nodes=[None], totalCount=1), "sub-issues"),
     (lambda node: node["timelineItems"].update(nodes=[None]), "close events"),
-], ids=["a label", "a sub-issue", "a close event"])
+], ids=["a label", "a label after another", "a sub-issue", "a close event"])
 def test_a_null_node_in_a_list_github_answers_refuses_to_judge(capsys, code, null, what):
     """The L9d delta review 2's nit: one node of a card's list answered as null (GitHub's
     schema allows it: ``[Label]``, ``[Issue]``, ``[IssueTimelineItems]``) exits 2 naming the

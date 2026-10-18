@@ -46,11 +46,11 @@ from tools.ci.arcs import ARCS
 from tools.ci.gitcmd import GitError, git, run
 
 SHIPS, REOPENS = "Ships", "Reopens"
-#: The branch every shipped card's commit is on, as a message names it (git is handed
-#: :func:`tracking`'s full name).
+#: The branch every shipped card's commit is on, as a message names it; :func:`tracking`
+#: is its full name.
 DEV = "origin/dev"
-#: The branch a release merges into, as a message names it (git is handed
-#: :func:`tracking`'s full name).
+#: The branch a release merges into, as a message names it; :func:`tracking` is its full
+#: name.
 MAIN = "origin/main"
 #: A trailer's value naming a card: ``plan#`` and the card's number.
 _CARD = re.compile(r"plan#([1-9][0-9]*)")
@@ -100,10 +100,11 @@ class History:
 
 def tracking(branch: str) -> str:
     """``branch`` (:data:`DEV` or :data:`MAIN`) by the full name of its remote-tracking
-    reference, the one name no other reference can stand in for: git resolves the short name
-    to the first reference it could name, so a tag or a local branch of that name comes
-    before the remote-tracking branch (``git help revisions``), and CI's checkout fetches
-    every tag."""
+    reference, which no other reference can stand in for while the branch exists: git
+    resolves the short name to the first reference it could name, so a tag or a local branch
+    of that name comes before the remote-tracking branch (``git help revisions``), and CI's
+    checkout fetches every tag.  A full name that does not exist git still resolves to a tag
+    named like it, so whether the branch exists is asked of the exact reference."""
     return f"refs/remotes/{branch}"
 
 
