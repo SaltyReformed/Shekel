@@ -1,6 +1,6 @@
 """Refuse a change set whose commits break the card-trailer rules (step X-cx's L4, card plan#4).
 
-Git only, no tracker access.  Two rules, each read with :mod:`tools.ci.trailers`,
+Git only, no tracker access.  Three rules, each read with :mod:`tools.ci.trailers`,
 the one reader and the one ``shipped`` rule the tracker tool also asks:
 
 1. **Citation shape.**  Every ``Ships:`` and ``Reopens:`` trailer on the change
@@ -43,6 +43,37 @@ the one reader and the one ``shipped`` rule the tracker tool also asks:
    merge.  A trailer a revert does not owe is not refused: a ``Ships:`` it
    carries is a claim, as on any commit.
 
+3. **A ``Reopens:`` undoes a ``Ships:`` in its own history** (ruling
+   ``balance:R-BAL309``: CI refuses "an undo naming a card its own history
+   never shipped (a typo)").  A ``Reopens: plan#N`` that cancels no ``Ships:
+   plan#N`` is a STRAY, :func:`tools.ci.trailers.shipped`'s own answer and no
+   second spelling of it, and most likely a mistyped number.  Landed, it is
+   permanent: a release counts the card it names as a change it carries, and,
+   when that card moves money, beside another money change in one pull request
+   it blocks every release (the money wedge, step X-cx's L9d leaf c).  One walk
+   answers every commit, ``shipped`` over ``head``'s history: whether a
+   ``Reopens:`` cancels a ``Ships:`` reads only whether that ``Ships:`` is in
+   the ``Reopens:`` commit's own history (R-BAL181), so a ``Ships:`` anywhere
+   else in ``head``'s history cancels nothing, wherever it sits (a branch
+   beside it, or a later commit on its own line); and every ``Ships:`` in that
+   commit's own history is in ``head``'s, since the commit is.  So the answer
+   is the one each commit's own history gives.  **Each ``Reopens:`` is judged
+   once, when it first lands** (the coordinator, under ``R-BAL207``,
+   2026-10-17): only on the commits of the change set ``dev`` does not hold yet
+   (:func:`not_on_dev`), every commit of a pull request into ``dev``, and of
+   one into ``main`` a release branch's own, since what ``dev`` holds no
+   commit can change (``R-BAL184``).  So this check never refuses a later pull
+   request for a stray that reached ``dev`` without it (none had:
+   ``origin/dev`` held no ``plan#`` trailer on 2026-10-17), or past a check no
+   merge into ``dev`` requires, and undoing one owes nothing (rule 2).  The
+   release tool still counts such a stray: a money one that reached ``dev``
+   beside another money change blocks every release, which only a check every
+   merge into ``dev`` requires can prevent.  ``dev`` is read only when the
+   change set carries a ``Reopens:``, and a checkout that cannot read it
+   refuses to judge.  The old ``<arc>:<id>`` form is not read here: it ends at
+   the cutover (``R-BAL287``), and no ``Reopens:`` in it exists (none on any
+   ref, 2026-10-17).
+
 **What a revert is: git's own record, at the start of a line.**  ``git
 revert`` writes ``This reverts commit <id>.``; with ``--reference`` the id is
 shortened and followed by `` (<subject>, <date>)``; reverting a merge adds
@@ -66,19 +97,22 @@ not all known.
 
 **The change set** is ``<base>..<head>``: the commits ``head`` holds and
 ``base`` does not.  ``ci.yml``'s ``scope`` job hands over the pair for a pull
-request, a merge-queue group and a push to ``main``.  A change set holding no
-commit is refused too: none of those events has one, so it means the two ends
-are wrong.
+request, a merge-queue group and a push to ``main``.  Rules 1 and 2 judge
+every commit of it, rule 3 only those ``dev`` does not hold yet.  A change set
+holding no commit is refused too: none of those events has one, so it means
+the two ends are wrong.
 
 Usage, at the repository root::
 
     python -m tools.ci.commit_trailers <base-sha> <head-sha>
 
 Exit status: 0 nothing refused; 1 refused, each reason printed; 2 the command
-line or git failed, or the change set holds no commit, so nothing was checked.
-What a command line must name is :func:`ends`, and how a verdict is printed and exits is
-:func:`report`: the one rule and the one reporter CI's landing check
-(``tools/quill/landing.py``) reads its change set by and prints its verdict with too.
+line or git failed, ``dev`` cannot be read when rule 3 needs it, or the change
+set holds no commit, so nothing was checked.  What a command line must name is
+:func:`ends`, which of its commits ``dev`` does not hold yet is
+:func:`not_on_dev`, and how a verdict is printed and exits is :func:`report`:
+the rules and the one reporter CI's landing check (``tools/quill/landing.py``)
+reads its change set by and prints its verdict with too.
 """
 from __future__ import annotations
 
@@ -219,11 +253,48 @@ def _revert_reasons(root: Path, commit: tuple[str, str, str],
     ]
 
 
+def not_on_dev(root: Path, base: str, head: str) -> set[str]:
+    """The commits of ``<base>..<head>`` that :data:`tools.ci.trailers.DEV` does not hold yet:
+    the commits a rule judged once, when it first lands, judges (rule 3 here; every rule of
+    CI's landing check).
+
+    Raises:
+        GitError: when ``dev`` cannot be read in this checkout, so which commits it holds
+            already is unknown.
+    """
+    if run(root, "rev-parse", "--verify", "--quiet", f"{trailers.DEV}^{{commit}}").returncode:
+        raise GitError(f"{trailers.DEV} cannot be read in this checkout, so which commits dev "
+                       "holds already is unknown (in CI, check out with fetch-depth: 0)")
+    return set(git(root, "rev-list", head, f"^{base}", f"^{trailers.DEV}").split())
+
+
+def _stray_reasons(root: Path, base: str, head: str, found: trailers.History) -> list[str]:
+    """Why the change set ``<base>..<head>``, whose card trailers ``found`` holds, breaks
+    rule 3: one sentence per stray ``Reopens:`` on a commit ``dev`` does not hold yet, a
+    trailer a commit carries twice named once; empty when it carries no ``Reopens:``, and
+    ``dev`` is then not read.
+
+    Raises:
+        GitError: when ``dev`` cannot be read, or git cannot read ``head``'s history.
+    """
+    if not any(trailer.key == trailers.REOPENS for trailer in found.trailers):
+        return []
+    fresh = not_on_dev(root, base, head)
+    strays = trailers.shipped(root, trailers.history(root, head))[1]
+    return [f"{stray.sha[:12]} ({stray.subject}) carries `Reopens: plan#{stray.card}`, but no "
+            f"commit in its history ships plan#{stray.card}, so it undoes nothing (a mistyped "
+            "number?): name the card whose `Ships:` the commit undoes; if it does undo "
+            f"plan#{stray.card}, rebuild it on top of the commit that ships plan#{stray.card}; "
+            "otherwise remove the trailer"
+            for stray in dict.fromkeys(strays) if stray.sha in fresh]
+
+
 def problems(root: Path, base: str, head: str) -> tuple[int, list[str]]:
     """How many commits the change set holds, and one sentence per broken rule.
 
     Raises:
-        GitError: when git cannot read the change set (a shallow clone among them).
+        GitError: when git cannot read the change set (a shallow clone among them), or
+            ``dev`` when the change set carries a ``Reopens:``.
     """
     found = trailers.history(root, f"{base}..{head}")
     reasons = [f"{line} (nor the old <arc>:<id> form, read until the cutover)"
@@ -234,6 +305,7 @@ def problems(root: Path, base: str, head: str) -> tuple[int, list[str]]:
     commits = list(_commits(root, base, head))
     for commit in commits:
         reasons.extend(_revert_reasons(root, commit, carried.get(commit[0], set())))
+    reasons.extend(_stray_reasons(root, base, head, found))
     return len(commits), reasons
 
 

@@ -10,6 +10,7 @@ import pytest
 
 from tools.ci.commit_trailers import main, problems, reverts
 from tools.ci.scratch import commit as _commit
+from tools.ci.scratch import point_dev
 from tools.ci.scratch import repository
 from tools.ci.scratch import run as _run
 from tools.ci.trailers import history, shipped
@@ -154,13 +155,17 @@ class TestARevertKeepsGitsAnswerTrue:
         """The same revert, carrying ``Reopens: plan#4``."""
         ship = _change(repo, "leaf", "leaf", "Ships: plan#4")
         base = _head(repo)
+        point_dev(repo, base)
         _revert(repo, ship, trailer="Reopens: plan#4")
         assert problems(repo, base, _head(repo)) == (1, [])
 
     def test_a_reopens_for_another_card_does_not_pay_the_debt(self, repo):
-        """``Reopens: plan#5`` undoes nothing of plan#4's."""
+        """``Reopens: plan#5`` undoes nothing of plan#4's.  plan#5 shipped earlier, so the
+        trailer is no stray (rule 3, graded by its own tests)."""
+        _change(repo, "five", "five", "Ships: plan#5")
         ship = _change(repo, "leaf", "leaf", "Ships: plan#4")
         base = _head(repo)
+        point_dev(repo, base)
         _revert(repo, ship, trailer="Reopens: plan#5")
         assert len(problems(repo, base, _head(repo))[1]) == 1
 
@@ -180,6 +185,7 @@ class TestARevertKeepsGitsAnswerTrue:
         ship = _change(repo, "leaf", "leaf", "Ships: plan#4")
         undo = _revert(repo, ship, trailer="Reopens: plan#4")
         base = _head(repo)
+        point_dev(repo, base)
         _revert(repo, undo, trailer="Reopens: plan#4")
         reasons = problems(repo, base, _head(repo))[1]
         assert len(reasons) == 1 and "add the trailer `Ships: plan#4`" in reasons[0]
@@ -278,6 +284,7 @@ class TestARevertKeepsGitsAnswerTrue:
         """
         ships = {name: _change(repo, name, name, "Ships: plan#4") for name in ("first", "second")}
         base = _head(repo)
+        point_dev(repo, base)
         undo = _revert(repo, ships[undone])
         assert problems(repo, base, _head(repo))[1] == [
             f"{undo[:12]} (Revert \"{undone}\") undoes {ships[undone][:12]} ({undone}), which "
@@ -401,6 +408,7 @@ class TestRevertingAMerge:
 
     def test_a_merge_revert_carrying_reopens_passes(self, repo, merged):
         """The same revert, carrying the trailer."""
+        point_dev(repo, merged)
         _revert(repo, merged, "-m", "1", trailer="Reopens: plan#4")
         assert problems(repo, merged, _head(repo)) == (1, [])
 
@@ -420,6 +428,7 @@ class TestRevertingAMerge:
         _run(repo, "checkout", "--quiet", "dev")
         _run(repo, "merge", "--quiet", "--no-ff", "feat", "-m", "Merge feat")
         merged = _head(repo)
+        point_dev(repo, merged)
         _revert(repo, merged, "-m", "1")
         reasons = problems(repo, merged, _head(repo))[1]
         assert len(reasons) == 1 and "add the trailer `Reopens: plan#4`" in reasons[0]
@@ -470,6 +479,7 @@ class TestRevertingAMerge:
         _run(repo, "checkout", "--quiet", "dev")
         _run(repo, "merge", "--quiet", "--no-ff", "feat", "-m", "Merge feat")
         merged = _head(repo)
+        point_dev(repo, merged)
         undo = _revert(repo, merged, "-m", "1")
         assert problems(repo, merged, _head(repo))[1] == [
             f"{undo[:12]} (Revert \"Merge feat\") undoes {four[:12]} (four), which carries "
@@ -499,6 +509,128 @@ class TestRevertingAMerge:
         reasons = problems(repo, merged, _head(repo))[1]
         assert len(reasons) == 1
         assert f"it says it kept {stranger}, which is not a parent of merge" in reasons[0]
+
+
+def _stray(sha, subject, card):
+    """Rule 3's sentence for ``Reopens: plan#<card>`` on the commit ``sha``."""
+    return (f"{sha[:12]} ({subject}) carries `Reopens: plan#{card}`, but no commit in its "
+            f"history ships plan#{card}, so it undoes nothing (a mistyped number?): name the "
+            f"card whose `Ships:` the commit undoes; if it does undo plan#{card}, rebuild it on "
+            f"top of the commit that ships plan#{card}; otherwise remove the trailer")
+
+
+class TestAReopensUndoesAShipInItsOwnHistory:
+    """Rule 3 (R-BAL309): a ``Reopens:`` that cancels no ``Ships:`` (trailers.shipped's stray)
+    on a commit ``dev`` does not hold yet is refused.  ``dev`` is the base, as on a pull
+    request into it, unless a test says otherwise: a base ``dev`` does not hold, a ``dev``
+    ahead of it, or none at all."""
+
+    def test_a_reopens_naming_a_card_never_shipped_is_refused(self, repo):
+        """The mistyped number: plan#9 was never shipped, so the undo names nothing."""
+        base = _head(repo)
+        point_dev(repo, base)
+        stray = _change(repo, "undo", "undo by hand", "Reopens: plan#9")
+        assert problems(repo, base, _head(repo)) == (1, [_stray(stray, "undo by hand", 9)])
+
+    def test_a_reopens_of_a_card_shipped_before_the_change_set_passes(self, repo):
+        """An undo written by hand, no revert record: its card shipped on ``dev``, so it
+        cancels that ship.  Asked over the change set alone, it would read as a stray."""
+        _change(repo, "leaf", "leaf", "Ships: plan#4")
+        base = _head(repo)
+        point_dev(repo, base)
+        _change(repo, "undo", "undo by hand", "Reopens: plan#4")
+        assert problems(repo, base, _head(repo)) == (1, [])
+
+    def test_a_ship_and_its_reopen_on_one_commit_is_no_stray(self, repo):
+        """A commit is in its own history: its ``Reopens:`` cancels its own ``Ships:``."""
+        base = _head(repo)
+        point_dev(repo, base)
+        _change(repo, "leaf", "leaf", "Ships: plan#4\nReopens: plan#4")
+        assert problems(repo, base, _head(repo)) == (1, [])
+
+    def test_a_reopens_before_the_ship_it_names_is_a_stray(self, repo):
+        """The pull request reopens plan#4, then ships it: the ``Ships:`` is in the change
+        set but not in the ``Reopens:`` commit's history, so it cancels nothing."""
+        base = _head(repo)
+        point_dev(repo, base)
+        early = _change(repo, "early", "early", "Reopens: plan#4")
+        _change(repo, "leaf", "leaf", "Ships: plan#4")
+        assert problems(repo, base, _head(repo)) == (2, [_stray(early, "early", 4)])
+
+    def test_a_ship_on_a_sibling_branch_cancels_no_reopens(self, repo):
+        """The coordinator's REQUIRED CASE, grading rule 3's one walk over ``head``'s history:
+        plan#7's ``Ships:`` is in ``head``'s history (one branch, merged) but not in the
+        ``Reopens: plan#7`` commit's own (a sibling branch from the same base), so the
+        ``Reopens:`` is still a stray.  The control: built on the ship, it is none."""
+        base = _head(repo)
+        point_dev(repo, base)
+        _run(repo, "checkout", "--quiet", "-b", "ship", base)
+        _change(repo, "seven", "seven", "Ships: plan#7")
+        _run(repo, "checkout", "--quiet", "-b", "undo", base)
+        sibling = _change(repo, "undo", "undo by hand", "Reopens: plan#7")
+        _run(repo, "checkout", "--quiet", "dev")
+        _run(repo, "merge", "--quiet", "--no-ff", "ship", "-m", "Merge ship")
+        _run(repo, "merge", "--quiet", "--no-ff", "undo", "-m", "Merge undo")
+        assert problems(repo, base, _head(repo)) == (4, [_stray(sibling, "undo by hand", 7)])
+        _run(repo, "checkout", "--quiet", "-b", "after", "ship")
+        _change(repo, "undo2", "undo after", "Reopens: plan#7")
+        assert problems(repo, base, _head(repo)) == (2, [])
+
+    def test_only_the_stray_of_a_commit_reopening_two_cards_is_refused(self, repo):
+        """Each trailer is its own (BAL-608): plan#4 shipped, so its ``Reopens:`` stands;
+        plan#5 never did."""
+        _change(repo, "leaf", "leaf", "Ships: plan#4")
+        base = _head(repo)
+        point_dev(repo, base)
+        both = _change(repo, "undo", "undo two", "Reopens: plan#4\nReopens: plan#5")
+        assert problems(repo, base, _head(repo)) == (1, [_stray(both, "undo two", 5)])
+
+    def test_a_stray_a_commit_carries_twice_is_named_once(self, repo):
+        """One commit, one trailer written twice: one refusal."""
+        base = _head(repo)
+        point_dev(repo, base)
+        twice = _change(repo, "undo", "undo", "Reopens: plan#9\nReopens: plan#9")
+        assert problems(repo, base, _head(repo)) == (1, [_stray(twice, "undo", 9)])
+
+    def test_a_stray_dev_already_holds_is_never_judged_again(self, repo):
+        """Judged once, when it first lands (R-BAL184): a release pull request from ``dev``
+        carries a stray that reached ``dev`` past the check, and is not refused for it.  The
+        control: on a pull request into ``dev``, the same commit is refused."""
+        base = _head(repo)
+        stray = _change(repo, "undo", "undo by hand", "Reopens: plan#9")
+        _change(repo, "later", "later")
+        point_dev(repo, _head(repo))
+        assert problems(repo, base, _head(repo)) == (2, [])
+        point_dev(repo, base)
+        assert problems(repo, base, _head(repo)) == (2, [_stray(stray, "undo by hand", 9)])
+
+    def test_a_stray_in_the_bases_history_dev_lacks_is_not_judged_again(self, repo):
+        """Review of c1, M2 (mutant R1): only the change set's commits are refused.  A pull
+        request into branch A, which is open and not on ``dev`` and holds a stray, carries a
+        sound ``Reopens:`` of its own: A's stray is A's to answer, never this one's."""
+        _change(repo, "four", "four", "Ships: plan#4")
+        point_dev(repo, _head(repo))
+        _change(repo, "a1", "a1", "Reopens: plan#9")
+        base = _head(repo)
+        _change(repo, "b1", "b1", "Reopens: plan#4")
+        assert problems(repo, base, _head(repo)) == (1, [])
+
+    def test_a_reopens_of_a_ship_in_the_bases_history_dev_lacks_is_no_stray(self, repo):
+        """Review of c1, M2 (mutant R2): the walk reaches the ``Reopens:`` commit's whole
+        history, never ``dev``'s plus the change set's.  Branch A ships plan#7 and is not on
+        ``dev``; a pull request stacked on A undoes it."""
+        point_dev(repo, _head(repo))
+        _change(repo, "a1", "a1", "Ships: plan#7")
+        base = _head(repo)
+        _change(repo, "b1", "b1", "Reopens: plan#7")
+        assert problems(repo, base, _head(repo)) == (1, [])
+
+    def test_the_old_form_is_not_read(self, repo):
+        """``Reopens: <arc>:<id>`` ends at the cutover (R-BAL287) and none exists: rule 3
+        reads ``plan#`` trailers alone, so ``dev`` is not even read."""
+        base = _head(repo)
+        _change(repo, "undo", "undo", "Reopens: balance:X-bk-1")
+        assert problems(repo, base, _head(repo)) == (1, [])
 
 
 class TestWhatCannotBeReadIsRefused:
@@ -592,3 +724,20 @@ class TestTheCommandLine:
         """An id this repository does not hold is a failure, never an empty change set."""
         assert main(["e" * 40, _head(repo)], root=repo) == 2
         assert "git could not read" in capsys.readouterr().err
+
+    def test_a_reopens_with_no_dev_to_read_exits_two(self, repo, capsys):
+        """Rule 3 cannot tell which commits ``dev`` holds without ``dev``: nothing checked."""
+        base = _head(repo)
+        _change(repo, "undo", "undo by hand", "Reopens: plan#9")
+        assert main([base, _head(repo)], root=repo) == 2
+        assert "origin/dev cannot be read in this checkout" in capsys.readouterr().err
+
+    def test_a_stray_exits_one(self, repo, capsys):
+        """Rule 3's refusal through the command line CI runs."""
+        base = _head(repo)
+        point_dev(repo, base)
+        _change(repo, "undo", "undo by hand", "Reopens: plan#9")
+        assert main([base, _head(repo)], root=repo) == 1
+        out = capsys.readouterr().out.splitlines()
+        assert "carries `Reopens: plan#9`, but no commit in its history ships" in out[0]
+        assert out[-1].endswith(", 1 refused")

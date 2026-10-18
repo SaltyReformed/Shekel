@@ -3,8 +3,9 @@ CI's landing check (step X-cx's L9d, leaf a; ruling ``balance:R-BAL289``, "CI's 
 check reads the tracker with a read-only token", whose token ``balance:R-BAL311`` makes
 one minted per run from a read-only GitHub App).
 
-:mod:`tools.ci.commit_trailers` reads git alone: a trailer's shape, and what a revert
-owes.  This check asks the tracker what each card a trailer names IS, before it lands:
+:mod:`tools.ci.commit_trailers` reads git alone: a trailer's shape, what a revert owes,
+and a ``Reopens:`` that undoes nothing in its own history.  This check asks the tracker
+what each card a trailer names IS, before it lands:
 
 1. **A card the tracker holds.**  A ``Ships: plan#N`` or ``Reopens: plan#N`` naming a
    number the tracker has no card for is refused: most likely a mistyped number, and
@@ -67,8 +68,10 @@ Usage, at the repository root::
 
     python -m tools.quill.landing <base-sha> <head-sha>
 
-The two ends are read by :func:`tools.ci.commit_trailers.ends`, the one rule for them,
-and the verdict is printed by :func:`tools.ci.commit_trailers.report`.  Exit status: 0
+The two ends are read by :func:`tools.ci.commit_trailers.ends`, the one rule for them;
+the commits ``dev`` does not hold yet by :func:`tools.ci.commit_trailers.not_on_dev`, the
+one rule for those, which that check's stray rule reads too; and the verdict is printed
+by :func:`tools.ci.commit_trailers.report`.  Exit status: 0
 nothing refused; 1 refused, each reason printed; 2 the command line, git or the
 tracker's read failed, ``dev`` cannot be read, or the change set holds no commit, so
 nothing was checked.
@@ -84,8 +87,8 @@ import requests
 
 from tools.ci import trailers
 from tools.ci.arcs import REPO
-from tools.ci.commit_trailers import ends, report
-from tools.ci.gitcmd import GitError, git, run
+from tools.ci.commit_trailers import ends, not_on_dev, report
+from tools.ci.gitcmd import GitError, git
 from tools.quill._command import with_closure
 from tools.quill._github import GitHub, GitHubError
 from tools.quill._state import filing_ended, filing_unfinished, no_work
@@ -110,20 +113,6 @@ def reader_from_environment() -> CardReader:
     if not token:
         raise NoToken(f"{TOKEN_VARIABLE} is not set, so the tracker cannot be read")
     return CardReader(GitHub(token), PLAN)
-
-
-def _not_on_dev(root: Path, base: str, head: str) -> set[str]:
-    """The commits of ``<base>..<head>`` that :data:`tools.ci.trailers.DEV` does not hold yet:
-    each one this check judges.
-
-    Raises:
-        tools.ci.gitcmd.GitError: when ``dev`` cannot be read in this checkout, so which
-            commits it holds already is unknown.
-    """
-    if run(root, "rev-parse", "--verify", "--quiet", f"{trailers.DEV}^{{commit}}").returncode:
-        raise GitError(f"{trailers.DEV} cannot be read in this checkout, so which commits dev "
-                       "holds already is unknown (in CI, check out with fetch-depth: 0)")
-    return set(git(root, "rev-list", head, f"^{base}", f"^{trailers.DEV}").split())
 
 
 def _shipped_once_landed(root: Path, judged: tuple[trailers.Trailer, ...]) -> set[int]:
@@ -199,7 +188,7 @@ def problems(root: Path, base: str, head: str,
             :func:`refusals` raises them.
     """
     count = int(git(root, "rev-list", "--count", f"{base}..{head}"))
-    fresh = _not_on_dev(root, base, head)
+    fresh = not_on_dev(root, base, head)
     judged = tuple(trailer for trailer in trailers.history(root, f"{base}..{head}").trailers
                    if trailer.sha in fresh)
     named: dict[tuple[int, str], list[trailers.Trailer]] = {}

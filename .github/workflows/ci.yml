@@ -188,8 +188,9 @@ jobs:
     needs: scope
     runs-on: ubuntu-24.04
     steps:
-      # The undone commit a revert names can be anywhere in history, so this
-      # checkout is full; the trailers are only READ.
+      # The undone commit a revert names can be anywhere in history, and the
+      # stray rule reads origin/dev, so this checkout is full; the trailers are
+      # only READ.
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -205,12 +206,13 @@ jobs:
       # ── 4d. The card-trailer rules, in EVERY scope ───────────────
       # Every commit of the change set (``base..head``, handed over by the
       # scope job) names a card as ``Ships: plan#N`` / ``Reopens: plan#N``
-      # (or, until X-cx's cutover, ``<arc>:<id>``), and a revert carries the
+      # (or, until X-cx's cutover, ``<arc>:<id>``); a revert carries the
       # ``Reopens:`` or ``Ships:`` that keeps git's answer to "did plan#N
       # ship?" true to the code it removes or brings back (step X-cx's L4,
-      # card plan#4).  Git only, no tracker access.  A missing or partial
-      # range is a usage error, never an empty change set: it fails, so the
-      # verdict is red.
+      # card plan#4); and a ``Reopens:`` on a commit dev does not hold yet
+      # undoes a ``Ships:`` in its own history (step X-cx's L9d, R-BAL309).
+      # Git only, no tracker access.  A missing or partial range is a usage
+      # error, never an empty change set: it fails, so the verdict is red.
       # Unguarded, like the plan gate: a registry-only pull request carries
       # commits too.  The rules: tools/ci/commit_trailers.py.
       - name: Card trailers (every scope)
