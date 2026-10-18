@@ -246,14 +246,16 @@ class TestFreshLoginRequiredDecorator:
         ``session_transaction`` without first having to log in via
         a full ``/login`` round-trip.
         """
-        app = Flask(__name__)
+        # An import name that points at no module, so Flask roots this app and its
+        # blueprint at the working directory; no case reads a root, instance path or logger.
+        app = Flask("fresh_login_required_test_app")
         app.config["SECRET_KEY"] = "test-key-for-fresh-login-decorator-tests"
         app.config["FRESH_LOGIN_MAX_AGE_MINUTES"] = 5
 
         # Register a fake auth.reauth endpoint so url_for inside the
         # decorator can resolve it.  The decorator does not actually
         # call the view, only generates a URL pointing at it.
-        bp = Blueprint("auth", __name__)
+        bp = Blueprint("auth", app.import_name)
 
         @bp.route("/reauth")
         def reauth():
