@@ -60,7 +60,7 @@ from app.services.statement_match._landing import (
 )
 from app.services.statement_match._sides import MatchSides
 
-from ._builders import (
+from tests.test_services.test_statement_match._builders import (
     accepted_acts,
     a_bank_line,
     a_later_period,
