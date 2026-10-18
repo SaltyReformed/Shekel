@@ -20,11 +20,11 @@ delete group, :class:`TestDeleteTransfer`, holds one case per state of the
 transfer and kind of delete since that step's checkpoint 2e-2b-2a (ruling
 R-BAL290 part 2), where it took in the already-hidden and paid groups.  What
 each side shows of a Projected or
-Cancelled row is ``test_transfer_legs.py``'s
-``TestBothSidesShowTheTransfer``, and a settled row's price that file's
+Cancelled row is the ``test_transfer_legs`` package's
+``TestBothSidesShowTheTransfer``, and a settled row's price that package's
 ``TestTheLegMapProducers::test_a_settled_leg_records_its_movements_figure``
 and ``TestTheLegContributionTwins::test_a_settled_leg_is_worth_its_record_and_not_its_plan``.
-One leg per side is that file's
+One leg per side is that package's
 ``TestTransferLegs::test_each_account_gets_its_own_side``, and which endpoint
 each side is on its ``TestLegOf`` and the projection table.  The database
 refuses a second side row: the expense side's in
@@ -197,7 +197,7 @@ class TestCreateTransfer:
         plan step ``balance:X-bi-6-4d-3``, whose create door stopped writing
         them: a transfer is one row and its two legs are derived from it
         (ruling R-BAL167 class 1; one leg per side is
-        ``test_transfer_legs.py``'s
+        ``test_transfer_legs/test_the_plan_half.py``'s
         ``TestTransferLegs::test_each_account_gets_its_own_side``).  It also
         asked each shadow for a recorded
         settlement, and asks each SIDE now: a Projected create records
@@ -238,7 +238,7 @@ class TestCreateTransfer:
         the category now (ruling R-BAL167 class 1).  It also read both legs'
         categories until that step's checkpoint 2e-2b-1b-2, which reads the
         row re-read from the database instead (ruling R-BAL290 part 1); what
-        a side shows of the row's category is ``test_transfer_legs.py``'s
+        a side shows of the row's category is ``test_transfer_legs/test_what_a_side_shows.py``'s
         ``TestBothSidesShowTheTransfer``.
         """
         with app.app_context():
@@ -271,7 +271,7 @@ class TestCreateTransfer:
         ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2, which reads the row
         re-read from the database instead (ruling R-BAL290 part 1): that a
         side names no TRANSACTION definition whatever its transfer's shape
-        (the grid's row-key contract) is ``test_transfer_legs.py``'s
+        (the grid's row-key contract) is ``test_transfer_legs/test_what_a_side_shows.py``'s
         ``TestALegsDisplayProjections``, which asks it in memory of a
         generated, a placed and an ad-hoc transfer and, saved, of an
         engine-generated one while it is still Projected (this read's own
@@ -303,7 +303,7 @@ class TestCreateTransfer:
         step's checkpoint 2e-2b-1b-2, which reads the row re-read from the
         database instead (ruling R-BAL290 part 1): that a custom name leaves
         each side's label composed from the endpoints is
-        ``test_transfer_legs.py``'s ``TestALegsDisplayProjections``, whose
+        ``test_transfer_legs/test_what_a_side_shows.py``'s ``TestALegsDisplayProjections``, whose
         three transfers each carry one.
         """
         with app.app_context():
@@ -559,7 +559,7 @@ class TestUpdateTransfer:
         What the edit wrote, re-read from the database (ruling R-BAL290
         part 1).  It also priced both legs until plan step
         ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-1; what a side shows of
-        the row's amount is ``test_transfer_legs.py``'s
+        the row's amount is ``test_transfer_legs/test_what_a_side_shows.py``'s
         ``TestBothSidesShowTheTransfer`` now.  The one copy of a pair: the
         invariant group's ``test_amounts_always_match_after_update`` made the
         same edit at $777.77 and was deleted there.  Renamed from
@@ -615,7 +615,7 @@ class TestUpdateTransfer:
         What the edit wrote, re-read from the database (ruling R-BAL290
         part 1).  It also read both legs' periods until plan step
         ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-1; what a side shows of
-        the row's period is ``test_transfer_legs.py``'s
+        the row's period is ``test_transfer_legs/test_what_a_side_shows.py``'s
         ``TestBothSidesShowTheTransfer`` now.  The one copy of a pair: the
         invariant group's ``test_periods_always_match_after_update`` made the
         same edit to the fourth period and was deleted there.  Renamed from
@@ -646,7 +646,7 @@ class TestUpdateTransfer:
         coordinator's ruling, 2026-10-13).  It also read both legs'
         categories until that step's checkpoint 2e-2b-1b-1, which re-reads
         the row from the database instead (ruling R-BAL290 part 1); what a
-        side shows of the row's category is ``test_transfer_legs.py``'s
+        side shows of the row's category is ``test_transfer_legs/test_what_a_side_shows.py``'s
         ``TestBothSidesShowTheTransfer``.  Renamed from
         ``test_a_category_edit_files_the_transfer_and_both_legs_under_it``,
         and before that ``test_category_updates_both_shadows``.
@@ -676,7 +676,7 @@ class TestUpdateTransfer:
         checkpoint 2e-2a-2).  It then priced both legs before and after the
         edit until that step's checkpoint 2e-2b-1b-1, which reads the row's
         amount, re-read from the database (ruling R-BAL290 part 1): a side's
-        price is the row's amount, which ``test_transfer_legs.py``'s
+        price is the row's amount, which ``test_transfer_legs/test_what_a_side_shows.py``'s
         ``TestBothSidesShowTheTransfer`` grades.  Renamed from
         ``test_a_notes_edit_leaves_both_legs_priced_as_they_were``, and
         before that ``test_notes_does_not_touch_shadows``.
@@ -732,7 +732,7 @@ class TestUpdateTransfer:
         What the edit wrote, re-read from the database (ruling R-BAL290
         part 1).  It also read both legs' flags until plan step
         ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-1; what a side shows of
-        the row's flag is ``test_transfer_legs.py``'s
+        the row's flag is ``test_transfer_legs/test_what_a_side_shows.py``'s
         ``TestBothSidesShowTheTransfer`` now.  Renamed from
         ``test_an_override_edit_reaches_the_transfer_and_both_legs``, and
         before that ``test_is_override_syncs_shadows``.
@@ -830,7 +830,7 @@ class TestUpdateTransfer:
         What the edit wrote, re-read from the database (ruling R-BAL290
         part 1).  It also read both legs' categories, as PROJECTION reads,
         until plan step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2: both
-        rows of ``test_transfer_legs.py``'s ``TestBothSidesShowTheTransfer``
+        rows of ``test_transfer_legs/test_what_a_side_shows.py``'s ``TestBothSidesShowTheTransfer``
         carried a category until then, so a side that answered some category
         for a transfer filed under NONE failed only those reads (measured at
         checkpoint 2e-2b-1b-1, by a mutant answering ``-1`` for a missing
@@ -1062,9 +1062,9 @@ class TestUpdateTransfer:
         at plan step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-1 (ruling
         R-BAL290 part 1), where it read both legs' periods and, after the
         settle, their prices, and not the records' amounts.  A side's period
-        is ``test_transfer_legs.py``'s ``TestBothSidesShowTheTransfer``; a
+        is ``test_transfer_legs/test_what_a_side_shows.py``'s ``TestBothSidesShowTheTransfer``; a
         SETTLED side's price is not, since that table holds no settled row,
-        but that file's
+        but ``test_transfer_legs/test_the_grids_legs.py``'s
         ``TestTheLegMapProducers::test_a_settled_leg_records_its_movements_figure``
         and ``TestTheLegContributionTwins``'
         ``test_a_settled_leg_is_worth_its_record_and_not_its_plan``
@@ -1187,7 +1187,7 @@ class TestDeleteTransfer:
         hid it, and it is asked of this case's own stored state (saved,
         ad-hoc, Projected, hidden, no side holding a record) on BOTH sides by
         :meth:`test_delete_soft_deleted_transfer_is_idempotent` below, and on
-        the expense side alone by ``test_transfer_legs.py``'s
+        the expense side alone by ``test_transfer_legs/test_the_plan_half.py``'s
         ``TestTransferLegs::test_a_settled_a_cancelled_and_a_deleted_parent_yield_no_leg``,
         which asks Checking's plan only (measured at that checkpoint: a
         loader letting a hidden transfer through on the income side alone
@@ -1492,11 +1492,11 @@ class TestRestoreTransfer:
     reads ran after that step's create door: each case failed at its
     plant).  The restored transfer's amount is
     :meth:`test_restores_transfer_and_shadows`'s, and what a side shows of
-    it ``test_transfer_legs.py``'s ``TestBothSidesShowTheTransfer``.  Each
+    it ``test_transfer_legs/test_what_a_side_shows.py``'s ``TestBothSidesShowTheTransfer``.  Each
     state the side reads asked is asked elsewhere, failing under a mutant
     gated on that state and side (measured at that checkpoint), with one
     exception.  A restored ``$0.00`` close's side reads Paid: on the expense
-    side, ``test_transfer_legs.py``'s ``TestTheLegMapProducers`` and
+    side, ``test_transfer_legs/test_the_grids_legs.py``'s ``TestTheLegMapProducers`` and
     ``TestTheLegContributionTwins`` cases
     ``test_a_settled_leg_with_no_movement_is_the_zero_record`` and
     ``test_routes/test_a_zero_close_has_no_day.py``.  On the INCOME side no
@@ -1506,10 +1506,12 @@ class TestRestoreTransfer:
     none (measured by the review of that checkpoint).  The close's own
     Paid is :class:`TestDeleteTransfer`'s
     ``test_a_zero_close_held_nothing_and_keeps_paid``.  A restored planned
-    transfer's sides read Projected: that file's
+    transfer's sides read Projected:
+    ``test_transfer_legs/test_what_a_side_shows.py``'s
     ``TestBothSidesShowTheTransfer``, each side.  They hold no settle day:
-    that file's ``test_a_planned_and_an_undated_leg_answer_none`` on the
-    expense side, and ``test_statement_match/test_leg_candidates.py``'s
+    ``test_transfer_legs/test_the_grids_legs.py``'s
+    ``test_a_planned_and_an_undated_leg_answer_none`` on the expense side,
+    and ``test_statement_match/test_leg_candidates.py``'s
     ``test_each_side_is_offered_on_its_own_account_keyed_by_the_transfer``
     on the income side.
     """
@@ -1764,7 +1766,7 @@ class TestDueDateAndSettleDayShadows:
     The due date is a column of the transfer's row, read re-read from the
     database; each side's settle day is its payment record's, read by its
     own SQL (:func:`tests._test_helpers.transfer_side_record`).  What a side
-    shows of the row's due date is ``test_transfer_legs.py``'s
+    shows of the row's due date is ``test_transfer_legs/test_what_a_side_shows.py``'s
     ``TestBothSidesShowTheTransfer``, both sides.  Until plan step
     ``balance:X-bi-6-4d-3`` each due-date case also read the transfer's two
     shadow rows, which that step's create door no longer writes (ruling
@@ -2287,7 +2289,7 @@ class TestMovingATransferBetweenAccounts:
     re-read from the database since that step's checkpoint 2e-2b-1b-3, where
     it read the session's columns and, in five of the six, legs' accounts or
     labels (ruling R-BAL290 part 1).  Which endpoint each side is on is
-    ``test_transfer_legs.py``'s ``TestLegOf`` and its
+    ``test_transfer_legs/test_what_a_side_shows.py``'s ``TestLegOf`` and its
     ``TestBothSidesShowTheTransfer``, and each side's label, composed from
     the endpoints' current names, its ``TestALegsDisplayProjections``.  A
     ledger case that reads the transfer reads the session's row after the
@@ -2342,7 +2344,7 @@ class TestMovingATransferBetweenAccounts:
         shadow rows whose accounts and names the arm re-wrote until that
         step, and the expense leg's label had to follow a destination it does
         not sit on.  Each leg is derived from the transfer now, so a side's
-        account is its endpoint column (``test_transfer_legs.py``'s
+        account is its endpoint column (``test_transfer_legs/test_what_a_side_shows.py``'s
         ``TestLegOf``) and its label is composed from the endpoints' current
         names (that file's ``TestALegsDisplayProjections``).  Renamed from
         ``test_the_destination_move_carries_the_income_leg_and_its_name``.
@@ -2412,7 +2414,7 @@ class TestMovingATransferBetweenAccounts:
         reads no label since that step's checkpoint 2e-2b-1b-3, and nothing
         in this file catches the mutant since (measured there).  That a
         leg's name is composed from its endpoints' current names is pinned by
-        ``test_transfer_legs.py``'s ``TestALegsDisplayProjections``
+        ``test_transfer_legs/test_what_a_side_shows.py``'s ``TestALegsDisplayProjections``
         (``test_the_label_is_composed_from_the_endpoints_current_names``).
         The endpoint half stands, read off the row re-read from the database
         since that checkpoint, where it read the object in the session

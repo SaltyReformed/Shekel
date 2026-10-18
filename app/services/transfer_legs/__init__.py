@@ -72,7 +72,7 @@ On every door-written state the two predicates agree (no door soft-deletes
 one shadow alone); on the double drift -- a dated movement under a shadow
 deleted around the service, the parent still Projected -- the leg used to
 vanish from both halves and is now counted once, by the plan (R-JA: the
-parent decides).  ``tests/test_services/test_transfer_legs.py``'s drift
+parent decides).  ``tests/test_services/test_transfer_legs/test_the_plan_half.py``'s drift
 class pins it, red under the old predicate.
 
 **A leg's LABEL is composed here** (:func:`leg_label`), from the endpoints'

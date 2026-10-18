@@ -59,7 +59,7 @@ def _reread(xfer_id):
     ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-3; the legs were two shadow
     rows until that step (ruling R-BAL167 class 4), and each is derived from
     the transfer now: a side's account is its endpoint column
-    (``test_transfer_legs.py``'s ``TestLegOf``) and its label is composed
+    (``test_transfer_legs/test_what_a_side_shows.py``'s ``TestLegOf``) and its label is composed
     from the endpoints' current names (that file's
     ``TestALegsDisplayProjections``).
     """

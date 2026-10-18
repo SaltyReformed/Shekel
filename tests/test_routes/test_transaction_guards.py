@@ -291,7 +291,7 @@ class TestDueDatePatch:
         transfer's own column, re-read from the database.  The leg pressed is
         the from-side's, where the expense shadow sat.  Each side's
         projection of the date is ``TestBothSidesShowTheTransfer`` in
-        ``test_transfer_legs.py``
+        ``test_transfer_legs/test_what_a_side_shows.py``
         (``test_both_sides_show_the_row_in_every_field_the_table_names``).
         """
         with app.app_context():

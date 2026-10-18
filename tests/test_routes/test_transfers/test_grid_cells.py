@@ -295,7 +295,7 @@ class TestLegContextResponse:
         expense twin's amount was read too until plan step
         ``balance:X-bi-6-4d-3``, which births none: each side's figure is the
         transfer's, projected (graded field by field by
-        ``test_transfer_legs.py::TestBothSidesShowTheTransfer``; ruling
+        ``test_transfer_legs/test_what_a_side_shows.py::TestBothSidesShowTheTransfer``; ruling
         R-BAL167 class 1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():

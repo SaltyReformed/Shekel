@@ -60,7 +60,7 @@ class TestOneTimeTransfer:
         Named ``..._and_two_shadows`` until plan step
         ``balance:X-bi-6-4d-3``, which births no shadow: its count of two
         and their expense / income types went, the sides being the
-        transfer's projection by endpoint (``test_transfer_legs.py``'s
+        transfer's projection by endpoint (``test_transfer_legs/test_what_a_side_shows.py``'s
         ``TestBothSidesShowTheTransfer``; ruling R-BAL167 class 1, plan step
         balance:X-bi-6-4d-3).
         """
@@ -366,7 +366,7 @@ class TestOneTimeTransfer:
 
         It asserted all three rows until plan step ``balance:X-bi-6-4d-3``,
         which births no shadow: each side is the transfer's projection by
-        endpoint now (``test_transfer_legs.py``'s
+        endpoint now (``test_transfer_legs/test_what_a_side_shows.py``'s
         ``TestBothSidesShowTheTransfer``), and a side's display NAME is
         composed from the endpoints at read time (its label is pinned by
         ``TestALegsDisplayProjections`` there), so the transfer's two

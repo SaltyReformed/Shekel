@@ -448,7 +448,7 @@ class TestTransferInstance:
         plan step ``balance:X-bi-6-4d-3``, which births none; the twins'
         figures it read then are each side's projection of the transfer
         read here, graded field by field by
-        ``test_transfer_legs.py::TestBothSidesShowTheTransfer`` (ruling
+        ``test_transfer_legs/test_what_a_side_shows.py::TestBothSidesShowTheTransfer`` (ruling
         R-BAL167 class 1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():
@@ -815,7 +815,7 @@ class TestTransferPeriodMove:
         ``balance:X-bi-6-4d-3``, which births no shadow: it read both
         shadows' periods (Transfer Invariant 3), which are each side's
         projection of the transfer's period read here
-        (``test_transfer_legs.py``'s ``TestBothSidesShowTheTransfer``;
+        (``test_transfer_legs/test_what_a_side_shows.py``'s ``TestBothSidesShowTheTransfer``;
         ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-3).
         """
         with app.app_context():

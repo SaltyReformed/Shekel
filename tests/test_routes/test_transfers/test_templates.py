@@ -658,7 +658,7 @@ class TestTemplateUpdate:
         It also read both shadow transactions' amounts until plan step
         ``balance:X-bi-6-4d-3``, which births none: each side's figure is
         derived from the transfer read here, a projection
-        ``test_transfer_legs.py::TestBothSidesShowTheTransfer`` grades
+        ``test_transfer_legs/test_what_a_side_shows.py::TestBothSidesShowTheTransfer`` grades
         field by field (ruling R-BAL167 class 1, plan step
         balance:X-bi-6-4d-3).
         """

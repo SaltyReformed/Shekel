@@ -292,7 +292,7 @@ class TestTheParentDecidesADrift:
     ``pay_period_locks.settled_items`` states it.  No door writes either
     state -- every status change goes through ``apply_status_to_all_three``
     -- and production held neither on the 2026-09-30 00:11 dump; each is
-    planted around the service, as ``test_transfer_legs``' drift class
+    planted around the service, as ``test_transfer_legs/test_the_plan_half.py``'s drift class
     does, because on every door-written state the transfer and its legs
     share one status, so a lock still reading the LEGS' status passes every
     test above.  These are the states that tell the two apart.

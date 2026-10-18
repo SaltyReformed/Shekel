@@ -470,7 +470,7 @@ def movement_parent(movement: TransactionEntry) -> PlanItem:
     :func:`_leg_is_income`: a side record is its leg's record, always (the
     schema's two rules :func:`_side_records` names), so its leg carries it;
     any other movement is filed under its plan row.
-    ``tests/test_services/test_transfer_legs.py`` pins the twin against
+    ``tests/test_services/test_transfer_legs/test_the_settled_half.py`` pins the twin against
     :func:`transfer_movement_rows`.
 
     Args:

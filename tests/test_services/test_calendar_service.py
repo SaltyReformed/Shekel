@@ -1873,7 +1873,8 @@ class TestATransferIsALegOfItsParent:
         """A $300.00 savings -> card transfer on checking's calendar (set
         ``(checking, card)``): one INCOME cell, the card's leg, 300.00 in --
         R-CC23's one-endpoint arm end to end, the reader-level twin of
-        ``test_transfer_legs``' case (the second review of leaf X-bi-6-1b)."""
+        ``test_transfer_legs/test_the_grids_legs.py``'s case (the second
+        review of leaf X-bi-6-1b)."""
         with app.app_context():
             card = create_account_of_type(
                 seed_user, db.session, "Credit Card", "Rewards Card",

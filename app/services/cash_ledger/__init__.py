@@ -103,7 +103,7 @@ savings with the checking shadow settled around the service folds checking at
 ``-$500.00``, and the reverse drift (parent settled, shadows Projected) folds
 ``$0.00`` on both sides.  Before X-bi-6a either drift counted ONCE, because
 only the shadow was read.  Pinned in
-``tests/test_services/test_transfer_legs.py`` with ``X-bi-4`` named as the
+``tests/test_services/test_transfer_legs/test_the_plan_half.py`` with ``X-bi-4`` named as the
 step that moves it; the structural end is ``X-bi-4`` + ``X-bi-6``, after which
 a transfer's status lives in ONE row and the drift is not a state at all.
 
