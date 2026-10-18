@@ -585,6 +585,47 @@ def test_a_tag_named_like_dev_or_main_stands_in_for_it_in_no_shipped_set(capsys,
     assert "plan#5 is a container" in capsys.readouterr().out
 
 
+def test_a_branch_that_has_not_landed_ships_nothing_in_the_shipped_set(capsys, code):
+    """The L9d delta review 4's LOW-1 (its mutants A7 and A8): the shipped set is the
+    history of dev, main and the head, never of every ref the checkout holds, and CI's
+    checkout fetches every branch.  Branch feat-x, on neither dev nor main and not under the
+    head, ships #6 (closed while still being filed, so a leaf of #5 only once shipped); a
+    pull request into dev ships #5.  Nothing says feat-x lands, so #5 is plain work and
+    lands.  Over every remote-tracking branch and the head, or every ref and the head, #6
+    shipped and #5 would be refused as a container."""
+    root, start = code
+    run(root, "update-ref", "refs/remotes/origin/feat-x",
+        commit(root, "leaf", "Ships: plan#6", parents=[start]))
+    status, out, _, (step,) = _land(capsys, code, _Lookup(_dropped_leaf()),
+                                    ("step", "Ships: plan#5"))
+    assert status == 0
+    assert out.splitlines() == [f"landing check: 1 commit(s) in {start[:12]}..{step[:12]}, "
+                                "0 refused"]
+
+
+def test_the_shipped_set_holds_a_trailer_in_the_body_of_a_merge_commit_main_holds(capsys,
+                                                                                    code):
+    """The L9d delta review 4's LOW-1 (its mutant A3): a merge commit's trailers count in
+    the shipped set as any commit's do.  A hotfix's pull request merged into main with a
+    body carrying ``Ships: plan#6`` (whoever merges can write one; no check judges that
+    merge commit), and #6 (closed while still being filed, so a leaf of #5 only once
+    shipped) is on no other commit.  quill's sync reads that trailer once main is back in
+    dev, and #6 then splits #5, so a pull request into dev shipping #5 is refused.  With
+    merge commits left out of the shipped set's read, #6 never shipped and it would land."""
+    root, start = code
+    hotfix = commit(root, "hotfix", parents=[start])
+    point_main(root, commit(root, "Merge pull request #2 from hotfix", "Ships: plan#6",
+                            parents=[start, hotfix]))
+    status, out, _, (step,) = _land(capsys, code, _Lookup(_dropped_leaf()),
+                                    ("step", "Ships: plan#5"))
+    assert status == 1
+    assert out.splitlines() == [
+        f"REFUSED -- {step[:12]} (step) carries `Ships: plan#5`, but plan#5 is a container, "
+        "which no commit ships: name the step or finding the commit builds (a step split into "
+        "smaller steps is built as them)",
+        f"landing check: 1 commit(s) in {start[:12]}..{step[:12]}, 1 refused"]
+
+
 def test_a_merge_commit_the_change_set_holds_is_judged(capsys, code):
     """The review of the delta review 3 fix, LOW-2 (its mutant N12): a merge commit in the
     change set, a queued group's or one a pull request into another branch brought in, is
