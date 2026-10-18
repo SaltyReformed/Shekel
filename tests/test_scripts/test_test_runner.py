@@ -23,6 +23,13 @@ findings has since been deleted rather than fixed:
   that scrub is gone too -- there is no shared path left for a child to be
   pushed onto, because there is no shared path at all.
 
+The cluster's own life -- its socket directory, ``docker run``, readiness and
+teardown -- is ``scripts/private_cluster.py``'s since step X-cx's K1a, which
+moved it out of the wrapper; its own cases (the socket path's byte budget
+among them) are ``test_private_cluster.py``.  The cases here drive it THROUGH
+the wrapper, which names the cluster, arms the traps and hands pytest the
+DSNs.
+
 These drive a stub ``docker`` and a stub ``pytest`` on ``PATH``, so they need
 no daemon, no image and no database, and they run in CI.  The suite-scale
 behaviour they stand in for was measured separately, on 2026-09-05 at
@@ -220,6 +227,34 @@ class TestTheWrapperItself:
             f"scripts/test.sh is not valid bash: {result.stderr.strip()}. "
             "Every test invocation in this repo goes through that wrapper, "
             "so this breaks all local testing."
+        )
+
+    def test_the_cluster_is_started_and_stopped_through_its_one_home(
+        self,
+    ) -> None:
+        """The wrapper starts and stops its cluster through
+        ``scripts/private_cluster.py`` and spells no container command of its own.
+
+        Step X-cx's K1a moved the cluster's life into that module so the
+        release rehearsal kit starts its cluster the same way: one ``docker
+        run``, one readiness rule, one teardown.  A wrapper that spelled its
+        own ``docker run`` again would pass every end-to-end case below, since
+        the stub docker cannot tell who called it; this reads the SOURCE for
+        that reason, as the trap-arm case does.
+        """
+        source = _TEST_RUNNER.read_text(encoding="utf-8")
+        code = [line for line in source.splitlines()
+                if line.strip() and not line.lstrip().startswith("#")]
+
+        assert any('scripts/private_cluster.py" stop "$_run_container"' in line
+                   for line in code), "the teardown no longer stops through the module"
+        assert any("scripts/private_cluster.py" in line for line in code) and any(
+            line.strip().startswith('start "$_run_container" "$_image"') for line in code
+        ), "the cluster is no longer started through the module"
+        spelled = [line for line in code
+                   if re.search(r"\bdocker\s+(run|rm|exec|inspect)\b", line)]
+        assert not spelled, (
+            f"scripts/test.sh spells a container command of its own again: {spelled}"
         )
 
 
@@ -616,45 +651,6 @@ class TestThePrivateClusterHasNoPort:
             assert "107 bytes" in result.stderr, result.stderr
         finally:
             shutil.rmtree(runtime, ignore_errors=True)
-
-
-class TestTheSocketPathBudgetIsArithmeticNotAGuess:
-    """The 93-byte threshold is derived, and nothing was pinning it.
-
-    ``sun_path`` is 108 bytes including the terminator, so 107 usable, and
-    postgres appends ``/.s.PGSQL.5432``.  A review measured the boundary
-    empirically -- 93 binds, 94 fails with "AF_UNIX path too long" -- and
-    found the refusal test used a directory far past it, so the constant
-    could have drifted by several bytes with every case still green.
-    """
-
-    def test_the_threshold_and_the_suffix_account_for_the_whole_budget(
-        self,
-    ) -> None:
-        """93 + len("/.s.PGSQL.5432") must equal the 107-byte limit."""
-        source = _TEST_RUNNER.read_text(encoding="utf-8")
-        match = re.search(r'\$_sockdir_bytes" -gt ([0-9]+)', source)
-
-        assert match, "the socket-path length guard is gone or was respelled"
-        threshold = int(match.group(1))
-        assert threshold + len("/.s.PGSQL.5432") == 107, (
-            f"threshold {threshold} plus the socket suffix does not fill the "
-            "107-byte sun_path budget; one of the two moved without the other"
-        )
-
-    def test_the_guard_measures_bytes_not_characters(self) -> None:
-        """A multibyte XDG_RUNTIME_DIR under-counts with ``${#var}``.
-
-        ``sun_path`` is a byte budget; ``${#var}`` counts characters, so a
-        path with non-ASCII would pass the guard and then be rejected by the
-        kernel.
-        """
-        source = _TEST_RUNNER.read_text(encoding="utf-8")
-
-        assert '"${#_run_sockdir}" -gt' not in source, (
-            "the guard counts characters again; sun_path is a byte budget"
-        )
-        assert "wc -c" in source
 
 
 class TestAReadyContainerWithNoSocketIsRefused:

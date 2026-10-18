@@ -11,7 +11,12 @@
 # A cluster of this run's own
 #     The container comes from the image ``scripts/build_test_db_image.py``
 #     bakes -- the test template already inside it -- and is reached over a
-#     UNIX SOCKET in a per-run directory.  It is removed afterwards.
+#     UNIX SOCKET in a per-run directory.  It is removed afterwards.  Its
+#     whole life -- the socket directory, the ``docker run`` and its
+#     settings, the readiness wait and the teardown -- is
+#     ``scripts/private_cluster.py``'s, the one home the release rehearsal
+#     kit starts its own cluster through too; this wrapper names the cluster,
+#     arms the traps that stop it, and runs pytest against it.
 #
 #     NOTHING IS SHARED, SO NOTHING NEEDS COORDINATING.  Until
 #     ``balance:X-br-4`` this wrapper also carried a hygiene restart, a
@@ -37,8 +42,8 @@
 #     NO PORT IS PUBLISHED.  The cluster serves one process on this machine,
 #     and on a rootless daemon a published port is a 25-40% failure: docker
 #     allocates it inside the container's network namespace and rootlesskit
-#     binds that number on the HOST.  See the block at the container start
-#     for the measurements.
+#     binds that number on the HOST.  ``scripts/private_cluster.py`` holds
+#     the measurements.
 #
 #     THE DAEMON IS NOT THE SYSTEM ONE.  A container per run on the system
 #     daemon is exactly the churn ``docs/test-harness-isolation.md`` was
@@ -53,7 +58,8 @@
 #                        ``tests/test_deploy``'s conftest see the same
 #                        endpoint this script chose.
 #     XDG_RUNTIME_DIR    Holds the rootless socket that is auto-selected, and
-#                        the per-run socket directory.  Default:
+#                        the per-run socket directory
+#                        (``scripts/private_cluster.py`` makes it).  Default:
 #                        ``/run/user/$(id -u)``.
 #     SHEKEL_ALLOW_HOST_DOCKER  ``1`` accepts a non-rootless daemon.  Shares
 #                        its spelling with ``tests/test_deploy/conftest.py``
@@ -62,7 +68,8 @@
 #                        is a throwaway nothing observes.  Read through a
 #                        truthy vocabulary, NOT by presence: ``CI=false``
 #                        must not sanction anything.
-#     READINESS_TIMEOUT_SECONDS  Cap on the ``pg_isready`` wait.  Default: 15.
+#     READINESS_TIMEOUT_SECONDS  Cap on the readiness wait, read by
+#                        ``scripts/private_cluster.py``.  Default: 15.
 #     TEST_DB_IMAGE      An image to use INSTEAD of building and verifying
 #                        one.  Skips build_test_db_image.py entirely, so
 #                        whoever sets it owns the image's correctness.  Its
@@ -101,13 +108,13 @@
 #     the kernel's 107-byte limit, an image that cannot be prepared, a
 #     cluster that does not accept connections within
 #     READINESS_TIMEOUT_SECONDS, and one that reports ready without leaving
-#     a socket.  NO COUNT IS GIVEN: every attempt to count them in a comment
-#     has been wrong.  Other non-pytest statuses are docker's or the
-#     shell's, not this script's.
+#     a socket (``scripts/private_cluster.py`` refuses the socket path, the
+#     readiness and the missing socket, and any other start it cannot
+#     finish).  NO COUNT IS GIVEN: every attempt to count them in a comment
+#     has been wrong.  Other non-pytest statuses are docker's or the shell's,
+#     not this script's.
 
 set -euo pipefail
-
-READINESS_TIMEOUT_SECONDS="${READINESS_TIMEOUT_SECONDS:-15}"
 
 # Resolved via BASH_SOURCE, not the invoker's cwd, so a run from outside the
 # repo root still finds the project (OPS/SH-26).
@@ -336,74 +343,18 @@ fi
 
 # The name carries the PID because the whole point is that two runs can
 # coexist -- including two in the SAME worktree, which no per-worktree
-# database prefix ever fixed.
+# database prefix ever fixed.  It is chosen HERE, before anything starts, so
+# a trap that fires mid-start still knows what to stop; the socket directory
+# is named after it (``scripts/private_cluster.py``).
 _run_container="shekel-testrun-$$"
 
-# NO PUBLISHED PORT.  The cluster serves exactly one process on this
-# machine, so a port buys nothing and costs a whole failure class: on a
-# rootless daemon `dockerd` picks the port inside the container's network
-# namespace and rootlesskit then binds that number on the HOST, where a live
-# outbound connection often already owns it.  `ip_local_port_range` is
-# 32768-60999, byte-identical to docker's publish band, and this host
-# routinely holds thousands of sockets in it.  Measured: 5 of 12 container
-# starts failed, and 3 of 12 still failed with no port ever recycled, so it
-# is not a release race -- it is two allocators in two namespaces sharing one
-# number space.  The root daemon does not hit it (0 of 8), which is why this
-# only surfaced on moving off it.
-#
-# A socket has no allocator and no shared namespace: the run names its own
-# directory, and it already has a unique name in its PID.
-_run_sockdir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/${_run_container}"
-# A unix socket path is capped at 107 bytes by the kernel and postgres
-# appends `/.s.PGSQL.5432` (14).  Refuse at the door rather than let the
-# limit surface as a connection error from deep inside the suite.
-# BYTES, not characters: ``${#var}`` counts characters and ``sun_path`` is a
-# byte budget, so a multibyte XDG_RUNTIME_DIR would under-count and admit a
-# path the kernel then rejects.
-_sockdir_bytes="$(printf '%s' "$_run_sockdir" | wc -c)"
-if [ "$_sockdir_bytes" -gt 93 ]; then
-    echo "[test.sh] socket directory $_run_sockdir is too long;" \
-        "a unix socket path cannot exceed 107 bytes.  Set" \
-        "XDG_RUNTIME_DIR to something shorter." >&2
-    exit 2
-fi
-unset _sockdir_bytes
-rm -rf "$_run_sockdir"
-mkdir -p "$_run_sockdir"
-# 0777 because rootless docker maps the container's postgres user into the
-# subuid range, so it cannot write a directory owned by this user.  The
-# socket is still private: XDG_RUNTIME_DIR itself is 0700.
-chmod 0777 "$_run_sockdir"
-
-# ``-v`` removes the container's ANONYMOUS VOLUME with it.  The baked image
-# inherits the base's ``VOLUME /var/lib/postgresql`` declaration even though
-# PGDATA lives elsewhere, so every run created a volume that ``docker rm -f``
-# left behind: measured 101 of 112 volumes on this daemon dangling, the
-# newest in one-second pairs matching this script's own verify+run
-# invocations.  Each holds ~0 B, so the cost is unbounded metadata on a
-# daemon the homelab stack watches, not disk.
-#
-# And the removal REPORTS ITS OWN FAILURE.  Discarding the status, stdout and
-# stderr made the one step whose entire job is cleanup unable to say it had
-# failed: a wedged or unreachable daemon left the container running and the
-# wrapper still exited with pytest's status.
+# Stopping is the one home's: it removes the container with its anonymous
+# volume and the socket directory, and NAMES on stderr anything that
+# survived.  The wrapper still exits with pytest's status, as it always has;
+# ``|| true`` because a survivor is reported there, not by aborting the
+# teardown under ``set -e``.
 _teardown_run_container() {
-    docker rm -fv "$_run_container" >/dev/null 2>&1 || true
-    if docker inspect "$_run_container" >/dev/null 2>&1; then
-        echo "[test.sh] WARNING: $_run_container survived teardown --" \
-            "remove it by hand ('docker rm -fv $_run_container') or the" \
-            "next run reusing that PID collides with it." >&2
-    fi
-    # The socket directory outlives the container and sits on a tmpfs, so a
-    # leak is bounded by the next reboot rather than by anything that prunes
-    # it.  A plain rm suffices ONLY because the mount point is /sockets: the
-    # entrypoint chowns /var/run/postgresql to its own subuid-mapped user and
-    # sets the sticky bit, after which this user cannot unlink the socket
-    # that user created -- measured 5 of 5.
-    rm -rf "$_run_sockdir" 2>/dev/null || true
-    if [ -e "$_run_sockdir" ]; then
-        echo "[test.sh] WARNING: $_run_sockdir survived teardown." >&2
-    fi
+    "$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" stop "$_run_container" || true
 }
 
 # Forward the signal to pytest FIRST, so the run stops rather than being
@@ -422,137 +373,24 @@ _stop_run() {
 # and was missing -- closing the terminal on a running suite leaked both the
 # container and the socket directory, while this file's own prose claimed
 # every exit path was covered.  Adding the arm was the way to make that
-# sentence true.
+# sentence true.  The traps are armed BEFORE the start.  A start ended by
+# Ctrl-C stops what it made itself; one killed by TERM or HUP cannot, and
+# the trap's stop finds its cluster by the name chosen above.  A stop of a
+# cluster that was never made finds nothing and says nothing.
 trap '_teardown_run_container' EXIT
 trap '_teardown_run_container; exit 130' INT
 trap '_teardown_run_container; exit 143' TERM
 trap '_teardown_run_container; exit 129' HUP
 
-# ``--network=none`` follows from having no port: the cluster needs no
-# network at all, which also takes the harness off the experimental
-# gvisor-tap-vsock driver the rootless daemon falls back to when slirp4netns
-# is absent.  ``listen_addresses=''`` means it does not even open a TCP
-# listener inside its own namespace.
-#
-# The socket lives at /sockets, NOT the default /var/run/postgresql, because
-# the entrypoint chowns that path to a subuid-mapped user and sticky-bits it,
-# leaving behind files this user cannot delete.
-docker run -d --rm --name "$_run_container" \
-    --network=none \
-    -e POSTGRES_USER=shekel_user \
-    -e POSTGRES_PASSWORD=shekel_pass \
-    -e POSTGRES_DB=postgres \
-    -e PGDATA=/pgdata-baked \
-    -v "${_run_sockdir}:/sockets" \
-    "$_image" \
-    -c idle_in_transaction_session_timeout=30000 \
-    -c lock_timeout=10000 \
-    -c statement_timeout=30000 \
-    -c fsync=off \
-    -c synchronous_commit=off \
-    -c full_page_writes=off \
-    -c max_locks_per_transaction=256 \
-    -c listen_addresses='' \
-    -c unix_socket_directories=/sockets >/dev/null
-
-# THE SETTINGS ABOVE ARE A CENSUS OF THE DELETED SHARED CLUSTER'S, not a
-# selection from it, and saying so is the point: the compose service that
-# ``balance:X-br-4`` removed ran with TEN ``-c`` flags and the per-run branch
-# was written with THREE.  That was survivable while this path was opt-in and
-# is not now that it is the only one, so the census was taken.  Three flags
-# above are not from it: the two socket flags are this run's own mechanics
-# (see above the run), and the lock table's size, which that cluster never
-# set, has its own paragraph below.
-#
-# The three TIMEOUTS are carried because the suite QUOTES one of them as a
-# mechanism.  ``tests/_test_helpers.py`` (twice) and three migration tests
-# state that a conflicting DDL "dies on the cluster's 10-second
-# ``lock_timeout``" -- PostgreSQL's default is 0, meaning wait forever, so
-# without the flag that becomes the per-test pytest-timeout naming a timeout
-# instead of a lock, with four docstrings telling the author to expect the
-# other signature.  ``statement_timeout`` and
-# ``idle_in_transaction_session_timeout`` come along for the same reason: a
-# runaway is bounded by the cluster, loudly, rather than by the test runner.
-#
-# The three ``tcp_keepalives_*`` flags are DELIBERATELY NOT carried, and this
-# is the one place that says so: they configure TCP sockets, and this cluster
-# has none -- ``--network=none``, ``listen_addresses=''`` and a unix socket.
-# They would be inert rather than wrong.  So would the tenth,
-# ``file_copy_method=clone``, which is not carried either: it chooses how
-# ``CREATE DATABASE ... STRATEGY FILE_COPY`` copies a template's files (the
-# deleted service paired it with a btrfs PGDATA for reflinks), and every
-# clone the suite makes is ``STRATEGY WAL_LOG`` (tests/conftest.py).
-#
-# THE NON-DURABLE KNOBS ARE WHAT MAKE THIS AFFORDABLE, and leaving them off
-# is the difference between a design that pays for itself and one that does
-# not.  Measured: the full suite took 753 s in a per-run container against
-# 356 s on the shared cluster -- 2.1x -- purely because the baked image runs
-# with docker's default durability while docker-compose.dev.yml gives the
-# shared test-db `fsync=off`, `synchronous_commit=off` and
-# `full_page_writes=off`.  Per-test drop-and-reclone is thousands of DDL
-# cycles, and docs/testing-standards.md prices one at 1618 ms with fsync on
-# against 31 ms with it off.  The cluster is a throwaway that lives for one
-# run, so a crash losing its last transactions costs a re-run and nothing
-# else -- exactly the argument the compose file already makes, which is why
-# these three are copied from it rather than invented here.
-#
-# THE LOCK TABLE IS SIZED FOR THIS SUITE rather than left at PostgreSQL's
-# default of 64 (finding BAL-570).  The table is shared by the whole cluster
-# and a lock keeps its slot until its transaction ends, so what has to fit is
-# every worker's open transaction at the same moment.  Two transactions in the
-# suite lock the whole schema at once, and both grow with every migration:
-# ``_empty_the_database`` in
-# tests/test_scripts/test_init_database_one_transaction.py drops the five
-# application schemas, and the first boot it then runs
-# (``init_fresh_database``) creates them again.  Five tests run that pair and
-# they sit side by side in collection order, so ``-n 12`` can hand all five
-# to five workers at once.  Measured 2026-09-30 on dev at 337341152 (image
-# shekel-test-db:0aa2eb4287c5, PostgreSQL 18.6), from ``pg_locks`` inside
-# each transaction and from a sampler reading the whole cluster's
-# ``pg_locks`` through a run (a sampled peak is a floor, not the peak):
-#
-#   the DROP's transaction              2,829 locks
-#   the first boot, at its commit       1,519 locks
-#   heaviest single backend, full run   2,827 (that DROP; none heavier seen)
-#   cluster peak, a run of that file   13,052 (four DROPs, one boot)
-#   cluster peak, full run             10,869 (three DROPs, one boot)
-#   one transaction can hold, at 64    14,912 before "out of shared memory"
-#   one transaction can hold, at 256   55,760
-#
-# Five of those DROPs in flight are 14,145 of the 14,912 before any other
-# worker holds a lock.  That is what the full run that surfaced BAL-570 hit:
-# four of the five failed on the DROP with "out of shared memory ... increase
-# max_locks_per_transaction".  At 256, all twelve of pytest.ini's workers
-# inside a 2,829-lock transaction at the same moment would hold 33,948, so the
-# heaviest transaction can grow to ~4,600 locks (64% more) before even that
-# schedule overflows.  It costs 11 MB of shared memory (161 MB against 150).
-# On PostgreSQL 18 the same setting also sizes each backend's fast-path slots
-# (64 to 256), which only moves weak locks off the shared table; the DROP's
-# AccessExclusive locks never take that path.
-#
-# This sizes the suite's CONCURRENCY, not the application's need.  Neither
-# production compose file sets it, so as far as this repository says
-# production runs 64, where one transaction tops out near the 14,912 above
-# (the first boot holds 1,519).  At 256 the suite no longer fails when one
-# transaction outgrows that ceiling, so it is no alarm for one.
-#
-# Asking over the socket is safe HERE and would not be in the builder.  The
-# entrypoint answers on a socket during its initdb window before the real
-# server exists -- but the baked image ships a populated PGDATA, so the
-# entrypoint skips initdb entirely and that window never opens.
-# scripts/build_test_db_image.py, whose bake container DOES run initdb, is
-# the one that still cannot trust a socket.
-_deadline=$(($(date +%s) + READINESS_TIMEOUT_SECONDS))
-until docker exec "$_run_container" \
-    pg_isready -q -h /sockets -U shekel_user 2>/dev/null; do
-    # shellcheck disable=SC2312 # date +%s always succeeds; it only drives this timeout
-    if [ "$(date +%s)" -ge "$_deadline" ]; then
-        echo "[test.sh] $_run_container did not accept connections within" \
-            "${READINESS_TIMEOUT_SECONDS}s" >&2
-        exit 2
-    fi
-    sleep 0.1
-done
+# The start prints the socket directory, then the container's id, once the
+# cluster accepts connections on that socket; a start that cannot finish
+# names why, exits 2 and leaves nothing behind.
+if ! _cluster="$("$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" \
+    start "$_run_container" "$_image")"; then
+    exit 2
+fi
+read -r _run_sockdir <<<"$_cluster"
+unset _cluster
 
 # libpq reads a ``host`` beginning with ``/`` as a socket DIRECTORY, and
 # SQLAlchemy passes the query string through untouched, so one URL shape
