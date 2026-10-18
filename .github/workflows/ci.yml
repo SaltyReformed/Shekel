@@ -304,8 +304,10 @@ jobs:
 
       # A trailer naming a card the tracker lacks, a Ships: naming no work,
       # or one naming a card that carries the filing mark (still being filed,
-      # or dropped while it was) is refused, each trailer judged once, when
-      # its commit first lands on dev or main (step X-cx's L9d).
+      # or dropped while it was) is refused, each trailer judged once, by the
+      # pull request or merge group that lands its commit on dev or main (step
+      # X-cx's L9d); a merge commit GitHub writes and a push straight to dev or
+      # main are never judged.
       # The tracker is read only when a trailer names a card.  No condition:
       # with the mint skipped the token is empty, and the check decides.
       # The rules: tools/quill/landing.py.

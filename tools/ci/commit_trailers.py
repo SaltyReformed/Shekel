@@ -62,12 +62,17 @@ the one reader and the one ``shipped`` rule the tracker tool also asks:
    2026-10-17; ``main`` beside ``dev`` since the L9d delta review's
    MEDIUM-1): only on the commits of the change set that have not landed,
    which neither ``dev`` nor ``main`` holds yet (:func:`not_landed`): every
-   commit of a pull request into ``dev``, of one into ``main`` a release
-   branch's own, and of a push to ``main``, which ``main`` then holds, none.
-   A commit ``dev`` or ``main`` holds was judged at the pull request that
-   brought it there, or got there past this check (a push straight to
-   ``dev``); either way no commit can change it (``R-BAL184``), so judging it
-   again could only refuse it for good, never catch it.  So this check never
+   commit of a pull request or a merge-queue group into ``dev``, of a pull
+   request into ``main`` a release branch's own, and of a push to ``main``,
+   which ``main`` then holds, none.  A commit ``dev`` or ``main`` holds was
+   judged at the pull request that brought it there, or got there past this
+   check: a push straight to ``dev``, an administrator's push straight to
+   ``main`` (its protection does not bind administrators), or the merge commit
+   GitHub writes when it merges a pull request, which no pull request's
+   change set holds and whose message is that pull request's title (2026-10-18:
+   merge commits only, ``merge_commit_message: PR_TITLE``).  Either way no
+   commit can change it (``R-BAL184``), so judging it again could only refuse
+   it for good, never stop it landing.  So this check never
    refuses a later pull request for a stray that reached ``dev`` or ``main``
    without it (none had: neither held a ``plan#`` trailer on 2026-10-18), or
    past a check no merge requires, and undoing one owes nothing (rule 2).  The

@@ -41,11 +41,14 @@ branch's own commit, judged at its pull request into ``main``, would be judged a
 the push to ``main`` and by the pull request bringing ``main`` back into ``dev``.  So of
 the change set ``<base>..<head>`` it judges only the commits that have not landed, which
 neither :data:`tools.ci.trailers.DEV` nor :data:`tools.ci.trailers.MAIN` holds yet:
-every commit of a pull request into ``dev``, of one into ``main`` a release branch's own,
-and of a push to ``main``, which ``main`` then holds, none.  A change set wholly on
-``dev`` or ``main`` judges nothing and says so; a checkout that cannot read either
-refuses to judge.  A commit pushed straight to ``dev``, outside a pull request, is never
-judged here.
+every commit of a pull request or a merge-queue group into ``dev``, of a pull request
+into ``main`` a release branch's own, and of a push to ``main``, which ``main`` then
+holds, none.  A change set wholly on ``dev`` or ``main`` judges nothing and says so; a
+checkout that cannot read either refuses to judge.  Never judged here, since no pull
+request's change set holds it: a commit pushed straight to ``dev``, an administrator's
+push straight to ``main`` (its protection does not bind administrators), and the merge
+commit GitHub writes when it merges a pull request, whose message is that pull request's
+title (2026-10-18: merge commits only, ``merge_commit_message: PR_TITLE``).
 
 **Whether a card is work is git's answer once those commits land**: whether a step is
 split reads which of the steps linked under it git says shipped (a step closed while
@@ -230,7 +233,7 @@ def main(argv: list[str] | None = None,
         return 2
     if fresh < count:
         print(f"landing check: {count - fresh} of the {count} commit(s) are on "
-              f"{trailers.DEV} or {trailers.MAIN} already, each judged when it landed there")
+              f"{trailers.DEV} or {trailers.MAIN} already, and are not judged again")
     return report("landing check", base, head, count, reasons)
 
 

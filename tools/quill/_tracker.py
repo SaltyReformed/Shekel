@@ -277,19 +277,26 @@ class Comment:
     body: str
 
 
-def _counted(connection: dict | None, what: str, number: int) -> list:
-    """A connection's nodes, refusing one GitHub answered as null or truncated (a silent
-    partial read).  GitHub's schema lets it answer an issue's ``labels`` as null, and any
-    connection's ``nodes`` (read 2026-10-18)."""
+def _listed(connection: dict | None, what: str, number: int) -> list:
+    """A connection's nodes, refusing one GitHub answered as null, which would read as none:
+    GitHub's schema lets it answer an issue's ``labels`` so, and any connection's ``nodes``
+    (read 2026-10-18)."""
     if connection is None or connection["nodes"] is None:
         raise TrackerError(f"GitHub answered plan#{number}'s {what} as null, so the read "
                            "holds none of them")
-    if connection["totalCount"] > len(connection["nodes"]):
+    return connection["nodes"]
+
+
+def _counted(connection: dict | None, what: str, number: int) -> list:
+    """A connection's nodes (:func:`_listed`), refusing one GitHub truncated (a silent
+    partial read)."""
+    nodes = _listed(connection, what, number)
+    if connection["totalCount"] > len(nodes):
         raise TrackerError(
             f"plan#{number} has {connection['totalCount']} {what}; the read holds "
-            f"{len(connection['nodes'])}"
+            f"{len(nodes)}"
         )
-    return connection["nodes"]
+    return nodes
 
 
 def _is_tracker_issue(node: dict, place: Place) -> bool:
@@ -320,7 +327,7 @@ def card_from(node: dict, place: Place, board_id: str | None, app_login: str) ->
     None), a :class:`BareCard` (:data:`_queries.BARE_CARD_FIELDS`).  ``app_login`` is the
     reader's: a close by it is the tool's."""
     number = node["number"]
-    events = node["timelineItems"]["nodes"]
+    events = _listed(node["timelineItems"], "close events", number)
     last_actor = ((events[-1].get("actor") or {}).get("login")) if events else None
     is_open = node["state"] == "OPEN"
     links = [(node["parent"], "parent")] if node["parent"] else []

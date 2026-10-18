@@ -364,8 +364,8 @@ def test_a_release_of_commits_dev_holds_judges_none_of_them_again(capsys, code):
     assert main([start, undone], _never, root) == 0
     out = capsys.readouterr().out
     assert out.splitlines() == [
-        "landing check: 2 of the 2 commit(s) are on origin/dev or origin/main already, each "
-        "judged when it landed there",
+        "landing check: 2 of the 2 commit(s) are on origin/dev or origin/main already, and are "
+        "not judged again",
         f"landing check: 2 commit(s) in {start[:12]}..{undone[:12]}, 0 refused"]
 
 
@@ -391,11 +391,11 @@ def test_a_release_branch_commit_only_main_holds_is_judged_once(capsys, code):
     assert main([work, released], _reader(later), root) == 0
     assert not later.asked
     assert capsys.readouterr().out.splitlines() == [
-        "landing check: 3 of the 3 commit(s) are on origin/dev or origin/main already, each "
-        "judged when it landed there",
+        "landing check: 3 of the 3 commit(s) are on origin/dev or origin/main already, and are "
+        "not judged again",
         f"landing check: 3 commit(s) in {start[:12]}..{released[:12]}, 0 refused",
-        "landing check: 2 of the 2 commit(s) are on origin/dev or origin/main already, each "
-        "judged when it landed there",
+        "landing check: 2 of the 2 commit(s) are on origin/dev or origin/main already, and are "
+        "not judged again",
         f"landing check: 2 commit(s) in {work[:12]}..{released[:12]}, 0 refused"]
 
 
@@ -501,12 +501,14 @@ def test_a_card_linked_to_one_the_tracker_lacks_refuses_to_judge(capsys, code):
 @pytest.mark.parametrize(("null", "what"), [
     (lambda node: node.update(labels=None), "labels"),
     (lambda node: node["subIssues"].update(nodes=None), "sub-issues"),
-], ids=["labels", "sub-issue nodes"])
+    (lambda node: node["timelineItems"].update(nodes=None), "close events"),
+], ids=["labels", "sub-issue nodes", "close-event nodes"])
 def test_a_list_github_answers_as_null_refuses_to_judge(capsys, code, null, what):
     """The L9d delta review's LOW-2: a card's labels, or the nodes of one of its lists,
     answered as null (GitHub's schema allows both) exits 2 naming the card and the list,
-    never a traceback; and an answer the tracker DID give is not called unreadable (the
-    review's nit)."""
+    never a traceback and never read as none (a null list of close events read as none
+    would say no one ever closed the card); and an answer the tracker DID give is not
+    called unreadable (the review's nit)."""
     nodes = _tracker(_card(5))
     null(nodes[5])
     status, out, err, _ = _land(capsys, code, _Lookup(nodes), ("ship", "Ships: plan#5"))
