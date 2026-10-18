@@ -433,9 +433,10 @@ class TestRegenerateDeletionRoutedThroughService:
 
     # ``test_regen_delete_leaves_no_orphan_shadows`` (C34-3) was deleted at plan
     # step ``balance:X-bi-6-4d-3`` (ruling **R-BAL320**): without its twin reads
-    # it asserted only that every retired transfer is gone, which
-    # ``test_regen_delete_emits_one_hard_delete_event_per_deletion`` asserts on
-    # the same ``_retire_every_row``, failing first when the retire arm skips
+    # it asserted nothing but its helper's ``created == []``.
+    # ``test_regen_delete_emits_one_hard_delete_event_per_deletion`` runs the
+    # same ``_retire_every_row`` and reads one event per deletion and every
+    # retired transfer gone, failing first when the retire arm skips
     # ``delete_transfer`` (measured).
 
     def test_transfer_recurrence_module_has_no_bare_delete(self):

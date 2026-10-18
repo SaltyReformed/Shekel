@@ -433,14 +433,18 @@ class TestResolveConflictsShadowGuard:
     a transfer is refused at the INSERT (``ck_transactions_names_no_transfer``,
     graded by ``tests/test_models/test_a_transfer_is_one_row.py``'s
     ``test_the_database_refuses_a_twin``), and the guard goes with the column at
-    ``balance:X-bi-6-5``.  The two cases that drove it were deleted there
-    (ruling **R-BAL320**): ``test_update_action_on_shadow_raises_validation_error``
-    planted the refused row, and ``test_cross_user_shadow_silently_skipped``'s
-    two reads -- no raise, nothing written -- are ``TestResolveConflicts``'s
+    ``balance:X-bi-6-5``.  The two cases that drove it were deleted at plan
+    step ``balance:X-bi-6-4d-3`` (ruling **R-BAL320**):
+    ``test_update_action_on_shadow_raises_validation_error`` planted the
+    refused row, and ``test_cross_user_shadow_silently_skipped`` read two
+    things.  Its nothing-written read is ``TestResolveConflicts``'s
     ``test_cross_user_update_blocked`` on a regular row, which fails first when
-    the cross-user skip's ``continue`` is dropped (measured).  That case read no
-    access event; the warning is logged before the ``continue``, so dropping it
-    leaves ``tests/test_services/test_service_log_events.py``'s
+    the cross-user skip's ``continue`` is dropped (measured).  Its no-raise read
+    graded the ORDER -- the cross-user skip before this guard -- which no state
+    can show without a twin, so it goes unchecked until ``balance:X-bi-6-5``
+    deletes the guard.  The deleted case read no access event; the warning is
+    logged before the ``continue``, so dropping it leaves
+    ``tests/test_services/test_service_log_events.py``'s
     ``test_resolve_conflicts_cross_user_emits_access_event`` passing (measured).
     The control below stays.
     """

@@ -666,17 +666,21 @@ class TestGenerateTransferOf:
         Named ``test_the_transfer_is_the_engines_with_both_legs`` until plan
         step ``balance:X-bi-6-4d-3``, where its reads of the two shadow legs
         went (ruling **R-BAL167** class 1): a transfer stores no leg row since
-        migration 82f7, and each side's endpoint, due date and ``template_id``
-        are read off the transfer, graded once by
-        ``tests.test_services.test_transfer_legs`` ::
-        ``test_both_sides_show_the_row_in_every_field_the_table_names``.
+        migration 82f7.  Each side's endpoint and due date are read off the
+        transfer, graded once by ``tests.test_services.test_transfer_legs`` ::
+        ``test_both_sides_show_the_row_in_every_field_the_table_names``; a
+        side names no definition (its ``template_id`` is ``None``), graded for
+        a saved generated transfer, this case's shape, by the same module's
+        ``TestALegsDisplayProjections`` ::
+        ``test_a_saved_generated_transfers_sides_name_no_definition_projected_or_settled``.
         Its read of the legs' amount declaration -- no figure, priced by
         ``PARENT_TRANSFER`` -- went with them and moved nowhere, because no
         live row or value carries a declaration: the rows it read are refused
         by ``ck_transactions_names_no_transfer``, a
         :class:`~app.services.transfer_legs.TransferLeg` stores no amount of
-        its own (it holds its parent, and is worth what the parent resolves
-        to), and the declaration's one writer,
+        its own (it holds its parent and, once settled, its record; a
+        still-planned leg is worth what its parent resolves to), and the
+        declaration's one writer in ``app/``,
         ``transfer_service._amount.apply_amount_ownership``, writes it onto
         ``TransferRows.shadows``, empty on every transfer -- an arm the step's
         second leaf deletes (``TransferRows``'s docstring, in

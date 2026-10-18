@@ -378,10 +378,11 @@ class TestTransferMaintain:
         82f7, so each side's account is its parent's endpoint, graded once by
         ``tests.test_services.test_transfer_legs`` ::
         ``test_both_sides_show_the_row_in_every_field_the_table_names``, and
-        its name is composed from the endpoints' names, graded by the same
-        module's ``TestALegsDisplayProjections`` ::
-        ``test_the_label_is_composed_from_the_endpoints_current_names`` (ruling
-        **R-BAL167** class 1).
+        its name is composed from the endpoints' names -- graded in memory by
+        the same module's ``TestALegsDisplayProjections`` ::
+        ``test_the_label_is_composed_from_the_endpoints_current_names``, while
+        a saved transfer of a definition, this case's rows, is asked its label
+        by no case (that test's own docstring; ruling **R-BAL167** class 1).
         """
         with app.app_context():
             template, _, rows = self._template_with_rows(
