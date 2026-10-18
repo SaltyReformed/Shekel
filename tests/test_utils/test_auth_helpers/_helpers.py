@@ -4,8 +4,6 @@
 
 import logging
 
-from app.models.ref import Status
-
 
 class _AuthHelpersLogCapture:
     """Context manager that captures records on the auth_helpers logger.
@@ -16,15 +14,26 @@ class _AuthHelpersLogCapture:
     """
 
     def __init__(self, level=logging.DEBUG):
+        """Build the handler that keeps every record at *level* or above in ``records``.
+
+        The default, DEBUG, keeps the INFO ``resource_not_found`` beside the
+        WARNING denials, so a case can assert one is absent.  The logger is not
+        touched until the block is entered.
+        """
         self._logger = logging.getLogger("app.utils.auth_helpers")
         self._level = level
         self.records: list[logging.LogRecord] = []
         self._handler = logging.Handler()
-        self._handler.emit = lambda record: self.records.append(record)
+        self._handler.emit = self.records.append
         self._prior_level = None
         self._prior_propagate = None
 
     def __enter__(self):
+        """Attach the handler, set the logger to *level* and stop propagation.
+
+        The logger's own level and propagation are saved first, so ``__exit__``
+        puts back exactly what the block found.
+        """
         self._prior_level = self._logger.level
         self._prior_propagate = self._logger.propagate
         self._logger.addHandler(self._handler)
@@ -36,6 +45,10 @@ class _AuthHelpersLogCapture:
         return self
 
     def __exit__(self, *exc):
+        """Detach the handler and restore the level and propagation ``__enter__`` saved.
+
+        Returns ``None``, so an exception raised in the block still propagates.
+        """
         self._logger.removeHandler(self._handler)
         self._logger.setLevel(self._prior_level)
         self._logger.propagate = self._prior_propagate

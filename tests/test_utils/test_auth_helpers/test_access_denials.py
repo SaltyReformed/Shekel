@@ -136,7 +136,6 @@ class TestAccessDeniedLogging:
     ):
         """A cross-user denial through the parent path emits ``access_denied_cross_user``."""
         # Build a transaction owned by the second user.
-        from app.services import pay_period_write  # noqa: WPS433
         periods2 = record_paydays_across_a_hole(
             user_id=second_user["user"].id,
             first_payday=date(2026, 3, 1),
@@ -306,7 +305,6 @@ class TestAccessDeniedLogging:
         deep-hunt #85: the owner-path denial was silent before.  WARNING
         level matches the sibling get_or_404 cross-user event.
         """
-        from app.services import pay_period_write  # noqa: WPS433
         with app.test_request_context("/some/path"):
             login_user(seed_user["user"])
             periods2 = record_paydays_across_a_hole(
@@ -442,33 +440,44 @@ class TestAccessDeniedLogging:
 
 
 class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
-    """Another owner's DELETED row, probed by a stranger or a companion: a denial, not "not found".
+    """Deleted-row probes, one case per denial arm: owner, companion visibility, companion owner.
 
-    ``get_accessible_transaction_or_deleted`` asks the not-found predicate
+    Each case names another owner's DELETED row, and a different arm of
+    ``get_accessible_transaction_or_deleted`` refuses it: the owner check refuses a stranger
+    (``owner_id != acts_on``, ``test_a_strangers_probe``); the companion check refuses the
+    owner's companion a HIDDEN row (``not txn.visible_to_companion``,
+    ``test_a_companions_probe``) and another household's companion a companion-VISIBLE row
+    (its ``owner_id != acts_on``, ``test_a_companions_probe_of_another_household``).
+    The door asks the not-found predicate
     (``is_not_found_to_transaction_doors``) AFTER both access branches, and its
-    comment says why: either probe is an access denial first (``access_denied_cross_user``
+    comment says why: every such probe is an access denial first (``access_denied_cross_user``
     at WARNING, the F-144 contract) and "not found" second, so the predicate never runs
     and logs nothing.  Measured at plan step ``balance:X-bi-6-4d-3`` (ruling **R-BAL300**):
     evaluating the predicate ahead of the access branches, every return unchanged, logged
     the row as ``resource_not_found`` before the denial and failed no test that captures a
-    log, for either requester (for the companion, at the deletion's parent too).  These two
+    log, for either requester (for the companion, at the deletion's parent too).  These
     cases are that grade.  Moving the whole block ahead also hands the requester the row's
-    NAME: both cases fail on that too, and ``TestNothingLeaksThroughTheName``
+    NAME: every case fails on that too, and ``TestNothingLeaksThroughTheName``
     (``tests/test_routes/test_cc5_4a4_hidden_row_doors.py``) grades the name at every
     surface.
     """
 
     @staticmethod
     def _probe(requester, row):
-        """*requester* asks the door for *row*: ``(its answer, the auth_helpers records)``."""
+        """*requester* asks the door for *row*: ``(its answer, the auth_helpers capture)``."""
         login_user(requester)
         with _AuthHelpersLogCapture() as cap:
             answer = get_accessible_transaction_or_deleted(row.id)
         return answer, cap
 
     @staticmethod
-    def _is_the_denial_alone(answer, cap):
-        """Assert the door answered None, logged ONE WARNING denial and no "not found"."""
+    def _is_the_denial_alone(requester, answer, cap):
+        """Assert the door answered None, denied *requester* once at WARNING, logged no not-found.
+
+        ``None`` is also the no-name assertion: a HiddenRow is the only answer that carries a
+        row's name.  The denial's ``user_id`` tells the requester from an anonymous principal,
+        which a login that silently failed would leave probing, and which logs the same records.
+        """
         seen = [(r.levelname, getattr(r, "event", None)) for r in cap.records]
         assert answer is None, (
             f"The requester was answered {answer!r}, not None; records: {seen}"
@@ -479,6 +488,10 @@ class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
         ]
         assert [r.levelno for r in denials] == [logging.WARNING], (
             f"Expected exactly one WARNING access denial; records: {seen}"
+        )
+        assert denials[0].user_id == requester.id, (
+            f"The denial names user {denials[0].user_id!r}, not the requester "
+            f"{requester.id}; records: {seen}"
         )
         assert cap.find(EVT_RESOURCE_NOT_FOUND) is None, (
             f"The requester's probe logged the row as not found; records: {seen}"
@@ -498,7 +511,7 @@ class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
             assert theirs.user_id != seed_user["user"].id
             answer, cap = self._probe(seed_user["user"], theirs)
 
-        self._is_the_denial_alone(answer, cap)
+        self._is_the_denial_alone(seed_user["user"], answer, cap)
 
     def test_a_companions_probe(self, app, seed_user, seed_companion):
         """The owner's deleted $70.00 Massage, never shown to the companion: the same denial."""
@@ -517,7 +530,28 @@ class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
             assert row.is_deleted is True
             answer, cap = self._probe(companion, row)
 
-        self._is_the_denial_alone(answer, cap)
+        self._is_the_denial_alone(companion, answer, cap)
+
+    def test_a_companions_probe_of_another_household(
+        self, app, seed_user, seed_second_user, seed_companion,
+    ):
+        """seed_user's companion names another owner's deleted $45.00 Pool, shown to companions."""
+        with app.test_request_context("/some/path"):
+            theirs = a_deleted_occurrence(
+                db.session, seed_second_user, seed_second_user["bootstrap_period"],
+                amount="45.00", name="Pool", companion_visible=True,
+            )
+            companion = seed_companion["user"]
+            # Precondition, read back after the builder's commit: the row is
+            # companion-VISIBLE and DELETED, and its owner is not the owner this
+            # companion acts for, so only the companion check's owner arm refuses it.
+            assert companion.data_owner_id == seed_user["user"].id
+            assert companion.data_owner_id != theirs.user_id
+            assert theirs.visible_to_companion is True
+            assert theirs.is_deleted is True
+            answer, cap = self._probe(companion, theirs)
+
+        self._is_the_denial_alone(companion, answer, cap)
 
 
 class TestRequireOwnerFailsClosed:
