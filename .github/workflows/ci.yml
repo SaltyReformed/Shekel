@@ -303,6 +303,12 @@ jobs:
           repositories: ${{ steps.plan.outputs.name }}
           permission-issues: read
 
+      # THROWAWAY (never merged): measurement (e), per-card digests only.
+      - name: Probe the card reader (throwaway)
+        env:
+          PLAN_READ_TOKEN: ${{ steps.token.outputs.token }}
+        run: python landing_probe.py
+
       # A trailer naming a card the tracker lacks, a Ships: naming no work,
       # or one naming a card that carries the filing mark (still being filed,
       # or dropped while it was) is refused, each trailer judged once, by the
