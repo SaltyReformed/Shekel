@@ -183,8 +183,9 @@ class TestTheCashFoldReadsTheParent:
         transfer (checking $250.00 lower, savings $250.00 higher).  The
         savings side's two reads joined at plan step
         ``balance:X-bi-6-4d-3``: until then the case read checking alone, so
-        a fold that dated only the to-side's leg off its period passed every
-        test (measured over the whole suite at that step).  Renamed from
+        a fold that landed only the to-side's leg on its period's day instead
+        of its due date failed none of the tests that passed at that step
+        (measured over the whole suite).  Renamed from
         ``test_a_shadow_dated_around_the_service_lands_on_the_parents_day``:
         it was a firing control that moved the checking-side shadow's due
         date to the 8th around the service, the day the fold dated until
@@ -410,8 +411,15 @@ class TestAStatusDriftIsCountedOnce:
 
         The parent's status is written Done directly.  The fold values no
         planned leg (the parent is not Projected), and folds no settled fact
-        (neither
-        side holds a record).  Until plan step ``balance:X-bi-6-4d-3`` its
+        (neither side holds a record), so each account reads on the
+        transfer's day what it read before the transfer existed: checking
+        does not fall $250.00 and savings does not rise $250.00.  The savings
+        read joined at plan step ``balance:X-bi-6-4d-3``: until then the case
+        read checking alone, and a cash fold that valued only the to-side's
+        leg of such a transfer, at the transfer's amount, changed no balance
+        any passing test read (measured over the whole suite at that step).
+        The loan walk reads the same state's to-side by its own producer, in
+        ``test_loan_settled_legs.py``.  Until that step its
         shadows stayed Projected under the settled parent, a status drift no
         door wrote; a transfer is one row since (ruling **R-BAL258**), and
         the state is the status-band rule's zero close.  The name is the
@@ -424,6 +432,7 @@ class TestAStatusDriftIsCountedOnce:
             period = seed_periods[2]
             day = period.start_date
             checking_before = _balance_on(checking, scenario, day)
+            savings_before = _balance_on(savings, scenario, day)
             transfer = create_transfer(
                 seed_user, db.session, checking, savings, period,
                 amount=_AMOUNT,
@@ -436,3 +445,4 @@ class TestAStatusDriftIsCountedOnce:
             db.session.expire_all()
 
             assert _balance_on(checking, scenario, day) == checking_before
+            assert _balance_on(savings, scenario, day) == savings_before

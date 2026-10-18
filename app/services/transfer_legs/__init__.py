@@ -67,15 +67,20 @@ whose record is ``None``.
 denied**: sharing the join gave :func:`planned_transfer_legs`' ``dated_leg``
 test the term ``the shadow is live`` (``Transaction.is_deleted IS FALSE``)
 that it did not carry before -- the term the settled half's
-``balance_contributing_clause`` has always applied to the same movement.
-On every door-written state the two predicates agree (no door soft-deletes
-one shadow alone); on the double drift -- a dated movement under a shadow
-deleted around the service, the parent still Projected -- the leg used to
-vanish from both halves and is now counted once, by the plan (R-JA: the
-parent decides).  ``tests/test_services/test_transfer_legs/test_the_plan_half.py``'s
+``balance_contributing_clause`` applied to the same movement.  On every
+door-written state the two predicates agreed (no door soft-deleted one shadow
+alone); on the double drift -- a dated movement under a shadow deleted around
+the service, the parent still Projected -- the leg had vanished from both
+halves, and from 6-1 it was counted once, by the plan (R-JA: the parent
+decides).  ``tests/test_services/test_transfer_legs/test_the_plan_half.py``'s
 drift class pinned it, red under the old predicate, until plan step
-``balance:X-bi-6-4d-3`` made a transfer one row (ruling **R-BAL258**) and the
-pin went with the shadows (ruling **R-BAL313**).  **The double drift is
+``balance:X-bi-6-4d-2`` moved the join onto the side links.  That step
+deleted the term (:func:`_records._side_records` says why no liveness test is
+left) and refused at commit the hide of a shadow holding a movement (the
+deleted-row rule's row arm, ruling **R-BAL167**'s class 2), so from then its
+case pinned the storable neighbour, a movement under a LIVE shadow, until plan
+step ``balance:X-bi-6-4d-3`` made a transfer one row (ruling **R-BAL258**) and
+that case went with the shadows (ruling **R-BAL313**).  **The double drift is
 structural now**: no shadow can be stored to hide
 (``tests/test_models/test_a_transfer_is_one_row.py``'s
 ``TestTheUpgrade::test_the_database_refuses_a_twin``), and a DATED record

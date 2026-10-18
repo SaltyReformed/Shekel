@@ -202,8 +202,8 @@ def _side_records() -> Query:
     side names it by :func:`_movement_link`'s two side keys, and a movement
     filed under a plan row names that row and no transfer
     (``ck_transaction_entries_one_parent``).  Every reader of a leg's record
-    narrows this -- the plan half's and the resync's
-    :func:`dated_leg_exists_clause`, the grid's
+    narrows this -- the plan half's, the loan settled half's and the
+    resync's :func:`dated_leg_exists_clause`, the grid's
     :func:`covering_movements_by_leg`, every settled-half reader through
     :func:`transfer_movement_rows`, the posting writer through
     :func:`transfer_family_movements`, and every door's "this transfer holds a
@@ -361,12 +361,17 @@ def dated_leg_exists_clause(*filters):
 
     A correlated ``EXISTS`` over :func:`_side_records`, rooted at
     ``Transfer``: one of the transfer's sides has a record carrying a
-    ``settled_on``.  Its two readers ask one question two ways -- the plan
-    half's :func:`planned_transfer_legs` narrows it to ONE account (that
-    side's money moved, so its leg is no longer planned, ruling
-    **R-BAL79**), and the posting writer's deploy resync asks it bare (the
-    transfer may hold a posted leg whatever its status, the totality
-    argument of ``posting_service.resync_all_cash_postings``).  Stated once
+    ``settled_on``.  Its three readers ask one question three ways -- the
+    plan half's :func:`_still_planned_legs` (behind
+    :func:`planned_transfer_legs` and :func:`offerable_transfer_legs`)
+    narrows it to ONE account and negates it (that side's money moved, so
+    its leg is no longer planned, ruling **R-BAL79**); the loan settled
+    half (``loan_loaders._shadows.settled_half_clause``) narrows it to the
+    transfer's to-account and ORs it with "not Projected" (the payment into
+    the loan has happened, ruling **R-BAL140**); and the posting writer's
+    deploy resync asks it bare, ORed with "settled" (the transfer may hold
+    a posted leg whatever its status, the totality argument of
+    ``posting_service.resync_all_cash_postings``).  Stated once
     since leaf ``X-bi-6-4a``: the resync's copy lived in
     ``_posting_purchases`` and walked the shadow itself, and it read every
     entry under a live shadow where this reads the covering movements the
