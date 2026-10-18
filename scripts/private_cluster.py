@@ -24,13 +24,15 @@ and names on stderr anything that survived or could not be asked about; it is sa
 on a cluster that never started, or twice, which is what lets a caller's signal traps call
 it whenever they fire.
 
-Exit status: 0 done; 1 ``stop`` left something behind, each named; 2 ``start`` made
-something and could not give a cluster that accepts connections (each reason printed, and
-anything its own stop left behind), or the command line was wrong; 3 ``start`` refused
+Exit status: 0 done; 1 ``stop`` left something behind, each named; 2 ``start`` began
+making the cluster and could not give one that accepts connections (each reason printed,
+and anything its own stop left behind), or the command line was wrong; 3 ``start`` refused
 before it made anything (the reason printed), so nothing of it exists to stop, and a stop by
 its name could remove a container another holds.  Ctrl-C ends ``start`` BY SIGINT, as
 Python itself ends on one, once it has stopped what it made and named what that stop left,
-so a calling shell sees the signal and stops too.
+so a calling shell sees the signal and stops too; a Ctrl-C inside a failed start's own stop
+ends it there, unnamed, for the caller's stop by name to finish.  ``main`` ends the process
+it runs in that way, so a caller in process wants :func:`start`.
 
 Environment variables read:
     XDG_RUNTIME_DIR    Where the socket directory is made.  Default ``/run/user/<uid>``.
@@ -385,8 +387,9 @@ def start(name: str, image: str) -> Cluster:
 
     One window stays open: a container given the name after the check and before ``docker
     run`` makes the run fail, and this start's stop then removes that container by name.
-    Only another process choosing the same name inside that window opens it, which
-    ``test.sh`` cannot: its names carry its PID.
+    Only another process choosing the same name inside that window opens it.  ``test.sh``'s
+    names carry its PID, unique among the live processes of its PID namespace, so only a
+    run in another namespace on the same daemon could.
 
     Raises:
         Refused: when the start is refused before it makes anything, naming why.
@@ -401,11 +404,11 @@ def start(name: str, image: str) -> Cluster:
         _make_socket_dir(directory)
         container = _run_container(name, image, directory)
         _wait_ready(name, directory, seconds)
-    except ClusterError as refused:
+    except ClusterError as failed:
         survived = stop(name)
         if survived:
-            raise ClusterError(f"{refused}.  Stopping it left something behind: "
-                               + " ".join(survived)) from refused
+            raise ClusterError(f"{failed}.  Stopping it left something behind: "
+                               + " ".join(survived)) from failed
         raise
     except KeyboardInterrupt as interrupted:
         raise Interrupted(*stop(name)) from interrupted

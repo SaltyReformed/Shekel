@@ -425,6 +425,55 @@ class TestThePrivateClusterIsCleanedUp:
         assert held.exists(), f"the held container was removed; docker saw:\n{calls}"
         assert not [line for line in calls.splitlines() if line.startswith("rm ")], calls
 
+    def test_a_start_killed_outright_is_stopped_by_the_wrapper_s_trap(
+        self, tmp_path: Path
+    ) -> None:
+        """A start killed before it can stop what it made is stopped by the
+        EXIT trap, by the name the wrapper chose.
+
+        The traps are disarmed on the start's exit 3 ONLY.  A start killed
+        outright -- here by SIGKILL as its ``docker run`` returns, the
+        container made -- runs no stop of its own, and the trap's stop is the
+        one thing that removes its container and socket directory.  The review
+        of 668b53c99 measured a wrapper that disarmed on EVERY failed start
+        passing every case.
+        """
+        runtime = Path(tempfile.mkdtemp(prefix="skrt", dir="/tmp"))
+        held = tmp_path / "stub-container"
+        calls = tmp_path / "docker-calls"
+        binaries = _stub_tree(tmp_path)
+        # A docker whose ``run`` makes the container, then kills the start
+        # that asked for it, as an OOM killer or a ``kill -9`` would.
+        (binaries / "docker").write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, signal, sys\n"
+            "args = sys.argv[1:]\n"
+            f"open({str(calls)!r}, 'a').write(' '.join(args) + chr(10))\n"
+            "cmd = args[0] if args else ''\n"
+            "if cmd == 'info':\n"
+            "    print('[name=seccomp,profile=builtin name=rootless]')\n"
+            "elif cmd == 'run':\n"
+            f"    open({str(held)!r}, 'w').close()\n"
+            "    os.kill(os.getppid(), signal.SIGKILL)\n"
+            f"elif cmd == 'rm' and os.path.exists({str(held)!r}):\n"
+            f"    os.remove({str(held)!r})\n"
+            f"elif cmd == 'ps' and os.path.exists({str(held)!r}):\n"
+            "    print('stubcontainer')\n"
+            "sys.exit(0)\n",
+            encoding="utf-8",
+        )
+        try:
+            result = _run_wrapper(binaries, {"XDG_RUNTIME_DIR": str(runtime)})
+            left = list(runtime.glob("shekel-testrun-*"))
+        finally:
+            shutil.rmtree(runtime, ignore_errors=True)
+        seen = calls.read_text(encoding="utf-8").splitlines()
+
+        assert result.returncode == 2, result.stderr
+        assert [line.split()[0] for line in seen] == ["info", "ps", "run", "rm", "ps"], seen
+        assert not held.exists(), f"the killed start's container was left; docker saw: {seen}"
+        assert not left, f"the killed start's socket directory was left: {left}"
+
     def test_the_container_is_removed_with_its_volume(
         self, tmp_path: Path
     ) -> None:

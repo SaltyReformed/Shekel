@@ -339,22 +339,29 @@ def _wait_for(stub: _Stub, command: str) -> None:
         time.sleep(0.05)
 
 
+_WARNED_CONTAINER = f"[private_cluster] WARNING: {_CONTAINER_LEFT}\n"
+
+
 @pytest.mark.parametrize(("behaviour", "warned"), [
     (_Behaviour(ready=False), ""),
-    (_Behaviour(ready=False, survives=True), f"[private_cluster] WARNING: {_CONTAINER_LEFT}\n"),
+    (_Behaviour(ready=False, survives=True), _WARNED_CONTAINER),
+    (_Behaviour(ready=False, survives=True, pins_dir=True),
+     _WARNED_CONTAINER + "[private_cluster] WARNING: {directory} survived teardown.\n"),
     (_Behaviour(hangs_on="ps"), ""),
-], ids=["during the readiness wait", "its stop leaves the container", "before anything is made"])
+], ids=["during the readiness wait", "its stop leaves the container",
+        "its stop leaves the container and the directory", "before anything is made"])
 def test_ctrl_c_ends_a_start_by_sigint_once_it_has_stopped_what_it_made(
         docker, runtime, behaviour, warned):
     """The review's LOW-5 and the delta review's LOW-2: Ctrl-C to the start's whole process
-    group, as a terminal sends it, stops what the start made, NAMES what that stop could not
-    remove, and ends the start BY SIGINT with no traceback, so the shell that ran it stops
-    too: an exit status of 130 tells a shell the child dealt with the Ctrl-C, and it went on
-    to its next command.  Before anything is made there is nothing to stop or remove.
+    group, as a terminal sends it, stops what the start made, NAMES each thing that stop
+    could not remove, and ends the start BY SIGINT with no traceback, so the shell that ran
+    it stops too: an exit status of 130 tells a shell the child dealt with the Ctrl-C, and it
+    went on to its next command.  Before anything is made there is nothing to stop or remove.
 
     The case's own process may have SIGINT IGNORED (a backgrounded pytest inherits that),
-    and an ignored signal is inherited across exec where neither bash nor Python can take it
-    back, so ``env --default-signal`` gives the shell the default first.
+    and an ignored signal is inherited across exec: bash cannot take back one ignored when
+    it started, and Python leaves it ignored, so ``env --default-signal`` gives the shell the
+    default first.
     """
     stub = docker(behaviour)
     with subprocess.Popen(
@@ -371,10 +378,12 @@ def test_ctrl_c_ends_a_start_by_sigint_once_it_has_stopped_what_it_made(
             if shell.poll() is None:
                 os.killpg(shell.pid, signal.SIGKILL)
                 shell.communicate()
+            _unpin(runtime / _NAME)
     made = not behaviour.hangs_on
-    assert (shell.returncode, out, err) == (-signal.SIGINT, "", warned)
+    assert (shell.returncode, out, err) == (
+        -signal.SIGINT, "", warned.format(directory=runtime / _NAME))
     assert stub.held.exists() is behaviour.survives
-    assert not (runtime / _NAME).exists()
+    assert (runtime / _NAME).exists() is behaviour.pins_dir
     assert (f"rm -fv {_NAME}" in stub.calls()) is made
 
 
@@ -473,21 +482,42 @@ def _padded(runtime: Path, size: int, filler: str) -> Path:
     return runtime / padding
 
 
-@pytest.mark.parametrize("filler", [
-    "d",
-    # A byte that is not UTF-8 (``XDG_RUNTIME_DIR`` holding one) is one byte, and counting
-    # it must not raise.
-    "\udcff",
-], ids=["93 bytes", "93 bytes, not UTF-8"])
 def test_a_socket_directory_of_93_bytes_starts_a_cluster_whose_socket_binds_there(
-        docker, runtime, monkeypatch, filler):
+        docker, runtime, monkeypatch):
     """The budget's top: a socket directory of 93 bytes starts a cluster, and its socket
     binds there at 107 bytes, the kernel's limit."""
     docker()
-    padded = _padded(runtime, 93, filler)
+    padded = _padded(runtime, 93, "d")
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(padded))
     assert private_cluster.start(_NAME, _IMAGE).socket_dir == padded / _NAME
     assert (padded / _NAME / ".s.PGSQL.5432").is_socket()
+
+
+def test_a_byte_that_is_not_utf8_is_counted_as_one_byte_and_never_raises(docker, runtime,
+                                                                          monkeypatch):
+    """A socket directory of 93 BYTES holding bytes that are not UTF-8 (``XDG_RUNTIME_DIR``
+    may hold them) is counted as 93, one byte each, and counting it does not raise: the start
+    goes on past the guard.  That is all this grades.  The stub binds its socket there; a
+    REAL daemon carries the bind as UTF-8 and replaces such a byte, so a real start there
+    waits out its readiness cap (measured by the review of 668b53c99; reported, not fixed
+    here).
+
+    Every failure is reported in ASCII and in bytes: a failure message holding such a path
+    cannot be sent between xdist's processes, and would end the whole session instead of
+    failing this case.
+    """
+    docker()
+    padded = _padded(runtime, 93, "\udcff")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(padded))
+    try:
+        directory = private_cluster.start(_NAME, _IMAGE).socket_dir
+    except private_cluster.ClusterError as refused:
+        said = ascii(str(refused))
+    else:
+        said = ""
+    if said:
+        pytest.fail(said)
+    assert os.fsencode(directory) == os.fsencode(padded / _NAME)
 
 
 @pytest.mark.parametrize("filler", [
