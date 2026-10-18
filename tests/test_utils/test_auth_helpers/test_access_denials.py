@@ -8,7 +8,10 @@ from decimal import Decimal
 
 import pytest
 from flask_login import current_user, login_user
+from sqlalchemy import text
 
+from app import ref_cache
+from app.enums import RoleEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import TransactionType
@@ -183,9 +186,6 @@ class TestAccessDeniedLogging:
         forensic event lands even though the response shape mirrors
         a true 404.
         """
-        from app import ref_cache  # noqa: WPS433
-        from app.enums import RoleEnum  # noqa: WPS433
-
         # Build a companion user attached to the seed user.
         from app.models.user import User  # noqa: WPS433
         companion_role_id = ref_cache.role_id(RoleEnum.COMPANION)
@@ -507,10 +507,13 @@ class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
                 amount="45.00", name="Pool",
             )
             # Precondition, read back after the builder's commit: a DELETED
-            # row of another user's, so the probe below is a stranger's.
+            # row of another user's, and a requester that is not a companion
+            # (its ``role_id``, the one read the door branches on; the owner
+            # check is the other branch), so the probe below is a stranger's.
             assert theirs.is_deleted is True
             assert theirs.user_id == seed_second_user["user"].id
             assert theirs.user_id != seed_user["user"].id
+            assert seed_user["user"].role_id != ref_cache.role_id(RoleEnum.COMPANION)
             answer, cap = self._probe(seed_user["user"], theirs)
 
         self._is_the_denial_alone(seed_user["user"], answer, cap)
@@ -539,21 +542,46 @@ class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
     ):
         """seed_user's companion names another owner's deleted $45.00 Pool, shown to companions."""
         with app.test_request_context("/some/path"):
+            # The probed row's id is set by a stated sequence restart, not left to the
+            # order the fixtures build in: the denial's ``pk`` read below grades the door
+            # only while the row's id differs from every user id the companion branch
+            # holds (the requester, the owner it acts for, the row's owner).  Left alone,
+            # the row is this database's first transaction and the owner this companion
+            # acts for is its first user, so both are id 1 and a door logging that owner's
+            # id as the ``pk`` passed.  The builder takes no id, hence the restart.  A
+            # rollback does not undo ``setval``, but the autouse ``db`` fixture re-clones
+            # the database before every test, so the restart reaches no other case.
+            probed_row_id = 9_001
+            db.session.execute(
+                text("SELECT setval('budget.transactions_id_seq', :v, false)"),
+                {"v": probed_row_id},
+            )
             theirs = a_deleted_occurrence(
                 db.session, seed_second_user, seed_second_user["bootstrap_period"],
                 amount="45.00", name="Pool", companion_visible=True,
             )
             companion = seed_companion["user"]
             # Precondition, read back after the builder's commit: the requester is a
-            # COMPANION (``User.data_owner_id`` differs from a user's own id only for a
-            # companion, and the door branches on that role), the row is
+            # COMPANION (its ``role_id``, the one read the door branches on), the row is
             # companion-VISIBLE and DELETED, and its owner is not the owner this
-            # companion acts for, so only the companion check's owner arm refuses it.
-            assert companion.id != companion.data_owner_id
+            # companion acts for (``User.data_owner_id``), so only the companion check's
+            # owner arm refuses it.
+            assert companion.role_id == ref_cache.role_id(RoleEnum.COMPANION)
             assert companion.data_owner_id == seed_user["user"].id
             assert companion.data_owner_id != theirs.user_id
             assert theirs.visible_to_companion is True
             assert theirs.is_deleted is True
+            # And the restart took: the row holds the id it set, apart from all three users'.
+            ids = {
+                "the probed row": theirs.id,
+                "the row's owner": theirs.user_id,
+                "the owner the companion acts for": companion.data_owner_id,
+                "the companion": companion.id,
+            }
+            assert theirs.id == probed_row_id, f"The sequence restart did not take: {ids}"
+            assert len(set(ids.values())) == len(ids), (
+                f"The ids the denial could name are not pairwise distinct: {ids}"
+            )
             answer, cap = self._probe(companion, theirs)
 
         denial = self._is_the_denial_alone(companion, answer, cap)

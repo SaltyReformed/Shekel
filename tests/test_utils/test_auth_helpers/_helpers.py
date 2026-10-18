@@ -1,4 +1,4 @@
-"""The capture of the ``app.utils.auth_helpers`` logger that the denial cases assert on.
+"""The capture of the ``app.utils.auth_helpers`` logger: the denial and the silence cases read it.
 
 ``tools/split`` moved ``_AuthHelpersLogCapture`` here from the module-level helpers of
 ``tests/test_utils/test_auth_helpers.py``; it has been edited since, so it is no longer that
