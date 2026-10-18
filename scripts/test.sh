@@ -15,8 +15,9 @@
 #     whole life -- the socket directory, the ``docker run`` and its
 #     settings, the readiness wait and the teardown -- is
 #     ``scripts/private_cluster.py``'s, the one home the release rehearsal
-#     kit starts its own cluster through too; this wrapper names the cluster,
-#     arms the traps that stop it, and runs pytest against it.
+#     kit (step X-cx's K1, not yet built) is to start its own cluster through
+#     too; this wrapper names the cluster, arms the traps that stop it, and
+#     runs pytest against it.
 #
 #     NOTHING IS SHARED, SO NOTHING NEEDS COORDINATING.  Until
 #     ``balance:X-br-4`` this wrapper also carried a hygiene restart, a
@@ -383,8 +384,11 @@ trap '_teardown_run_container; exit 143' TERM
 trap '_teardown_run_container; exit 129' HUP
 
 # The start prints the socket directory, then the container's id, once the
-# cluster accepts connections on that socket; a start that cannot finish
-# names why, exits 2 and leaves nothing behind.
+# cluster accepts connections on a socket it has checked is there; a start
+# that cannot finish names why, and what its own stop left behind, and exits
+# 2.  While it runs, bash holds a TERM or HUP until it returns (a command
+# substitution defers traps), so a signal then is served within the
+# readiness cap.
 if ! _cluster="$("$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" \
     start "$_run_container" "$_image")"; then
     exit 2
@@ -397,11 +401,6 @@ unset _cluster
 # serves both.  tests/conftest.py rewrites only the PATH of these URLs to
 # reach a per-worker database, and urlparse/urlunparse preserve the query, so
 # the socket survives that rewrite.
-if [ ! -S "${_run_sockdir}/.s.PGSQL.5432" ]; then
-    echo "[test.sh] $_run_container reported ready but left no socket" \
-        "at ${_run_sockdir}/.s.PGSQL.5432" >&2
-    exit 2
-fi
 export TEST_ADMIN_DATABASE_URL="postgresql://shekel_user:shekel_pass@/postgres?host=${_run_sockdir}"
 export TEST_DATABASE_URL="postgresql://shekel_user:shekel_pass@/shekel_test?host=${_run_sockdir}"
 

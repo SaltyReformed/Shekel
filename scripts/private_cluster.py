@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """A throwaway PostgreSQL cluster of one caller's own: the ONE home of its life.
 
-``scripts/test.sh`` gives every suite run a cluster of its own (``balance:X-br-4``), and the
-release rehearsal kit (step X-cx's K1, ``tools/rehearsal/``) needs one too.  Both start it
-here and stop it here, so there is one ``docker run``, one readiness rule and one teardown
-(the coordinator's K1 leaf-plan ruling, 2026-10-18, point 1).  The caller names the
+``scripts/test.sh`` gives every suite run a cluster of its own (``balance:X-br-4``), and
+starts and stops it here; the release rehearsal kit (step X-cx's K1, not yet built) is to
+start its own here too, so there is one ``docker run``, one readiness rule and one
+teardown (the coordinator's K1 leaf-plan ruling, 2026-10-18, point 1).  The caller names the
 cluster; it is a container of that name on this run's daemon, reached over a UNIX SOCKET in
 a directory of the same name under ``XDG_RUNTIME_DIR``, with no network and no port.
 
@@ -14,17 +14,19 @@ Usage::
     python scripts/private_cluster.py stop <name>
 
 ``start`` prints the socket directory, then the container's id, one per line, once the
-cluster accepts connections there.  A start that fails, or is ended by Ctrl-C, stops what
-it made before it exits; one killed outright (TERM, HUP, KILL) cannot, which is why the
-caller NAMES the cluster before starting it and stops it by that name (``test.sh`` names
-its cluster after its own PID).  ``stop`` removes the container with its anonymous volume
-and the socket directory, and names on stderr anything that survived; it is safe to run
-on a cluster that never started, or twice, which is what lets a caller's signal traps call
-it whenever they fire.
+cluster accepts connections there.  It refuses a name a container already holds, and a
+start that fails stops what it made, naming anything that stop left behind; one killed
+outright (TERM, HUP, KILL) cannot, which is why the caller NAMES the cluster before
+starting it and stops it by that name (``test.sh`` names its cluster after its own PID).
+``stop`` removes the container with its anonymous volume and the socket directory, and
+names on stderr anything that survived or could not be asked about; it is safe to run on
+a cluster that never started, or twice, which is what lets a caller's signal traps call it
+whenever they fire.
 
 Exit status: 0 done; 1 ``stop`` left something behind, each named; 2 ``start`` could not
-give a cluster that accepts connections (each reason printed, nothing left behind), or the
-command line was wrong.
+give a cluster that accepts connections (each reason printed, and anything its own stop
+left behind), or the command line was wrong; 130 ``start`` was ended by Ctrl-C, having
+stopped what it made.
 
 Environment variables read:
     XDG_RUNTIME_DIR    Where the socket directory is made.  Default ``/run/user/<uid>``.
@@ -38,7 +40,9 @@ Standard library only: ``test.sh`` runs it before any environment is known to ho
 from __future__ import annotations
 
 import argparse
+import math
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -83,14 +87,16 @@ _SOCKET_DIR_BYTES = _SUN_PATH_BYTES - len(f"/{_SOCKET_FILE}".encode())
 # ``tests/_test_helpers.py`` (twice) and three migration tests state that a conflicting DDL
 # "dies on the cluster's 10-second ``lock_timeout``" -- PostgreSQL's default is 0, wait
 # forever, so without the flag that becomes the per-test pytest-timeout naming a timeout
-# instead of a lock.  ``statement_timeout`` and ``idle_in_transaction_session_timeout``
-# come along for the same reason: a runaway is bounded by the cluster, loudly.
+# instead of a lock, with four docstrings telling the author to expect the other signature.
+# ``statement_timeout`` and ``idle_in_transaction_session_timeout`` come along for the same
+# reason: a runaway is bounded by the cluster, loudly, rather than by the test runner.
 #
 # The three ``tcp_keepalives_*`` flags are DELIBERATELY NOT carried, and this is the one
-# place that says so: they configure TCP sockets, and this cluster has none.  Nor is the
-# tenth, ``file_copy_method=clone``: it chooses how ``CREATE DATABASE ... STRATEGY
-# FILE_COPY`` copies a template's files, and every clone the suite makes is ``STRATEGY
-# WAL_LOG`` (tests/conftest.py).
+# place that says so: they configure TCP sockets, and this cluster has none, so they would
+# be inert rather than wrong.  So would the tenth, ``file_copy_method=clone``, which is not
+# carried either: it chooses how ``CREATE DATABASE ... STRATEGY FILE_COPY`` copies a
+# template's files (the deleted service paired it with a btrfs PGDATA for reflinks), and
+# every clone the suite makes is ``STRATEGY WAL_LOG`` (tests/conftest.py).
 #
 # THE NON-DURABLE KNOBS ARE WHAT MAKE A CLUSTER PER RUN AFFORDABLE.  Measured: the full
 # suite took 753 s in a per-run container against 356 s on the shared cluster -- 2.1x --
@@ -152,6 +158,8 @@ _SETTINGS = (
 _DEFAULT_READINESS_SECONDS = 15
 # How long one docker command may take before the daemon is taken to be wedged.
 _DOCKER_TIMEOUT_SECONDS = 60
+# The conventional exit status of a process ended by Ctrl-C (128 + SIGINT).
+_INTERRUPTED = 130
 
 
 class ClusterError(RuntimeError):
@@ -176,7 +184,7 @@ def socket_dir(name: str) -> Path:
 
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:
     """One docker command, its output captured; a daemon that does not answer within
-    :data:`_DOCKER_TIMEOUT_SECONDS` is reported as one.
+    :data:`_DOCKER_TIMEOUT_SECONDS` is reported as one, where a shell waited forever.
 
     Raises:
         ClusterError: when docker cannot be run or does not answer in time.
@@ -184,18 +192,35 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(["docker", *args], capture_output=True, text=True, check=False,
                               timeout=_DOCKER_TIMEOUT_SECONDS)
-    except FileNotFoundError as exc:
-        raise ClusterError("docker is not on PATH") from exc
     except subprocess.TimeoutExpired as exc:
         raise ClusterError(f"docker {args[0]} did not answer within "
                            f"{_DOCKER_TIMEOUT_SECONDS}s; the daemon may be wedged") from exc
+    except OSError as exc:
+        raise ClusterError(f"docker cannot be run: {exc}") from exc
+
+
+def _present(name: str) -> bool:
+    """Whether docker holds a container named exactly ``name``, running or not.  Asked by
+    an ANCHORED name filter: docker's ``name`` filter otherwise matches every name that
+    CONTAINS it, and ``inspect`` exits 1 alike for a container that is gone and a daemon
+    that cannot be asked, so a teardown reading it would call an unreachable daemon clean.
+
+    Raises:
+        ClusterError: when docker cannot be asked.
+    """
+    asked = _docker("ps", "--all", "--quiet", "--filter", f"name=^{re.escape(name)}$")
+    if asked.returncode:
+        raise ClusterError(f"docker could not be asked whether {name} exists: "
+                           f"{(asked.stderr or asked.stdout).strip()}")
+    return bool(asked.stdout.strip())
 
 
 def _readiness_seconds() -> float:
     """The cap on the readiness wait, from ``READINESS_TIMEOUT_SECONDS``.
 
     Raises:
-        ClusterError: when the variable is set to something that is not a number of seconds.
+        ClusterError: when the variable is set to anything but a finite, non-negative
+            number of seconds (``nan`` and ``inf`` would make the wait endless).
     """
     given = os.environ.get("READINESS_TIMEOUT_SECONDS", "")
     if not given:
@@ -205,9 +230,24 @@ def _readiness_seconds() -> float:
     except ValueError as exc:
         raise ClusterError(f"READINESS_TIMEOUT_SECONDS={given!r} is not a number of "
                            "seconds") from exc
-    if seconds < 0:
-        raise ClusterError(f"READINESS_TIMEOUT_SECONDS={given!r} is negative")
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ClusterError(f"READINESS_TIMEOUT_SECONDS={given!r} is not a finite, "
+                           "non-negative number of seconds")
     return seconds
+
+
+def _refuse_a_socket_dir_too_long(directory: Path) -> None:
+    """Refuse a socket directory past the kernel's budget for a socket path, counted in
+    BYTES as the kernel counts them (``os.fsencode``): refused at the door rather than let
+    the limit surface as a connection error from deep inside the caller.
+
+    Raises:
+        ClusterError: when the directory is too long.
+    """
+    if len(os.fsencode(directory)) > _SOCKET_DIR_BYTES:
+        raise ClusterError(f"socket directory {directory} is too long; a unix socket path "
+                           f"cannot exceed {_SUN_PATH_BYTES} bytes.  Set XDG_RUNTIME_DIR to "
+                           "something shorter.")
 
 
 def _make_socket_dir(directory: Path) -> None:
@@ -215,19 +255,21 @@ def _make_socket_dir(directory: Path) -> None:
 
     0777 because rootless docker maps the container's postgres user into the subuid range,
     so it cannot write a directory owned by this user.  The socket is still private:
-    ``XDG_RUNTIME_DIR`` itself is 0700.  A directory left by an earlier cluster of this name
-    is removed first.
+    ``XDG_RUNTIME_DIR`` itself is 0700.  Whatever an earlier cluster of this name left at
+    the path, a directory or a file, is removed first.
 
     Raises:
-        ClusterError: when the path is past the kernel's budget for a socket path, in BYTES.
+        ClusterError: when the leftover cannot be removed or the directory made.
     """
-    if len(str(directory).encode()) > _SOCKET_DIR_BYTES:
-        raise ClusterError(f"socket directory {directory} is too long; a unix socket path "
-                           f"cannot exceed {_SUN_PATH_BYTES} bytes.  Set XDG_RUNTIME_DIR to "
-                           "something shorter.")
-    shutil.rmtree(directory, ignore_errors=True)
-    directory.mkdir(parents=True)
-    directory.chmod(0o777)
+    try:
+        if directory.is_dir() and not directory.is_symlink():
+            shutil.rmtree(directory)
+        else:
+            directory.unlink(missing_ok=True)
+        directory.mkdir(parents=True)
+        directory.chmod(0o777)
+    except OSError as exc:
+        raise ClusterError(f"socket directory {directory} cannot be made: {exc}") from exc
 
 
 def _run_container(name: str, image: str, directory: Path) -> str:
@@ -241,8 +283,9 @@ def _run_container(name: str, image: str, directory: Path) -> str:
     thousands of sockets in it.  Measured: 5 of 12 container starts failed, and 3 of 12
     still failed with no port ever recycled, so it is not a release race -- it is two
     allocators in two namespaces sharing one number space.  The root daemon does not hit it
-    (0 of 8).  A socket has no allocator and no shared namespace: the cluster's directory
-    carries its own name, which its caller made unique.
+    (0 of 8), which is why this only surfaced on moving off it.  A socket has no allocator
+    and no shared namespace: the cluster's directory carries its own name, which its caller
+    made unique.
 
     ``--network=none`` follows from having no port, which also takes the cluster off the
     experimental gvisor-tap-vsock driver the rootless daemon falls back to when slirp4netns
@@ -294,47 +337,61 @@ def _wait_ready(name: str, directory: Path, seconds: float) -> None:
 def start(name: str, image: str) -> Cluster:
     """Start the cluster ``name`` from ``image`` and wait until it accepts connections.
 
-    A start that fails stops everything it made before raising, so nothing is left behind
-    whichever step failed.
+    ``image`` ships a populated PGDATA at :data:`_PGDATA`, as the baked test image does
+    (:func:`_wait_ready` says why readiness depends on it).  Nothing is made until the
+    readiness cap, the socket path's length and the name are known good: a name a container
+    already holds is refused, never taken over, so a start only ever stops what it made.  A
+    start refused after that stops what it made, and its error names anything that stop
+    left behind.  One ended by Ctrl-C stops what it made and re-raises; what that stop
+    could not remove, the caller's own stop names.  One killed outright (TERM, HUP) stops
+    nothing, so its caller, which named the cluster, stops it by that name.
 
     Raises:
         ClusterError: when any step fails, naming it.
+        KeyboardInterrupt: when Ctrl-C ends the start, after it stops what it made.
     """
     seconds = _readiness_seconds()
     directory = socket_dir(name)
-    ready = False
+    _refuse_a_socket_dir_too_long(directory)
+    if _present(name):
+        raise ClusterError(f"a container named {name} already exists, and a start never "
+                           "takes over a name in use: stop that cluster, or name another")
     try:
         _make_socket_dir(directory)
         container = _run_container(name, image, directory)
         _wait_ready(name, directory, seconds)
-        ready = True
-    finally:
-        # A refusal, an error or a Ctrl-C ending the start stops what it made.  A process
-        # killed outright runs no ``finally``: its caller stops the cluster by name.
-        if not ready:
-            stop(name)
+    except ClusterError as refused:
+        survived = stop(name)
+        if survived:
+            raise ClusterError(f"{refused}.  Stopping it left something behind: "
+                               + " ".join(survived)) from refused
+        raise
+    except KeyboardInterrupt:
+        stop(name)
+        raise
     return Cluster(container, directory)
 
 
 def stop(name: str) -> list[str]:
     """Remove the cluster ``name``'s container, with its anonymous volume, and its socket
-    directory; one sentence per thing that survived.
+    directory; one sentence per thing that survived, or that could not be asked about.
 
     ``-v`` removes the ANONYMOUS VOLUME too: the baked image inherits the base's ``VOLUME
     /var/lib/postgresql`` though PGDATA lives elsewhere, and plain ``docker rm -f`` left one
     behind per run -- measured 101 of 112 volumes on the development daemon dangling, the
     newest in one-second pairs matching a run's own verify and start.  Each holds ~0 B, so
     the cost is unbounded metadata on a daemon the homelab stack watches, not disk.  A
-    survivor is NAMED,
-    never discarded: a teardown that cannot say it failed left a wedged daemon's container
-    running while its caller exited clean.  The socket directory sits on a tmpfs, so a leak
-    is bounded only by the next reboot; a plain removal suffices because it is mounted at
-    ``/sockets`` (see :data:`_SOCKETS`).
+    survivor is NAMED, never discarded: a teardown that cannot say it failed left a wedged
+    or unreachable daemon's container running while its caller exited clean, which is why
+    whether it survived is asked of :func:`_present`, which tells "gone" from "cannot be
+    asked".  The socket directory sits on a tmpfs, so a leak is bounded only by the next
+    reboot; a plain removal suffices because it is mounted at ``/sockets`` (see
+    :data:`_SOCKETS`).
     """
     survived = []
     try:
         _docker("rm", "-fv", name)
-        if not _docker("inspect", name).returncode:
+        if _present(name):
             survived.append(f"{name} survived teardown -- remove it by hand ('docker rm -fv "
                             f"{name}') or the next cluster of that name collides with it.")
     except ClusterError as exc:
@@ -363,6 +420,9 @@ def main(argv: list[str] | None = None) -> int:
         except ClusterError as exc:
             print(f"[private_cluster] {exc}", file=sys.stderr)
             return 2
+        except KeyboardInterrupt:
+            # The start stopped what it made; a traceback here would say nothing more.
+            return _INTERRUPTED
         print(cluster.socket_dir)
         print(cluster.container)
         return 0

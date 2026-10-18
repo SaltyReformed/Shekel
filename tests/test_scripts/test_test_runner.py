@@ -55,7 +55,8 @@ _TEST_RUNNER = _REPO_ROOT / "scripts/test.sh"
 
 
 def _stub_tree(
-    tmp_path: Path, *, rootless: bool = True, make_socket: bool = True
+    tmp_path: Path, *, rootless: bool = True, make_socket: bool = True,
+    survives: bool = False,
 ) -> Path:
     """Write a stub ``docker`` and ``pytest`` into a directory for ``PATH``.
 
@@ -69,8 +70,12 @@ def _stub_tree(
             ``balance:X-br-3`` the wrapper asks before starting anything, so
             a stub that answers nothing is refused -- which is the point.
         make_socket: Whether the stub container leaves a socket behind.  A
-            container can report ready and still not have one; the wrapper
-            refuses to build a DSN naming a socket that is not there.
+            container can report ready and still not have one; the cluster's
+            start refuses to hand out a socket that is not there.
+        survives: Whether the stub container survives its removal.  The stub
+            holds it as a file that ``run`` makes and ``rm`` removes, and
+            ``ps`` lists it while it exists, as the cluster's start and stop
+            ask by its exact name.
 
     Returns:
         The directory to prepend to ``PATH``.
@@ -86,6 +91,7 @@ def _stub_tree(
     if not make_socket:
         socket_arm = "            pass"
     calls = tmp_path / "docker-calls"
+    held = tmp_path / "stub-container"
     env_dump = tmp_path / "pytest-env.json"
 
     (binaries / "docker").write_text(
@@ -99,6 +105,7 @@ def _stub_tree(
         "elif cmd == 'run':\n"
         # The wrapper mounts the run's socket directory at /sockets; a real
         # postgres would create the socket there, so the stub must too.
+        f"    open({str(held)!r}, 'w').close()\n"
         "    mounts = [args[i + 1] for i, a in enumerate(args) if a == '-v']\n"
         "    for mount in mounts:\n"
         "        if mount.endswith(':/sockets'):\n"
@@ -107,6 +114,10 @@ def _stub_tree(
         "            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
         # Bound and deliberately NOT unlinked: the file must outlive the stub.
         f"{socket_arm}\n"
+        "    print('stubcontainer')\n"
+        f"elif cmd == 'rm' and not {survives!r} and os.path.exists({str(held)!r}):\n"
+        f"    os.remove({str(held)!r})\n"
+        f"elif cmd == 'ps' and os.path.exists({str(held)!r}):\n"
         "    print('stubcontainer')\n"
         "elif cmd == 'inspect':\n"
         "    sys.exit(1)\n"
@@ -251,8 +262,9 @@ class TestTheWrapperItself:
         assert any("scripts/private_cluster.py" in line for line in code) and any(
             line.strip().startswith('start "$_run_container" "$_image"') for line in code
         ), "the cluster is no longer started through the module"
-        spelled = [line for line in code
-                   if re.search(r"\bdocker\s+(run|rm|exec|inspect)\b", line)]
+        spelled = [line for line in code if re.search(
+            r"\bdocker\s+(container\s+)?(run|create|start|stop|kill|rm|exec|inspect)\b",
+            line)]
         assert not spelled, (
             f"scripts/test.sh spells a container command of its own again: {spelled}"
         )
@@ -320,13 +332,13 @@ class TestThePrivateClusterIsCleanedUp:
         wrapper's own header claimed every exit path was covered.
 
         A leaked container is not merely untidy: the run names it after its
-        PID, and the wrapper's teardown warns that a survivor collides with
-        the next run that reuses that PID.
+        PID, and the teardown warns that a survivor collides with the next
+        cluster of that name, which is the next run reusing that PID.
 
-        This reads the SOURCE rather than delivering real signals, which is
-        what the module's socket-budget test does for the same reason -- the
-        behaviour needs a live container and a race, and what actually
-        regresses is an arm being dropped from the trap list.
+        This reads the SOURCE rather than delivering real signals, as the
+        wiring case does -- the behaviour needs a live container and a race,
+        and what actually regresses is an arm being dropped from the trap
+        list.
 
         Args:
             signal_name: The signal whose arm must be present.
@@ -340,6 +352,44 @@ class TestThePrivateClusterIsCleanedUp:
             "A run ended that way leaks its postgres container and its socket "
             "directory, and the next run reusing that PID collides with them."
         )
+
+    def test_every_trap_is_armed_before_the_cluster_is_started(self) -> None:
+        """The traps come BEFORE the start, so a run killed during the start is
+        stopped by name.
+
+        A start ended by Ctrl-C stops what it made itself, but one killed by
+        TERM or HUP cannot: only the trap's stop, which finds the cluster by
+        the name the wrapper chose, removes it.  The review of step X-cx's K1a
+        measured the traps moved after the start: a TERM to the whole group
+        during the start left the container and its socket directory behind.
+        Read from the SOURCE, as the trap-arm case is.
+        """
+        lines = _TEST_RUNNER.read_text(encoding="utf-8").splitlines()
+        started = next(index for index, line in enumerate(lines)
+                       if line.strip().startswith('start "$_run_container" "$_image"'))
+        armed = {match.group(1): index for index, line in enumerate(lines)
+                 if (match := re.match(r"trap\s+'_teardown_run_container[^']*'\s+([A-Z]+)$",
+                                       line))}
+
+        assert set(armed) == {"EXIT", "INT", "TERM", "HUP"}, armed
+        late = sorted(name for name, index in armed.items() if index > started)
+        assert not late, f"armed only after the cluster is started: {late}"
+
+    def test_a_container_that_survives_teardown_is_named_and_pytest_s_status_kept(
+        self, tmp_path: Path
+    ) -> None:
+        """A survivor is named on stderr, and the wrapper still exits with
+        pytest's status.
+
+        The module's stop exits 1 when something survives.  Under ``set -e``,
+        the teardown at the end of the wrapper would then end the run with
+        that 1 instead of pytest's status, unless it is told not to (``||
+        true``); what survived is reported by the WARNING, not by the exit.
+        """
+        result = _run_wrapper(_stub_tree(tmp_path, survives=True), {})
+
+        assert result.returncode == 0, result.stderr
+        assert "survived teardown" in result.stderr, result.stderr
 
     def test_the_container_is_removed_with_its_volume(
         self, tmp_path: Path
