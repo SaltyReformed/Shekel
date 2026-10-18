@@ -141,15 +141,38 @@ def test_a_key_quill_cannot_sign_with_is_a_credentials_error(pem):
     pytest.param(b'{"client_id": 7}', "holds no client_id", id="not-a-string"),
     pytest.param(b'{"client_id": "x", "n": ' + b"1" * 5000 + b"}", "is not JSON",
                  id="integer-too-long"),
-    pytest.param(b"[" * 100_000 + b"]" * 100_000, "is not JSON", id="nested-too-deep"),
 ])
 def test_an_app_json_holding_no_client_id_is_a_credentials_error(tmp_path, text, why):
     """L9d: each of these escaped as a traceback (JSONDecodeError, UnicodeDecodeError,
-    ValueError, RecursionError, KeyError, AttributeError or TypeError), or passed on a
-    value that is no client ID."""
+    ValueError, KeyError, AttributeError or TypeError), or passed on a value that is no
+    client ID.  The parser's RecursionError, the one more escape, has its own case:
+    :func:`test_an_app_json_the_parser_cannot_nest_that_deep_is_a_credentials_error`."""
     (tmp_path / "app.json").write_bytes(text)
     (tmp_path / "app.pem").write_bytes(b"pem")
     with pytest.raises(CredentialsError, match=why):
+        app_credentials(tmp_path)
+
+
+def test_an_app_json_the_parser_cannot_nest_that_deep_is_a_credentials_error(tmp_path,
+                                                                            monkeypatch):
+    """L9d: ``json.loads`` raising RecursionError on nesting deeper than it can parse
+    escaped as a traceback; it is ``app.json`` "is not JSON".  No real input pins this arm
+    on every host: Python 3.14's C parser is bounded by the stack it uses, so where it
+    gives up depends on the host and the Python build.  Measured: on the developer's host
+    (CPython 3.14.8, ``ulimit -s`` 8192) 50,000 nested arrays parse and 75,000 raise
+    "Stack overflow (used 8148 kB) while decoding a JSON array"; GitHub's runner parsed
+    100,000 (CI job 117731545129, 2026-10-18), so a case built on 100,000 failed there.
+    Any deeper input is the same bet on a stack size, so the parse is made to raise what
+    the host measured raises."""
+    def too_deep(_text):
+        """The parser giving up as the host measured it does."""
+        raise RecursionError("Stack overflow (used 8148 kB) while decoding a JSON array "
+                             "from a unicode string")
+
+    monkeypatch.setattr("tools.quill._github.json.loads", too_deep)
+    (tmp_path / "app.json").write_text('{"client_id": "Iv23client"}', encoding="utf-8")
+    (tmp_path / "app.pem").write_bytes(b"pem")
+    with pytest.raises(CredentialsError, match="is not JSON: Stack overflow"):
         app_credentials(tmp_path)
 
 

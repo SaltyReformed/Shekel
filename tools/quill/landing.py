@@ -67,16 +67,23 @@ change set's base.  So a hotfix ``main`` holds counts though ``head`` was built 
 merged, and a ``Reopens:`` ``main`` holds undoes a ``Ships:`` though ``dev`` lacks it
 yet.  Until ``main`` is brought back into ``dev`` after the change set lands, ``dev``
 alone can answer otherwise; the check answers for once it is.  The answer is for ``dev``
-and ``main`` as this run reads them: a pull request that merges after either has moved,
-with no new push to run the check again, keeps this run's verdict, since ``main``'s
-protection does not require a branch to be up to date before it merges (its ``strict``
-is false, read 2026-10-18) and no merge into ``dev`` requires the check.  A pull request
-into a branch other than ``dev`` or ``main`` (one stacked on another pull request's),
-whose head reaches ``dev`` only beside whatever else that branch holds, is judged again
-when that branch's pull request carries its commits into ``dev`` or ``main``, since they
-have not landed; unless that branch's pull request merges first, when GitHub, deleting
-the merged branch, moves this one onto that branch's base, which runs nothing, so this
-run's verdict stands.
+and ``main`` as this run reads them.  Since ``R-BAL321``, ``main``'s protection requires
+a branch to be up to date before it merges (``strict`` true, read 2026-10-18), so a pull
+request into ``main`` must hold ``main``'s tip: once ``main`` moves, the pull request
+must be updated, and the push that updates it runs the check again, whose verdict the
+merge needs (``ci.yml``'s ``pull_request`` trigger names no ``types``, and
+``lint-and-test``, which needs the ``landing`` job, is a required check, read
+2026-10-18).  A move of ``dev`` alone runs nothing (``ci.yml`` runs on a push to ``main``
+only), so a pull request into ``main`` that merges after ``dev`` has moved keeps this
+run's verdict; so does a pull request into ``dev`` after either has moved, since no merge
+into ``dev`` requires the check or an up-to-date branch (``dev`` has no branch
+protection, and its rulesets restrict only updates and deletion, read 2026-10-18).  A
+pull request into a branch other than ``dev`` or ``main`` (one stacked on another pull
+request's), whose head reaches ``dev`` only beside whatever else that branch holds, is
+judged again when that branch's pull request carries its commits into ``dev`` or
+``main``, since they have not landed; unless that branch's pull request merges first,
+when GitHub, deleting the merged branch, moves this one onto that branch's base, which
+runs nothing, so this run's verdict stands.
 
 **The tracker is read only when a trailer names a card**, through the card-only reader
 (:class:`_tracker.CardReader`) and the token :data:`TOKEN_VARIABLE` holds: never quill's
