@@ -108,12 +108,13 @@ def tracking(branch: str) -> str:
     return f"refs/remotes/{branch}"
 
 
-def history(root: Path, ref: str = DEV) -> History:
+def history(root: Path, *refs: str) -> History:
     """Every ``Ships:`` and ``Reopens:`` trailer naming a card, and every old-form
-    ``Ships:`` and ``Reopens:``, on ``ref``.
+    ``Ships:`` and ``Reopens:``, on ``refs`` (:data:`DEV` when none is named).
 
-    One ``git log`` over everything ``ref`` names -- a branch, or a range such
-    as ``base..head`` -- reading each message's trailer block as git parses it.
+    One ``git log`` over everything ``refs`` name together -- a branch, a range
+    such as ``base..head``, or several tips, whose histories it reads as one,
+    each commit once -- reading each message's trailer block as git parses it.
 
     Raises:
         GitError: when ``root`` is a shallow clone, whose history stops short.
@@ -124,7 +125,7 @@ def history(root: Path, ref: str = DEV) -> History:
             "`git fetch --unshallow origin` (in CI, check out with fetch-depth: 0)"
         )
     out = git(
-        root, "log", ref,
+        root, "log", *(refs or (DEV,)),
         f"--format=%H{_FIELD}%s{_FIELD}%(trailers:key={SHIPS},valueonly,separator=%x02)"
         f"{_FIELD}%(trailers:key={REOPENS},valueonly,separator=%x02){_RECORD}",
     )

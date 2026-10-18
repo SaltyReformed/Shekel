@@ -235,8 +235,9 @@ jobs:
       # turns a needed read green.
       PLAN_READER_KEY_PRESENT: ${{ secrets.PLAN_READER_KEY != '' }}
     steps:
-      # The check reads dev's whole history -- what has shipped -- and which of
-      # the change set's commits dev or main already holds, so this checkout is
+      # The check reads the whole history of dev, main and the head -- what
+      # will have shipped once the head and main reach dev -- and which of the
+      # change set's commits dev or main already holds, so this checkout is
       # full; the history is only READ.
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -306,8 +307,10 @@ jobs:
       # or one naming a card that carries the filing mark (still being filed,
       # or dropped while it was) is refused, each trailer judged once, by the
       # pull request or merge group that lands its commit on dev or main (step
-      # X-cx's L9d); a merge commit GitHub writes and a push straight to dev or
-      # main are never judged.
+      # X-cx's L9d).  Never judged: a commit pushed straight to dev, and, while
+      # no merge queue runs, the merge commit GitHub writes when it merges a
+      # pull request (main's protection binds administrators, R-BAL319, so no
+      # commit is pushed straight to main).
       # The tracker is read only when a trailer names a card.  No condition:
       # with the mint skipped the token is empty, and the check decides.
       # The rules: tools/quill/landing.py.

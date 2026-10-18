@@ -47,24 +47,30 @@ own; of a push to ``main``, which ``main`` then holds, none.  A change set wholl
 ``dev`` or ``main`` judges nothing and says so; a checkout that cannot read either
 refuses to judge.  Never judged here, since it lands without a pull request judging it,
 and once landed it is never judged: a commit pushed straight to ``dev`` (which its
-ruleset lets an administrator do), and the merge commit GitHub writes when it merges a
-pull request into ``dev`` or ``main``.  Nor is a pull request into ``dev`` held to what
-this check says: no merge into ``dev`` requires it.  The merge commit carries no trailer
-unless whoever merges writes it a body: its message is by default one line made from the
-pull request's title (``R-BAL319``, 2026-10-18), and git reads no trailer from a
-message's first line.  The same ruling made ``main``'s protection bind administrators,
-so no commit is pushed straight to ``main``, a third kind until then.
+ruleset lets an administrator do), and, while no merge queue runs, the merge commit
+GitHub writes when it merges a pull request into ``dev`` or ``main`` (a queued group's
+merge commits are in its change set, and judged).  Nor is a pull request into ``dev``
+held to what this check says: no merge into ``dev`` requires it.  The merge commit
+carries no trailer unless whoever merges writes it a body: its message is by default one
+line made from the pull request's title (``R-BAL319``, 2026-10-18), and git reads no
+trailer from a message's first line.  The same ruling made ``main``'s protection bind
+administrators, so no commit is pushed straight to ``main``, a third kind until then.
 
-**Whether a card is work is git's answer once ``head`` reaches ``dev``**: whether a step
-is split reads which of the steps linked under it git says shipped (a step closed while
-still being filed is a leaf of it only once shipped, :func:`_state.leaves`), so the
-shipped set is ``dev``'s history and every commit ``head`` holds that ``dev`` does not
-(``<dev>..<head>``), judged or not and whatever the change set's base
-(:func:`tools.ci.trailers.shipped`).  A commit only ``main`` holds, a release branch's
-or a hotfix's, is not judged again, but ``dev`` comes to hold it beside the change set:
-in the base of a pull request into ``main``, when ``main`` is brought back into ``dev``;
-in the change set of a pull request into ``dev`` from a branch built on ``main``, when
-that pull request lands.
+**Whether a card is work is git's answer once ``head`` and ``main`` have both reached
+``dev``**: whether a step is split reads which of the steps linked under it git says
+shipped (a step closed while still being filed is a leaf of it only once shipped,
+:func:`_state.leaves`).  Every commit ``main`` holds reaches ``dev`` when ``main`` is
+brought back into ``dev``, and ``head`` reaches ``dev`` by a pull request into ``dev`` or
+through ``main``, so the shipped set is the history of ``dev``, ``main`` and ``head``
+together, read as one (:func:`tools.ci.trailers.shipped`), judged or not and whatever the
+change set's base.  So a hotfix ``main`` holds counts though ``head`` was built before it
+merged, and a ``Reopens:`` ``main`` holds undoes a ``Ships:`` though ``dev`` lacks it
+yet.  Between a pull request landing on ``dev`` and ``main`` coming back into ``dev``,
+``dev`` alone can answer otherwise; the check answers for once ``main`` is back.  A pull
+request into a branch other than ``dev`` or ``main`` (one stacked on another pull
+request's), whose head reaches ``dev`` only beside whatever else that branch holds, is
+judged again when that branch's pull request carries its commits into ``dev`` or
+``main``, since they have not landed.
 
 **The tracker is read only when a trailer names a card**, through the card-only reader
 (:class:`_tracker.CardReader`) and the token :data:`TOKEN_VARIABLE` holds: never quill's
@@ -78,9 +84,9 @@ A run that is handed no key mints no token (GitHub documents that a Dependabot r
 fork's pull request get no Actions secrets), so there a change set naming a card refuses
 to judge, and one naming none passes without a read.  **What
 cannot be read refuses to judge**: no token, an error GitHub answers, a tracker that
-cannot be reached, a list GitHub cut short or answered as null, or a card linked to one
-the tracker lacks exits 2, nothing checked.  So does a change set holding no commit, as
-:mod:`tools.ci.commit_trailers` refuses one.
+cannot be reached, a list GitHub cut short, answered as null or holding a null node, or
+a card linked to one the tracker lacks exits 2, nothing checked.  So does a change set
+holding no commit, as :mod:`tools.ci.commit_trailers` refuses one.
 
 Usage, at the repository root::
 
@@ -134,13 +140,11 @@ def reader_from_environment() -> CardReader:
 
 
 def _shipped_once_landed(root: Path, head: str) -> set[int]:
-    """Every card git says shipped once ``head`` reaches ``dev``: over ``dev``'s history
-    and every commit ``head`` holds that ``dev`` does not (``<dev>..<head>``), ``dev`` read
-    by its full name (:func:`tools.ci.trailers.tracking`)."""
-    dev = trailers.tracking(trailers.DEV)
-    landed = trailers.History(trailers.history(root, dev).trailers
-                              + trailers.history(root, f"{dev}..{head}").trailers, ())
-    return set(trailers.shipped(root, landed)[0])
+    """Every card git says shipped once ``head`` and ``main`` have both reached ``dev``:
+    over the history of ``dev``, ``main`` and ``head`` together, read as one, the two
+    branches by their full names (:func:`tools.ci.trailers.tracking`)."""
+    return set(trailers.shipped(root, trailers.history(
+        root, trailers.tracking(trailers.DEV), trailers.tracking(trailers.MAIN), head))[0])
 
 
 def _wrong(number: int, key: str, card: BareCard | None, cards: Mapping[int, BareCard],
@@ -149,7 +153,7 @@ def _wrong(number: int, key: str, card: BareCard | None, cards: Mapping[int, Bar
     card is ``card`` (None when the tracker does not hold it), as the end of a sentence;
     None when nothing is.  ``cards`` holds every card a decision over a ``Ships:``-named
     card reads (:func:`_command.with_closure`), and ``shipped`` git's answer once the change
-    set's head reaches ``dev``."""
+    set's head and ``main`` have both reached ``dev``."""
     if card is None:
         fix = ("" if key == trailers.REOPENS else
                ", or file the card with quill file first and name the number it is given")
@@ -174,13 +178,14 @@ def refusals(named: Mapping[tuple[int, str], Sequence[trailers.Trailer]], shippe
     """One sentence for each ``(card, key)`` in ``named`` the tracker refuses (the module's
     rules), each naming every commit that carries it, by card; ``named`` holds the card
     trailers of the change set's commits that have not landed, and ``shipped`` git's
-    answer once the change set's head reaches ``dev``.  The tracker is read through the
-    reader ``connect`` makes.
+    answer once the change set's head and ``main`` have both reached ``dev``.  The tracker
+    is read through the reader ``connect`` makes.
 
     Raises:
         NoToken: when ``connect`` has no token to read with.
         _tracker.TrackerError: when a card a ``Ships:`` names links to one the tracker
-            lacks, or GitHub's answer is cut short.
+            lacks, or GitHub's answer is cut short, answers a list as null or holds a null
+            node in one.
         _github.GitHubError: when GitHub answers a read with an error.
         requests.RequestException: when the tracker cannot be reached.
     """
@@ -204,9 +209,9 @@ def problems(root: Path, base: str, head: str,
     (:func:`refusals`); the tracker is not read when none of them names a card.
 
     Raises:
-        tools.ci.gitcmd.GitError: when git cannot read the change set or ``dev``'s
-            history (a shallow clone among them), or ``dev`` or ``main`` cannot be read at
-            all (:class:`tools.ci.commit_trailers.LandedUnknown`).
+        tools.ci.gitcmd.GitError: when git cannot read the change set or the history of
+            ``dev``, ``main`` and ``head`` (a shallow clone among them), or ``dev`` or
+            ``main`` cannot be read at all (:class:`tools.ci.commit_trailers.LandedUnknown`).
         NoToken, _tracker.TrackerError, _github.GitHubError, requests.RequestException: as
             :func:`refusals` raises them.
     """

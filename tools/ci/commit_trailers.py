@@ -68,21 +68,23 @@ the one reader and the one ``shipped`` rule the tracker tool also asks:
    into ``main``, a release branch's own; of a push to ``main``, which
    ``main`` then holds, none.  A commit ``dev`` or ``main`` holds was judged
    at the pull request or merge group that first brought it to either, or
-   got there past this check, as two kinds of commit always do: a commit
-   pushed straight to ``dev`` (which its ruleset lets an administrator do),
-   and the merge commit GitHub writes when it merges a pull request into
-   ``dev`` or ``main``.  Each of those lands without a pull request judging
-   it, and once landed it is never judged.  Either way no commit can change
-   it (``R-BAL184``), so judging it again could only refuse it for good,
-   never stop it landing.  The merge commit carries no trailer unless
-   whoever merges writes it a body: its message is by default one line made
-   from the pull request's title (``R-BAL319``, 2026-10-18), and git reads no
-   trailer from a message's first line.  The same ruling made ``main``'s
-   protection bind administrators, so no commit is pushed straight to
-   ``main``, a third kind until then.  So this check never refuses a later
-   pull request for a stray that reached ``dev`` or ``main`` without it (none
-   had: neither held a ``plan#`` trailer on 2026-10-18), or past a check no
-   merge requires, and undoing one owes nothing (rule 2).  The release tool
+   got there past this check, as two kinds of commit do: a commit pushed
+   straight to ``dev`` (which its ruleset lets an administrator do), and,
+   while no merge queue runs, the merge commit GitHub writes when it merges
+   a pull request into ``dev`` or ``main`` (a queued group's merge commits
+   are in its change set, and judged).  Each of those lands without a pull
+   request judging it, and once landed it is never judged.  Either way no
+   commit can change it (``R-BAL184``), so judging it again could only
+   refuse it for good, never stop it landing.  The merge commit carries no
+   trailer unless whoever merges writes it a body: its message is by default
+   one line made from the pull request's title (``R-BAL319``, 2026-10-18),
+   and git reads no trailer from a message's first line.  The same ruling
+   made ``main``'s protection bind administrators, so no commit is pushed
+   straight to ``main``, a third kind until then.  So this check never
+   refuses a later pull request for a stray that reached ``dev`` or
+   ``main`` without it (none had: neither held a ``plan#`` trailer on
+   2026-10-18), or past a check no merge requires, and undoing one owes
+   nothing (rule 2).  The release tool
    still counts such a stray: a money one that reached ``dev`` beside another
    money change blocks every release, which only a check every merge into
    ``dev`` requires can prevent.  ``dev`` and ``main`` are read only when the
