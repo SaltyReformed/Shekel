@@ -8,7 +8,6 @@ rules, state machine behavior, regeneration, and conflict resolution.
 import logging
 from datetime import date, timedelta
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 
@@ -38,6 +37,7 @@ from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    APP_PACKAGE_DIR,
     typed,
     record_paydays_across_a_hole,
     rhythm_of,
@@ -58,7 +58,6 @@ from tests._test_helpers import transfer_amount
 from tests.test_routes.test_the_chooser_restores_what_the_unarchive_would import (
     _transfer_as_stored,
 )
-from tests.test_services.test_service_log_events import _LogCapture
 
 
 def _assert_shadows_valid(xfer):
@@ -2838,11 +2837,12 @@ class TestRegenerateDeletionRoutedThroughService:
         Pins Transfer Invariant 4 literally: every deletion writer-path
         into ``budget.transfers`` is ``transfer_service.delete_transfer``.
         """
-        module_path = (
-            Path(__file__).resolve().parents[2]
-            / "app" / "services" / "transfer_recurrence.py"
-        )
+        # Found from the app package's own location, never from this test's
+        # place in the tree, and the read must hold text: a "not in" over an
+        # empty read passes on nothing.
+        module_path = APP_PACKAGE_DIR / "services" / "transfer_recurrence.py"
         source = module_path.read_text(encoding="utf-8")
+        assert source, f"read nothing from {module_path}"
         assert "db.session.delete(xfer)" not in source, (
             "Found db.session.delete(xfer) in transfer_recurrence.py -- "
             "regen must route through transfer_service.delete_transfer "
