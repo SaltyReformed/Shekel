@@ -691,13 +691,15 @@ class TestTheRemovedMovementLeavesItsParentsLoadedList:
             assert payment not in hotel.entries
             assert hotel.entries is family
 
-    def test_a_transfers_payment_leaves_its_shadows_entries(self, app, seed_user):
+    def test_a_transfers_payment_leaves_the_from_sides_movements(self, app, seed_user):
         """A Paid $500.00 transfer's checking-side payment, taken off by the act.
 
         Its list is the transfer's from-side collection since plan step
         ``balance:X-bi-6-4d-2`` (ruling **R-BAL88**), where it was the
         Checking shadow's ``entries`` until then (ruling **R-BAL167** class
-        1).  The name is the test's history.
+        1).  Renamed from
+        ``test_a_transfers_payment_leaves_its_shadows_entries`` at plan step
+        ``balance:X-bi-6-4d-3``'s vacuous-residue checkpoint.
         """
         with app.app_context():
             savings = create_account_of_type(

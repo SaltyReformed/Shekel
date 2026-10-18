@@ -40,7 +40,11 @@ from app.services.transfer_legs import (
     grid_transfer_leg,
     grid_transfer_legs,
 )
-from app.services.transfer_service import delete_transfer, update_transfer
+from app.services.transfer_service import (
+    delete_transfer,
+    settle_transfer,
+    update_transfer,
+)
 from app.utils.balance_predicates import is_projected_clause
 from app.services.account_resolver import resolve_cash_flow_set
 from tests._test_helpers import (
@@ -49,9 +53,34 @@ from tests._test_helpers import (
     create_settled_transfer,
     create_transfer,
     transfer_side_settle_day,
+    typed as typed_figure,
 )
 
 from ._helpers import _AMOUNT, _savings, _cancelled_transfer
+
+
+def _closed_at_zero(seed_user, session, period):
+    """Return the $250.00 checking -> savings transfer marked Paid at $0.00, and both its legs.
+
+    Closed through the settle door with a typed ``$0.00``, which stores no
+    record on either side (rulings **R-BAL82**, **R-BAL141**); each leg is
+    loaded by the grid's own producer, the expense side first.
+    """
+    checking = seed_user["account"]
+    savings = _savings(seed_user)
+    closed = create_transfer(
+        seed_user, session, checking, savings, period, amount=_AMOUNT,
+    )
+    session.commit()
+    settle_transfer(
+        closed.id, seed_user["user"].id,
+        submitted=typed_figure(Decimal("0.00")),
+    )
+    session.commit()
+    return closed, [
+        grid_transfer_leg(closed, checking.id),
+        grid_transfer_leg(closed, savings.id),
+    ]
 
 
 # ── The grid's legs (plan step balance:X-bi-6-1, ruling R-BAL87) ────────
@@ -98,10 +127,20 @@ class TestALegsRecordIsItsCoveringMovement:
                 assert movement.settled_on == date(2026, 2, 3)
             assert covering_movements_by_leg([]) == {}
 
-    def test_a_deleted_shadows_movement_is_not_a_legs_record(
+    def test_a_soft_deleted_transfer_holds_no_legs_record(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The join reads the LIVE pair: a soft-deleted shadow's movement is no record."""
+        """A settled transfer's soft delete takes both sides' records with it.
+
+        The delete takes each side's payment off the books (ruling
+        **R-CC75**, finding **BAL-532**), and the database refuses a hidden
+        transfer still holding one (``app/deleted_row_infrastructure``'s
+        transfer arm), so the join finds no record of it.  Until plan step
+        ``balance:X-bi-6-4d-2`` the movements stayed under the hidden
+        shadows and the join's "the shadow is live" term was what left them
+        no leg's.  Renamed from
+        ``test_a_deleted_shadows_movement_is_not_a_legs_record``.
+        """
         with app.app_context():
             checking = seed_user["account"]
             savings = _savings(seed_user)
@@ -287,20 +326,24 @@ class TestTheLegMapProducers:
     def test_a_settled_leg_with_no_movement_is_the_zero_record(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Ruling R-BAL82's state on a leg: settled, no covering movement, ``$0``."""
+        """Ruling R-BAL82's state on a leg: settled, no covering movement, ``$0``, on both sides.
+
+        The transfer is closed at ``$0.00`` through its door
+        (:func:`_closed_at_zero`).  Until plan step ``balance:X-bi-6-4d-3``'s
+        vacuous-residue checkpoint the case hand-built the EXPENSE side's
+        leg, record ``None``, over a transfer settled at $250.00 with a
+        record on each side; it read no income side, and the cp2e-2b-2b
+        review's LOW 2 found no case that read a ``$0.00`` close's income
+        side on a destination that does not amortize.
+        """
         with app.app_context():
-            checking = seed_user["account"]
-            savings = _savings(seed_user)
-            settled = create_settled_transfer(
-                seed_user, db.session, checking, savings, seed_periods[2],
-                amount=_AMOUNT, settled_on=date(2026, 2, 3),
-            )
-            db.session.commit()
-            leg = TransferLeg(
-                transfer=settled, account_id=checking.id, is_income=False,
-                record=None,
-            )
-            assert leg_settled_amounts_by_key([leg]) == {leg.cell_key: Decimal("0")}
+            closed, legs = _closed_at_zero(seed_user, db.session, seed_periods[2])
+
+            assert [leg.record for leg in legs] == [None, None]
+            assert leg_settled_amounts_by_key(legs) == {
+                (closed.id, closed.from_account_id): Decimal("0"),
+                (closed.id, closed.to_account_id): Decimal("0"),
+            }
 
     def test_a_reverted_leg_retains_a_stated_figure_and_not_a_resolved_one(
         self, app, db, seed_user, seed_periods,
@@ -402,23 +445,21 @@ class TestTheLegContributionTwins:
     def test_a_settled_leg_with_no_movement_is_the_zero_record(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
+        """A ``$0.00`` close's legs are worth ``$0``, figure and contribution, on both sides.
+
+        Built and read as :class:`TestTheLegMapProducers`' case of the same
+        name is, and changed with it at the same step: it hand-built the
+        expense side's leg alone until then.
+        """
         with app.app_context():
-            checking = seed_user["account"]
-            savings = _savings(seed_user)
-            settled = create_settled_transfer(
-                seed_user, db.session, checking, savings, seed_periods[2],
-                amount=_AMOUNT, settled_on=date(2026, 2, 3),
-            )
-            db.session.commit()
-            leg = TransferLeg(
-                transfer=settled, account_id=checking.id, is_income=False,
-                record=None,
-            )
-            assert leg_settled_figure(leg) == Decimal("0")
-            assert leg_settled_contribution(leg) == Decimal("0")
-            assert leg_contribution_of(
-                leg, basis_for(checking, seed_user["scenario"]),
-            ) == Decimal("0")
+            _, legs = _closed_at_zero(seed_user, db.session, seed_periods[2])
+            basis = basis_for(seed_user["account"], seed_user["scenario"])
+
+            assert [leg.record for leg in legs] == [None, None]
+            for leg in legs:
+                assert leg_settled_figure(leg) == Decimal("0")
+                assert leg_settled_contribution(leg) == Decimal("0")
+                assert leg_contribution_of(leg, basis) == Decimal("0")
 
     def test_an_excluded_leg_is_worth_zero_whatever_it_remembers(
         self, app, db, seed_user, seed_periods,

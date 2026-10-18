@@ -608,9 +608,13 @@ class TestTheTransferArmThroughItsROUTE:
             for account_id in (parent.from_account_id, parent.to_account_id):
                 # An ECHOED prefill is not a correction: the record says
                 # ``resolved`` and states the figure the settle booked.
-                assert transfer_side_record(
+                record = transfer_side_record(
                     db.session, transfer_id, account_id,
-                ).figure_source_id == resolved
+                )
+                assert record is not None, (
+                    f"the tick recorded no payment on account {account_id}"
+                )
+                assert record.figure_source_id == resolved
                 assert transfer_side_figure(
                     db.session, transfer_id, account_id,
                 ) == Decimal("75.00")

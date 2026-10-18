@@ -66,13 +66,15 @@ def _minted(seed_user):
     name is a display decision this step also makes and a test that asserted
     both through one predicate would pass a rename it should have caught.
 
-    **A transfer SHADOW is excluded by the column that says it is one.**  The
-    ``create_transfer`` fixture leaves a shadow's category NULL, so without
-    that term this helper reports one as a row this door minted -- which it
-    measurably did, in a first version of the group cases below.  It is a
-    property of the FIXTURE and not of the app: all 346 shadows on a
-    production clone carry a category (measured 2026-08-23, against 0
-    NULL-category transactions of any kind).
+    **No transfer term.**  A transfer came with two shadow rows until plan
+    step ``balance:X-bi-6-4d-3``, and the ``create_transfer`` fixture left a
+    shadow's category NULL, so this helper excluded shadows by
+    ``transfer_id IS NULL`` (without that term it reported one as a row this
+    door minted, in a first version of the group cases).  A transfer is one
+    row since that step (ruling **R-BAL258**) and the database refuses a row
+    naming one (``ck_transactions_names_no_transfer``), so the term went at
+    that step's vacuous-residue checkpoint: at each of the helper's 47
+    calls in a run of the package, no row named a transfer (measured).
 
     Args:
         seed_user: The seeded user bundle.
@@ -85,7 +87,6 @@ def _minted(seed_user):
         .filter(
             Transaction.account_id == seed_user["account"].id,
             Transaction.category_id.is_(None),
-            Transaction.transfer_id.is_(None),
         )
         .order_by(Transaction.id)
         .all()

@@ -48,6 +48,7 @@ from tests._test_helpers import (
     refused_by_database_rule,
     rhythm_of,
     transfer_side_record,
+    typed,
 )
 
 
@@ -90,11 +91,6 @@ def _reverted_500(seed_user, periods):
     return xfer
 
 
-def _legs(xfer):
-    """The transfer's two shadow rows, dead or alive."""
-    return db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-
-
 def _side_records(xfer):
     """The records the transfer's two sides hold, read by their own SQL.
 
@@ -118,11 +114,12 @@ def _held_transfer_ids():
 
 
 class TestTheOneClause:
-    """``transfer_holds_a_movement``: any record on either side, whatever its twins are.
+    """``transfer_holds_a_movement``: any record on either side.
 
     It asked about any entry under any shadow, live or dead, until plan step
     ``balance:X-bi-6-4d-2`` moved each side's record onto the transfer
-    (ruling **R-BAL88**); a twin's own state is read by no reader since.
+    (ruling **R-BAL88**); a transfer has no twin since plan step
+    ``balance:X-bi-6-4d-3`` made it one row (ruling **R-BAL258**).
     """
 
     def test_a_transfer_holding_nothing_is_not_held(
@@ -158,28 +155,28 @@ class TestTheOneClause:
 
             assert _held_transfer_ids() == {xfer.id}
 
-    def test_a_hidden_legs_kept_payment_is_held(
+    def test_hiding_a_transfer_that_kept_its_payments_is_refused_and_it_stays_held(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """Finding BAL-532: hidden twins over the payments the transfer kept.
+        """Finding BAL-532: the hide is refused at commit, and the clause still holds the transfer.
 
         Until plan step ``balance:X-bi-6-4d-2`` the occurrence delete hid the
         transfer and its legs with the payments inside, and the clause had to
         see a DEAD shadow's entry.  That state is REFUSED at commit since (the
         deleted-row rule's transfer arm; the delete takes the payments off,
         ruling **R-CC75**), so it is asserted refused (ruling **R-BAL167**
-        class 2).  The subject left -- the clause has no live-twin term -- is
-        the storable remainder: both twins hidden around the service while
-        the live transfer keeps its two records, which the clause still
-        holds (class 3: no reader reads a twin).
+        class 2), and after the refusal the transfer still holds both
+        records and the clause still holds it.  The case also hid both twins
+        around the service, before the refused hide and again over the live
+        transfer's two kept records, until plan step
+        ``balance:X-bi-6-4d-3``'s vacuous-residue checkpoint: a transfer is
+        one row since that step (ruling **R-BAL258**), so each of those
+        updates touched no row and the plant's read of the twins walked an
+        empty list (both measured).  Renamed from
+        ``test_a_hidden_legs_kept_payment_is_held``.
         """
         with app.app_context():
             xfer = _reverted_500(seed_user, seed_periods_today)
-            hide_twins = db.text(
-                "UPDATE budget.transactions SET is_deleted = TRUE "
-                "WHERE transfer_id = :t"
-            )
-            db.session.execute(hide_twins, {"t": xfer.id})
             db.session.execute(
                 db.text(
                     "UPDATE budget.transfers SET is_deleted = TRUE WHERE id = :t"
@@ -193,13 +190,10 @@ class TestTheOneClause:
             db.session.rollback()
             assert f"transfer {xfer.id} " in str(caught.value)
 
-            db.session.execute(hide_twins, {"t": xfer.id})
-            db.session.commit()
             db.session.expire_all()
-            legs = _legs(xfer)
-            assert all(leg.is_deleted for leg in legs) and all(
+            assert all(
                 record is not None for record in _side_records(xfer)
-            ), "the plant: both twins hidden, the transfer holding both payments"
+            ), "the plant: the refused hide left the transfer holding both payments"
 
             assert _held_transfer_ids() == {xfer.id}
 
@@ -212,16 +206,24 @@ class TestThePeriodLock:
     ):
         """No row of the period is settled; the $500.00 transfer is.
 
-        On this door-written state the transfer and its legs share one
-        status, so this cannot tell which of them the lock read:
-        :class:`TestTheParentDecidesADrift` can.
+        A transfer's status lives in its one row since plan step
+        ``balance:X-bi-6-4d-3`` (ruling **R-BAL258**).  Until plan step
+        ``balance:X-bi-6-4d-2`` its two shadow rows carried the same status
+        on this door-written state, so the case could not tell which of the
+        three the lock read, and :class:`TestTheParentDecidesADrift` planted
+        a drift to tell them apart; from that step a settle left the twins
+        Projected under the Paid transfer, until the next deleted them.  The
+        plant's count also left the shadows out
+        (``transfer_id IS NULL``), a term no row can fail since
+        (``ck_transactions_names_no_transfer``), dropped at that step's
+        vacuous-residue checkpoint: the count was 0 with it and without it
+        (measured).
         """
         with app.app_context():
             period = seed_periods_today[4]
             _paid_500(seed_user, seed_periods_today)
             assert db.session.query(Transaction).filter(
                 Transaction.pay_period_id == period.id,
-                Transaction.transfer_id.is_(None),
             ).count() == 0, "the plant: the transfer is all the period holds"
 
             locks = classify_schedule_locks(
@@ -246,31 +248,42 @@ class TestThePeriodLock:
 
 
 class TestTheParentDecidesADrift:
-    """On a status drift Transfer Invariant 3 forbade, the TRANSFER's status was read.
+    """The TRANSFER's status is what the lock reads (ruling **R-JM**).
 
-    Ruling **R-JM** (a transfer's leg reads its parent), as
-    ``pay_period_locks.settled_items`` states it.  The class planted the
-    two drifts around the service, because on every door-written state the
-    transfer and its legs shared one status, so a lock still reading the
-    LEGS' status passed every test above.  Drift A, a leg set Paid under a
-    Projected transfer, was deleted at plan step ``balance:X-bi-6-4d-3``
-    (ruling **R-BAL313**): a transfer came with two shadow rows until that
-    step made it one row (ruling **R-BAL258**).  Its three reads of the
-    reverted transfer it planted over -- the HOLDS_MOVEMENT lock, no settled
-    item, one holding row -- are :class:`TestThePeriodLock`'s
+    As ``pay_period_locks.settled_items`` states it.  The class planted the
+    two status drifts Transfer Invariant 3 forbade around the service,
+    because on every door-written state the transfer and its legs shared
+    one status, so a lock still reading the LEGS' status passed every test
+    above.  Drift A, a leg set Paid under a Projected transfer, was deleted
+    at plan step ``balance:X-bi-6-4d-3`` (ruling **R-BAL313**): a transfer
+    came with two shadow rows until that step made it one row (ruling
+    **R-BAL258**).  Its three reads of the reverted transfer it planted over
+    -- the HOLDS_MOVEMENT lock, no settled item, one holding row -- are
+    :class:`TestThePeriodLock`'s
     ``test_a_reverted_transfer_locks_its_period_for_its_kept_payment`` and
     :class:`TestTheResetCounts`' ``test_a_transfer_holding_its_payment_counts_once``,
-    on the same ``_reverted_500``.  Drift B, the transfer set Paid alone,
-    is the one case left.
+    on the same ``_reverted_500``.  Drift B, the transfer set Paid alone
+    over its two Projected legs, is the one case left, and it is no drift
+    any more: a Paid transfer whose sides hold no record is the ``$0.00``
+    close the status-band rule admits (``side_band_infrastructure``), so
+    the case closes the transfer at ``$0.00`` through its settle door.  The
+    class's name is its history.
     """
 
-    def test_a_paid_transfer_over_projected_legs_is_settled(
+    def test_a_transfer_closed_at_zero_is_settled(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """Drift B: the $500.00 transfer set Paid alone; its legs say Projected.
+        """The $500.00 transfer marked Paid at $0.00: no record, and its period locked as settled.
 
-        The legs' status read no settled item here (the period unlocked,
-        a settled count of 0); the transfer's reads one.
+        A ``$0.00`` close stores no record on either side (rulings
+        **R-BAL82**, **R-BAL141**), so the lock and the settled count read
+        the transfer's own status alone.  Until plan step
+        ``balance:X-bi-6-4d-3``'s vacuous-residue checkpoint the case wrote
+        the status Done around the service: drift B, over two Projected
+        shadows until that step made a transfer one row (a lock reading the
+        legs' status found no settled item there), and its plant read those
+        legs, an empty list since (measured).  Renamed from
+        ``test_a_paid_transfer_over_projected_legs_is_settled``.
         """
         with app.app_context():
             period = seed_periods_today[4]
@@ -280,17 +293,14 @@ class TestTheParentDecidesADrift:
                 amount=Decimal("500.00"),
             )
             db.session.commit()
-            db.session.get(Transfer, xfer.id).status_id = (
-                ref_cache.status_id(StatusEnum.DONE)
+            transfer_service.settle_transfer(
+                xfer.id, seed_user["user"].id, submitted=typed(Decimal("0.00")),
             )
             db.session.commit()
             db.session.expire_all()
-            legs = _legs(xfer)
-            assert not is_projected(db.session.get(Transfer, xfer.id)) and all(
-                is_projected(leg) for leg in legs
-            ) and not any(
-                leg.entries for leg in legs
-            ), "the plant: a Paid transfer over two Projected, empty legs"
+            assert not is_projected(db.session.get(Transfer, xfer.id)) and (
+                _side_records(xfer) == [None, None]
+            ), "the plant: a Paid transfer holding no record on either side"
             user_id = seed_user["user"].id
 
             locks = classify_schedule_locks(

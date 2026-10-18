@@ -12,28 +12,31 @@ that produces it (:func:`planned_transfer_legs`), so every reader of an
 account's plan derives the same pair from the same parent.
 
 **What it replaces.**  Until this step every balance reader loaded the two
-SHADOW rows the transfer service writes beside each parent -- an expense
+SHADOW rows the transfer service wrote beside each parent -- an expense
 ``Transaction`` on the from-account and an income ``Transaction`` on the
 to-account -- and priced each through amount rule 5 (*a shadow is worth its
-parent*).  The shadows still exist and the transfer service still maintains
-them, for the settle doors and the screens that render them; what changed is
-that no reader FOLDING a projection reads one.  The settled half is each
-shadow's covering MOVEMENT since plan step ``balance:X-bi-4a``, and plan
-step ``X-bi-6`` deletes the rows, at which point the maintenance contract
-that kept a shadow equal to its parent (Transfer Invariant 3) has nothing
-left to keep in step.
+parent*).  From this step no reader FOLDING a projection read one; the
+shadows stayed, maintained by the transfer service for the settle doors and
+the screens that rendered them, until plan step ``balance:X-bi-6-4d-2``
+stopped keeping them in step, and plan step ``balance:X-bi-6-4d-3`` deleted
+them, making a transfer one row (ruling **R-BAL258**).  The settled half
+is each side's covering MOVEMENT since plan step ``balance:X-bi-4a`` (filed
+under the side's shadow until plan step ``balance:X-bi-6-4d-2``, under the
+transfer by a side link since), so the maintenance contract that kept a
+shadow equal to its parent (Transfer Invariant 3) has no shadow left to
+keep in step.
 
 **A leg is planned exactly while its own DATED movement does not exist**
 (ruling **R-BAL79**, plan step ``balance:X-bi-4a``; ledger row
 **BAL-500**).  The settled half reads a leg as the dated covering movement
-under the transfer's shadow on that account, so the MOVEMENT -- not the
+filed under the transfer's side on that account, so the MOVEMENT -- not the
 parent's status -- is what decides which relation a leg is in, per side:
 a transfer whose parent is still Projected while one side's movement has
-been dated (a state no door writes today and Transfer Invariant 3 forbids;
-``X-bi-6``'s per-leg settle days make it the ordinary transitional state)
-is emitted here for the OTHER side alone, so no leg is counted by both
-halves.  Through ``X-bi-3e`` both legs were emitted off the parent's status
-and that state read ``-$500.00`` on a `$250.00` transfer.
+been dated (a state the status-band rule refuses at commit since plan step
+``balance:X-bi-6-4d-2``, below) is emitted here for the OTHER side alone,
+so no leg is counted by both halves.  Through ``X-bi-3e`` both legs were
+emitted off the parent's status and that state read ``-$500.00`` on a
+`$250.00` transfer.
 
 **A leg is DERIVED and carries its parent, deliberately.**  It stores no
 figure, no period and no date of its own: :attr:`~TransferLeg.due_date`

@@ -12,7 +12,6 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import StatusEnum
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.balance_at._asset_contributions import _recorded_contributions
 from app.services.balance_at._cash_fold import assembled_fold
@@ -77,10 +76,9 @@ class TestTransferLegs:
     ):  # pylint: disable=unused-argument
         """The plan half admits live still-Projected parents and nothing else.
 
-        A settled transfer is the RECORD half's (its shadow row, until
-        ``X-bi-4``); a Cancelled one is not money the account owes; a deleted
-        one is gone.  Each is built through the door so the state is one the
-        app produces.
+        A settled transfer is the RECORD half's (its sides' records); a
+        Cancelled one is not money the account owes; a deleted one is gone.
+        Each is built through the door so the state is one the app produces.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -99,8 +97,10 @@ class TestTransferLegs:
                 amount=_AMOUNT,
             )
             db.session.commit()
-            # Through the transfer service, so the parent and both shadows
-            # go together (Transfer Invariants 3 and 4).
+            # Through the transfer service's delete, the door that hides a
+            # transfer; it hid the parent and both shadows together until
+            # plan step balance:X-bi-6-4d-3 made a transfer one row (ruling
+            # R-BAL258).
             delete_transfer(deleted.id, seed_user["user"].id, soft=True)
             db.session.commit()
 
@@ -114,14 +114,21 @@ class TestTransferLegs:
 class TestTheCashFoldReadsTheParent:
     """The general case: every account's plan derives its transfer legs."""
 
-    def test_the_plan_holds_a_leg_and_no_shadow_row(
+    def test_the_plan_holds_the_transfers_leg_once(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """``planned_cash_rows`` carries the parent's leg where the shadow was.
+        """``planned_cash_rows`` carries the transfer's leg once, on its from-side.
 
-        The row half excludes shadows -- the ONE ``transfer_id`` narrowing this
-        step adds, which ``X-bi-6`` deletes with the rows -- and the leg half
-        derives them, so a projected transfer appears exactly once.
+        The leg half derives the leg from the transfer.  The case also read
+        that no ROW of the plan named a transfer (a shadow beside its leg
+        would have counted the transfer twice) until plan step
+        ``balance:X-bi-6-4d-3``'s vacuous-residue checkpoint: a transfer is
+        one row since that step (ruling **R-BAL258**), and the database
+        refuses a row naming one (``ck_transactions_names_no_transfer``,
+        pinned by ``tests/test_models/test_a_transfer_is_one_row.py``'s
+        ``TestTheUpgrade::test_the_database_refuses_a_twin``), so that read
+        walked a list holding no such row (measured empty).  Renamed from
+        ``test_the_plan_holds_a_leg_and_no_shadow_row``.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -135,14 +142,9 @@ class TestTheCashFoldReadsTheParent:
             plan = planned_cash_rows(checking.id, seed_user["scenario"].id)
 
             legs = [item for item in plan if isinstance(item, TransferLeg)]
-            rows = [item for item in plan if isinstance(item, Transaction)]
             assert [(leg.transfer.id, leg.is_income) for leg in legs] == [
                 (transfer.id, False),
             ]
-            assert not [row for row in rows if row.transfer_id is not None], (
-                "a projected shadow row is still in the plan beside its leg: "
-                "the transfer would be counted twice"
-            )
 
     def test_both_sides_fold_the_parent_to_the_cent(
         self, app, db, seed_user, seed_periods,
@@ -359,7 +361,11 @@ class TestTheContributionFeedsReadTheParent:
     def test_a_settled_contribution_is_its_record_confirmed(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The RECORD half is still the shadow row, at what it recorded."""
+        """The RECORD half is the to-side's record, confirmed, at what it recorded.
+
+        $240.00 where the plan says $250.00.  The record half was the
+        to-side's shadow row when this case was written.
+        """
         with app.app_context():
             period = seed_periods[2]
             account = make_investment_account(
@@ -409,11 +415,17 @@ class TestAStatusDriftIsCountedOnce:
     ):  # pylint: disable=unused-argument
         """Settled with no record on either side, the $250.00 transfer moves nothing.
 
-        The parent's status is written Done directly.  The fold values no
-        planned leg (the parent is not Projected), and folds no settled fact
-        (neither side holds a record), so each account reads on the
-        transfer's day what it read before the transfer existed: checking
-        does not fall $250.00 and savings does not rise $250.00.  The savings
+        The parent's status is written Done directly.  The fold's plan holds
+        no leg of it on either account (the parent is not Projected), and the
+        fold folds no settled fact (neither side holds a record), so each
+        account reads on the transfer's day what it read before the transfer
+        existed: checking does not fall $250.00 and savings does not rise
+        $250.00.  The plan read, by the fold's own loader on both accounts,
+        joined at plan step ``balance:X-bi-6-4d-3``'s vacuous-residue
+        checkpoint: until then the case read it only through the balances,
+        which the valuation's own re-check of the status holds, so a loader
+        that admitted the closed transfer's leg on either side failed none of
+        this case's reads (measured on each side).  The savings
         read joined at plan step ``balance:X-bi-6-4d-3``: until then the case
         read checking alone, and a cash fold that valued only the to-side's
         leg of such a transfer, at the transfer's amount, changed no balance
@@ -444,5 +456,11 @@ class TestAStatusDriftIsCountedOnce:
             db.session.commit()
             db.session.expire_all()
 
+            for account in (checking, savings):
+                assert not [
+                    item for item in planned_cash_rows(account.id, scenario.id)
+                    if isinstance(item, TransferLeg)
+                    and item.transfer.id == transfer.id
+                ], f"the plan holds a leg of the closed transfer on account {account.id}"
             assert _balance_on(checking, scenario, day) == checking_before
             assert _balance_on(savings, scenario, day) == savings_before

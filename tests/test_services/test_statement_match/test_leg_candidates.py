@@ -11,8 +11,9 @@ left offering nothing.
 
 Each class pins one fact of the new shape: what is offered and how it is
 priced, labelled and dated; how an accepted leg is recorded and claimed;
-how the drifted states no door writes are decided by the PARENT (ruling
-**R-JM**, R-BAL79); and the re-price a stale form meets.  The before/after
+how the PARENT decides a side (ruling **R-JM**, R-BAL79) in two drifted
+states the status-band rule refuses at commit and in the ``$0.00`` close;
+and the re-price a stale form meets.  The before/after
 grade over the 2026-09-30 00:11 production dump lives with the leaf's
 handoff, not here.
 
@@ -65,6 +66,7 @@ from tests._test_helpers import (
     create_transfer,
     on_both_sides,
     open_books_before_the_first_assertion,
+    typed,
 )
 
 from ._builders import (
@@ -548,7 +550,15 @@ class TestAcceptingALeg:
 
 
 class TestTheParentDecidesADriftedSide:
-    """DECLARED, all three states unwritable by any door (ruling **R-JM**; R-BAL79 per side, R-BAL80)."""
+    """The PARENT decides a side (ruling **R-JM**; R-BAL79 per side, R-BAL80).
+
+    The first two states are DECLARED: the status-band rule refuses each at
+    commit (``side_band_infrastructure``: a settled transfer over an
+    un-dated record, and a dated record under a Projected transfer), so each
+    is built around the service and only flushed.  The third is the
+    ``$0.00`` close, which the settle door writes.  The class's name is its
+    history.
+    """
 
     def test_a_settled_transfer_over_an_undated_kept_record_offers_nothing(
         self, app, db, seed_user,
@@ -578,14 +588,14 @@ class TestTheParentDecidesADriftedSide:
         Through leaf ``X-bi-6-4c-2`` the shadow was offered as a Projected row
         at the settle price and its movement hidden; the leg arm emits a side
         only while its dated movement does not exist, so the dated movement
-        is the subject, at its recorded figure.
+        is the subject, at its recorded figure.  The case also set each
+        shadow back to Projected, until plan step ``balance:X-bi-6-4d-3``'s
+        vacuous-residue checkpoint: a transfer is one row since that step
+        (ruling **R-BAL258**), so that loop walked no row (measured).
         """
         transfer = _a_transfer(seed_user)
         _settle(seed_user, transfer)
-        projected = ref_cache.status_id(StatusEnum.PROJECTED)
-        transfer.status_id = projected
-        for shadow in transfer.shadow_transactions:
-            shadow.status_id = projected
+        transfer.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
         db.session.flush()
 
         (only,) = _of_transfer(
@@ -595,17 +605,39 @@ class TestTheParentDecidesADriftedSide:
         assert only.kind is RowKind.SETTLEMENT
         assert only.cash_amount == -_AMOUNT
 
-    def test_a_settled_transfer_over_projected_shadows_offers_nothing(
+    def test_a_transfer_closed_at_zero_offers_nothing(
         self, app, db, seed_user,
     ):
-        """No LEG (the parent is not Projected) and no movement to offer (none was written)."""
+        """No LEG and no movement to offer, on either of its accounts.
+
+        The transfer is marked Paid at ``$0.00`` through its settle door,
+        which stores no record on either side (rulings **R-BAL82**,
+        **R-BAL141**), so there is no movement to offer.  Two guards keep
+        each side's LEG off the screen, and either one alone holds it: the
+        offer loader admits no transfer that is not Projected
+        (``transfer_legs.offerable_transfer_legs``), and a leg worth
+        nothing is dropped (``_leg_valuation.leg_candidate``), which a
+        ``$0.00`` close's leg is.  Until plan step ``balance:X-bi-6-4d-3``'s
+        vacuous-residue checkpoint the case wrote the status Done around the
+        service, and it read checking's offer set alone.  Renamed from
+        ``test_a_settled_transfer_over_projected_shadows_offers_nothing``.
+        """
         transfer = _a_transfer(seed_user)
-        transfer.status_id = ref_cache.status_id(StatusEnum.DONE)
+        transfer_service.settle_transfer(
+            transfer.id, seed_user["user"].id, submitted=typed(Decimal("0.00")),
+        )
         db.session.flush()
+        assert transfer.status.is_settled and [
+            _side_records(transfer, account_id)
+            for account_id in (transfer.from_account_id, transfer.to_account_id)
+        ] == [[], []], "the plant: a Paid transfer holding no record on either side"
 
-        rows = _offered(seed_user, seed_user["account"].id).rows
+        for account_id in (transfer.from_account_id, transfer.to_account_id):
+            rows = _offered(seed_user, account_id).rows
 
-        assert _of_transfer(rows, transfer) == []
+            assert _of_transfer(rows, transfer) == [], (
+                f"the closed transfer is offered on account {account_id}"
+            )
 
 
 class TestAStaleFormIsRefused:
