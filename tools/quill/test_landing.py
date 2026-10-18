@@ -18,7 +18,7 @@ import pytest
 import requests
 
 from tools.ci.scratch import commit, point_dev, point_main, repository, run
-from tools.ci.trailers import DEV, MAIN
+from tools.ci.trailers import DEV, MAIN, tracking
 from tools.quill import landing
 from tools.quill._github import GitHubError
 from tools.quill._recorded import recording
@@ -355,7 +355,7 @@ def test_a_release_of_commits_dev_holds_judges_none_of_them_again(capsys, code):
     """The review's M-1 (the coordinator's (A)): dev shipped #5, then undid it, and #5 was
     re-planned into smaller steps (or deleted) -- a container now, which a release judges
     as the work it was.  The release's change set, main..dev, holds only commits dev holds,
-    each judged when it landed there: none is judged again and the tracker is never read,
+    each judged, if at all, before it landed there: none is judged and the tracker is never read,
     so permanent history cannot refuse a release for good."""
     root, start = code
     shipped = commit(root, "ship", "Ships: plan#5", parents=[start])
@@ -364,8 +364,8 @@ def test_a_release_of_commits_dev_holds_judges_none_of_them_again(capsys, code):
     assert main([start, undone], _never, root) == 0
     out = capsys.readouterr().out
     assert out.splitlines() == [
-        "landing check: 2 of the 2 commit(s) are on origin/dev or origin/main already, and are "
-        "not judged again",
+        "landing check: 2 of the 2 commit(s) are on origin/dev or origin/main already, and a "
+        "commit is judged only before it lands",
         f"landing check: 2 commit(s) in {start[:12]}..{undone[:12]}, 0 refused"]
 
 
@@ -391,11 +391,11 @@ def test_a_release_branch_commit_only_main_holds_is_judged_once(capsys, code):
     assert main([work, released], _reader(later), root) == 0
     assert not later.asked
     assert capsys.readouterr().out.splitlines() == [
-        "landing check: 3 of the 3 commit(s) are on origin/dev or origin/main already, and are "
-        "not judged again",
+        "landing check: 3 of the 3 commit(s) are on origin/dev or origin/main already, and a "
+        "commit is judged only before it lands",
         f"landing check: 3 commit(s) in {start[:12]}..{released[:12]}, 0 refused",
-        "landing check: 2 of the 2 commit(s) are on origin/dev or origin/main already, and are "
-        "not judged again",
+        "landing check: 2 of the 2 commit(s) are on origin/dev or origin/main already, and a "
+        "commit is judged only before it lands",
         f"landing check: 2 commit(s) in {work[:12]}..{released[:12]}, 0 refused"]
 
 
@@ -430,7 +430,7 @@ def test_a_checkout_that_cannot_read_dev_or_main_refuses_to_judge_naming_it(caps
     """Without both, which commits have landed is unknown: exit 2, and the message names the
     ref that cannot be read, never the change set (the L9d delta review's nit)."""
     root, start = code
-    run(root, "update-ref", "-d", f"refs/remotes/{missing}")
+    run(root, "update-ref", "-d", tracking(missing))
     head = _on(root, start, ("ship", "Ships: plan#7"))[0]
     assert main([start, head], _never, root) == 2
     assert capsys.readouterr().err == (
@@ -449,6 +449,46 @@ def test_the_shipped_set_is_devs_history_whatever_the_base(capsys, code):
     step = _on(root, start, ("step", "Ships: plan#5"))[0]
     assert main([start, step], _reader(_Lookup(_dropped_leaf())), root) == 1
     assert "plan#5 is a container" in capsys.readouterr().out
+
+
+def test_the_shipped_set_holds_every_commit_dev_lacks_judged_or_not(capsys, code):
+    """The L9d delta review 2's LOW-1: git's answer once the change set reaches dev is over
+    dev's history and EVERY commit of it dev does not hold yet, never the judged commits
+    alone.  Release branch commit F ships #6 (closed while still being filed, so a leaf of
+    #5 only once shipped) and reaches main; a hotfix branch built on main ships #5, and its
+    pull request into dev carries F.  F is main's, so it is not judged again, but dev holds
+    it once the pull request lands, and #6 then splits #5: the Ships: of #5 is refused.
+    Over the judged commits alone, #6 never shipped and it would land."""
+    root, start = code
+    work = commit(root, "dev's work", parents=[start])
+    point_dev(root, work)
+    fix = commit(root, "release fix", "Ships: plan#6", parents=[work])
+    released = commit(root, "Merge pull request #1 from release", parents=[start, fix])
+    point_main(root, released)
+    hotfix = commit(root, "hotfix built on main", "Ships: plan#5", parents=[released])
+    assert main([work, hotfix], _reader(_Lookup(_dropped_leaf())), root) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        "landing check: 2 of the 3 commit(s) are on origin/dev or origin/main already, and a "
+        "commit is judged only before it lands",
+        f"REFUSED -- {hotfix[:12]} (hotfix built on main) carries `Ships: plan#5`, but plan#5 "
+        "is a container, which no commit ships: name the step or finding the commit builds (a "
+        "step split into smaller steps is built as them)",
+        f"landing check: 3 commit(s) in {work[:12]}..{hotfix[:12]}, 1 refused"]
+
+
+def test_a_tag_named_like_dev_stands_in_for_it_in_no_shipped_set(capsys, code):
+    """The L9d delta review 2's LOW-2, at the shipped set: git resolves ``origin/dev`` to a
+    tag of that name before the remote-tracking branch, and CI's checkout fetches every tag.
+    dev shipped #6, which splits #5, so a Ships: of #5 is refused; a tag named ``origin/dev``
+    on dev's base, before #6 shipped, does not make git's answer read #5 as plain work,
+    since dev's history is read by its full name (:func:`tools.ci.trailers.tracking`)."""
+    root, start = code
+    leaf = commit(root, "leaf", "Ships: plan#6", parents=[start])
+    run(root, "tag", DEV, start)
+    status, out, _, _ = _land(capsys, code, _Lookup(_dropped_leaf()), ("step", "Ships: plan#5"),
+                              base=leaf)
+    assert run(root, "rev-parse", DEV) == start, "control: the short name is shadowed"
+    assert status == 1 and "plan#5 is a container" in out
 
 
 def test_a_number_past_graphqls_int_is_never_asked_and_is_not_held(capsys, code):
@@ -501,14 +541,16 @@ def test_a_card_linked_to_one_the_tracker_lacks_refuses_to_judge(capsys, code):
 @pytest.mark.parametrize(("null", "what"), [
     (lambda node: node.update(labels=None), "labels"),
     (lambda node: node["subIssues"].update(nodes=None), "sub-issues"),
+    (lambda node: node["blockedBy"].update(nodes=None), "blockers"),
     (lambda node: node["timelineItems"].update(nodes=None), "close events"),
-], ids=["labels", "sub-issue nodes", "close-event nodes"])
+], ids=["labels", "sub-issue nodes", "blocker nodes", "close-event nodes"])
 def test_a_list_github_answers_as_null_refuses_to_judge(capsys, code, null, what):
     """The L9d delta review's LOW-2: a card's labels, or the nodes of one of its lists,
     answered as null (GitHub's schema allows both) exits 2 naming the card and the list,
     never a traceback and never read as none (a null list of close events read as none
     would say no one ever closed the card); and an answer the tracker DID give is not
-    called unreadable (the review's nit)."""
+    called unreadable (the review's nit).  Blockers since the L9d delta review 2's nit (its
+    mutant K3), the one list the read holds that had no case."""
     nodes = _tracker(_card(5))
     null(nodes[5])
     status, out, err, _ = _land(capsys, code, _Lookup(nodes), ("ship", "Ships: plan#5"))
@@ -516,6 +558,24 @@ def test_a_list_github_answers_as_null_refuses_to_judge(capsys, code, null, what
     assert err == ("landing check: what the tracker answered cannot be judged, so nothing "
                    f"was checked: GitHub answered plan#5's {what} as null, so the read holds "
                    "none of them\n")
+
+
+@pytest.mark.parametrize(("null", "what"), [
+    (lambda node: node["labels"].update(nodes=[None], totalCount=1), "labels"),
+    (lambda node: node["subIssues"].update(nodes=[None], totalCount=1), "sub-issues"),
+    (lambda node: node["timelineItems"].update(nodes=[None]), "close events"),
+], ids=["a label", "a sub-issue", "a close event"])
+def test_a_null_node_in_a_list_github_answers_refuses_to_judge(capsys, code, null, what):
+    """The L9d delta review 2's nit: one node of a card's list answered as null (GitHub's
+    schema allows it: ``[Label]``, ``[Issue]``, ``[IssueTimelineItems]``) exits 2 naming the
+    card and the list, never a TypeError or AttributeError escaping as exit 1."""
+    nodes = _tracker(_card(5))
+    null(nodes[5])
+    status, out, err, _ = _land(capsys, code, _Lookup(nodes), ("ship", "Ships: plan#5"))
+    assert (status, out) == (2, "")
+    assert err == ("landing check: what the tracker answered cannot be judged, so nothing "
+                   f"was checked: GitHub answered one of plan#5's {what} as null, so the read "
+                   "cannot say what it is\n")
 
 
 def test_without_a_token_a_change_set_naming_a_card_is_not_judged(capsys, code, monkeypatch):

@@ -13,7 +13,7 @@ from tools.ci.scratch import commit as _commit
 from tools.ci.scratch import point_dev, point_main
 from tools.ci.scratch import repository
 from tools.ci.scratch import run as _run
-from tools.ci.trailers import DEV, MAIN, history, shipped
+from tools.ci.trailers import DEV, MAIN, history, shipped, tracking
 
 
 @pytest.fixture(name="repo")
@@ -620,6 +620,21 @@ class TestAReopensUndoesAShipInItsOwnHistory:
         point_main(repo, stray)
         assert problems(repo, base, stray) == (1, [])
 
+    @pytest.mark.parametrize("branch", [DEV, MAIN])
+    @pytest.mark.parametrize("kind", ["tag", "branch"])
+    def test_a_reference_named_like_dev_or_main_hides_no_stray(self, repo, branch, kind):
+        """The L9d delta review 2's LOW-2: git resolves a short name to a tag or a local
+        branch of that name before the remote-tracking branch, and CI's checkout fetches
+        every tag, so one named ``origin/main`` (or ``origin/dev``) at a pull request's head
+        would read its commits as landed and judge none.  Git is handed each branch's full
+        name (:func:`tools.ci.trailers.tracking`): the stray is still refused."""
+        base = _head(repo)
+        point_dev(repo, base)
+        stray = _change(repo, "undo", "undo by hand", "Reopens: plan#9")
+        _run(repo, kind, branch, stray)
+        assert _run(repo, "rev-parse", branch) == stray, "control: the short name is shadowed"
+        assert problems(repo, base, stray) == (1, [_stray(stray, "undo by hand", 9)])
+
     def test_a_stray_in_the_bases_history_dev_lacks_is_not_judged_again(self, repo):
         """Review of c1, M2 (mutant R1): only the change set's commits are refused.  A pull
         request into branch A, which is open and not on ``dev`` and holds a stray, carries a
@@ -756,7 +771,23 @@ class TestTheCommandLine:
         review's nit)."""
         base = _head(repo)
         point_dev(repo, base)
-        _run(repo, "update-ref", "-d", f"refs/remotes/{missing}")
+        _run(repo, "update-ref", "-d", tracking(missing))
+        _change(repo, "undo", "undo by hand", "Reopens: plan#9")
+        assert main([base, _head(repo)], root=repo) == 2
+        assert capsys.readouterr().err == (
+            f"commit trailers: {missing} cannot be read in this checkout, so which commits "
+            "have landed already is unknown (in CI, check out with fetch-depth: 0)\n")
+
+    @pytest.mark.parametrize("missing", [DEV, MAIN])
+    def test_a_tag_named_like_a_missing_branch_does_not_stand_in_for_it(self, repo, capsys,
+                                                                       missing):
+        """The L9d delta review 2's LOW-2, at the read of whether each branch exists: with
+        the branch missing and a tag of its name present, git's full name is still asked, so
+        the check names the branch it cannot read, as when nothing has that name."""
+        base = _head(repo)
+        point_dev(repo, base)
+        _run(repo, "update-ref", "-d", tracking(missing))
+        _run(repo, "tag", missing, base)
         _change(repo, "undo", "undo by hand", "Reopens: plan#9")
         assert main([base, _head(repo)], root=repo) == 2
         assert capsys.readouterr().err == (

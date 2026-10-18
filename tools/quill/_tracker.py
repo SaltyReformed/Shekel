@@ -278,12 +278,16 @@ class Comment:
 
 
 def _listed(connection: dict | None, what: str, number: int) -> list:
-    """A connection's nodes, refusing one GitHub answered as null, which would read as none:
-    GitHub's schema lets it answer an issue's ``labels`` so, and any connection's ``nodes``
-    (read 2026-10-18)."""
+    """A connection's nodes, refusing one GitHub answered as null, which would read as none,
+    and one holding a null node, which no fact can be read from: GitHub's schema lets it
+    answer an issue's ``labels`` so, any connection's ``nodes``, and each node in them
+    (``[Label]``, ``[Issue]``, ``[IssueTimelineItems]``; read 2026-10-18)."""
     if connection is None or connection["nodes"] is None:
         raise TrackerError(f"GitHub answered plan#{number}'s {what} as null, so the read "
                            "holds none of them")
+    if None in connection["nodes"]:
+        raise TrackerError(f"GitHub answered one of plan#{number}'s {what} as null, so the "
+                           "read cannot say what it is")
     return connection["nodes"]
 
 

@@ -61,24 +61,31 @@ the one reader and the one ``shipped`` rule the tracker tool also asks:
    once, when it first lands** (the coordinator, under ``R-BAL207``,
    2026-10-17; ``main`` beside ``dev`` since the L9d delta review's
    MEDIUM-1): only on the commits of the change set that have not landed,
-   which neither ``dev`` nor ``main`` holds yet (:func:`not_landed`): every
-   commit of a pull request or a merge-queue group into ``dev``, of a pull
-   request into ``main`` a release branch's own, and of a push to ``main``,
-   which ``main`` then holds, none.  A commit ``dev`` or ``main`` holds was
-   judged at the pull request that brought it there, or got there past this
-   check: a push straight to ``dev``, an administrator's push straight to
-   ``main`` (its protection does not bind administrators), or the merge commit
-   GitHub writes when it merges a pull request, which no pull request's
-   change set holds and whose message is that pull request's title (2026-10-18:
-   merge commits only, ``merge_commit_message: PR_TITLE``).  Either way no
-   commit can change it (``R-BAL184``), so judging it again could only refuse
-   it for good, never stop it landing.  So this check never
-   refuses a later pull request for a stray that reached ``dev`` or ``main``
-   without it (none had: neither held a ``plan#`` trailer on 2026-10-18), or
-   past a check no merge requires, and undoing one owes nothing (rule 2).  The
-   release tool still counts such a stray: a money one that reached ``dev``
-   beside another money change blocks every release, which only a check every
-   merge into ``dev`` requires can prevent.  ``dev`` and ``main`` are read
+   which neither ``dev`` nor ``main`` holds yet (:func:`not_landed`).  Of a
+   pull request or a merge-queue group into ``dev``, that is every commit but
+   those it carries from ``dev`` or ``main`` (so the pull request bringing
+   ``main`` back into ``dev`` judges none of ``main``'s); of a pull request
+   into ``main``, a release branch's own; of a push to ``main``, which
+   ``main`` then holds, none.  A commit ``dev`` or ``main`` holds was judged
+   at the pull request or merge group that first brought it to either, or
+   got there past this check, as two kinds of commit always do: a commit
+   pushed straight to ``dev`` (which its ruleset lets an administrator do),
+   and the merge commit GitHub writes when it merges a pull request.  Each of
+   those lands without a pull request judging it, and once landed it is
+   never judged.  Either way no commit can change it (``R-BAL184``), so
+   judging it again could only refuse it for good, never stop it landing.
+   Of those two kinds, two repository settings leave only the first able to
+   carry a trailer (``R-BAL319``, 2026-10-18), while they stand: a merge
+   commit's message is one line, made from the pull request's title, and git
+   reads no trailer from a message's first line; and ``main``'s protection
+   binds administrators, so no commit is pushed straight to ``main``, a third
+   kind until then.  So this check never refuses a later pull request for a
+   stray that reached ``dev`` or ``main`` without it (none had: neither held a
+   ``plan#`` trailer on 2026-10-18), or past a check no merge requires, and
+   undoing one owes nothing (rule 2).  The release tool still counts such a
+   stray: a money one that reached ``dev`` beside another money change blocks
+   every release, which only a check every merge into ``dev`` requires can
+   prevent.  ``dev`` and ``main`` are read
    only when the change set carries a ``Reopens:``, and a checkout that cannot
    read either refuses to judge.  The old ``<arc>:<id>`` form is not read
    here: it ends at the cutover (``R-BAL287``), and no ``Reopens:`` in it
@@ -269,6 +276,24 @@ class LandedUnknown(GitError):
     :data:`tools.ci.trailers.MAIN` cannot be read in this checkout."""
 
 
+def _held_by_none(root: Path, base: str, head: str, branches: tuple[str, ...]) -> set[str]:
+    """The commits of ``<base>..<head>`` none of ``branches`` (:data:`tools.ci.trailers.DEV`,
+    :data:`tools.ci.trailers.MAIN`) holds, each branch handed to git by its full name
+    (:func:`tools.ci.trailers.tracking`), so no tag or local branch named like it stands in.
+
+    Raises:
+        LandedUnknown: when one of ``branches`` cannot be read in this checkout, naming it.
+    """
+    for branch in branches:
+        if run(root, "rev-parse", "--verify", "--quiet",
+               f"{trailers.tracking(branch)}^{{commit}}").returncode:
+            raise LandedUnknown(f"{branch} cannot be read in this checkout, so which commits "
+                                "have landed already is unknown (in CI, check out with "
+                                "fetch-depth: 0)")
+    return set(git(root, "rev-list", head, f"^{base}",
+                   *(f"^{trailers.tracking(branch)}" for branch in branches)).split())
+
+
 def not_landed(root: Path, base: str, head: str) -> set[str]:
     """The commits of ``<base>..<head>`` that have not landed: neither
     :data:`tools.ci.trailers.DEV` nor :data:`tools.ci.trailers.MAIN` holds them yet.  They
@@ -278,13 +303,19 @@ def not_landed(root: Path, base: str, head: str) -> set[str]:
     Raises:
         LandedUnknown: when ``dev`` or ``main`` cannot be read in this checkout, naming it.
     """
-    for ref in (trailers.DEV, trailers.MAIN):
-        if run(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").returncode:
-            raise LandedUnknown(f"{ref} cannot be read in this checkout, so which commits have "
-                                "landed already is unknown (in CI, check out with "
-                                "fetch-depth: 0)")
-    return set(git(root, "rev-list", head, f"^{base}", f"^{trailers.DEV}",
-                   f"^{trailers.MAIN}").split())
+    return _held_by_none(root, base, head, (trailers.DEV, trailers.MAIN))
+
+
+def not_on_dev(root: Path, base: str, head: str) -> set[str]:
+    """The commits of ``<base>..<head>`` :data:`tools.ci.trailers.DEV` does not hold yet,
+    whether ``main`` holds them or not: what a pull request into ``dev`` adds to ``dev``'s
+    history when it lands, so what CI's landing check reads, beside that history, for which
+    cards git says shipped.
+
+    Raises:
+        LandedUnknown: when ``dev`` cannot be read in this checkout, naming it.
+    """
+    return _held_by_none(root, base, head, (trailers.DEV,))
 
 
 def _stray_reasons(root: Path, base: str, head: str, found: trailers.History) -> list[str]:

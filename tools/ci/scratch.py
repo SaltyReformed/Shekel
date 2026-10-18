@@ -23,7 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from tools.ci.gitcmd import git
-from tools.ci.trailers import DEV, MAIN
+from tools.ci.trailers import DEV, MAIN, tracking
 
 #: Settings no developer's own git configuration may change under a test.
 ISOLATED = ("-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
@@ -58,13 +58,13 @@ def repository(parent: Path, name: str = "code") -> Path:
 def point_dev(root: Path, sha: str) -> None:
     """Point the remote-tracking branch every shipped card is read from
     (:data:`tools.ci.trailers.DEV`) at ``sha``."""
-    run(root, "update-ref", f"refs/remotes/{DEV}", sha)
+    run(root, "update-ref", tracking(DEV), sha)
 
 
 def point_main(root: Path, sha: str) -> None:
     """Point the remote-tracking branch a release merges into (:data:`tools.ci.trailers.MAIN`)
     at ``sha``."""
-    run(root, "update-ref", f"refs/remotes/{MAIN}", sha)
+    run(root, "update-ref", tracking(MAIN), sha)
 
 
 def leaf_on_dev(parent: Path) -> tuple[Path, str]:

@@ -40,21 +40,28 @@ was (``tools/release/_cards.py``) -- so this check re-run over a trailer ``dev``
 branch's own commit, judged at its pull request into ``main``, would be judged again by
 the push to ``main`` and by the pull request bringing ``main`` back into ``dev``.  So of
 the change set ``<base>..<head>`` it judges only the commits that have not landed, which
-neither :data:`tools.ci.trailers.DEV` nor :data:`tools.ci.trailers.MAIN` holds yet:
-every commit of a pull request or a merge-queue group into ``dev``, of a pull request
-into ``main`` a release branch's own, and of a push to ``main``, which ``main`` then
-holds, none.  A change set wholly on ``dev`` or ``main`` judges nothing and says so; a
-checkout that cannot read either refuses to judge.  Never judged here, since no pull
-request's change set holds it: a commit pushed straight to ``dev``, an administrator's
-push straight to ``main`` (its protection does not bind administrators), and the merge
-commit GitHub writes when it merges a pull request, whose message is that pull request's
-title (2026-10-18: merge commits only, ``merge_commit_message: PR_TITLE``).
+neither :data:`tools.ci.trailers.DEV` nor :data:`tools.ci.trailers.MAIN` holds yet.  Of
+a pull request or a merge-queue group into ``dev``, that is every commit but those it
+carries from ``dev`` or ``main``; of a pull request into ``main``, a release branch's
+own; of a push to ``main``, which ``main`` then holds, none.  A change set wholly on
+``dev`` or ``main`` judges nothing and says so; a checkout that cannot read either
+refuses to judge.  Never judged here, since it lands without a pull request judging it,
+and once landed it is never judged: a commit pushed straight to ``dev`` (which its
+ruleset lets an administrator do), and the merge commit GitHub writes when it merges a
+pull request.  Of those, two repository settings leave only the first able to carry a
+trailer (``R-BAL319``, 2026-10-18), while they stand: a merge commit's message is one
+line, made from the pull request's title, and git reads no trailer from a message's
+first line; and ``main``'s protection binds administrators, so no commit is pushed
+straight to ``main``, a third kind until then.
 
-**Whether a card is work is git's answer once those commits land**: whether a step is
-split reads which of the steps linked under it git says shipped (a step closed while
-still being filed is a leaf of it only once shipped, :func:`_state.leaves`), so the
-shipped set is ``dev``'s history and those commits together
-(:func:`tools.ci.trailers.shipped`).
+**Whether a card is work is git's answer once the change set reaches ``dev``**: whether
+a step is split reads which of the steps linked under it git says shipped (a step closed
+while still being filed is a leaf of it only once shipped, :func:`_state.leaves`), so
+the shipped set is ``dev``'s history and every commit of the change set ``dev`` does not
+hold yet, judged or not (:func:`tools.ci.commit_trailers.not_on_dev`;
+:func:`tools.ci.trailers.shipped`): a pull request into ``dev`` from a branch built on
+``main`` carries a release branch's commit, which only ``main`` holds and which is not
+judged again, but which ``dev`` holds once it lands.
 
 **The tracker is read only when a trailer names a card**, through the card-only reader
 (:class:`_tracker.CardReader`) and the token :data:`TOKEN_VARIABLE` holds: never quill's
@@ -78,7 +85,8 @@ Usage, at the repository root::
 
 The two ends are read by :func:`tools.ci.commit_trailers.ends`, the one rule for them;
 the commits that have not landed by :func:`tools.ci.commit_trailers.not_landed`, the one
-rule for those, which that check's stray rule reads too; the verdict is printed by
+rule for those, which that check's stray rule reads too, and the commits ``dev`` lacks by
+:func:`tools.ci.commit_trailers.not_on_dev`, beside it; the verdict is printed by
 :func:`tools.ci.commit_trailers.report`, and a git failure by
 :func:`tools.ci.commit_trailers.unjudged`.  Exit status: 0 nothing refused; 1 refused,
 each reason printed; 2 the command line, git or the tracker's read failed, ``dev`` or
@@ -95,7 +103,7 @@ import requests
 
 from tools.ci import trailers
 from tools.ci.arcs import REPO
-from tools.ci.commit_trailers import ends, not_landed, report, unjudged
+from tools.ci.commit_trailers import ends, not_landed, not_on_dev, report, unjudged
 from tools.ci.gitcmd import GitError, git
 from tools.quill._command import with_closure
 from tools.quill._github import GitHub, GitHubError
@@ -123,10 +131,12 @@ def reader_from_environment() -> CardReader:
     return CardReader(GitHub(token), PLAN)
 
 
-def _shipped_once_landed(root: Path, judged: tuple[trailers.Trailer, ...]) -> set[int]:
-    """Every card git says shipped once the commits that have not landed land: over
-    ``dev``'s history and their trailers, ``judged``."""
-    landed = trailers.History(trailers.history(root, trailers.DEV).trailers + judged, ())
+def _shipped_once_landed(root: Path, gained: tuple[trailers.Trailer, ...]) -> set[int]:
+    """Every card git says shipped once the change set reaches ``dev``: over ``dev``'s
+    history, read by its full name (:func:`tools.ci.trailers.tracking`), and ``gained``,
+    the trailers of every commit of the change set ``dev`` does not hold yet."""
+    landed = trailers.History(
+        trailers.history(root, trailers.tracking(trailers.DEV)).trailers + gained, ())
     return set(trailers.shipped(root, landed)[0])
 
 
@@ -136,7 +146,7 @@ def _wrong(number: int, key: str, card: BareCard | None, cards: Mapping[int, Bar
     card is ``card`` (None when the tracker does not hold it), as the end of a sentence;
     None when nothing is.  ``cards`` holds every card a decision over a ``Ships:``-named
     card reads (:func:`_command.with_closure`), and ``shipped`` git's answer once the change
-    set lands."""
+    set reaches ``dev``."""
     if card is None:
         fix = ("" if key == trailers.REOPENS else
                ", or file the card with quill file first and name the number it is given")
@@ -161,7 +171,8 @@ def refusals(named: Mapping[tuple[int, str], Sequence[trailers.Trailer]], shippe
     """One sentence for each ``(card, key)`` in ``named`` the tracker refuses (the module's
     rules), each naming every commit that carries it, by card; ``named`` holds the card
     trailers of the change set's commits that have not landed, and ``shipped`` git's
-    answer once they land.  The tracker is read through the reader ``connect`` makes.
+    answer once the change set reaches ``dev``.  The tracker is read through the reader
+    ``connect`` makes.
 
     Raises:
         NoToken: when ``connect`` has no token to read with.
@@ -198,8 +209,8 @@ def problems(root: Path, base: str, head: str,
     """
     count = int(git(root, "rev-list", "--count", f"{base}..{head}"))
     fresh = not_landed(root, base, head)
-    judged = tuple(trailer for trailer in trailers.history(root, f"{base}..{head}").trailers
-                   if trailer.sha in fresh)
+    change_set = trailers.history(root, f"{base}..{head}").trailers
+    judged = tuple(trailer for trailer in change_set if trailer.sha in fresh)
     named: dict[tuple[int, str], list[trailers.Trailer]] = {}
     for trailer in judged:
         carried = named.setdefault((trailer.card, trailer.key), [])
@@ -207,7 +218,10 @@ def problems(root: Path, base: str, head: str,
             carried.append(trailer)
     if not named:
         return count, len(fresh), []
-    return count, len(fresh), refusals(named, _shipped_once_landed(root, judged), connect)
+    gained = not_on_dev(root, base, head)
+    shipped = _shipped_once_landed(root, tuple(trailer for trailer in change_set
+                                               if trailer.sha in gained))
+    return count, len(fresh), refusals(named, shipped, connect)
 
 
 def main(argv: list[str] | None = None,
@@ -233,7 +247,8 @@ def main(argv: list[str] | None = None,
         return 2
     if fresh < count:
         print(f"landing check: {count - fresh} of the {count} commit(s) are on "
-              f"{trailers.DEV} or {trailers.MAIN} already, and are not judged again")
+              f"{trailers.DEV} or {trailers.MAIN} already, and a commit is judged only "
+              "before it lands")
     return report("landing check", base, head, count, reasons)
 
 
