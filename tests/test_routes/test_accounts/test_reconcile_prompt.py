@@ -19,7 +19,6 @@ from tests._test_helpers import (
     transfer_side_figure,
     transfer_side_record,
 )
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import account_service, cash_ledger
 from app.services.row_valuation import leg_settled_contribution
@@ -418,10 +417,13 @@ class TestTheTransferArmThroughItsROUTE:
 
     @staticmethod
     def _outstanding_transfer(seed_user, period, amount="75.00"):
-        """Return ``(transfer, shadow on the reconciled account)``, projected.
+        """Return a committed, Projected transfer out of the reconciled account.
 
         Dated into the past through the period it sits in, so the shared
-        attribution bound admits it against a statement asserted today.
+        attribution bound admits it against a statement asserted today.  It
+        returned the transfer's shadow on the reconciled account beside it
+        until plan step ``balance:X-bi-6-4d-3``: a transfer is one row since
+        then (ruling R-BAL167 class 4).
         """
         savings = account_service.create_account(
             account_service.AccountSpec(
@@ -443,15 +445,7 @@ class TestTheTransferArmThroughItsROUTE:
             amount=Decimal(amount),
         )
         db.session.commit()
-        shadow = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.transfer_id == transfer.id,
-                Transaction.account_id == seed_user["account"].id,
-            )
-            .one()
-        )
-        return transfer, shadow
+        return transfer
 
     def test_the_panel_prints_the_section_and_says_a_SECOND_account_moves(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -465,7 +459,7 @@ class TestTheTransferArmThroughItsROUTE:
         deleting the ``group.section.note`` block fails this.
         """
         with app.app_context():
-            transfer, _shadow = self._outstanding_transfer(
+            transfer = self._outstanding_transfer(
                 seed_user, seed_periods_today[0],
             )
             transfer_id = transfer.id
@@ -490,7 +484,7 @@ class TestTheTransferArmThroughItsROUTE:
         The service case proves the verb does it; this proves the ROUTE
         reaches the verb -- that the transfer's id posted in its own
         ``transfer_ids`` field (ruling R-BAL145) lands in the transfer arm
-        rather than the transaction one, which would refuse a shadow outright.
+        rather than the transaction one, whose ids name rows, not transfers.
 
         The transfer's status is the one status, and each leg is its side's
         payment RECORD since plan step ``balance:X-bi-6-4d-2``; each shadow
@@ -498,7 +492,7 @@ class TestTheTransferArmThroughItsROUTE:
         plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            transfer, _shadow = self._outstanding_transfer(
+            transfer = self._outstanding_transfer(
                 seed_user, seed_periods_today[0],
             )
             transfer_id = transfer.id
@@ -519,12 +513,6 @@ class TestTheTransferArmThroughItsROUTE:
             done_id = ref_cache.status_id(StatusEnum.DONE)
             parent = db.session.get(Transfer, transfer_id)
             assert parent.status_id == done_id
-            legs = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=transfer_id)
-                .all()
-            )
-            assert len(legs) == 2, "Transfer Invariant 1"
             resolved = ref_cache.movement_figure_source_id(
                 MovementFigureSourceEnum.RESOLVED,
             )
@@ -553,7 +541,7 @@ class TestTheTransferArmThroughItsROUTE:
         balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            transfer, _shadow = self._outstanding_transfer(
+            transfer = self._outstanding_transfer(
                 seed_user, seed_periods_today[0],
             )
             transfer_id = transfer.id
@@ -593,7 +581,7 @@ class TestTheTransferArmThroughItsROUTE:
         R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            transfer, _shadow = self._outstanding_transfer(
+            transfer = self._outstanding_transfer(
                 seed_user, seed_periods_today[0],
             )
             transfer_id = transfer.id

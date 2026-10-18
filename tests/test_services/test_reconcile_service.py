@@ -37,12 +37,10 @@ from app.services import (
     transaction_service,
     transfer_service,
 )
-from app.services.cash_ledger import derived_amount_basis
 from app.services.pay_calendar import (
     PayCalendar,
     calendar_for,
 )
-from app.services.reconcile_service import _transactions
 from app.utils.log_events import (
     EVT_TRANSACTIONS_RECONCILED,
     EVT_TRANSFERS_RECONCILED,
@@ -1240,73 +1238,6 @@ class TestTheTransactionArm:
             assert earlier.id in offered
             assert offered[earlier.id].attributed_on == date(2026, 1, 8)
 
-    def test_a_transfer_shadow_belongs_to_the_OTHER_arm(
-        self, app, db, seed_user, seed_periods, seed_entry_template,
-    ):
-        """A shadow is offered, and it is tagged as the TRANSFER arm's.
-
-        **This case inverted at plan step X-f2-c3 and the inversion is the
-        step.**  It read "neither offered nor settled": the panel could not
-        settle a transfer at all, because ``settle_transaction`` REFUSES a
-        shadow (transfer invariant 3 -- the parent and both legs move
-        together), so this arm's scope excluded one and nothing else offered
-        it.  The transfer arm settles through ``update_transfer`` instead, so
-        the row IS offered now -- and what is graded here is that it belongs to
-        that arm and not to this one, which is the clause the two arms
-        partition the table on.
-
-        **Built through the real transfer service**, not by writing a
-        ``transfer_id`` onto an ordinary row: the expense shadow that lands on
-        this account is a genuine Projected row in the same period, so it is
-        inside every other clause of the scope and ONLY the membership clause
-        can tell the two arms' rows apart.
-        """
-        with app.app_context():
-            other = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    name="Savings",
-                    account_type_id=seed_user["account"].account_type_id,
-                    anchor_balance=Decimal("100.00"),
-                ),
-            )
-            db.session.flush()
-            transfer = create_transfer(
-                seed_user, db.session, seed_user["account"], other,
-                seed_periods[0], amount=Decimal("75.00"),
-            )
-            db.session.commit()
-
-            shadow = (
-                db.session.query(Transaction)
-                .filter(
-                    Transaction.transfer_id == transfer.id,
-                    Transaction.account_id == seed_user["account"].id,
-                )
-                .one()
-            )
-
-            offer = self._offered(seed_user)[(transfer.id, seed_user["account"].id)]
-            assert offer.kind is reconcile_service.OfferKind.TRANSFER
-            assert offer.amount == Decimal("75.00")
-            # The transaction arm's own scope still refuses it: asked directly,
-            # with the transfer arm out of the picture.  Without this the case
-            # above would pass for a panel that offered the shadow through the
-            # WRONG arm and settled one leg.
-            owner_id = seed_user["user"].id
-            assert shadow.id not in _transactions.outstanding_transactions(
-                # The PANEL's own STATEMENT, which ``outstanding_set`` builds
-                # once and threads (pay-calendar plan step C4-a-2): the arm
-                # takes the value rather than three arguments it would
-                # reassemble.
-                _reconciled(seed_user),
-                # The PANEL's own basis, which ``outstanding_set`` builds once
-                # (plan step X-au-j).  Built here rather than defaulted inside
-                # the arm: the parameter is required precisely so a producer
-                # cannot quietly rebuild its caller's derivations.
-                derived_amount_basis(owner_id, seed_user["scenario"].id),
-            )
-
     def test_a_settled_row_is_neither_offered_nor_re_settled(
         self, app, db, seed_user, seed_periods, seed_entry_template,
     ):
@@ -1732,22 +1663,19 @@ class TestTheTransferArm:
     @classmethod
     def _transfer_out(cls, seed_user, seed_periods, amount="75.00",
                       due_date=None):
-        """Return ``(transfer, expense shadow on the seed account)``."""
+        """Return a committed transfer from the seed account to a new savings account.
+
+        It returned the transfer's expense shadow on the seed account beside
+        it until plan step ``balance:X-bi-6-4d-3``: a transfer is one row
+        since then (ruling R-BAL167 class 4).
+        """
         transfer = create_transfer(
             seed_user, db.session, seed_user["account"],
             cls._savings(seed_user), seed_periods[0],
             amount=Decimal(amount), due_date=due_date,
         )
         db.session.commit()
-        shadow = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.transfer_id == transfer.id,
-                Transaction.account_id == seed_user["account"].id,
-            )
-            .one()
-        )
-        return transfer, shadow
+        return transfer
 
     @staticmethod
     def _side_records(transfer):
@@ -1765,6 +1693,24 @@ class TestTheTransferArm:
             if record is not None:
                 records[account_id] = record
         return records
+
+    @staticmethod
+    def _assert_unsettled(transfer):
+        """Assert a refused tick wrote nothing: still Projected, and no side records a payment.
+
+        A settle writes both halves -- the transfer's one status and each
+        side's payment record -- so a refusal is graded on both, and on both
+        sides, re-read after the caller's ``expire_all``.  It read the seed
+        account's expense shadow's ``settled_on`` until plan step
+        ``balance:X-bi-6-4d-3`` (ruling R-BAL167 class 1).
+        """
+        for account_id in (transfer.from_account_id, transfer.to_account_id):
+            assert transfer_side_record(db.session, transfer.id, account_id) is None, (
+                f"the refused tick recorded a payment on account {account_id}"
+            )
+        assert db.session.get(type(transfer), transfer.id).status_id == (
+            ref_cache.status_id(StatusEnum.PROJECTED)
+        )
 
     _offered = staticmethod(TestTheTransactionArm._offered)
     _settle = staticmethod(TestTheTransactionArm._settle)
@@ -1793,7 +1739,7 @@ class TestTheTransferArm:
         balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            transfer, shadow = self._transfer_out(seed_user, seed_periods)
+            transfer = self._transfer_out(seed_user, seed_periods)
             statement = _statement(seed_user["account"].id)
 
             assert self._settle(seed_user, [], transfer_ids=[transfer.id]) == 1
@@ -1833,7 +1779,7 @@ class TestTheTransferArm:
         plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            transfer, shadow = self._transfer_out(seed_user, seed_periods)
+            transfer = self._transfer_out(seed_user, seed_periods)
 
             assert self._settle(seed_user, [], transfer_ids=[transfer.id]) == 1
             db.session.commit()
@@ -1860,7 +1806,7 @@ class TestTheTransferArm:
         exactly what it is not.
         """
         with app.app_context():
-            transfer, _shadow = self._transfer_out(seed_user, seed_periods)
+            transfer = self._transfer_out(seed_user, seed_periods)
 
             groups = reconcile_service.outstanding_set(_reconciled(seed_user)).groups
             block = next(
@@ -1871,6 +1817,12 @@ class TestTheTransferArm:
             assert block.section.label == "Transfers"
             assert "both sides" in block.section.note
             assert block.settle_closes_an_envelope is False
+            # The figure the EXPENSE side's tick offers, the transfer's own
+            # $75.00.  Moved here at plan step balance:X-bi-6-4d-3 from the
+            # deleted test_a_transfer_shadow_belongs_to_the_OTHER_arm (ruling
+            # R-BAL313): no other test reads this side's offered amount (an
+            # extra $1.00 on the expense side's offer passed the whole suite).
+            assert block.settle.amount == Decimal("75.00")
 
     def test_the_expense_leg_counts_as_a_PAYMENT_and_the_income_leg_a_DEPOSIT(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1915,7 +1867,7 @@ class TestTheTransferArm:
         account.
         """
         with app.app_context():
-            transfer, shadow = self._transfer_out(
+            transfer = self._transfer_out(
                 seed_user, seed_periods, due_date=date(2026, 1, 11),
             )
 
@@ -1923,7 +1875,7 @@ class TestTheTransferArm:
             assert self._settle(seed_user, [], transfer_ids=[transfer.id]) == 0
 
             db.session.expire_all()
-            assert db.session.get(Transaction, shadow.id).settled_on is None
+            self._assert_unsettled(transfer)
 
     def test_another_accounts_transfer_is_neither_offered_nor_settled(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1931,9 +1883,9 @@ class TestTheTransferArm:
         """A balance assertion declares ONE account's balance.
 
         The transfer runs between two accounts that are neither of them the one
-        being reconciled, so its shadows are not on this statement.  Settling
-        across accounts would record money against a statement that never
-        showed it -- and here it would move two accounts at once.
+        being reconciled, so neither of its sides is on this statement.
+        Settling across accounts would record money against a statement that
+        never showed it -- and here it would move two accounts at once.
         """
         with app.app_context():
             source = self._savings(seed_user, name="Second Checking")
@@ -1944,20 +1896,11 @@ class TestTheTransferArm:
             )
             db.session.commit()
 
-            shadow = (
-                db.session.query(Transaction)
-                .filter(
-                    Transaction.transfer_id == transfer.id,
-                    Transaction.account_id == source.id,
-                )
-                .one()
-            )
-
             assert (transfer.id, seed_user["account"].id) not in self._offered(seed_user)
             assert self._settle(seed_user, [], transfer_ids=[transfer.id]) == 0
 
             db.session.expire_all()
-            assert db.session.get(Transaction, shadow.id).settled_on is None
+            self._assert_unsettled(transfer)
 
     def test_a_soft_deleted_transfer_is_neither_offered_nor_settled(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1971,7 +1914,7 @@ class TestTheTransferArm:
         rather than a silent skip.
         """
         with app.app_context():
-            transfer, shadow = self._transfer_out(seed_user, seed_periods)
+            transfer = self._transfer_out(seed_user, seed_periods)
             transfer_service.delete_transfer(
                 transfer.id, seed_user["user"].id, soft=True,
             )
@@ -1993,7 +1936,7 @@ class TestTheTransferArm:
         R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            transfer, shadow = self._transfer_out(seed_user, seed_periods)
+            transfer = self._transfer_out(seed_user, seed_periods)
             assert self._settle(seed_user, [], transfer_ids=[transfer.id]) == 1
             db.session.commit()
 
@@ -2023,7 +1966,7 @@ class TestTheTransferArm:
         until then (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            transfer, shadow = self._transfer_out(seed_user, seed_periods)
+            transfer = self._transfer_out(seed_user, seed_periods)
             assert self._offered(seed_user)[(transfer.id, seed_user["account"].id)].is_correctable is True
 
             with caplog.at_level("INFO"):
@@ -2062,7 +2005,7 @@ class TestTheTransferArm:
         R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
-            transfer, shadow = self._transfer_out(seed_user, seed_periods)
+            transfer = self._transfer_out(seed_user, seed_periods)
 
             with caplog.at_level("INFO"):
                 assert self._settle(
@@ -2438,8 +2381,10 @@ class TestTheCashFigureBesideTheBookedOne:
         """A row that carries no entries has no card half to disagree with.
 
         Graded across BOTH source-row arms because the field is on the shared
-        offer type: a bill can hold no entries, and a transfer shadow
-        structurally cannot (production: 342 shadows, 0 entries).
+        offer type: a bill can hold no entries, and a transfer's leg
+        structurally holds no purchase (production: 342 shadows, 0 entries,
+        measured while a transfer still kept its shadow rows; a transfer is
+        one row since plan step ``balance:X-bi-6-4d-3``).
         """
         with app.app_context():
             bill = self._bill(seed_user, seed_periods[0], amount="180.00")
@@ -2458,14 +2403,6 @@ class TestTheCashFigureBesideTheBookedOne:
             )
             db.session.commit()
 
-            shadow = (
-                db.session.query(Transaction)
-                .filter(
-                    Transaction.transfer_id == transfer.id,
-                    Transaction.account_id == seed_user["account"].id,
-                )
-                .one()
-            )
             offered = self._offered(seed_user)
             assert offered[bill.id].cash_amount is None
             assert offered[(transfer.id, seed_user["account"].id)].cash_amount is None
