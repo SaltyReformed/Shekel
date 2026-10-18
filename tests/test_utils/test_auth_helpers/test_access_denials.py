@@ -474,9 +474,10 @@ class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
     def _is_the_denial_alone(requester, answer, cap):
         """Assert the door answered None, denied *requester* once at WARNING, logged no not-found.
 
-        ``None`` is also the no-name assertion: a HiddenRow is the only answer that carries a
+        ``None`` is also the no-name assertion: a HiddenRow is the only refusal that carries a
         row's name.  The denial's ``user_id`` tells the requester from an anonymous principal,
         which a login that silently failed would leave probing, and which logs the same records.
+        Returns the denial, for a case that reads more of it.
         """
         seen = [(r.levelname, getattr(r, "event", None)) for r in cap.records]
         assert answer is None, (
@@ -496,6 +497,7 @@ class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
         assert cap.find(EVT_RESOURCE_NOT_FOUND) is None, (
             f"The requester's probe logged the row as not found; records: {seen}"
         )
+        return denials[0]
 
     def test_a_strangers_probe(self, app, seed_user, seed_second_user):
         """seed_user names another user's deleted $45.00 Pool: one WARNING, no "not found"."""
@@ -542,16 +544,28 @@ class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
                 amount="45.00", name="Pool", companion_visible=True,
             )
             companion = seed_companion["user"]
-            # Precondition, read back after the builder's commit: the row is
+            # Precondition, read back after the builder's commit: the requester is a
+            # COMPANION (``User.data_owner_id`` differs from a user's own id only for a
+            # companion, and the door branches on that role), the row is
             # companion-VISIBLE and DELETED, and its owner is not the owner this
             # companion acts for, so only the companion check's owner arm refuses it.
+            assert companion.id != companion.data_owner_id
             assert companion.data_owner_id == seed_user["user"].id
             assert companion.data_owner_id != theirs.user_id
             assert theirs.visible_to_companion is True
             assert theirs.is_deleted is True
             answer, cap = self._probe(companion, theirs)
 
-        self._is_the_denial_alone(companion, answer, cap)
+        denial = self._is_the_denial_alone(companion, answer, cap)
+        # The F-144 trail names the household whose row was probed, and the row: the
+        # owner the denial logs is the row's, not the one this companion acts for.
+        assert denial.owner_id == theirs.user_id, (
+            f"The denial names owner {denial.owner_id!r}, not the probed row's owner "
+            f"{theirs.user_id}"
+        )
+        assert denial.pk == theirs.id, (
+            f"The denial names row {denial.pk!r}, not the probed row {theirs.id}"
+        )
 
 
 class TestRequireOwnerFailsClosed:
