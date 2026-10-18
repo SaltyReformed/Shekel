@@ -32,8 +32,33 @@ from app.utils.log_events import (
 from tests._test_helpers import rhythm_of, one_off_row_of
 from tests._test_helpers import record_paydays_across_a_hole
 from tests._test_helpers import a_deleted_occurrence
+from tests._test_helpers import create_account_of_type
 
 from ._helpers import _AuthHelpersLogCapture
+
+
+def _the_next_row_takes_id(sequence, row_id):
+    """Restart *sequence* so the next row built from it takes *row_id*.
+
+    A denial's ``pk`` read grades a door only while the probed row's id differs from every
+    other id the denying branch holds: the requester, the owner it acts for, the row's owner.
+    Left to the order the fixtures build in, ids of different kinds coincide: the first
+    transaction a case builds and ``seed_user`` are both id 1, and ``second_user``'s account
+    and ``second_user`` are both id 2, so a door logging one of those user ids as the ``pk``
+    passed.  The builders take no id, hence the restart.  A rollback does not undo
+    ``setval``, but the autouse ``db`` fixture re-clones the database before every test, so
+    the restart reaches no other case.  Each caller asserts its row took *row_id*, and that
+    the ids its denial could name are pairwise distinct.
+
+    Args:
+        sequence: The id sequence to restart, schema-qualified
+            (``"budget.transactions_id_seq"``).
+        row_id: The id the next row built from *sequence* takes.
+    """
+    db.session.execute(
+        text("SELECT setval(CAST(:seq AS regclass), :v, false)"),
+        {"seq": sequence, "v": row_id},
+    )
 
 
 class TestAccessDeniedLogging:
@@ -77,9 +102,27 @@ class TestAccessDeniedLogging:
         is WARNING (not INFO like the missing-PK case).
         """
         with app.test_request_context("/some/path"):
-            login_user(seed_user["user"])
+            # The probed account is built here, after a stated sequence restart
+            # (``_the_next_row_takes_id`` says why), not taken from ``second_user``: the
+            # fixture's account and its owner are both id 2.
+            probed_account_id = 9_001
+            _the_next_row_takes_id("budget.accounts_id_seq", probed_account_id)
+            theirs = create_account_of_type(
+                second_user, db.session, "Checking", "Probed Checking",
+            )
+            requester = seed_user["user"]
+            ids = {
+                "the probed account": theirs.id,
+                "its owner": theirs.user_id,
+                "the requester": requester.id,
+            }
+            assert theirs.id == probed_account_id, f"The sequence restart did not take: {ids}"
+            assert len(set(ids.values())) == len(ids), (
+                f"The ids the denial could name are not pairwise distinct: {ids}"
+            )
+            login_user(requester)
             with _AuthHelpersLogCapture() as cap:
-                result = get_or_404(Account, second_user["account"].id)
+                result = get_or_404(Account, theirs.id)
 
         assert result is None
         record = cap.find(EVT_ACCESS_DENIED_CROSS_USER)
@@ -92,7 +135,7 @@ class TestAccessDeniedLogging:
         assert record.category == ACCESS
         assert record.user_id == seed_user["user"].id
         assert record.model == "Account"
-        assert record.pk == second_user["account"].id
+        assert record.pk == theirs.id
         assert record.owner_id == second_user["user"].id
         assert record.path == "/some/path"
 
@@ -314,7 +357,25 @@ class TestAccessDeniedLogging:
                 rhythm=rhythm_of(14),
             )
             db.session.flush()
+            probed_row_id = 9_001
+            _the_next_row_takes_id("budget.transactions_id_seq", probed_row_id)
             txn = self._make_owned_txn(db, second_user, periods2[0])
+            requester = seed_user["user"]
+            # Precondition: the requester is an OWNER (its ``role_id``, the one read the
+            # door branches on), so the owner branch refuses the row, and an owner acts on
+            # its own data (``User.data_owner_id``, the door's ``acts_on``), so the owner it
+            # acts for IS the requester and the ids below hold that id once.
+            assert requester.role_id != ref_cache.role_id(RoleEnum.COMPANION)
+            assert requester.data_owner_id == requester.id
+            ids = {
+                "the probed row": txn.id,
+                "the row's owner": txn.user_id,
+                "the requester, the owner it acts for": requester.id,
+            }
+            assert txn.id == probed_row_id, f"The sequence restart did not take: {ids}"
+            assert len(set(ids.values())) == len(ids), (
+                f"The ids the denial could name are not pairwise distinct: {ids}"
+            )
 
             with _AuthHelpersLogCapture() as cap:
                 result = get_accessible_transaction(txn.id)
@@ -344,10 +405,28 @@ class TestAccessDeniedLogging:
         so this isolates the ``not visible_to_companion`` denial.
         """
         with app.test_request_context("/some/path"):
+            probed_row_id = 9_001
+            _the_next_row_takes_id("budget.transactions_id_seq", probed_row_id)
             # Ad-hoc txn owned by seed_user -> companion_visible False.
             txn = self._make_owned_txn(db, seed_user, seed_periods[0])
             assert txn.visible_to_companion is False
-            login_user(seed_companion["user"])
+            companion = seed_companion["user"]
+            # Precondition: the requester is a COMPANION (its ``role_id``, the one read the
+            # door branches on) acting for the row's own owner (``User.data_owner_id``, the
+            # door's ``acts_on``), so only the visibility arm refuses the row, and the owner
+            # it acts for IS the row's owner: the ids below hold that id once.
+            assert companion.role_id == ref_cache.role_id(RoleEnum.COMPANION)
+            assert companion.data_owner_id == txn.user_id
+            ids = {
+                "the probed row": txn.id,
+                "the row's owner, the owner the companion acts for": txn.user_id,
+                "the companion": companion.id,
+            }
+            assert txn.id == probed_row_id, f"The sequence restart did not take: {ids}"
+            assert len(set(ids.values())) == len(ids), (
+                f"The ids the denial could name are not pairwise distinct: {ids}"
+            )
+            login_user(companion)
             with _AuthHelpersLogCapture() as cap:
                 result = get_accessible_transaction(txn.id)
 
@@ -543,19 +622,10 @@ class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
         """seed_user's companion names another owner's deleted $45.00 Pool, shown to companions."""
         with app.test_request_context("/some/path"):
             # The probed row's id is set by a stated sequence restart, not left to the
-            # order the fixtures build in: the denial's ``pk`` read below grades the door
-            # only while the row's id differs from every user id the companion branch
-            # holds (the requester, the owner it acts for, the row's owner).  Left alone,
-            # the row is this database's first transaction and the owner this companion
-            # acts for is its first user, so both are id 1 and a door logging that owner's
-            # id as the ``pk`` passed.  The builder takes no id, hence the restart.  A
-            # rollback does not undo ``setval``, but the autouse ``db`` fixture re-clones
-            # the database before every test, so the restart reaches no other case.
+            # order the fixtures build in (``_the_next_row_takes_id`` says why):
+            # left alone, the row and the owner this companion acts for are both id 1.
             probed_row_id = 9_001
-            db.session.execute(
-                text("SELECT setval('budget.transactions_id_seq', :v, false)"),
-                {"v": probed_row_id},
-            )
+            _the_next_row_takes_id("budget.transactions_id_seq", probed_row_id)
             theirs = a_deleted_occurrence(
                 db.session, seed_second_user, seed_second_user["bootstrap_period"],
                 amount="45.00", name="Pool", companion_visible=True,
