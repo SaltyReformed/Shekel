@@ -114,6 +114,15 @@ def pull_request(repo, onto, *lines, files=None):
     return repo.merge(onto, work, f"Merge pull request ({' '.join(lines)})")
 
 
+def release_after(repo, shipped, carried):
+    """A release after the cutover: ``(base, cut)``, the base a pull request on the
+    cutover carrying the trailer lines ``shipped`` (the cutover itself when there are
+    none), the cut one on the base carrying ``carried``."""
+    _, cutover = after_cutover(repo)
+    base = pull_request(repo, cutover, *shipped) if shipped else cutover
+    return base, pull_request(repo, base, *carried)
+
+
 def judge(repo, base, cut, tracker, unrehearsed=()):
     """``plan`` over ``<base>..<cut>``, reaching ``tracker``."""
     return plan(repo.root, base, cut, Inputs(unrehearsed, (), lambda: tracker))

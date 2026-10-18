@@ -13,7 +13,8 @@ bound by the one git call here that does not go through ``gitcmd``
 (``tools/quill``) by step X-cx's L4, so the card-trailer rules and the tracker
 tool test against one builder; the repository the tests start from
 (:func:`repository`), the ``dev`` they read (:func:`point_dev`) and the
-sentinel's controls joined it for BAL-609, each once spelled in both suites.
+sentinel's controls joined it for BAL-609, each once spelled in both suites; the
+``main`` read beside ``dev`` (:func:`point_main`) joined it at X-cx L9d's review fix.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from tools.ci.gitcmd import git
-from tools.ci.trailers import DEV
+from tools.ci.trailers import DEV, MAIN, tracking
 
 #: Settings no developer's own git configuration may change under a test.
 ISOLATED = ("-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
@@ -57,7 +58,13 @@ def repository(parent: Path, name: str = "code") -> Path:
 def point_dev(root: Path, sha: str) -> None:
     """Point the remote-tracking branch every shipped card is read from
     (:data:`tools.ci.trailers.DEV`) at ``sha``."""
-    run(root, "update-ref", f"refs/remotes/{DEV}", sha)
+    run(root, "update-ref", tracking(DEV), sha)
+
+
+def point_main(root: Path, sha: str) -> None:
+    """Point the remote-tracking branch a release merges into (:data:`tools.ci.trailers.MAIN`)
+    at ``sha``."""
+    run(root, "update-ref", tracking(MAIN), sha)
 
 
 def leaf_on_dev(parent: Path) -> tuple[Path, str]:

@@ -24,9 +24,10 @@ refusing every release from then on (the full-leaf review of 2026-10-14, its E2)
 
 **A group is a card labelled deploy-together**, and **after a release that touches a
 group, production holds it wholly or not at all** (R-BAL288; the coordinator's C', under
-R-BAL207, 2026-10-14; a group no release touches is not judged, so a leaf filed under a
-group after it was released whole holds back only a release that touches it).  Its
-MEMBERS, judged per cut (:func:`_member`), are the steps below it that production must
+R-BAL207, 2026-10-14; only a group the release touches gets a verdict on its members, so
+a leaf filed under a group after it was released whole holds back only a release that
+touches it; the read's two checks below run over every group it holds).  Its MEMBERS,
+judged per cut (:func:`_member`), are the steps below it that production must
 hold together: each leaf below it that can still ship, by quill's one leaf rule
 (``leaves_below``: a leaf split again counting as its own leaves); each step below it
 that production holds at the cut, whatever the plan now says of it, since its code is
@@ -52,8 +53,15 @@ step (:func:`_none_hung`: only a person's link or retype puts one there, since q
 links a step only under the step it splits), and then compares the two walks for each
 group and judges nothing when they part (:func:`_one_walk`: only a link or a card's
 type changed between the tracker's rounds of the read parts them), so no member is
-dropped because a walk missed it (the coordinator, under R-BAL207, 2026-10-14).  A card
-the release names under a group is a leaf, a step re-planned into leaves since its
+dropped because a walk missed it (the coordinator, under R-BAL207, 2026-10-14).  **Both
+checks run over every group the read holds, whether the release touches it or not**: a
+group quill's closure holds for any other reason (for example one blocking a card the
+closure reads, one above such a blocker, or one above a named card that touches
+nothing) is read below too, and a step hung or a walk parted there refuses the release
+(``release plan`` exits 2, nothing judged), naming the cards and the way to mend them,
+although no verdict on members reads that group (the coordinator, under R-BAL207,
+2026-10-14: kept strict, the PR #565 delta review's M-1).  A card the release names
+under a group is a leaf, a step re-planned into leaves since its
 trailer landed (quill splits no step ``dev`` says shipped, so it was undone first, or
 split before its ship merged; a person can split one on the web), a step that will never
 ship, a finding, or the group's own card (the coordinator, under R-BAL207, 2026-10-14).
@@ -85,9 +93,12 @@ and undone.  Two ways out stand:
   a live step dead or a container back into a leaf; the new cut is judged with its own
   read, and no such change makes production hold a step below the group.  Where groups
   nest, the outer group's way out takes the inner one out too.  A ``Reopens:`` can name
-  any card production holds: CI's trailer check reads its shape alone, and L9d's check
-  reading the tracker must let one name a step production holds, a split one included,
-  or this way out cannot land.
+  any card production holds: CI's trailer check refuses one only when it undoes no
+  ``Ships:`` in its own history (``tools/ci/commit_trailers.py``, rule 3), and one made
+  on the cut for a member production holds there undoes that member's ``Ships:``, which
+  the cut's history holds; and L9d's landing check refuses one only when the tracker
+  lacks its card (``tools/quill/landing.py``), so a step production holds, a split one
+  included, may be named and this way out lands.
 - **Ship it whole**: a member named as missing or undone that can still ship can ship,
   or ship back.
 
@@ -201,7 +212,8 @@ def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
     Raises:
         ReleaseError: when a step hangs below a deploy-together group under a card that
             is no step (:func:`_none_hung`), or the group's links read down and its cards'
-            lines read up give it different steps (:func:`_one_walk`).
+            lines read up give it different steps (:func:`_one_walk`): for any group the
+            read holds, whether the release touches it or not.
         tools.quill.door.TrackerError: when a card one of them links to is not there.
         tools.quill.door.GitHubError: when GitHub answers a read with an error.
         requests.RequestException, OSError: when the tracker cannot be reached.
@@ -290,10 +302,11 @@ def _none_hung(tracker: Tracker, groups: Mapping[int, Collection[int]],
     a step only under the step it splits, so only a person's link puts one there, or a
     person's change of a split step's type.  Neither walk of the read sees such a step
     (quill's closure holds a step's step sub-issues, never a finding's), so a member
-    production holds could be dropped unseen.  Every card below each group, of any kind,
-    is read for it: ``listed`` holds each card the read holds's sub-issues, as ``(number,
-    kind)``, and ``kinds`` each one's kind; the rest are read from ``tracker`` here, in
-    rounds, each card once.
+    production holds could be dropped unseen.  Every card below each group in ``groups``
+    (every group the read holds, touched by the release or not), of any kind and in any
+    state, is read for it: ``listed`` holds each card the read holds's sub-issues, as
+    ``(number, kind)``, and ``kinds`` each one's kind; the rest are read from ``tracker``
+    here, in rounds, each card once.
 
     Raises:
         ReleaseError: naming each card a step hangs under, the steps and the groups above

@@ -1,6 +1,6 @@
 """Refuse a change set whose commits break the card-trailer rules (step X-cx's L4, card plan#4).
 
-Git only, no tracker access.  Two rules, each read with :mod:`tools.ci.trailers`,
+Git only, no tracker access.  Three rules, each read with :mod:`tools.ci.trailers`,
 the one reader and the one ``shipped`` rule the tracker tool also asks:
 
 1. **Citation shape.**  Every ``Ships:`` and ``Reopens:`` trailer on the change
@@ -43,6 +43,56 @@ the one reader and the one ``shipped`` rule the tracker tool also asks:
    merge.  A trailer a revert does not owe is not refused: a ``Ships:`` it
    carries is a claim, as on any commit.
 
+3. **A ``Reopens:`` undoes a ``Ships:`` in its own history** (ruling
+   ``balance:R-BAL309``: CI refuses "an undo naming a card its own history
+   never shipped (a typo)").  A ``Reopens: plan#N`` that cancels no ``Ships:
+   plan#N`` is a STRAY, :func:`tools.ci.trailers.shipped`'s own answer and no
+   second spelling of it, and most likely a mistyped number.  Landed, it is
+   permanent: a release counts the card it names as a change it carries, and,
+   when that card moves money, beside another money change in one pull request
+   it blocks every release (the money wedge, step X-cx's L9d leaf c).  One walk
+   answers every commit, ``shipped`` over ``head``'s history: whether a
+   ``Reopens:`` cancels a ``Ships:`` reads only whether that ``Ships:`` is in
+   the ``Reopens:`` commit's own history (R-BAL181), so a ``Ships:`` anywhere
+   else in ``head``'s history cancels nothing, wherever it sits (a branch
+   beside it, or a later commit on its own line); and every ``Ships:`` in that
+   commit's own history is in ``head``'s, since the commit is.  So the answer
+   is the one each commit's own history gives.  **Each ``Reopens:`` is judged
+   once, when it first lands** (the coordinator, under ``R-BAL207``,
+   2026-10-17; ``main`` beside ``dev`` since the L9d delta review's
+   MEDIUM-1): only on the commits of the change set that have not landed,
+   which neither ``dev`` nor ``main`` holds yet (:func:`not_landed`).  Of a
+   pull request or a merge-queue group into ``dev``, that is every commit but
+   those it carries from ``dev`` or ``main`` (so the pull request bringing
+   ``main`` back into ``dev`` judges none of ``main``'s); of a pull request
+   into ``main``, a release branch's own; of a push to ``main``, which
+   ``main`` then holds, none.  A commit ``dev`` or ``main`` holds was judged
+   at the pull request or merge group that first brought it to either, or
+   got there past this check, as two kinds of commit do: a commit pushed
+   straight to ``dev`` (which its ruleset lets an administrator do), and the
+   merge commit GitHub writes when it merges a pull request into ``dev`` or
+   ``main`` outside a merge queue (a queued group's merge commits are in its
+   change set, and judged).  Each of those lands without a pull
+   request judging it, and once landed it is never judged.  Either way no
+   commit can change it (``R-BAL184``), so judging it again could only
+   refuse it for good, never stop it landing.  The merge commit carries no
+   trailer unless whoever merges writes it a body: its message is by default
+   one line made from the pull request's title (``R-BAL319``, 2026-10-18),
+   and git reads no trailer from a message's first line.  The same ruling
+   made ``main``'s protection bind administrators, so no commit is pushed
+   straight to ``main``, a third kind until then.  So this check never
+   refuses a later pull request for a stray that reached ``dev`` or
+   ``main`` without it (none had: neither held a ``plan#`` trailer on
+   2026-10-18), or past a check no merge requires, and undoing one owes
+   nothing (rule 2).  The release tool still counts such a stray: a money
+   one that reached ``dev`` beside another money change blocks every
+   release, which only a check every merge into ``dev`` requires can
+   prevent.  ``dev`` and ``main`` are read only when the change set carries
+   a ``Reopens:``, and a checkout that cannot read either refuses to judge.
+   The old ``<arc>:<id>`` form is not read here: it ends at the cutover
+   (``R-BAL287``), and no ``Reopens:`` in it exists (none on any ref,
+   2026-10-17).
+
 **What a revert is: git's own record, at the start of a line.**  ``git
 revert`` writes ``This reverts commit <id>.``; with ``--reference`` the id is
 shortened and followed by `` (<subject>, <date>)``; reverting a merge adds
@@ -66,16 +116,23 @@ not all known.
 
 **The change set** is ``<base>..<head>``: the commits ``head`` holds and
 ``base`` does not.  ``ci.yml``'s ``scope`` job hands over the pair for a pull
-request, a merge-queue group and a push to ``main``.  A change set holding no
-commit is refused too: none of those events has one, so it means the two ends
-are wrong.
+request, a merge-queue group and a push to ``main``.  Rules 1 and 2 judge
+every commit of it, rule 3 only those that have not landed.  A change set
+holding no commit is refused too: none of those events has one, so it means
+the two ends are wrong.
 
 Usage, at the repository root::
 
     python -m tools.ci.commit_trailers <base-sha> <head-sha>
 
 Exit status: 0 nothing refused; 1 refused, each reason printed; 2 the command
-line or git failed, or the change set holds no commit, so nothing was checked.
+line or git failed, ``dev`` or ``main`` cannot be read when rule 3 needs them,
+or the change set holds no commit, so nothing was checked.  What a command line
+must name is :func:`ends`, which of its commits have not landed is
+:func:`not_landed`, how a verdict is printed and exits is :func:`report`, and
+how a check that judged nothing says why is :func:`unjudged`: the rules and the
+reporters CI's landing check (``tools/quill/landing.py``) reads its change set
+by and prints its verdict with too.
 """
 from __future__ import annotations
 
@@ -216,11 +273,60 @@ def _revert_reasons(root: Path, commit: tuple[str, str, str],
     ]
 
 
+class LandedUnknown(GitError):
+    """Which commits have landed is unknown: :data:`tools.ci.trailers.DEV` or
+    :data:`tools.ci.trailers.MAIN` cannot be read in this checkout."""
+
+
+def not_landed(root: Path, base: str, head: str) -> set[str]:
+    """The commits of ``<base>..<head>`` that have not landed: neither
+    :data:`tools.ci.trailers.DEV` nor :data:`tools.ci.trailers.MAIN` holds them yet.  They
+    are the commits a rule judged once, when it first lands, judges (rule 3 here; every rule
+    of CI's landing check).  Each branch is handed to git by its full name
+    (:func:`tools.ci.trailers.tracking`), so no tag or local branch named like it stands in,
+    and whether it exists is asked of that exact reference (``show-ref --verify``): git
+    would resolve even a full name that does not exist to a tag named like it.
+
+    Raises:
+        LandedUnknown: when ``dev`` or ``main`` cannot be read in this checkout, naming it.
+    """
+    for branch in (trailers.DEV, trailers.MAIN):
+        if run(root, "show-ref", "--verify", "--quiet", trailers.tracking(branch)).returncode:
+            raise LandedUnknown(f"{branch} cannot be read in this checkout, so which commits "
+                                "have landed already is unknown (in CI, check out with "
+                                "fetch-depth: 0)")
+    return set(git(root, "rev-list", head, f"^{base}", f"^{trailers.tracking(trailers.DEV)}",
+                   f"^{trailers.tracking(trailers.MAIN)}").split())
+
+
+def _stray_reasons(root: Path, base: str, head: str, found: trailers.History) -> list[str]:
+    """Why the change set ``<base>..<head>``, whose card trailers ``found`` holds, breaks
+    rule 3: one sentence per stray ``Reopens:`` on a commit that has not landed, a trailer
+    a commit carries twice named once; empty when it carries no ``Reopens:``, and ``dev``
+    and ``main`` are then not read.
+
+    Raises:
+        GitError: when ``dev`` or ``main`` cannot be read (:class:`LandedUnknown`), or git
+            cannot read ``head``'s history.
+    """
+    if not any(trailer.key == trailers.REOPENS for trailer in found.trailers):
+        return []
+    fresh = not_landed(root, base, head)
+    strays = trailers.shipped(root, trailers.history(root, head))[1]
+    return [f"{stray.sha[:12]} ({stray.subject}) carries `Reopens: plan#{stray.card}`, but no "
+            f"commit in its history ships plan#{stray.card}, so it undoes nothing (a mistyped "
+            "number?): name the card whose `Ships:` the commit undoes; if it does undo "
+            f"plan#{stray.card}, rebuild it on top of the commit that ships plan#{stray.card}; "
+            "otherwise remove the trailer"
+            for stray in dict.fromkeys(strays) if stray.sha in fresh]
+
+
 def problems(root: Path, base: str, head: str) -> tuple[int, list[str]]:
     """How many commits the change set holds, and one sentence per broken rule.
 
     Raises:
-        GitError: when git cannot read the change set (a shallow clone among them).
+        GitError: when git cannot read the change set (a shallow clone among them), or
+            ``dev`` or ``main`` when the change set carries a ``Reopens:``.
     """
     found = trailers.history(root, f"{base}..{head}")
     reasons = [f"{line} (nor the old <arc>:<id> form, read until the cutover)"
@@ -231,34 +337,60 @@ def problems(root: Path, base: str, head: str) -> tuple[int, list[str]]:
     commits = list(_commits(root, base, head))
     for commit in commits:
         reasons.extend(_revert_reasons(root, commit, carried.get(commit[0], set())))
+    reasons.extend(_stray_reasons(root, base, head, found))
     return len(commits), reasons
 
 
-def main(argv: list[str] | None = None, root: Path = REPO) -> int:
-    """Check the change set ``<base>..<head>``; print each refusal; exit as the module says."""
-    args = sys.argv[1:] if argv is None else argv
+def ends(args: list[str]) -> tuple[str, str] | None:
+    """A change set's two ends, ``(base, head)``, from a command line naming them: two full
+    commit ids, neither all zeros; None for any other command line."""
     if (len(args) != 2 or not all(_FULL_ID.fullmatch(a) for a in args)
             or any(set(a) == {"0"} for a in args)):
-        print("usage: python -m tools.ci.commit_trailers <base-sha> <head-sha> (two full "
-              f"commit ids, neither all zeros); given {args!r}", file=sys.stderr)
-        return 2
-    base, head = args
-    try:
-        count, reasons = problems(root, base, head)
-    except GitError as exc:
-        print(f"commit trailers: git could not read {base[:12]}..{head[:12]}: {exc}",
-              file=sys.stderr)
-        return 2
+        return None
+    return args[0], args[1]
+
+
+def report(check: str, base: str, head: str, count: int, reasons: list[str]) -> int:
+    """Print the verdict of the change-set check named ``check`` on ``<base>..<head>``, which
+    holds ``count`` commits and broke a rule for each of ``reasons``; its exit status as the
+    module says.  A change set holding no commit is refused: no pull request, merge group
+    or push has one, so it means the two ends are wrong.  CI's landing check
+    (``tools/quill/landing.py``) prints its verdict here too."""
     if not count:
-        print(f"commit trailers: {base[:12]}..{head[:12]} holds no commit, so nothing was "
+        print(f"{check}: {base[:12]}..{head[:12]} holds no commit, so nothing was "
               "checked; no pull request, merge group or push has an empty change set",
               file=sys.stderr)
         return 2
     for reason in reasons:
         print(f"REFUSED -- {reason}")
-    print(f"commit trailers: {count} commit(s) in {base[:12]}..{head[:12]}, "
-          f"{len(reasons)} refused")
+    print(f"{check}: {count} commit(s) in {base[:12]}..{head[:12]}, {len(reasons)} refused")
     return 1 if reasons else 0
+
+
+def unjudged(check: str, base: str, head: str, error: GitError) -> int:
+    """Print why the change-set check named ``check`` judged nothing of ``<base>..<head>``:
+    git's ``error``, which names the ref when ``dev`` or ``main`` cannot be read
+    (:class:`LandedUnknown`) and the change set otherwise; exit status 2.  CI's landing
+    check (``tools/quill/landing.py``) prints its git failures here too."""
+    said = (str(error) if isinstance(error, LandedUnknown)
+            else f"git could not read {base[:12]}..{head[:12]}: {error}")
+    print(f"{check}: {said}", file=sys.stderr)
+    return 2
+
+
+def main(argv: list[str] | None = None, root: Path = REPO) -> int:
+    """Check the change set ``<base>..<head>``; print each refusal; exit as the module says."""
+    args = sys.argv[1:] if argv is None else argv
+    if (pair := ends(args)) is None:
+        print("usage: python -m tools.ci.commit_trailers <base-sha> <head-sha> (two full "
+              f"commit ids, neither all zeros); given {args!r}", file=sys.stderr)
+        return 2
+    base, head = pair
+    try:
+        count, reasons = problems(root, base, head)
+    except GitError as exc:
+        return unjudged("commit trailers", base, head, exc)
+    return report("commit trailers", base, head, count, reasons)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 
 from tools.quill.door import FakeTracker, GitHubError
+from tools.quill.quill import CONNECT
 from tools.release import release
 from tools.release._carried import Declaration
 from tools.release._model import STEPS_PATH, ReleaseError
@@ -333,3 +334,18 @@ def test_plan_exits_2_when_the_tracker_cannot_be_read(repo, capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.startswith("release plan: nothing was judged: ")
+
+
+def test_plan_exits_2_when_the_apps_key_cannot_be_used(repo, capsys, monkeypatch):
+    """L9d: a corrupt app.pem, read by the command line's own connection, escaped ``main``
+    as a traceback with exit 1, which reads as refused; it judges nothing."""
+    base, cutover = after_cutover(repo)
+    cut = pull_request(repo, cutover, "Ships: plan#40")
+    monkeypatch.setattr("tools.quill._tracker.app_credentials",
+                        lambda: ("Iv23client", b"not a pem"))
+    assert release.main(["plan", "--base", base, "--cut", cut], root=repo.root,
+                        connect=CONNECT) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("release plan: nothing was judged: the App's private key "
+                                   "cannot be loaded")

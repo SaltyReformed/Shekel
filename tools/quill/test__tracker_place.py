@@ -15,7 +15,7 @@ import re
 
 import pytest
 
-from tools.quill import _tracker
+from tools.quill import _tracker, quill
 from tools.quill._fake import FakeTracker
 from tools.quill._github import GitHubError
 from tools.quill._recorded import recording
@@ -441,9 +441,9 @@ def test_a_board_linked_only_to_the_rehearsal_is_not_the_real_trackers():
         board_of(github, PLAN)
 
 
-def _connect(monkeypatch, linked):
-    """``Tracker.connect`` over a scripted App: no key read, nothing sent to GitHub.  The
-    token minted is kept with the keywords it was minted with."""
+def _connect(monkeypatch, linked, slug=APP):
+    """``Tracker.connect`` over a scripted App whose login is ``slug``: no key read, nothing
+    sent to GitHub.  The token minted is kept with the keywords it was minted with."""
     minted = []
     monkeypatch.setattr(_tracker, "app_credentials", lambda: ("Iv23client", b"pem"))
     monkeypatch.setattr(_tracker, "app_jwt", lambda *_: "jwt")
@@ -456,7 +456,7 @@ def _connect(monkeypatch, linked):
 
     monkeypatch.setattr(_tracker, "installation_token", token)
     boards = _org([("PVT_p", PLAN.board_title), ("PVT_r", REHEARSAL.board_title)], linked)
-    app = _Scripted(rest={("GET", "/app"): {"slug": APP}})
+    app = _Scripted(rest={("GET", "/app"): {"slug": slug}})
     monkeypatch.setattr(_tracker, "GitHub", lambda used: app if used == "jwt" else boards)
     return minted
 
@@ -471,6 +471,33 @@ def test_connect_mints_a_token_narrowed_to_the_place_and_checks_its_boards_link(
     _connect(monkeypatch, {"PVT_r": [PLAN.full_name]})
     with pytest.raises(TrackerError, match="not to saltyreformed-labs/shekel-plan-rehearsal"):
         Tracker.connect(REHEARSAL)
+
+
+#: What ``connect`` says of credentials that sign in as the App before its rename.
+_ANOTHER_APP = "sign in as 'shekel-plan-tool', not as quill's App 'shekel-quill'"
+
+
+def test_connect_refuses_credentials_of_another_app_before_it_asks_for_an_installation(
+        monkeypatch):
+    """L9d a1 (the coordinator's 13:33 ruling): the App's login decides which closes are the
+    tool's, and the card-only reader reads the declared one, so ``connect`` holds the live
+    App to it: one that differs is refused, naming both, before it asks GitHub for the
+    App's installation or mints a token."""
+    minted = _connect(monkeypatch, {"PVT_r": [REHEARSAL.full_name]}, slug="shekel-plan-tool")
+    asked = []
+    monkeypatch.setattr(_tracker, "app_installation",
+                        lambda owner, _jwt: asked.append(owner) or {"id": 7})
+    with pytest.raises(TrackerError, match=_ANOTHER_APP):
+        Tracker.connect(REHEARSAL)
+    assert not asked and not minted
+
+
+def test_quill_stops_with_exit_2_on_credentials_of_another_app(monkeypatch, capsys):
+    """The refusal reaches the person through quill's named-error path: exit 2, both logins
+    in its text, through the command line's own connection to the plan's tracker."""
+    _connect(monkeypatch, {"PVT_p": [PLAN.full_name]}, slug="shekel-plan-tool")
+    assert quill.main(["next"], connect=quill.CONNECT) == 2
+    assert _ANOTHER_APP in capsys.readouterr().err
 
 
 class _AnyWrite(_Scripted):
