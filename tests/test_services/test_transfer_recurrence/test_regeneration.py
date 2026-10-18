@@ -9,7 +9,6 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app import ref_cache
@@ -25,7 +24,7 @@ from app.services.amount_ownership import state_own_amount
 from tests._test_helpers import state_template_price
 from tests._test_helpers import transfer_amount
 
-from ._helpers import _assert_shadows_valid, make_template_with_rule, _LogCapture
+from ._helpers import make_template_with_rule, _LogCapture
 
 
 class TestTransferRegeneration:
@@ -44,8 +43,10 @@ class TestTransferRegeneration:
         pass CREATED as the count of rows the rule names, and asserted that
         every id had CHANGED -- both true only while a regeneration rebuilt
         everything it touched.  It now asserts what a maintain pass promises,
-        which is strictly more: the same rows, carrying the new figure, with
-        their shadows in step and nothing created or destroyed.
+        which is strictly more: the same rows, carrying the new figure, and
+        nothing created or destroyed.  It read each row's two shadow
+        transactions too until plan step ``balance:X-bi-6-4d-3``: a transfer
+        stores no leg row since migration 82f7 (ruling **R-BAL167** class 1).
 
         Keeping the id is the point rather than a detail: the delete it replaces
         took the transfer's ``notes`` and any settlement record it had retained
@@ -63,14 +64,7 @@ class TestTransferRegeneration:
             )
             db.session.flush()
             old_ids = {xfer.id for xfer in created}
-            old_shadow_ids = {
-                shadow.id
-                for shadow in db.session.query(Transaction).filter(
-                    Transaction.transfer_id.in_(old_ids),
-                )
-            }
             assert len(old_ids) == 10
-            assert len(old_shadow_ids) == 20
 
             # Change the template amount.
             template.default_amount = Decimal("200.00")
@@ -94,16 +88,6 @@ class TestTransferRegeneration:
             assert {xfer.id for xfer in live} == old_ids
             for xfer in live:
                 assert transfer_amount(xfer) == Decimal("200.00")
-                _assert_shadows_valid(xfer)
-
-            # Both shadows of every row survived with their own ids -- the
-            # CASCADE the old sweep relied on never fires on this path.
-            assert {
-                shadow.id
-                for shadow in db.session.query(Transaction).filter(
-                    Transaction.transfer_id.in_(old_ids),
-                )
-            } == old_shadow_ids
 
     def test_regenerate_restores_a_drifted_due_date_in_place(
         self, app, db, seed_user, seed_periods
@@ -114,8 +98,8 @@ class TestTransferRegeneration:
         delete-and-recreate re-derived it for free.  A maintain pass has to
         apply it, so this drives the one field whose value comes from the RULE
         rather than the template's own columns: the row is moved off its
-        computed date through the shadow-safe door, and the next pass puts it
-        back -- on the SAME row.
+        computed date through ``transfer_service.update_transfer``, and the
+        next pass puts it back -- on the SAME row.
 
         The edit does not set ``is_override`` (that is the transfers PATCH
         route's doing, not the service's), so the row stays the rule's own and
@@ -149,7 +133,6 @@ class TestTransferRegeneration:
             restored = db.session.get(Transfer, drifted.id)
             assert restored is not None, "the drifted row was destroyed"
             assert restored.due_date == computed
-            _assert_shadows_valid(restored)
 
     def test_regenerate_produces_computed_due_dates(
         self, app, db, seed_user, seed_periods
@@ -205,7 +188,6 @@ class TestTransferRegeneration:
             ]
             for xfer in live:
                 assert transfer_amount(xfer) == Decimal("200.00")
-                _assert_shadows_valid(xfer)
 
     def test_regenerate_raises_conflict_for_overridden(
         self, app, db, seed_user, seed_periods
@@ -281,11 +263,12 @@ class TestTransferRegeneration:
 
 class TestRegenerateDeletionRoutedThroughService:
     """Commit 34 / LOW-02 / B6-03 -- regen deletes must use the canonical
-    transfer_service.delete_transfer path so the orphan-verification
-    self-check runs and one EVT_TRANSFER_HARD_DELETED audit event is
-    emitted per deleted transfer.  Shadow-pair atomicity is unchanged
-    (FK CASCADE already protected it), so this commit asserts forensic
-    completeness, not arithmetic correctness.
+    transfer_service.delete_transfer path so one EVT_TRANSFER_HARD_DELETED
+    audit event is emitted per deleted transfer.  This asserts forensic
+    completeness, not arithmetic correctness.  The orphan-verification
+    self-check and the shadow pair it counted went at plan step
+    ``balance:X-bi-6-4d-3``: a transfer stores no leg row since migration
+    82f7 (ruling **R-BAL167**).
     """
 
     def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
@@ -318,7 +301,7 @@ class TestRegenerateDeletionRoutedThroughService:
     def _retire_every_row(self, seed_user, seed_periods, template):
         """Clear the recurrence, then run the pass that retires what it left.
 
-        **The setup these three cases needed from plan step R10-b onwards.**
+        **The setup these cases needed from plan step R10-b onwards.**
         Each was written against a regeneration that deleted every
         non-overridden row in the window and rebuilt it, so an AMOUNT change was
         enough to observe a deletion.  A maintain pass deletes only what the
@@ -327,8 +310,8 @@ class TestRegenerateDeletionRoutedThroughService:
         of it, which is the "Does not repeat" edit
         ``regenerate_or_conflict_chooser`` documents.
 
-        The subject of all three is unchanged and is what matters: every
-        deletion this engine performs goes through
+        The subject of both cases that call it is unchanged and is what
+        matters: every deletion this engine performs goes through
         ``transfer_service.delete_transfer``.
 
         Args:
@@ -448,59 +431,12 @@ class TestRegenerateDeletionRoutedThroughService:
             )
             assert {r.transfer_id for r in hard_delete_records} == retired_ids
 
-    def test_regen_delete_leaves_no_orphan_shadows(
-        self, app, db, seed_user, seed_periods
-    ):
-        """C34-3: shadow-pair atomicity is unchanged.  Both shadows of
-        every RETIRED transfer are gone (FK CASCADE), and no
-        ``transactions.transfer_id`` points at a missing transfer.
-        Locks the no-balance-drift property the commit promises.
-
-        **RE-RULED at plan step R10-b**: see :meth:`_retire_every_row` for why
-        the deletion is now caused rather than assumed.  A row the rule still
-        names keeps both of its shadows, which is
-        ``test_maintaining_keeps_the_shadows_it_already_has``.
-        """
-        with app.app_context():
-            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
-            created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
-                ), seed_user["scenario"].id,
-            )
-            db.session.flush()
-
-            pre_shadow_ids: list[int] = []
-            for xfer in created:
-                shadows = (
-                    db.session.query(Transaction)
-                    .filter_by(transfer_id=xfer.id)
-                    .all()
-                )
-                assert len(shadows) == 2
-                pre_shadow_ids.extend(s.id for s in shadows)
-
-            self._retire_every_row(seed_user, seed_periods, template)
-            db.session.commit()
-            db.session.expire_all()
-
-            for sid in pre_shadow_ids:
-                assert db.session.get(Transaction, sid) is None, (
-                    f"Shadow {sid} survived regen -- FK CASCADE failed."
-                )
-
-            # No live shadow may reference a missing transfer.
-            live_shadows = (
-                db.session.query(Transaction)
-                .filter(Transaction.transfer_id.isnot(None))
-                .all()
-            )
-            for shadow in live_shadows:
-                parent = db.session.get(Transfer, shadow.transfer_id)
-                assert parent is not None, (
-                    f"Orphaned shadow {shadow.id} -> missing "
-                    f"transfer {shadow.transfer_id}."
-                )
+    # ``test_regen_delete_leaves_no_orphan_shadows`` (C34-3) was deleted at plan
+    # step ``balance:X-bi-6-4d-3`` (ruling **R-BAL320**): without its twin reads
+    # it asserted only that every retired transfer is gone, which
+    # ``test_regen_delete_emits_one_hard_delete_event_per_deletion`` asserts on
+    # the same ``_retire_every_row``, failing first when the retire arm skips
+    # ``delete_transfer`` (measured).
 
     def test_transfer_recurrence_module_has_no_bare_delete(self):
         """C34-4: lock the structural fix -- the source of

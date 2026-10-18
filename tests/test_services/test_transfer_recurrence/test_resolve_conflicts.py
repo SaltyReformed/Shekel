@@ -3,11 +3,14 @@
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import transfer_recurrence, transfer_service
-from app.utils.log_events import EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED
+from app.utils.log_events import (
+    EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED,
+    EVT_TRANSFER_RESTORED,
+    EVT_TRANSFER_UPDATED,
+)
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
@@ -16,7 +19,6 @@ from tests._test_helpers import (
     create_account_of_type,
     create_transfer,
     make_cadence_rule,
-    shadow_amount,
 )
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
 from app.services.amount_ownership import state_own_amount
@@ -26,7 +28,7 @@ from tests.test_routes.test_the_chooser_restores_what_the_unarchive_would import
     _transfer_as_stored,
 )
 
-from ._helpers import _assert_shadows_valid, make_template_with_rule, _LogCapture
+from ._helpers import make_template_with_rule, _LogCapture
 
 
 class TestTransferResolveConflicts:
@@ -114,15 +116,6 @@ class TestTransferResolveConflicts:
             assert xfer.is_override is False
             assert xfer.is_deleted is False
             assert transfer_amount(xfer) == Decimal("200.00")
-
-            # Shadows should also be synced.
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id
-            ).all()
-            for s in shadows:
-                assert s.is_override is False
-                assert s.is_deleted is False
-                assert shadow_amount(s) == Decimal("200.00")
 
     def test_cross_user_update_blocked(
         self, app, db, seed_user, seed_periods, second_user
@@ -348,9 +341,15 @@ class TestTransferResolveConflicts:
 
 class TestResolveConflictsServiceRouting:
     """Verify that resolve_conflicts routes through the transfer service
-    instead of directly manipulating shadow transaction ORM objects.
+    instead of writing the transfer's columns directly.
 
-    Closes L1 from transfer_rework_verification.md.
+    Closes L1 from transfer_rework_verification.md.  The routing's proof was
+    the two shadow transactions following their parent until plan step
+    ``balance:X-bi-6-4d-3``; a transfer stores no leg row since migration
+    82f7, and a direct write of the same columns leaves every value the cases
+    re-read equal, so each case reads the service's own audit events
+    (``EVT_TRANSFER_UPDATED``, ``EVT_TRANSFER_RESTORED``) beside its row
+    re-reads (ruling **R-BAL207**, the coordinator 2026-10-18).
     """
 
     def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
@@ -382,10 +381,12 @@ class TestResolveConflictsServiceRouting:
     def test_update_action_routes_amount_through_service(
         self, app, db, seed_user, seed_periods
     ):
-        """Verify that resolve_conflicts with action='update' routes
-        amount updates through transfer_service.update_transfer, ensuring
-        both shadow transactions are updated atomically.  Direct ORM
-        manipulation of shadows would bypass future service logic.
+        """action='update' hands the transfer back through update_transfer.
+
+        Graded by the one ``EVT_TRANSFER_UPDATED`` the service emits for this
+        transfer, read first: a direct write of ``is_override`` and the
+        ownership emits none.  It graded both shadow rows following the parent
+        until plan step ``balance:X-bi-6-4d-3`` (ruling **R-BAL167** class 1).
         """
         with app.app_context():
             template = self._make_template_with_rule(
@@ -401,47 +402,39 @@ class TestResolveConflictsServiceRouting:
             xfer = created[0]
             xfer.is_override = True
             state_own_amount(xfer, Decimal("999.99"))
-            # A shadow cannot be drifted to prove the service corrects it:
-            # since plan step X-au-g-2c-2 it stores no figure and reads its
-            # parent, so ``ck_transactions_amount_ownership`` refuses the
-            # write.  What the case still grades is the parent's own figure
-            # going through the SERVICE rather than being assigned, and both
-            # legs following it -- which the assertions below do.
             db.session.flush()
 
             # **"Use" carries no figure of its own since ruling R-JD** (plan step
             # X-au-f), so the DEFINITION states the price this case asserts and
             # the row lands on it by reading its series.
             state_template_price(template, Decimal("200.00"))
-            transfer_recurrence.resolve_conflicts(
-                [xfer.id], action="update",
-                ctx=BalanceContext.build(seed_user["user"].id),
-            )
+            with _LogCapture("app.services.transfer_service") as cap:
+                transfer_recurrence.resolve_conflicts(
+                    [xfer.id], action="update",
+                    ctx=BalanceContext.build(seed_user["user"].id),
+                )
             db.session.flush()
+
+            assert [
+                record.transfer_id for record in cap.find_all(EVT_TRANSFER_UPDATED)
+            ] == [xfer.id], "the hand-back did not go through update_transfer"
 
             db.session.refresh(xfer)
             assert transfer_amount(xfer) == Decimal("200.00")
             assert xfer.is_override is False
-
-            # Both shadows must match -- proves service routing, not
-            # direct ORM, because the drifted shadow was corrected.
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id
-            ).all()
-            assert len(shadows) == 2
-            for s in shadows:
-                assert shadow_amount(s) == Decimal("200.00")
-                assert s.is_override is False
-                assert s.is_deleted is False
 
     def test_update_restores_soft_deleted_transfer(
         self, app, db, seed_user, seed_periods
     ):
         """Verify that resolve_conflicts with action='update' restores a
         soft-deleted transfer by routing through restore_transfer, then
-        updates it through update_transfer.  The three-step cascade
-        (un-delete, reset override, update amount) maintains all shadow
-        invariants.
+        updates it through update_transfer.
+
+        Graded by the service's two audit events for this transfer, read
+        first and in order: ``EVT_TRANSFER_RESTORED``, then
+        ``EVT_TRANSFER_UPDATED``.  A direct write of ``is_deleted`` emits
+        neither.  It graded both shadow rows following the parent until plan
+        step ``balance:X-bi-6-4d-3`` (ruling **R-BAL167** class 1).
         """
         with app.app_context():
             template = self._make_template_with_rule(
@@ -456,7 +449,7 @@ class TestResolveConflictsServiceRouting:
 
             xfer = created[0]
             xfer_id = xfer.id
-            # Soft-delete the transfer and its shadows.
+            # Soft-delete the transfer.
             from app.services import transfer_service as ts
             ts.delete_transfer(xfer_id, seed_user["user"].id, soft=True)
             db.session.flush()
@@ -469,24 +462,26 @@ class TestResolveConflictsServiceRouting:
             # X-au-f), so the DEFINITION states the price this case asserts and
             # the row lands on it by reading its series.
             state_template_price(template, Decimal("300.00"))
-            transfer_recurrence.resolve_conflicts(
-                [xfer_id], action="update",
-                ctx=BalanceContext.build(seed_user["user"].id),
-            )
+            with _LogCapture("app.services.transfer_service") as cap:
+                transfer_recurrence.resolve_conflicts(
+                    [xfer_id], action="update",
+                    ctx=BalanceContext.build(seed_user["user"].id),
+                )
             db.session.flush()
+
+            assert [
+                (record.event, record.transfer_id) for record in cap.records
+                if getattr(record, "event", None)
+                in (EVT_TRANSFER_RESTORED, EVT_TRANSFER_UPDATED)
+            ] == [
+                (EVT_TRANSFER_RESTORED, xfer_id),
+                (EVT_TRANSFER_UPDATED, xfer_id),
+            ], "the restore and the hand-back did not both go through the service"
 
             db.session.refresh(xfer)
             assert xfer.is_deleted is False
             assert xfer.is_override is False
             assert transfer_amount(xfer) == Decimal("300.00")
-
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id
-            ).all()
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.is_deleted is False
-                assert shadow_amount(s) == Decimal("300.00")
 
     def test_keep_action_preserves_user_override(
         self, app, db, seed_user, seed_periods
@@ -525,48 +520,23 @@ class TestResolveConflictsServiceRouting:
             assert transfer_amount(xfer) == Decimal("350.00")
             assert xfer.is_override is True
 
-    def test_all_five_invariants_hold_after_resolution(
-        self, app, db, seed_user, seed_periods
-    ):
-        """Verify that after resolve_conflicts routes through the service,
-        all five shadow invariants hold: both shadows exist, amounts match,
-        statuses match, periods match, and types are one expense / one
-        income.  Catches any regression where service routing introduces
-        an invariant violation.
-        """
-        with app.app_context():
-            template = self._make_template_with_rule(
-                seed_user, EVERY_PERIOD
-            )
-            created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
-                ), seed_user["scenario"].id,
-            )
-            db.session.flush()
-
-            xfer = created[0]
-            xfer.is_override = True
-            state_own_amount(xfer, Decimal("999.99"))
-            db.session.flush()
-
-            transfer_recurrence.resolve_conflicts(
-                [xfer.id], action="update",
-                ctx=BalanceContext.build(seed_user["user"].id),
-            )
-            db.session.flush()
-
-            db.session.refresh(xfer)
-            # Use the shared invariant assertion helper.
-            _assert_shadows_valid(xfer)
+    # ``test_all_five_invariants_hold_after_resolution`` was deleted at plan step
+    # ``balance:X-bi-6-4d-3`` (ruling **R-BAL320**): its one assertion read the
+    # transfer's twin rows, which the database refuses to store
+    # (``ck_transactions_names_no_transfer``), so it read none (measured 0);
+    # its act is ``test_update_action_routes_amount_through_service``'s.
 
     def test_multiple_transfers_each_routed_through_service(
         self, app, db, seed_user, seed_periods
     ):
         """Verify that resolve_conflicts correctly processes multiple
         transfers in a single call, routing each through the transfer
-        service independently.  Each transfer's shadows must reflect the
-        resolved state regardless of processing order.
+        service independently.
+
+        Graded by the service's audit events, read first: one
+        ``EVT_TRANSFER_UPDATED`` per transfer and one ``EVT_TRANSFER_RESTORED``
+        for the soft-deleted one.  It graded each transfer's shadow rows until
+        plan step ``balance:X-bi-6-4d-3`` (ruling **R-BAL167** class 1).
         """
         with app.app_context():
             template = self._make_template_with_rule(
@@ -598,23 +568,22 @@ class TestResolveConflictsServiceRouting:
             # X-au-f), so the DEFINITION states the price this case asserts and
             # the row lands on it by reading its series.
             state_template_price(template, Decimal("250.00"))
-            transfer_recurrence.resolve_conflicts(
-                ids, action="update",
-                ctx=BalanceContext.build(seed_user["user"].id),
-            )
+            with _LogCapture("app.services.transfer_service") as cap:
+                transfer_recurrence.resolve_conflicts(
+                    ids, action="update",
+                    ctx=BalanceContext.build(seed_user["user"].id),
+                )
             db.session.flush()
+
+            assert sorted(
+                record.transfer_id for record in cap.find_all(EVT_TRANSFER_UPDATED)
+            ) == sorted(ids), "a hand-back did not go through update_transfer"
+            assert [
+                record.transfer_id for record in cap.find_all(EVT_TRANSFER_RESTORED)
+            ] == [created[2].id], "the restore did not go through restore_transfer"
 
             for xfer_id in ids:
                 xfer = db.session.get(Transfer, xfer_id)
                 assert xfer.is_deleted is False
                 assert xfer.is_override is False
                 assert transfer_amount(xfer) == Decimal("250.00")
-
-                shadows = db.session.query(Transaction).filter_by(
-                    transfer_id=xfer_id
-                ).all()
-                assert len(shadows) == 2
-                for s in shadows:
-                    assert s.is_deleted is False
-                    assert s.is_override is False
-                    assert shadow_amount(s) == Decimal("250.00")

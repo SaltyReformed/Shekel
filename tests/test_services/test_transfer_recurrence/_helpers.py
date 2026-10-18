@@ -1,68 +1,19 @@
-"""The helpers and constants every part of this package shares: the module-level helpers of
-``tests/test_services/test_transfer_recurrence.py``, moved verbatim by ``tools/split``.
+"""The module-level helpers of ``tests/test_services/test_transfer_recurrence.py``, moved
+verbatim by ``tools/split``, and which part imports each: ``make_template_with_rule``
+(``test_generation``, ``test_regeneration``, ``test_resolve_conflicts``) and ``_LogCapture``
+(``test_maintain``, ``test_regeneration``, ``test_resolve_conflicts``); ``test_negative_paths``
+imports neither.  ``_assert_shadows_valid`` read a transfer's two twin rows and went at plan step
+``balance:X-bi-6-4d-3`` (ruling **R-BAL167** class 4): a transfer stores no leg row since
+migration 82f7.
 """
 
 import logging
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
-from app.models.ref import TransactionType
-from app import ref_cache
-from app.enums import AmountSourceEnum
-from tests._test_helpers import create_account_of_type, make_cadence_rule, shadow_amount
+from tests._test_helpers import create_account_of_type, make_cadence_rule
 from tests._test_helpers import state_template_price
-from tests._test_helpers import transfer_amount
-
-
-def _assert_shadows_valid(xfer):
-    """Assert a transfer has exactly 2 correct shadow transactions.
-
-    **Only valid for a transfer that is NOT a loan payment**, and the amount
-    assertion is why: a leg reads its parent through amount rule 5, so
-    ``shadow_amount(leg) == xfer.amount`` holds by construction -- but rule 4
-    prices a loan payment's leg from the LOAN's installment, which is
-    deliberately not the parent's figure.  Every caller here generates plain
-    transfers; a loan payment reaching this helper would fail on a rule working
-    correctly.
-
-    The amount line therefore carries little on its own, so the DECLARATION is
-    asserted beside it: since plan step X-au-g-2c-2 a leg stores no figure and
-    names ``PARENT_TRANSFER``, and that pair is the invariant this used to check
-    by comparing two stored columns.
-    """
-    shadows = (
-        db.session.query(Transaction)
-        .filter_by(transfer_id=xfer.id)
-        .all()
-    )
-    assert len(shadows) == 2, (
-        f"Transfer {xfer.id} has {len(shadows)} shadows (expected 2)"
-    )
-
-    expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-    income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-    types = {s.transaction_type_id for s in shadows}
-    assert types == {expense_type.id, income_type.id}
-
-    parent_transfer_id = ref_cache.amount_source_id(
-        AmountSourceEnum.PARENT_TRANSFER,
-    )
-    for s in shadows:
-        assert s.estimated_amount is None
-        assert s.amount_source_id == parent_transfer_id
-        assert shadow_amount(s) == transfer_amount(xfer)
-        assert s.status_id == xfer.status_id
-        assert s.pay_period_id == xfer.pay_period_id
-        # due_date mirrors the parent (Transfer Invariant 3).
-        assert s.due_date == xfer.due_date
-
-    expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
-    income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
-    assert expense.account_id == xfer.from_account_id
-    assert income.account_id == xfer.to_account_id
-    return expense, income
 
 
 def make_template_with_rule(seed_user, cadence, **rule_kwargs):

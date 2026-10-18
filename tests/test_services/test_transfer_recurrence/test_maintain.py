@@ -5,7 +5,6 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app import ref_cache
@@ -24,14 +23,13 @@ from tests._test_helpers import (
     create_account_of_type,
     last_covered_day,
     make_cadence_rule,
-    shadow_amount,
     transfer_side_record,
 )
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
 from tests._test_helpers import state_template_price
 from tests._test_helpers import transfer_amount
 
-from ._helpers import _assert_shadows_valid, _LogCapture
+from ._helpers import _LogCapture
 
 
 class TestTransferMaintain:
@@ -152,19 +150,15 @@ class TestTransferMaintain:
 
         Clearing the recurrence leaves the rule naming no period at all, so
         every generated row is an orphan.  One holding nothing of the owner's
-        is removed -- through ``transfer_service.delete_transfer``, so both
-        shadows go with it and the ledger is reconciled first.
+        is removed -- through ``transfer_service.delete_transfer``, so the
+        ledger is reconciled first.  It read each row's two shadow rows gone
+        too until plan step ``balance:X-bi-6-4d-3``: a transfer stores no leg
+        row since migration 82f7 (ruling **R-BAL167** class 1).
         """
         with app.app_context():
-            template, _, rows = self._template_with_rows(
+            template, _, _ = self._template_with_rows(
                 seed_user, seed_periods,
             )
-            shadow_ids = [
-                shadow.id for shadow in db.session.query(Transaction).filter(
-                    Transaction.transfer_id.in_([x.id for x in rows]),
-                )
-            ]
-            assert len(shadow_ids) == 20
 
             template.recurrence_rule = None
             db.session.flush()
@@ -174,9 +168,6 @@ class TestTransferMaintain:
             assert db.session.query(Transfer).filter_by(
                 transfer_template_id=template.id,
             ).count() == 0
-            db.session.expire_all()
-            for shadow_id in shadow_ids:
-                assert db.session.get(Transaction, shadow_id) is None
 
     def test_one_pass_updates_creates_and_retires_together(
         self, app, db, seed_user, seed_periods
@@ -234,8 +225,6 @@ class TestTransferMaintain:
                 p.id for p in seed_periods[:7]
             }
             assert all(transfer_amount(x) == Decimal("155.00") for x in live)
-            for xfer in live:
-                _assert_shadows_valid(xfer)
             # The created row is a NEW id in the emptied period, and it is the
             # only one: the pass created exactly where nothing was.
             created_rows = [x for x in live if x.pay_period_id == gap_period_id]
@@ -382,10 +371,17 @@ class TestTransferMaintain:
         """A definition's account change reaches its rows IN PLACE.
 
         The old sweep applied it by destroying every row and re-creating it at
-        the new endpoints; the pass now moves the pair -- parent, expense leg
-        and income leg -- keeping each row's id.  Both shadow display names are
-        re-derived, because a leg on the new account still labelled with the old
-        one contradicts its own row.
+        the new endpoints; the pass now moves the transfer, keeping each row's
+        id.  It read each row's two shadow rows too -- the income leg on the new
+        account and both legs' display names -- until plan step
+        ``balance:X-bi-6-4d-3``: a transfer stores no leg row since migration
+        82f7, so each side's account is its parent's endpoint, graded once by
+        ``tests.test_services.test_transfer_legs`` ::
+        ``test_both_sides_show_the_row_in_every_field_the_table_names``, and
+        its name is composed from the endpoints' names, graded by the same
+        module's ``TestALegsDisplayProjections`` ::
+        ``test_the_label_is_composed_from_the_endpoints_current_names`` (ruling
+        **R-BAL167** class 1).
         """
         with app.app_context():
             template, _, rows = self._template_with_rows(
@@ -409,12 +405,6 @@ class TestTransferMaintain:
             assert {xfer.id for xfer in live} == old_ids
             for xfer in live:
                 assert xfer.to_account_id == elsewhere.id
-                expense, income = _assert_shadows_valid(xfer)
-                assert income.account_id == elsewhere.id
-                assert expense.name == "Transfer to Elsewhere"
-                assert income.name == (
-                    f"Transfer from {seed_user['account'].name}"
-                )
 
     def test_an_endpoint_move_is_retained_on_a_row_holding_records(
         self, app, db, seed_user, seed_periods
@@ -523,9 +513,6 @@ class TestTransferMaintain:
                 assert xfer.due_date == db.session.get(
                     PayPeriod, xfer.pay_period_id,
                 ).start_date
-                expense, income = _assert_shadows_valid(xfer)
-                assert expense.category_id == category.id
-                assert income.category_id == category.id
 
     def test_a_SOURCE_move_is_retained_on_a_row_holding_records(
         self, app, db, seed_user, seed_periods
@@ -605,12 +592,6 @@ class TestTransferMaintain:
             ] == [
                 Decimal("58.00"), Decimal("58.00"),
             ]
-            legs = db.session.query(Transaction).filter_by(
-                transfer_id=recorded.id, is_deleted=False,
-            ).all()
-            assert all(
-                shadow_amount(leg) == Decimal("175.00") for leg in legs
-            )
 
     def test_a_pass_that_changes_nothing_writes_nothing(
         self, app, db, seed_user, seed_periods
@@ -742,7 +723,6 @@ class TestTransferMaintain:
                 transfer_template_id=template.id,
             ):
                 assert transfer_amount(xfer) == Decimal("140.00")
-                _assert_shadows_valid(xfer)
 
     def test_the_audit_event_separates_updated_created_and_removed(
         self, app, db, seed_user, seed_periods

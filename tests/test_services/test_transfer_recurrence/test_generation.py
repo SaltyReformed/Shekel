@@ -9,10 +9,8 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
-from app.models.ref import TransactionType
 from app.services import pay_period_write, transfer_recurrence
 from app.services.recurrence_engine import resolve_generation_plan
 from app.exceptions import RecurrenceConflict
@@ -25,14 +23,13 @@ from tests._test_helpers import (
     create_account_of_type,
     last_covered_day,
     make_cadence_rule,
-    shadow_amount,
 )
 from tests.oracles.recurrence_baseline import EVERY_PERIOD, MONTHLY
 from app.services.amount_ownership import state_own_amount
 from tests._test_helpers import state_template_price
 from tests._test_helpers import transfer_amount
 
-from ._helpers import _assert_shadows_valid, make_template_with_rule
+from ._helpers import make_template_with_rule
 
 
 class TestTransferGeneration:
@@ -62,7 +59,6 @@ class TestTransferGeneration:
                 # back to the pay-period start (payday) -- the prior
                 # behaviour is preserved for day-less patterns.
                 assert xfer.due_date == xfer.pay_period.start_date
-                _assert_shadows_valid(xfer)
 
     def test_monthly_due_date_placed_on_day_of_month(
         self, app, db, seed_user, seed_periods
@@ -77,7 +73,7 @@ class TestTransferGeneration:
             P5 [03-13..03-26] -> 2026-03-15
             P7 [04-10..04-23] -> 2026-04-15
             P9 [05-08..05-21] -> 2026-05-15
-        so the shadows land on the true monthly due date (matching a loan
+        so the transfers land on the true monthly due date (matching a loan
         card's monthly_due_date) instead of the pay-period start.
         """
         with app.app_context():
@@ -99,8 +95,6 @@ class TestTransferGeneration:
             ]
             for xfer in created:
                 assert xfer.due_date.day == 15
-                # Parent and both shadows carry the same due date.
-                _assert_shadows_valid(xfer)
 
     def test_no_rule_returns_empty(self, app, db, seed_user, seed_periods):
         """Template with recurrence_rule=None returns empty list."""
@@ -243,9 +237,10 @@ class TestTransferGenerationSharesTheOccurrencePairs:
         ``(template, period, scenario)`` those three could not be stored and
         the pass REFUSED (plan ledger row D19).  Plan step **R17** re-keyed the
         index onto ``(template, scenario, occurs_on)``, so three occurrences
-        are three keys and all three transfers are written -- each with its own
-        shadow pair, which is the half this engine has and the transaction
-        engine does not.
+        are three keys and all three transfers are written.  Each kept a
+        shadow pair, read here, until plan step ``balance:X-bi-6-4d-3``: a
+        transfer stores no leg row since migration 82f7 (ruling **R-BAL167**
+        class 1).
         """
         with app.app_context():
             long_periods = pay_period_write.record_paydays(
@@ -298,11 +293,6 @@ class TestTransferGenerationSharesTheOccurrencePairs:
                 transfer_template_id=template.id,
                 pay_period_id=paycheck.id,
             ).count() == 3
-            # Each transfer keeps its shadow pair -- the invariant this engine
-            # owns, and the one a repeat could have broken by writing a parent
-            # without its two linked rows.
-            for row in in_paycheck:
-                _assert_shadows_valid(row)
 
     def test_a_transfer_occurrence_in_an_absorbed_hole_is_written_too(
         self, app, db, seed_user, seed_periods, caplog,
@@ -383,11 +373,16 @@ class TestTransferGenerationSharesTheOccurrencePairs:
             ] == []
 
 
-# ── Shadow Transaction Verification Tests ──────────────────────────
+# ── Generated Transfer Tests ──────────────────────────────────────
 
 
 class TestShadowTransactionCreation:
-    """Tests verifying shadow transaction creation through the recurrence engine."""
+    """A generated transfer's category, and the rows a maintain pass keeps.
+
+    The class name is history: it graded each transfer's two shadow (twin)
+    transactions until plan step ``balance:X-bi-6-4d-3``, and a transfer
+    stores no leg row since migration 82f7 (ruling **R-BAL167**).
+    """
 
     def _make_template(self, seed_user, cadence, category_id=None,
                        **rule_kwargs):
@@ -419,27 +414,22 @@ class TestShadowTransactionCreation:
         db.session.refresh(template)
         return template, savings
 
-    def test_generated_transfers_have_shadows(
-        self, app, db, seed_user, seed_periods
-    ):
-        """Every recurrence-generated transfer has exactly 2 shadows."""
-        with app.app_context():
-            template, _ = self._make_template(seed_user, EVERY_PERIOD)
-            created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
-                ), seed_user["scenario"].id,
-            )
-            db.session.flush()
-
-            assert len(created) == len(seed_periods)
-            for xfer in created:
-                _assert_shadows_valid(xfer)
+    # ``test_generated_transfers_have_shadows`` was deleted at plan step
+    # ``balance:X-bi-6-4d-3`` (ruling **R-BAL320**): without its twin read it
+    # counted ``created`` against ``seed_periods``, which
+    # ``TestTransferGeneration::test_every_period_generates_for_all`` counts on
+    # the same act, failing first when generation skips a period (measured).
 
     def test_category_id_passed_from_template(
         self, app, db, seed_user, seed_periods
     ):
-        """Template category_id flows to transfer and expense shadow."""
+        """Template category_id flows to every generated transfer.
+
+        It read the expense shadow's category beside the transfer's until plan
+        step ``balance:X-bi-6-4d-3``: a transfer stores no leg row since
+        migration 82f7, so the transfer's own column is the read (ruling
+        **R-BAL167** class 1).
+        """
         with app.app_context():
             rent_cat = seed_user["categories"]["Rent"]
             template, _ = self._make_template(
@@ -453,31 +443,27 @@ class TestShadowTransactionCreation:
             )
             db.session.flush()
 
-            expense_type = db.session.query(TransactionType).filter_by(
-                name="Expense"
-            ).one()
             for xfer in created:
                 assert xfer.category_id == rent_cat.id
 
-                shadows = db.session.query(Transaction).filter_by(
-                    transfer_id=xfer.id
-                ).all()
-                expense = [s for s in shadows
-                           if s.transaction_type_id == expense_type.id][0]
-                assert expense.category_id == rent_cat.id
-
-    def test_maintaining_keeps_the_shadows_it_already_has(
+    def test_maintaining_keeps_the_rows_it_already_has(
         self, app, db, seed_user, seed_periods
     ):
-        """An amount change reaches both shadows without replacing either.
+        """An amount change reaches every transfer without replacing any.
 
         **RE-RULED at plan step R10-b.**  It asserted every shadow was GONE
         after a regeneration -- true only while the pass hard-deleted each
         parent and let ``transactions.transfer_id``'s CASCADE take the pair.
-        The property worth pinning is the opposite one: the pair the owner
-        already has follows the definition, keeping its own rows, because
-        ``transfer_service.update_transfer`` mirrors the parent's figure onto
-        both legs (Transfer Invariants 3-5).
+        The property worth pinning is the opposite one: the rows the owner
+        already has follow the definition, keeping their own ids.
+
+        It read each transfer's two shadow rows too, and was named
+        ``test_maintaining_keeps_the_shadows_it_already_has``, until plan step
+        ``balance:X-bi-6-4d-3``: a transfer stores no leg row since migration
+        82f7 (ruling **R-BAL167** class 1).  What it reads that
+        ``test_regeneration.py``'s ``test_regenerate_maintains_its_rows_in_place``
+        does not: each row re-read after a COMMIT and an ``expire_all``, so the
+        id and the figure are the database's rather than the session's.
         """
         with app.app_context():
             template, _ = self._make_template(seed_user, EVERY_PERIOD)
@@ -489,12 +475,6 @@ class TestShadowTransactionCreation:
             db.session.flush()
 
             old_ids = [xfer.id for xfer in created]
-            old_shadow_ids = []
-            for xfer in created:
-                shadows = db.session.query(Transaction).filter_by(
-                    transfer_id=xfer.id
-                ).all()
-                old_shadow_ids.extend([s.id for s in shadows])
 
             # Change amount and regenerate.
             template.default_amount = Decimal("300.00")
@@ -508,102 +488,34 @@ class TestShadowTransactionCreation:
             db.session.commit()
             db.session.expire_all()
 
-            # Every shadow survived, carrying the new figure.
-            for sid in old_shadow_ids:
-                shadow = db.session.get(Transaction, sid)
-                assert shadow is not None, (
-                    f"Shadow {sid} was destroyed by a maintain pass."
-                )
-                assert shadow_amount(shadow) == Decimal("300.00")
-
             for xid in old_ids:
                 xfer = db.session.get(Transfer, xid)
-                assert xfer is not None
-                _assert_shadows_valid(xfer)
+                assert xfer is not None, (
+                    f"Transfer {xid} was destroyed by a maintain pass."
+                )
                 assert transfer_amount(xfer) == Decimal("300.00")
 
-    def test_no_orphaned_shadows_after_regeneration(
-        self, app, db, seed_user, seed_periods
-    ):
-        """No shadow transactions reference non-existent transfers after regen."""
-        with app.app_context():
-            template, _ = self._make_template(seed_user, EVERY_PERIOD)
-            transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
-                ), seed_user["scenario"].id,
-            )
-            db.session.flush()
-
-            template.default_amount = Decimal("250.00")
-            state_template_price(template, Decimal("250.00"))
-            db.session.flush()
-            transfer_recurrence.regenerate_for_template(
-                template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
-                ), seed_user["scenario"].id,
-            )
-            db.session.flush()
-
-            # Every shadow transaction should reference an existing transfer.
-            all_shadows = db.session.query(Transaction).filter(
-                Transaction.transfer_id.isnot(None)
-            ).all()
-            for shadow in all_shadows:
-                parent = db.session.get(Transfer, shadow.transfer_id)
-                assert parent is not None, (
-                    f"Orphaned shadow {shadow.id} references "
-                    f"non-existent transfer {shadow.transfer_id}"
-                )
-
-    def test_resolve_update_syncs_shadow_amounts(
-        self, app, db, seed_user, seed_periods
-    ):
-        """resolve_conflicts(update) syncs new_amount to shadow transactions."""
-        with app.app_context():
-            template, _ = self._make_template(seed_user, EVERY_PERIOD)
-            created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
-                ), seed_user["scenario"].id,
-            )
-            db.session.flush()
-
-            # Override one entry.
-            xfer = created[0]
-            xfer.is_override = True
-            state_own_amount(xfer, Decimal("999.99"))
-            db.session.flush()
-
-            # **"Use" carries no figure of its own since ruling R-JD** (plan step
-            # X-au-f), so the DEFINITION states the price this case asserts and
-            # the row lands on it by reading its series.
-            state_template_price(template, Decimal("175.00"))
-            transfer_recurrence.resolve_conflicts(
-                [xfer.id], action="update",
-                ctx=BalanceContext.build(seed_user["user"].id),
-            )
-            db.session.flush()
-
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id
-            ).all()
-            assert len(shadows) == 2
-            for s in shadows:
-                assert shadow_amount(s) == Decimal("175.00")
-                assert s.is_override is False
+    # ``test_no_orphaned_shadows_after_regeneration`` was deleted at plan step
+    # ``balance:X-bi-6-4d-3`` (ruling **R-BAL320**): its one read was a loop over
+    # the transactions naming a transfer, which the database refuses to store
+    # (``ck_transactions_names_no_transfer``), so it looped over none
+    # (measured 0 after its regeneration).
+    #
+    # ``test_resolve_update_syncs_shadow_amounts`` was deleted there too: its
+    # act and the transfer's figure are ``test_resolve_conflicts.py``'s
+    # ``TestTransferResolveConflicts::test_resolve_update_clears_flags_and_applies_amount``,
+    # which fails first when "update" leaves ``is_override`` set (measured).
 
 
 class TestATransferRecordsItsOccurrence:
     """``Transfer.occurs_on`` -- plan step **R17**, ledger row **D57**.
 
     The transfer half of the same leaf.  Both engines write the occurrence from
-    the same ``PlannedOccurrence`` through the same shared helpers, so what is
-    specific here is the pair: a transfer's two SHADOW transactions are created
-    by ``transfer_service`` from their parent rather than by the engine from an
-    occurrence, and no generate pass asks a shadow whether an occurrence has
-    been written.  Mirroring the column onto them would put a second writer on
-    it, so the control asserts they stay NULL.
+    the same ``PlannedOccurrence`` through the same shared helpers.  A case here
+    asserted that a transfer's two SHADOW transactions kept ``occurs_on`` NULL,
+    so mirroring could not put a second writer on the column, until plan step
+    ``balance:X-bi-6-4d-3``: a transfer stores no leg row since migration 82f7,
+    so the transfer is the column's one home (ruling **R-BAL320**, below).
     """
 
     def _make_template_with_rule(self, seed_user, cadence):
@@ -651,36 +563,12 @@ class TestATransferRecordsItsOccurrence:
                 == sorted(p.occurrence for p in plan.placements)
             )
 
-    def test_the_shadows_carry_no_occurrence(
-        self, app, db, seed_user, seed_periods
-    ):
-        """A shadow is created from its PARENT, never from an occurrence.
-
-        Transfer Invariant 4 makes ``transfer_service`` the only writer of a
-        shadow; this control is what keeps ``occurs_on`` from acquiring a
-        second writer through the mirroring the amount, status and period go
-        through.
-        """
-        with app.app_context():
-            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
-            schedule = GenerationSchedule.for_period_ids(
-                BalanceContext.build(template.user_id),
-                {p.id for p in seed_periods},
-            )
-            created = transfer_recurrence.generate_for_template(
-                template, schedule, seed_user["scenario"].id,
-            )
-            db.session.flush()
-
-            shadows = (
-                db.session.query(Transaction)
-                .filter(Transaction.transfer_id.in_([x.id for x in created]))
-                .all()
-            )
-            assert len(shadows) == 2 * len(created), (
-                "the control needs both shadows of every transfer"
-            )
-            assert all(shadow.occurs_on is None for shadow in shadows)
+    # ``test_the_shadows_carry_no_occurrence`` was deleted at plan step
+    # ``balance:X-bi-6-4d-3`` (ruling **R-BAL320**): the twins it read are rows
+    # the database refuses to store (``ck_transactions_names_no_transfer``,
+    # ``tests/test_models/test_a_transfer_is_one_row.py``'s
+    # ``test_the_database_refuses_a_twin``), so it read none (measured 0), and
+    # the column's one writer is graded by the case above.
 
     def test_a_maintain_pass_retains_an_undated_transfer_and_deletes_nothing(
         self, app, db, seed_user, seed_periods
@@ -692,8 +580,7 @@ class TestATransferRecordsItsOccurrence:
         plan step R10-b) read *answers no occurrence* as *the rule dropped
         this occurrence* and routed an undated row to ``work.retire``.  Here
         that arm is ``transfer_service.delete_transfer(..., soft=False)``,
-        which destroys the parent AND BOTH SHADOWS -- against a single row on
-        the transaction side.
+        which hard-deletes the transfer.
 
         **This engine is where the finding bites hardest.**  Production held
         54 undated transfers against 6 undated transactions, the developer's
@@ -704,8 +591,10 @@ class TestATransferRecordsItsOccurrence:
         directly: ``"event": "transfer_recurrence_regenerated",
         "deleted_count": 1, "created_count": 1``.
 
-        The shadow-pair assertion is what makes this a Transfer Invariant 1
-        control rather than a copy of the transaction case.
+        It counted the retained transfer's two shadow rows too (Transfer
+        Invariant 1) until plan step ``balance:X-bi-6-4d-3``: a transfer
+        stores no leg row since migration 82f7, so the parent's own re-read is
+        the control (ruling **R-BAL167** class 1).
         """
         with app.app_context():
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
@@ -741,13 +630,6 @@ class TestATransferRecordsItsOccurrence:
             ).one_or_none() is not None, (
                 f"REC-516: the maintain pass HARD DELETED undated transfer "
                 f"{victim_id} through delete_transfer(soft=False)"
-            )
-            # Transfer Invariant 1: the pair goes with the parent, so a
-            # surviving parent with one shadow is its own critical bug.
-            assert db.session.query(Transaction).filter_by(
-                transfer_id=victim_id,
-            ).count() == 2, (
-                "the retained transfer lost a shadow -- Transfer Invariant 1"
             )
             # The retained transfer still HOLDS its paycheck, so nothing was
             # written into that period a second time.

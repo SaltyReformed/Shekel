@@ -1,18 +1,16 @@
-"""Recurrence engine tests: resolve_conflicts(), and its refusal to mutate a transfer's shadow."""
+"""Recurrence engine tests: resolve_conflicts(), and the regular-row control beside its
+transfer-shadow guard.
+"""
 
-import pytest
 from datetime import timedelta
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.models.ref import TransactionType, Status
+from app.models.ref import TransactionType
 from app import ref_cache
 from app.enums import AmountSourceEnum, TxnTypeEnum
 from app.services import recurrence_engine
-from app.exceptions import ValidationError
-from app.services import account_service
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
@@ -26,7 +24,6 @@ from tests._test_helpers import (
     rhythm_of,
     state_template_price,
 )
-from app.models.amount_ownership import AmountOwnership
 from app.services.amount_ownership import state_own_amount
 
 
@@ -427,156 +424,26 @@ class TestResolveConflicts:
 
 
 class TestResolveConflictsShadowGuard:
-    """C-20 / F-007: ``resolve_conflicts`` must refuse to mutate
-    transfer shadow transactions (``transfer_id IS NOT NULL``).
+    """C-20 / F-007: ``resolve_conflicts`` refused to mutate a transfer shadow
+    transaction (``transfer_id IS NOT NULL``), closing CLAUDE.md Transfer
+    invariant 4 for this loop.
 
-    These tests close CLAUDE.md Transfer invariant 4 (no code path
-    directly mutates a shadow -- all transfer mutations route through
-    ``transfer_service``).  Pre-C-20, the convention was enforced
-    only by reviewer discipline; the per-row loop in
-    ``recurrence_engine.resolve_conflicts`` had no defensive check
-    and would silently desynchronise a shadow from its transfer
-    parent if a shadow ID ever appeared in the conflict list.
+    The guard (``app/services/recurrence_engine/_conflicts.py``) is
+    unreachable since plan step ``balance:X-bi-6-4d-3``: a transaction naming
+    a transfer is refused at the INSERT (``ck_transactions_names_no_transfer``,
+    graded by ``tests/test_models/test_a_transfer_is_one_row.py``'s
+    ``test_the_database_refuses_a_twin``), and the guard goes with the column at
+    ``balance:X-bi-6-5``.  The two cases that drove it were deleted there
+    (ruling **R-BAL320**): ``test_update_action_on_shadow_raises_validation_error``
+    planted the refused row, and ``test_cross_user_shadow_silently_skipped``'s
+    two reads -- no raise, nothing written -- are ``TestResolveConflicts``'s
+    ``test_cross_user_update_blocked`` on a regular row, which fails first when
+    the cross-user skip's ``continue`` is dropped (measured).  That case read no
+    access event; the warning is logged before the ``continue``, so dropping it
+    leaves ``tests/test_services/test_service_log_events.py``'s
+    ``test_resolve_conflicts_cross_user_emits_access_event`` passing (measured).
+    The control below stays.
     """
-
-    def _create_transfer_with_shadows(self, seed_user, seed_periods):
-        """Helper: build a transfer + its two shadow rows.
-
-        Creates a savings ``Account``, the two default
-        ``Transfers: Incoming`` / ``Transfers: Outgoing`` categories
-        (which the ``seed_user`` fixture does not include), and a
-        single transfer in the first period.  Returns the resulting
-        transfer plus its two shadows so the test can drive
-        ``resolve_conflicts`` against them.
-        """
-        from app.models.account import Account  # pylint: disable=import-outside-toplevel
-        from app.models.category import Category  # pylint: disable=import-outside-toplevel
-        from app.services import transfer_service  # pylint: disable=import-outside-toplevel
-        from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
-
-        savings_type = (
-            db.session.query(AccountType).filter_by(name="Savings").one()
-        )
-        savings = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-                anchor_balance=Decimal("0.00"),
-            ),
-        )
-        db.session.add(savings)
-
-        outgoing = Category(
-            user_id=seed_user["user"].id,
-            group_name="Transfers",
-            item_name="Outgoing",
-        )
-        incoming = Category(
-            user_id=seed_user["user"].id,
-            group_name="Transfers",
-            item_name="Incoming",
-        )
-        db.session.add_all([outgoing, incoming])
-        db.session.flush()
-
-        projected = (
-            db.session.query(Status).filter_by(name="Projected").one()
-        )
-
-        xfer = transfer_service.create_transfer(
-            transfer_service.TransferSpec(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings.id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                status_id=projected.id,
-                category_id=outgoing.id,
-            ),
-        )
-        db.session.flush()
-
-        shadows = (
-            db.session.query(Transaction)
-            .filter_by(transfer_id=xfer.id)
-            .all()
-        )
-        assert len(shadows) == 2, (
-            "Pre-condition: transfer must have exactly two shadows."
-        )
-        return xfer, shadows
-
-    def test_update_action_on_shadow_raises_validation_error(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A shadow ID with action='update' raises ValidationError and
-        leaves the shadow unchanged.
-
-        The guard must surface as a hard failure rather than a silent
-        skip: silently skipping would let a buggy caller pass shadow
-        IDs unnoticed and ship a regression that desyncs the parent
-        transfer's amount/status/period from its sibling shadow.
-        """
-        with app.app_context():
-            _, shadows = self._create_transfer_with_shadows(
-                seed_user, seed_periods,
-            )
-            shadow = shadows[0]
-            shadow_id = shadow.id
-            original_amount = shadow.estimated_amount
-            original_override = shadow.is_override
-            original_deleted = shadow.is_deleted
-            # Commit so the shadow survives the post-raise rollback
-            # below.  Without the commit, rollback would undo the
-            # transfer/shadow creation along with the failed mutation.
-            db.session.commit()
-
-            with pytest.raises(ValidationError, match="transfer shadow"):
-                recurrence_engine.resolve_conflicts(
-                    [shadow_id],
-                    action="update",
-                    ctx=BalanceContext.build(seed_user["user"].id),
-                )
-
-            db.session.rollback()
-            shadow_after = db.session.get(Transaction, shadow_id)
-            assert shadow_after is not None
-            assert shadow_after.estimated_amount == original_amount
-            assert shadow_after.is_override == original_override
-            assert shadow_after.is_deleted == original_deleted
-
-    def test_cross_user_shadow_silently_skipped(
-        self, app, db, seed_user, seed_periods, second_user,
-    ):
-        """Cross-user requests for a shadow ID stay silent.
-
-        Defense-in-depth: the existing cross-user check (silent skip
-        + ACCESS event) must take precedence over the new shadow
-        guard so an attacker probing for shadow IDs cannot
-        distinguish ``shadow + cross-user`` from ``not-found +
-        cross-user``.  Both must look identical to the caller.
-        """
-        with app.app_context():
-            _, shadows = self._create_transfer_with_shadows(
-                seed_user, seed_periods,
-            )
-            shadow = shadows[0]
-            shadow_id = shadow.id
-            original_amount = shadow.estimated_amount
-
-            # Calling as second_user must NOT raise -- cross-user
-            # silent skip wins over the shadow guard.
-            recurrence_engine.resolve_conflicts(
-                [shadow_id],
-                action="update",
-                ctx=BalanceContext.build(second_user["user"].id),
-            )
-            db.session.flush()
-
-            shadow_after = db.session.get(Transaction, shadow_id)
-            assert shadow_after.estimated_amount == original_amount
 
     def test_regular_transaction_still_resolves_after_guard(
         self, app, db, seed_user, seed_periods,
