@@ -1626,16 +1626,19 @@ class TestTheTransferArm:
 
     Money moving between two of the owner's own accounts still leaves one of
     them, so a checking statement shows it exactly as it shows a bill.
-    Replayed over production's 57 Checking assertion days, 8 would have carried
-    a transfer offer, `$5,442.89` -- six `$500.00` savings sweeps, one
+    Replayed over production's 57 Checking assertions (53 distinct days, as
+    ``reconcile_service._transfers`` counts them), 8 days would have carried a
+    transfer offer, `$5,442.89` -- six `$500.00` savings sweeps, one
     `$1,910.95` Mortgage payment and one `$531.94` Van Loan payment.
 
-    **What makes it a separate arm is the SETTLE.**  A transfer is three rows
-    and ``CLAUDE.md`` invariants 3 and 4 say they move together, so
-    ``settle_transaction`` refuses a shadow and ``update_transfer`` is the
-    verb.  These grade that a tick moves all THREE and stamps the statement's
-    day on both legs -- which is the whole reason the panel prints a note
-    saying a second account moves.
+    **What makes it a separate arm is the SETTLE.**  Its verb is
+    ``transfer_service.settle_transfer``, and one tick settles the WHOLE
+    transfer: its one status, and a payment record on each side.  These grade
+    that a tick settles the transfer and dates both sides' records by the
+    statement -- which is the whole reason the panel prints a note saying a
+    second account moves.  A transfer was three rows (a parent and two
+    shadows) until plan step ``balance:X-bi-6-4d-3``, and a tick moved all
+    three until plan step ``balance:X-bi-6-4d-2``.
     """
 
     @staticmethod
@@ -1696,7 +1699,7 @@ class TestTheTransferArm:
 
     @staticmethod
     def _assert_unsettled(transfer):
-        """Assert a refused tick wrote nothing: still Projected, and no side records a payment.
+        """Assert a refused tick settled nothing: still Projected, and no side records a payment.
 
         A settle writes both halves -- the transfer's one status and each
         side's payment record -- so a refusal is graded on both, and on both
@@ -1718,15 +1721,16 @@ class TestTheTransferArm:
     def test_a_tick_records_the_STATEMENT_on_this_accounts_leg_alone(
         self, app, db, seed_user, seed_periods, seed_entry_template,
     ):
-        """The clearing fact is NOT mirrored, where the settle day is.
+        """The clearing fact is NOT shared with the other side, though the tick dates both.
 
         Ruling **R-FL**, and the asymmetry is the point.  A transfer leaves one
         bank and arrives at another: the asserted account's statement showed its
         own leg, and the other account's statement is a document nobody has read
-        in this act.  ``settled_on`` IS mirrored onto both legs (transfer
-        invariant 3, graded by the test below); ``reconciled_by_id`` must not
-        be, or ticking a savings sweep off a checking statement would record
-        that the savings statement showed the money too.
+        in this act.  The tick dates BOTH sides' records by the statement
+        (graded by the test below), each side's day being a fact about its own
+        account since ruling R-BAL142; ``reconciled_by_id`` must not be
+        shared, or ticking a savings sweep off a checking statement would
+        record that the savings statement showed the money too.
 
         This is also what makes the posted walk's per-account read of a leg's
         statement link meaningful -- see
@@ -1764,14 +1768,15 @@ class TestTheTransferArm:
     def test_a_tick_settles_the_parent_and_BOTH_legs_on_the_statement_day(
         self, app, db, seed_user, seed_periods, seed_entry_template,
     ):
-        """The arm's whole point: three rows move, dated by the statement.
+        """The arm's whole point: the transfer settles, both sides dated by the statement.
 
-        The leg on the OTHER account settles too -- which is what the panel's
-        section note tells the user -- and both carry the asserted day rather
-        than the seam's default of the user's today.  A settle that moved one
-        leg would break transfer invariants 3 and 4 silently, because
-        ``sync_transaction_postings`` returns nothing for a shadow and the
-        ledger would stay flat while the grid showed one side settled.
+        The side on the OTHER account records the payment too -- which is what
+        the panel's section note tells the user -- and both records carry the
+        asserted day rather than the seam's default of the user's today.  A
+        settle that recorded ONE side only does not reach these reads: the
+        database's deferred trigger refuses it at commit.  One that recorded
+        NEITHER commits (the trigger reads it as a `$0.00` close), and the
+        two-record count below is what catches it.
 
         The transfer's status is the one status and each side's day is its
         payment RECORD's since plan step ``balance:X-bi-6-4d-2``; each shadow
@@ -1820,8 +1825,8 @@ class TestTheTransferArm:
             # The figure the EXPENSE side's tick offers, the transfer's own
             # $75.00.  Moved here at plan step balance:X-bi-6-4d-3 from the
             # deleted test_a_transfer_shadow_belongs_to_the_OTHER_arm (ruling
-            # R-BAL313): no other test reads this side's offered amount (an
-            # extra $1.00 on the expense side's offer passed the whole suite).
+            # R-BAL313): measured 2026-10-17 without this read, an extra $1.00
+            # on the expense side's offer failed no PASSING test.
             assert block.settle.amount == Decimal("75.00")
 
     def test_the_expense_leg_counts_as_a_PAYMENT_and_the_income_leg_a_DEPOSIT(
@@ -1886,6 +1891,11 @@ class TestTheTransferArm:
         being reconciled, so neither of its sides is on this statement.
         Settling across accounts would record money against a statement that
         never showed it -- and here it would move two accounts at once.
+
+        A scope that admitted this transfer fails here BEFORE the reads below,
+        at ``leg_of``'s refusal to build a leg for an account on neither side.
+        The record and status reads are the backstop for a scope defect and a
+        leg defect together (measured 2026-10-17).
         """
         with app.app_context():
             source = self._savings(seed_user, name="Second Checking")
@@ -1896,7 +1906,15 @@ class TestTheTransferArm:
             )
             db.session.commit()
 
-            assert (transfer.id, seed_user["account"].id) not in self._offered(seed_user)
+            # Under ANY key, not only this account's: a leg offered keyed by
+            # the transfer's own account would still be a transfer on neither
+            # side of this statement.
+            assert transfer.id not in {
+                key[0] for key in self._offered(seed_user) if isinstance(key, tuple)
+            }, (
+                f"transfer {transfer.id} was offered on account "
+                f"{seed_user['account'].id}, which is on neither of its sides"
+            )
             assert self._settle(seed_user, [], transfer_ids=[transfer.id]) == 0
 
             db.session.expire_all()
@@ -1907,11 +1925,11 @@ class TestTheTransferArm:
     ):
         """A deleted transfer is not money this account owes.
 
-        Graded because the WRITER acts on the PARENT rather than on the shadow
-        it was handed: ``update_transfer`` treats a soft-deleted transfer as
-        absent and raises ``NotFoundError``, which this route has no handler
-        for -- so a scope that admitted one would be a 500 on a money door
-        rather than a silent skip.
+        Graded because the WRITER acts on the transfer the tick names (its own
+        ``transfer_ids`` field, ruling R-BAL145): ``settle_transfer`` treats a
+        soft-deleted transfer as absent and raises ``NotFoundError``, which
+        this route has no handler for -- so a scope that admitted one would be
+        a 500 on a money door rather than a silent skip.
         """
         with app.app_context():
             transfer = self._transfer_out(seed_user, seed_periods)
@@ -1929,9 +1947,12 @@ class TestTheTransferArm:
         """Already recorded is not outstanding, and a replay must not re-date.
 
         ``done -> done`` is a legal identity transition, so nothing downstream
-        would refuse a second submission -- the SCOPE is what stops it, and a
-        re-settle would rewrite ``settled_on`` on both sides' payment records
-        to a later statement's day.  Each side's day is its record's since plan
+        would refuse a second submission -- the SCOPE is what stops it.
+        Without it a re-settle would record the later statement against this
+        side (``transfer_service.record_leg_clearing``).  It could not re-date
+        the records: the transfer service drops every stated day for a
+        transfer already settled (``settle_only``), so the day read below
+        grades that rule rather than the scope.  Each side's day is its record's since plan
         step ``balance:X-bi-6-4d-2``; the shadows carried it until then (ruling
         R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
@@ -1958,8 +1979,9 @@ class TestTheTransferArm:
         """A transfer's tick is correctable, and the figure lands on the pair.
 
         Ruling **R-FF**: correctable exactly when the settle takes its MANUAL
-        branch, and a transfer has no other -- a shadow is never
-        purchase-tracked (production: 342 shadows, 0 entries).  The corrected
+        branch, and a transfer has no other -- its leg is never purchase-tracked
+        (``TransferLeg.tracks_purchases``; production: 342 shadows, 0 entries,
+        measured while a transfer kept its shadow rows).  The corrected
         figure must reach BOTH legs or the two accounts disagree about how much
         money moved between them.  Each leg's figure is its side's payment
         RECORD's since plan step ``balance:X-bi-6-4d-2``; the shadows held it
@@ -1997,9 +2019,12 @@ class TestTheTransferArm:
         """An untouched box is not a correction, on this arm either.
 
         The panel prefills every correctable row, so a five-row submit posts
-        five figures.  Writing an echo would populate a column that is NULL on
-        all 17 settled transfer shadows in production -- the only signal that
-        says a human read one off a statement.  Each leg's record is its
+        five figures.  Recording an echo as a correction would destroy the only
+        signal that says a human read one off a statement: each side record's
+        figure SOURCE, as the read below says (it was the shadows'
+        ``actual_amount``, NULL on all 17 settled transfer shadows in
+        production when measured on 2026-08-12).
+        Each leg's record is its
         side's, hung off the transfer, since plan step
         ``balance:X-bi-6-4d-2``; the shadows held it until then (ruling
         R-BAL167 class 1, plan step balance:X-bi-6-4d-2).

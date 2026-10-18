@@ -403,7 +403,7 @@ class TestTheTransferArmThroughItsROUTE:
     is graded HERE is the part only the route and the template can get wrong:
     that a transfer reaches the panel at all, that its section prints the
     sentence saying a SECOND account moves, and that a tick posted as an
-    ordinary form submission settles all three rows.
+    ordinary form submission settles the transfer and records both its sides.
 
     **The section note is the one piece of copy on this screen that describes
     a side effect.**  Every other row settles what the user is looking at; a
@@ -479,7 +479,7 @@ class TestTheTransferArmThroughItsROUTE:
     def test_a_posted_tick_settles_the_parent_and_BOTH_legs(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The arm end to end: one form POST moves three rows.
+        """The arm end to end: one form POST settles the transfer and both its sides.
 
         The service case proves the verb does it; this proves the ROUTE
         reaches the verb -- that the transfer's id posted in its own
@@ -520,6 +520,9 @@ class TestTheTransferArmThroughItsROUTE:
                 record = transfer_side_record(
                     db.session, transfer_id, account_id,
                 )
+                assert record is not None, (
+                    f"the tick recorded no payment on account {account_id}"
+                )
                 assert record.settled_on == display_today()
                 # Nobody typed a figure, so the record's source is
                 # ``resolved`` -- which is where "did a human correct this"
@@ -532,9 +535,9 @@ class TestTheTransferArmThroughItsROUTE:
     ):
         """A figure read off the statement is a fact about the whole act.
 
-        Both legs carry it, because Transfer Invariant 3 says the three rows
-        state one amount -- a correction recorded on one side only would leave
-        the two accounts disagreeing about how much money moved between them.
+        Both legs carry it, because a transfer states ONE amount -- a
+        correction recorded on one side only would leave the two accounts
+        disagreeing about how much money moved between them.
         Each leg is its side's payment RECORD since plan step
         ``balance:X-bi-6-4d-2``, valued as the side the readers fold; the
         shadows held it until then (ruling R-BAL167 class 1, plan step
@@ -574,8 +577,9 @@ class TestTheTransferArmThroughItsROUTE:
         The panel PREFILLS every correctable box, so an untouched tick posts
         the figure the row would book anyway.  Without this case the
         correction test is satisfied by a verb that writes whatever it is
-        handed, which would populate ``actual_amount`` on every settled
-        transfer and destroy the signal that says a human typed one.  Each
+        handed, which would record every settled transfer's figure as typed
+        and destroy the signal that says a human typed one: each side record's
+        figure source, read below.  Each
         leg is its side's payment RECORD since plan step
         ``balance:X-bi-6-4d-2``; the shadows held it until then (ruling
         R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
