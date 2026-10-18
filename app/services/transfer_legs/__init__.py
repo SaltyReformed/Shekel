@@ -63,7 +63,7 @@ the transfer's shadow row on that account until then), and
 in -- which that step moved once.  The fold's loader still emits only legs
 whose record is ``None``.
 
-**One fold PREDICATE did change at 6-1, and it is pinned rather than
+**One fold PREDICATE did change at 6-1, and it was pinned rather than
 denied**: sharing the join gave :func:`planned_transfer_legs`' ``dated_leg``
 test the term ``the shadow is live`` (``Transaction.is_deleted IS FALSE``)
 that it did not carry before -- the term the settled half's
@@ -72,8 +72,16 @@ On every door-written state the two predicates agree (no door soft-deletes
 one shadow alone); on the double drift -- a dated movement under a shadow
 deleted around the service, the parent still Projected -- the leg used to
 vanish from both halves and is now counted once, by the plan (R-JA: the
-parent decides).  ``tests/test_services/test_transfer_legs/test_the_plan_half.py``'s drift
-class pins it, red under the old predicate.
+parent decides).  ``tests/test_services/test_transfer_legs/test_the_plan_half.py``'s
+drift class pinned it, red under the old predicate, until plan step
+``balance:X-bi-6-4d-3`` made a transfer one row (ruling **R-BAL258**) and the
+pin went with the shadows (ruling **R-BAL313**).  **The double drift is
+structural now**: no shadow can be stored to hide
+(``tests/test_models/test_a_transfer_is_one_row.py``'s
+``TestTheUpgrade::test_the_database_refuses_a_twin``), and a DATED record
+under a still-Projected transfer is refused at commit by the status-band rule
+(``tests/test_models/test_a_transfer_side_s_record_follows_its_status.py``'s
+``test_a_dated_record_under_a_projected_transfer_is_refused``).
 
 **A leg's LABEL is composed here** (:func:`leg_label`), from the endpoints'
 CURRENT names: "Transfer to <to-account>" on the from-side, "Transfer from

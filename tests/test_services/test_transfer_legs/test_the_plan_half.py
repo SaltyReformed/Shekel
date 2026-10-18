@@ -1,9 +1,13 @@
 """The plan half: which still-Projected transfers yield a leg, how the cash fold, the one reduction
-and the contribution feeds read the transfer, and the status drifts pinned: drift A counted
-once, drift B by neither.
+and the contribution feeds read the transfer, and a transfer settled with no record counted by
+neither half of the cash fold.
+
+The part's docstring named the two status drifts it pinned, drift A counted once and drift B by
+neither, until plan step ``balance:X-bi-6-4d-3`` deleted drift A's four cases (ruling
+**R-BAL313**); :class:`TestAStatusDriftIsCountedOnce` says what is left.
 """
 
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 from app import ref_cache
@@ -12,37 +16,29 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.balance_at._asset_contributions import _recorded_contributions
 from app.services.balance_at._cash_fold import assembled_fold
-from app.services.loan_ledger import payment_installments
 from app.services.cash_ledger import planned_cash_rows, planned_leg_contribution, sum_projected
 from app.services.recorded_contributions import load_shadow_income_contributions_for_account
 from app.services.transfer_legs import (
     TransferLeg,
-    covering_movements_by_leg,
     leg_of,
     planned_transfer_legs,
 )
 from app.services.transfer_service import delete_transfer
 from tests._test_helpers import (
-    cover_bare_settled_row,
     basis_for,
     capture_sql_statements,
-    create_loan_account,
     create_settled_transfer,
     create_transfer,
-    loan_params_for,
     make_investment_account,
     read_pass,
-    refused_by_database_rule,
 )
 
 from ._helpers import (
     _AMOUNT,
     _AS_OF,
-    _shadow_on,
     _savings,
     _cancelled_transfer,
     _balance_on,
-    _settle_shadow_around_the_service,
 )
 
 
@@ -176,54 +172,26 @@ class TestTheCashFoldReadsTheParent:
                 == _AMOUNT
             )
 
-    def test_a_shadow_deleted_around_the_service_moves_nothing(
+    def test_a_leg_lands_on_its_transfers_due_date(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """FIRING CONTROL: the parent decides, a drifted shadow does not.
+        """The landing day is the TRANSFER's due date, on both sides.
 
-        The checking-side shadow is soft-deleted DIRECTLY -- a write past
-        Transfer Invariant 4, the pair-drift ``transfer_service._restore``
-        repairs by hand -- and the fold on checking still counts the parent's
-        leg.  Before this step the fold read the shadow and the $250.00
-        vanished from the projection; spliced back to reading shadows, this
-        case fails at the last assertion.  The parent is the value's one home
-        (ruling **R-JA**), so a shadow that has parted from it moves no
-        balance.
-        """
-        with app.app_context():
-            checking = seed_user["account"]
-            savings = _savings(seed_user)
-            scenario = seed_user["scenario"]
-            period = seed_periods[2]
-            transfer = create_transfer(
-                seed_user, db.session, checking, savings, period,
-                amount=_AMOUNT,
-            )
-            db.session.commit()
-            with_leg = _balance_on(checking, scenario, period.start_date)
-
-            shadow = _shadow_on(transfer, checking)
-            shadow.is_deleted = True
-            db.session.commit()
-            db.session.expire_all()
-
-            # The bypass landed: the row is gone and the parent is not.
-            assert db.session.get(Transaction, shadow.id).is_deleted is True
-            assert db.session.get(Transfer, transfer.id).is_deleted is False
-            assert (
-                _balance_on(checking, scenario, period.start_date) == with_leg
-            )
-
-    def test_a_shadow_dated_around_the_service_lands_on_the_parents_day(
-        self, app, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """FIRING CONTROL: the landing day is the PARENT's due date.
-
-        The parent is created due on the 3rd day of its period and the
-        checking-side shadow's due date is then moved to the 8th, directly.
-        The leg lands on the 3rd: the day before it reads the pre-transfer
-        balance and the 3rd reads the transfer.  Before this step the fold
-        dated the shadow, so the money would have landed on the 8th.
+        The $250.00 checking -> savings transfer is created due on the 3rd
+        day of its period, and each of its legs lands there: on each account
+        the day before reads the pre-transfer balance and the 3rd reads the
+        transfer (checking $250.00 lower, savings $250.00 higher).  The
+        savings side's two reads joined at plan step
+        ``balance:X-bi-6-4d-3``: until then the case read checking alone, so
+        a fold that dated only the to-side's leg off its period passed every
+        test (measured over the whole suite at that step).  Renamed from
+        ``test_a_shadow_dated_around_the_service_lands_on_the_parents_day``:
+        it was a firing control that moved the checking-side shadow's due
+        date to the 8th around the service, the day the fold dated until
+        plan step ``balance:X-bi-6a``.  A transfer came with two shadow rows
+        until plan step ``balance:X-bi-6-4d-3`` made it one row (ruling
+        **R-BAL258**), so there is no shadow to move, and the case keeps its
+        transfer's day alone.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -231,15 +199,12 @@ class TestTheCashFoldReadsTheParent:
             scenario = seed_user["scenario"]
             period = seed_periods[2]
             parents_day = period.start_date + timedelta(days=2)
-            shadows_day = period.start_date + timedelta(days=7)
             opening = _balance_on(checking, scenario, parents_day)
+            savings_opening = _balance_on(savings, scenario, parents_day)
             transfer = create_transfer(
                 seed_user, db.session, checking, savings, period,
                 amount=_AMOUNT, due_date=parents_day,
             )
-            db.session.commit()
-            shadow = _shadow_on(transfer, checking)
-            shadow.due_date = shadows_day
             db.session.commit()
             db.session.expire_all()
             assert db.session.get(Transfer, transfer.id).due_date == parents_day
@@ -248,6 +213,10 @@ class TestTheCashFoldReadsTheParent:
             assert _balance_on(checking, scenario, day_before) == opening
             assert _balance_on(checking, scenario, parents_day) == (
                 opening - _AMOUNT
+            )
+            assert _balance_on(savings, scenario, day_before) == savings_opening
+            assert _balance_on(savings, scenario, parents_day) == (
+                savings_opening + _AMOUNT
             )
 
     def test_the_fold_reads_the_plan_relation_once(
@@ -415,177 +384,38 @@ class TestTheContributionFeedsReadTheParent:
 
 
 class TestAStatusDriftIsCountedOnce:
-    """A leg is planned exactly while its own dated movement does not exist (R-BAL79).
+    """A transfer settled with no record on either side is counted by neither half.
 
-    **The instrument before the measurement** (the X-g2b-0 idiom), inverted
-    at plan step ``balance:X-bi-4a``.  Since plan step balance:X-bi-6a the
-    record half keyed settled-ness on the SHADOW's status and the plan half
-    on the PARENT's, so a status drift -- forbidden by Transfer Invariants 3
-    and 4, written by no door, 0 of 350 shadow rows on the 2026-09-15
-    snapshot -- was read by both halves (``-$500.00`` on a `$250.00`
-    transfer, ledger row **BAL-500**) or by neither.  Since X-bi-4a the
-    record half is the shadow's DATED covering movement and the plan half
-    emits a leg only for a side whose dated movement does not exist (ruling
-    **R-BAL79**), so the movement, not the status, decides which relation a
-    leg is in and no leg is counted by both; drift B still reads by neither.
-    The structural end is X-bi-6, after which a transfer's status lives in
-    one row and the state cannot be written at all.
+    The class pinned the two status drifts between a transfer and its
+    shadows (Transfer Invariant 3) from plan step balance:X-bi-6a.  Drift A,
+    a shadow settled under a still-Projected parent, was read by both halves
+    (``-$500.00`` on a ``$250.00`` transfer, ledger row **BAL-500**) until
+    plan step ``balance:X-bi-4a`` let a side's DATED movement, not a status,
+    decide which relation its leg is in (ruling **R-BAL79**).  Its four
+    cases were deleted at plan step ``balance:X-bi-6-4d-3`` (ruling
+    **R-BAL313**): a transfer came with two shadow rows until that step made
+    it one row (ruling **R-BAL258**), so no shadow's status can drift.  Drift
+    B, the parent settled alone, is the one case left, and it is no drift
+    any more: a settled transfer whose sides hold no record is the shape the
+    status-band rule admits for a transfer closed at zero
+    (``side_band_infrastructure``).  The class's name is its history.  The
+    loan walk counts the same state once, as a ``$0.00`` payment (ruling
+    **R-BAL140**), in ``test_loan_settled_legs.py``.
     """
-
-    def test_a_settled_shadow_under_a_projected_parent_is_counted_once(
-        self, app, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """Drift A: $250.00 folds checking at -$250.00 and savings at +$250.00.
-
-        Checking's shadow carries a DATED covering movement (-$250.00 on its
-        settle day, the record half) and the parent is still a PLAN, whose
-        from-side leg the plan half now SKIPS because that side's movement
-        exists (ruling **R-BAL79**).  Savings is right either way: its shadow
-        holds no movement, so its leg lands once.  Through ``X-bi-3e`` the
-        first figure read -$500.00.
-        """
-        with app.app_context():
-            checking = seed_user["account"]
-            savings = _savings(seed_user)
-            scenario = seed_user["scenario"]
-            period = seed_periods[2]
-            day = period.start_date
-            checking_before = _balance_on(checking, scenario, day)
-            savings_before = _balance_on(savings, scenario, day)
-            transfer = create_transfer(
-                seed_user, db.session, checking, savings, period,
-                amount=_AMOUNT,
-            )
-            db.session.commit()
-            shadow = _shadow_on(transfer, checking)
-            _settle_shadow_around_the_service(shadow, day, _AMOUNT)
-            db.session.flush()
-            cover_bare_settled_row(db.session, shadow, _AMOUNT)
-            db.session.commit()
-            db.session.expire_all()
-            assert db.session.get(Transfer, transfer.id).status_id == (
-                ref_cache.status_id(StatusEnum.PROJECTED)
-            ), "the drift did not land: the parent must stay Projected"
-
-            assert _balance_on(checking, scenario, day) - checking_before == (
-                -_AMOUNT
-            )
-            assert _balance_on(savings, scenario, day) - savings_before == (
-                _AMOUNT
-            )
-
-    def test_a_dated_movement_under_a_DELETED_shadow_is_not_a_record_and_the_plan_counts_once(
-        self, app, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """The fold's one predicate CHANGE at leaf X-bi-6-1, declared and pinned.
-
-        The plan's ``dated_leg`` EXISTS then rode
-        ``transfer_legs._records._covering_movements_query``, which required
-        the shadow the movement hangs off to be LIVE -- the term the pre-leaf predicate
-        did not carry.  On any door-written state the two agree (no door
-        soft-deletes one shadow alone).  On the double drift built here -- a
-        settled leg's dated movement under a shadow soft-deleted around the
-        service, the parent still Projected -- the old predicate saw a dated
-        movement and emitted no plan leg, while the settled half already
-        excluded the deleted shadow (``balance_contributing_clause``): the
-        leg vanished from BOTH halves.  Now the plan emits it and the balance
-        moves by the parent's amount exactly once, which is R-JA's direction
-        (the parent decides) and the settled half's own rule applied to the
-        plan.  An adversarial review found the change shipped under a
-        "no fold read changed" claim; this is the pin the claim owed.
-
-        **Since plan step ``balance:X-bi-6-4d-2`` hiding that shadow is
-        REFUSED at commit** (the deleted-row rule's row arm, its twin
-        exception retired; ruling **R-BAL167** class 2): a side's record
-        hangs off the TRANSFER (ruling **R-BAL88**), and a twin holding a
-        movement can no longer be hidden.  The drift stops at what is
-        storable -- the movement under the LIVE twin, the parent Projected --
-        and a movement under a twin is no side's record, dead or alive, so
-        the three answers are unchanged (class 3: no reader reads a twin).
-        """
-        with app.app_context():
-            checking = seed_user["account"]
-            savings = _savings(seed_user)
-            scenario = seed_user["scenario"]
-            period = seed_periods[2]
-            day = period.start_date
-            checking_before = _balance_on(checking, scenario, day)
-            transfer = create_transfer(
-                seed_user, db.session, checking, savings, period,
-                amount=_AMOUNT,
-            )
-            db.session.commit()
-            shadow = _shadow_on(transfer, checking)
-            shadow_id = shadow.id
-            _settle_shadow_around_the_service(shadow, day, _AMOUNT)
-            db.session.flush()
-            cover_bare_settled_row(db.session, shadow, _AMOUNT)
-            db.session.commit()
-            shadow.is_deleted = True
-            with refused_by_database_rule(
-                "was deleted while it still holds a recorded payment or purchase",
-            ) as caught:
-                db.session.commit()
-            db.session.rollback()
-            assert f"transaction {shadow_id} " in str(caught.value)
-            db.session.expire_all()
-            assert db.session.get(Transfer, transfer.id).status_id == (
-                ref_cache.status_id(StatusEnum.PROJECTED)
-            ), "the drift did not land: the parent must stay Projected"
-
-            legs = planned_transfer_legs(
-                checking.id, scenario.id, options=(),
-            )
-            assert [leg.transfer.id for leg in legs] == [transfer.id], (
-                "the plan must emit the leg whose only dated movement hangs "
-                "off its shadow: that movement is no record"
-            )
-            assert covering_movements_by_leg([transfer.id]) == {}
-            assert _balance_on(checking, scenario, day) - checking_before == (
-                -_AMOUNT
-            ), "counted once, by the plan"
-
-    def test_a_settled_shadow_with_no_movement_is_counted_once_by_the_plan(
-        self, app, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """Drift A without the movement: the plan leg alone carries the -$250.00.
-
-        A shadow settled bare with no covering movement -- the ``$0.00``
-        record since plan step ``balance:X-bi-4b-2`` (ruling R-BAL82); the
-        pre-``X-bi-3d`` shape before it -- is worth nothing to the record
-        half, and its side's plan leg is emitted because no dated movement
-        exists.  Once, by the other relation; never twice.
-        """
-        with app.app_context():
-            checking = seed_user["account"]
-            savings = _savings(seed_user)
-            scenario = seed_user["scenario"]
-            period = seed_periods[2]
-            day = period.start_date
-            checking_before = _balance_on(checking, scenario, day)
-            transfer = create_transfer(
-                seed_user, db.session, checking, savings, period,
-                amount=_AMOUNT,
-            )
-            db.session.commit()
-            _settle_shadow_around_the_service(
-                _shadow_on(transfer, checking), day, _AMOUNT,
-            )
-            db.session.commit()
-            db.session.expire_all()
-
-            assert _balance_on(checking, scenario, day) - checking_before == (
-                -_AMOUNT
-            )
 
     def test_a_projected_shadow_under_a_settled_parent_is_counted_by_neither(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Drift B: the parent settled alone, and the $250.00 vanishes.
+        """Settled with no record on either side, the $250.00 transfer moves nothing.
 
-        No leg (the parent is not Projected), no plan row (the shadow is
-        excluded by ``transfer_id``), no settled fact (the shadow is not
-        settled).  Written by no door either; pinned for the same reason.
+        The parent's status is written Done directly.  The fold values no
+        planned leg (the parent is not Projected), and folds no settled fact
+        (neither
+        side holds a record).  Until plan step ``balance:X-bi-6-4d-3`` its
+        shadows stayed Projected under the settled parent, a status drift no
+        door wrote; a transfer is one row since (ruling **R-BAL258**), and
+        the state is the status-band rule's zero close.  The name is the
+        test's history.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -606,50 +436,3 @@ class TestAStatusDriftIsCountedOnce:
             db.session.expire_all()
 
             assert _balance_on(checking, scenario, day) == checking_before
-
-    def test_the_loan_feed_lists_a_drifted_payment_once(
-        self, app, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """Drift A on a loan, nothing moved: one payment, ONE planned installment.
-
-        The twin is settled around the service with no movement and its
-        parent stays Projected.  Since plan step balance:X-bi-6-4b both halves
-        of the feed are legs of the transfer and the settled half is the plan
-        half's exact complement (ruling **R-BAL140**): the parent is Projected
-        and no money moved, so the payment is planned, once.  *Re-expressed
-        under rule 5 (developer approval, 2026-09-24): it pinned the feed
-        listing this payment TWICE -- the settled twin in the record half with
-        its settle day and the still-Projected parent in the plan half --
-        while the settled half keyed on the twin's status (X-bi-6a to
-        X-bi-6-4b).*
-        """
-        with app.app_context():
-            loan = create_loan_account(
-                seed_user, db.session, name="Drift Mortgage",
-                principal=Decimal("250000.00"), rate=Decimal("0.06000"),
-                term=360, origination_date=date(2024, 1, 1),
-            )
-            db.session.commit()
-            period = seed_periods[2]
-            transfer = create_transfer(
-                seed_user, db.session, seed_user["account"], loan, period,
-                amount=Decimal("1500.00"),
-            )
-            db.session.commit()
-            _settle_shadow_around_the_service(
-                _shadow_on(transfer, loan), period.start_date,
-                Decimal("1500.00"),
-            )
-            db.session.commit()
-            db.session.expire_all()
-
-            installments = payment_installments(
-                loan.id, seed_user["scenario"].id,
-                loan_params_for(db.session, loan.id),
-                options=(), leg_options=(),
-            )
-
-            assert [
-                (isinstance(i.source, TransferLeg), i.dates.settled_on)
-                for i in installments
-            ] == [(True, None)]

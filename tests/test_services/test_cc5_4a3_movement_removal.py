@@ -127,7 +127,8 @@ def _record_zero(txn):
     """The popover's Actual box re-recorded at ``$0.00``, through its door."""
     with match_press.Press(_what_its_page_names(txn.covering_movements)) as press:
         transaction_service.apply_requested_status(
-            txn, txn.status_id, stated=transaction_service.StatedRecord(figure=typed(Decimal("0.00"))),
+            txn, txn.status_id,
+            stated=transaction_service.StatedRecord(figure=typed(Decimal("0.00"))),
             press=press,
         )
     db.session.commit()
@@ -578,7 +579,9 @@ class TestTheEventFilesATransfersPaymentUnderItsTransfer:
         movement.
 
         Returns:
-            ``(transfer, expense_shadow_id)``.
+            The transfer.  It returned the expense shadow's id beside it,
+            for a failure message, until plan step ``balance:X-bi-6-4d-3``
+            made a transfer one row (ruling **R-BAL258**).
         """
         savings = create_account_of_type(
             seed_user, db.session, "Savings", "Savings",
@@ -590,23 +593,18 @@ class TestTheEventFilesATransfersPaymentUnderItsTransfer:
             seed_user["bootstrap_period"], Decimal("500.00"),
         )
         db.session.commit()
-        shadow = (
-            db.session.query(Transaction)
-            .filter_by(transfer_id=xfer.id, account_id=seed_user["account"].id)
-            .one()
-        )
         _match(
             seed_user, _line(seed_user, "-500.00", "TRANSFER"),
             transfers=[xfer],
         )
-        return xfer, shadow.id
+        return xfer
 
     def test_a_zero_figure_files_the_payment_under_the_transfer_alone(
         self, app, seed_user,
     ):
         """The transfer popover's ``$0.00``: no row leaves, so no row is named."""
         with app.app_context():
-            xfer, shadow_id = self._a_matched_transfer(seed_user)
+            xfer = self._a_matched_transfer(seed_user)
 
             # The transfer's side records, where the payments under its
             # shadows were read until plan step balance:X-bi-6-4d-2 (ruling
@@ -625,20 +623,23 @@ class TestTheEventFilesATransfersPaymentUnderItsTransfer:
             assert record.getMessage() == match_withdrawal.RE_RECORDED
             assert record.transfer_ids == [xfer.id]
             assert record.transaction_ids == [], (
-                f"the shadow {shadow_id} is no parent the owner sees"
+                "a transfer's payment is filed under its transfer, and no row "
+                f"is a parent the owner sees: {record.transaction_ids}"
             )
 
-    def test_a_hard_delete_names_the_transfer_beside_its_leaving_shadows(
+    def test_a_hard_delete_names_the_transfer_and_no_row(
         self, app, seed_user,
     ):
-        """The delete hands its shadows over as leaving rows until they go."""
+        """The delete names its transfer, and no row leaves with it.
+
+        Renamed from
+        ``test_a_hard_delete_names_the_transfer_beside_its_leaving_shadows``:
+        the delete handed its two shadows over as leaving rows, and the event
+        named their ids, until plan step ``balance:X-bi-6-4d-3`` made a
+        transfer one row (ruling **R-BAL258**).
+        """
         with app.app_context():
-            xfer, _shadow_id = self._a_matched_transfer(seed_user)
-            shadow_ids = sorted(
-                row.id for row in db.session.query(Transaction).filter_by(
-                    transfer_id=xfer.id,
-                )
-            )
+            xfer = self._a_matched_transfer(seed_user)
 
             # The transfer's side records, where the payments under its
             # shadows were read until plan step balance:X-bi-6-4d-2 (ruling
@@ -655,7 +656,7 @@ class TestTheEventFilesATransfersPaymentUnderItsTransfer:
             (record,) = events.withdrawn()
             assert record.getMessage() == match_withdrawal.LEFT_THE_BOOKS
             assert record.transfer_ids == [xfer.id]
-            assert record.transaction_ids == shadow_ids
+            assert record.transaction_ids == []
 
 
 class TestTheRemovedMovementLeavesItsParentsLoadedList:

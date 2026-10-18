@@ -51,7 +51,7 @@ from tests._test_helpers import (
     transfer_side_settle_day,
 )
 
-from ._helpers import _AMOUNT, _shadow_on, _savings, _cancelled_transfer
+from ._helpers import _AMOUNT, _savings, _cancelled_transfer
 
 
 # ── The grid's legs (plan step balance:X-bi-6-1, ruling R-BAL87) ────────
@@ -227,36 +227,6 @@ class TestTheGridLoaderDrawsTheSetsSide:
                 [payment], lambda t: leg_accounts_shown(seen_from_a, t),
             ) == []
 
-    def test_the_own_rows_clause_keeps_no_shadow(
-        self, app, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """``own_rows_clause``: every member row, no shadow (the near leg is the LEG's)."""
-        with app.app_context():
-            checking = seed_user["account"]
-            savings = _savings(seed_user)
-            transfer = create_transfer(
-                seed_user, db.session, checking, savings, seed_periods[2],
-                amount=_AMOUNT,
-            )
-            db.session.commit()
-            checking_set = CashFlowSet.single(checking)
-
-            own = (
-                db.session.query(Transaction.id)
-                .filter(
-                    Transaction.pay_period_id == seed_periods[2].id,
-                    own_rows_clause(checking_set),
-                )
-                .all()
-            )
-            shadow_id = _shadow_on(transfer, checking).id
-
-            assert (shadow_id,) not in own
-            assert not any(
-                db.session.get(Transaction, row_id).transfer_id is not None
-                for (row_id,) in own
-            )
-
 
 class TestTheLegMapProducers:
     """The three leg-keyed maps beside their row twins, over the three states a leg can be in."""
@@ -275,7 +245,9 @@ class TestTheLegMapProducers:
             leg = grid_transfer_leg(transfer, checking.id)
             key = leg.cell_key
 
-            assert leg_amounts_by_key([leg], basis_for(checking, seed_user["scenario"])) == {key: _AMOUNT}
+            assert leg_amounts_by_key(
+                [leg], basis_for(checking, seed_user["scenario"]),
+            ) == {key: _AMOUNT}
             assert leg_settled_amounts_by_key([leg]) == {key: None}
             assert leg_retained_amounts_by_key([leg]) == {key: None}
 

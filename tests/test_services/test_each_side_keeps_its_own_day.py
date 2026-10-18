@@ -19,7 +19,6 @@ from app import ref_cache
 from app.enums import SettledDayBasisEnum, StatusEnum
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
-from app.models.transaction import Transaction
 from app.services import transfer_legs, transfer_service
 from app.services.settle_day import SettleDay, record_settle_day
 from app.utils.dates import display_today
@@ -57,17 +56,6 @@ def _transfer(seed_user, period):
     )
     db.session.commit()
     return xfer
-
-
-def _sides(xfer):
-    """Return ``(expense shadow, income shadow)`` of *xfer*, freshly read."""
-    db.session.expire_all()
-    shadows = db.session.query(Transaction).filter_by(
-        transfer_id=xfer.id, is_deleted=False,
-    ).all()
-    expense = next(s for s in shadows if s.account_id == xfer.from_account_id)
-    income = next(s for s in shadows if s.account_id == xfer.to_account_id)
-    return expense, income
 
 
 def _records(xfer):
@@ -309,10 +297,12 @@ class TestASettleOverADriftedSide:
     def test_the_drifted_side_takes_the_stated_day_and_the_other_keeps_its_own(
         self, app, seed_user, seed_periods_today,
     ):
-        """The drifted side is repaired on the statement's day, not the owner's today.
+        """A drifted side is refused at commit; a settle inside the save keeps the other's day.
 
-        The drift is the RETAINED shape (the shadow reverted alone, its
-        movement kept and un-dated), planted behind the seam's back because no
+        The name is the test's history: the drifted side was repaired on the
+        statement's day until plan step ``balance:X-bi-6-4d-2`` (DROPPED
+        below).  The drift is the RETAINED shape (the Savings side reverted alone, its
+        record kept and un-dated), planted behind the seam's back because no
         door writes it.  Until plan step ``balance:X-bi-6-4c-3`` the settle
         kept only its status over an already-settled parent, so the stated day
         was dropped and the repair dated the side on today.
@@ -320,17 +310,18 @@ class TestASettleOverADriftedSide:
         **The drift is refused at COMMIT since plan step
         ``balance:X-bi-6-4d-2``** (ruling **R-BAL167** class 2): the side's
         day is its RECORD's, off the transfer, and a settled transfer holding
-        an un-dated record breaks the band rule; the shadow keeps no status or
-        day of its own, so its two writes below move nothing a reader reads
-        (class 3).  So the drift is planted and its commit refused, then
-        planted again and the settle run inside the save, which is all the
-        state can ever exist in.  The transfer still says Paid (the shadow's
-        status was asserted until then, class 1) and the Checking side keeps
-        its own day.  DROPPED: the Savings side on ``an_observed_day(
-        savings_day)``.  The repair that honoured a day stated for a drifted
-        side (ledger row BAL-578) went at that step with the state, and
-        inside the save the side borrows the Checking side's day instead
-        (measured).
+        an un-dated record breaks the band rule.  So the drift is planted and
+        its commit refused, then planted again and the settle run inside the
+        save, which is all the state can ever exist in.  The transfer still
+        says Paid (the shadow's status was asserted until then, class 1) and
+        the Checking side keeps its own day.  DROPPED: the Savings side on
+        ``an_observed_day(savings_day)``.  The repair that honoured a day
+        stated for a drifted side (ledger row BAL-578) went at that step with
+        the state, and inside the save the side borrows the Checking side's
+        day instead (measured).  The plant also wrote the Savings shadow's
+        status and day, which no reader read (class 3), until plan step
+        ``balance:X-bi-6-4d-3`` made a transfer one row (ruling
+        **R-BAL258**); the record is the whole plant now.
         """
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3])
@@ -346,9 +337,6 @@ class TestASettleOverADriftedSide:
 
             def _drift():
                 """Plant the drift, staged: the Savings side's record un-dated."""
-                income = _sides(xfer)[1]
-                income.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
-                record_settle_day(income, None)
                 record_settle_day(
                     transfer_side_record(db.session, xfer.id, xfer.to_account_id),
                     None,

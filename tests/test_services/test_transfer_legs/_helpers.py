@@ -11,7 +11,6 @@ from app.extensions import db
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.ref import Status
-from app.models.transaction import Transaction
 from app.models.amount_ownership import AmountOwnership
 from app.models.transfer import Transfer
 from app.services.balance_at._cash_fold import assembled_fold, balances_at
@@ -21,7 +20,7 @@ from app.services.transfer_service import (
     TransferSpec,
     create_transfer as create_transfer_from_spec,
 )
-from tests._test_helpers import create_savings_account, read_pass, settle_day_columns
+from tests._test_helpers import create_savings_account, read_pass
 
 
 #: The transfer every DB case below moves: checking -> savings.
@@ -32,19 +31,6 @@ _AMOUNT = Decimal("250.00")
 #: so ruling R-G's clamp -- a plan lands no earlier than ``as_of + 1`` --
 #: never moves a landing day and a leg lands on its nominal day.
 _AS_OF = date(2026, 1, 1)
-
-
-def _shadow_on(transfer, account):
-    """Return *transfer*'s live shadow row on *account*."""
-    return (
-        db.session.query(Transaction)
-        .filter(
-            Transaction.transfer_id == transfer.id,
-            Transaction.account_id == account.id,
-            Transaction.is_deleted.is_(False),
-        )
-        .one()
-    )
 
 
 def _savings(seed_user, name="Savings"):
@@ -138,29 +124,3 @@ def _reread_sides(transfer_id):
         transfer_side_leg(row, is_income=False),
         transfer_side_leg(row, is_income=True),
     ]
-
-
-def _settle_shadow_around_the_service(shadow, day, amount):
-    """Write a settle day and a settled status onto ONE shadow.
-
-    A STATUS DRIFT: the parent and the sibling stay Projected.  Transfer
-    Invariants 3 and 4 forbid it and no door writes it (every status change
-    goes through ``apply_status_to_all_three``); it is written here directly
-    because the class has occurred (``transfer_service._restore`` carries a
-    corrector for it) and the fold's answer under it is what the controls
-    below pin.  The day pair, not the status alone: its CHECK welds the day
-    to its basis.  The RECORD is the covering movement, which each caller
-    lays through ``cover_bare_settled_row`` after the flush, or leaves off
-    to stage a ``$0.00`` close.
-
-    Args:
-        shadow: The leg to drift.
-        day: Its settle day.
-        amount: Unused since plan step ``balance:X-bi-4b-2`` deleted the
-            row's own figure columns; kept so every caller still names what
-            the leg settled at beside the cover it writes.
-    """
-    del amount
-    for column, value in settle_day_columns(day).items():
-        setattr(shadow, column, value)
-    shadow.status_id = ref_cache.status_id(StatusEnum.DONE)
