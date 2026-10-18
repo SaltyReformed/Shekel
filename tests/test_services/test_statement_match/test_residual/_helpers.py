@@ -190,22 +190,27 @@ def a_named_row(kind, row_id, cash_amount):
     )
 
 
-def _a_transfer_shadow(seed_user, *, amount="100.00"):
-    """Return the EXPENSE leg of a transfer off the seeded checking account.
+def _a_transfer(seed_user, *, amount="100.00"):
+    """Return a Projected transfer off the seeded checking account, to a new Savings.
 
     Built through ``transfer_service.create_transfer``, the sole creation
-    chokepoint, so the pair and its invariants are the real ones -- a
-    hand-staged shadow would grade a row the app cannot produce.
+    chokepoint, so the transfer and its invariants are the real ones.  A
+    case ticks it as its leg on checking, the EXPENSE side.  It returned
+    that side's shadow row until plan step ``balance:X-bi-6-4d-3`` (ruling
+    **R-BAL167** class 4): no shadow can be stored since that step's first
+    checkpoint (ruling **R-BAL258**), and its one caller read the shadow's
+    transfer.
 
     Args:
         seed_user: The seeded user bundle.
         amount: The transfer amount.
 
     Returns:
-        The shadow :class:`~app.models.transaction.Transaction` on checking.
+        The :class:`~app.models.transfer.Transfer`.
     """
-    # pylint: disable=import-outside-toplevel -- one caller, and the transfer
+    # Pylint: ``import-outside-toplevel`` -- one caller, and the transfer
     # service is not otherwise part of this module's subject.
+    # pylint: disable=import-outside-toplevel
     from app.services import account_service
     from tests._test_helpers import create_transfer
 
@@ -224,14 +229,7 @@ def _a_transfer_shadow(seed_user, *, amount="100.00"):
         seed_user["bootstrap_period"], amount=Decimal(amount),
     )
     db.session.flush()
-    return (
-        db.session.query(Transaction)
-        .filter(
-            Transaction.transfer_id == transfer.id,
-            Transaction.account_id == seed_user["account"].id,
-        )
-        .one()
-    )
+    return transfer
 
 
 def _a_cc_payback(seed_user, *, amount="180.00"):

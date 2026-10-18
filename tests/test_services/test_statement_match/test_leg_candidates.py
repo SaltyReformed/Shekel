@@ -11,10 +11,19 @@ left offering nothing.
 
 Each class pins one fact of the new shape: what is offered and how it is
 priced, labelled and dated; how an accepted leg is recorded and claimed;
-what a damaged transfer does (ruling **R-BAL158**); how the two drifted
-states no door writes are decided by the PARENT (ruling **R-JM**, R-BAL79);
-and the re-price a stale form meets.  The before/after grade over the
-2026-09-30 00:11 production dump lives with the leaf's handoff, not here.
+how the drifted states no door writes are decided by the PARENT (ruling
+**R-JM**, R-BAL79); and the re-price a stale form meets.  The before/after
+grade over the 2026-09-30 00:11 production dump lives with the leaf's
+handoff, not here.
+
+Plan step ``balance:X-bi-6-4d-3`` deleted three of the four cases that read
+or hid a transfer's shadow (ruling **R-BAL313**) -- no shadow ever a
+candidate, and a damaged pair (rulings **R-BAL158**, **R-BAL235**) offered at
+its price and once after a revert; the fourth, a renamed account's label,
+lost its shadow contrast.  No shadow can be stored since that step's first
+checkpoint (ruling **R-BAL258**), and what each deleted case still read on a
+plain transfer is read by another passing case (the bill beside one, by
+``test_candidates``).
 """
 
 from datetime import timedelta
@@ -27,7 +36,6 @@ from app import ref_cache
 from app.enums import SettledDayBasisEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
     account_service,
@@ -99,18 +107,6 @@ def _a_transfer(seed_user, savings=None, amount=_AMOUNT):
     return transfer
 
 
-def _shadow(transfer, account_id):
-    """Return *transfer*'s shadow row on *account_id* -- for planting and asserting only."""
-    return (
-        db.session.query(Transaction)
-        .filter(
-            Transaction.transfer_id == transfer.id,
-            Transaction.account_id == account_id,
-        )
-        .one()
-    )
-
-
 def _side_records(transfer, account_id):
     """Return the records *transfer*'s side on *account_id* holds, by id.
 
@@ -176,12 +172,17 @@ class TestAStillPlannedTransferIsOfferedAsItsLeg:
     def test_each_side_is_offered_on_its_own_account_keyed_by_the_transfer(
         self, app, db, seed_user,
     ):
-        """One LEG per account, signed by its side, priced and dated as the transfer."""
+        """One LEG per account, signed by its side, priced and dated as the transfer.
+
+        And priced, it is counted nowhere among the legs that could not be
+        priced: not in checking's offer set, nor in its review's bound.
+        """
         savings = _savings(seed_user)
         transfer = _a_transfer(seed_user, savings)
         checking = seed_user["account"]
 
-        (out,) = _of_transfer(_offered(seed_user, checking.id).rows, transfer)
+        offered = _offered(seed_user, checking.id)
+        (out,) = _of_transfer(offered.rows, transfer)
         (into,) = _of_transfer(_offered(seed_user, savings.id).rows, transfer)
 
         assert (out.kind, out.row_id) == (RowKind.LEG, transfer.id)
@@ -199,6 +200,14 @@ class TestAStillPlannedTransferIsOfferedAsItsLeg:
             assert leg.period.period_id == transfer.pay_period_id
             # One side of a transfer is never corrected alone (invariant 3).
             assert leg.figure_is_correctable is False
+        # Moved here at plan step balance:X-bi-6-4d-3 from the deleted
+        # test_a_broken_shadow_pair_is_offered_at_its_price_and_counted_nowhere
+        # (ruling R-BAL313): measured 2026-10-18 without these reads, a leg
+        # offered AND listed among the unpriceable failed no test.
+        assert offered.unpriceable == ()
+        assert statement_match.review_set(
+            a_scope(seed_user),
+        ).bounds.unpriceable_count == 0
 
     def test_several_legs_are_offered_in_transfer_id_order(
         self, app, db, seed_user,
@@ -255,20 +264,6 @@ class TestAStillPlannedTransferIsOfferedAsItsLeg:
         assert unmatched_rows(offered, entry_seven) == [leg]
         assert unmatched_rows(offered, leg_seven) == []
 
-    def test_no_shadow_row_is_ever_a_candidate(self, app, db, seed_user):
-        """Neither arm that reads a ROW offers a shadow: the leg is the transfer's only subject."""
-        transfer = _a_transfer(seed_user)
-        shadow = _shadow(transfer, seed_user["account"].id)
-        shadow_ids = {shadow.id}
-
-        rows = _offered(seed_user, seed_user["account"].id).rows
-
-        assert not [
-            row for row in rows
-            if row.kind is RowKind.TRANSACTION and row.row_id in shadow_ids
-        ]
-        assert len(_of_transfer(rows, transfer)) == 1
-
     def test_a_deleted_transfer_is_not_offered(self, app, db, seed_user):
         """The parent's soft delete takes both sides off every screen."""
         transfer = _a_transfer(seed_user)
@@ -288,7 +283,8 @@ class TestAStillPlannedTransferIsOfferedAsItsLeg:
         and never re-labelled; a leg reads the endpoints (ruling **R-BAL87**,
         leaf ``X-bi-6-1``'s change on the grid).  0 of 256 live shadows
         differed on the 2026-09-30 00:11 production dump, so no screen moved
-        on today's data.
+        on today's data.  The shadow's stale copy was this case's contrast
+        until plan step ``balance:X-bi-6-4d-3`` deleted the shadows.
         """
         savings = _savings(seed_user)
         transfer = _a_transfer(seed_user, savings)
@@ -300,9 +296,6 @@ class TestAStillPlannedTransferIsOfferedAsItsLeg:
         )
 
         assert leg.label == "Transfer to Emergency Fund (transfer leg)"
-        assert _shadow(transfer, seed_user["account"].id).name == (
-            "Transfer to Savings"
-        )
 
 
 class TestAPaidSideIsItsLegsRecord:
@@ -368,19 +361,30 @@ class TestAPaidSideIsItsLegsRecord:
     def test_a_reverted_transfer_is_a_leg_again_and_its_kept_movement_is_not_offered(
         self, app, db, seed_user,
     ):
-        """One subject per side per screen: the LEG, not the un-dated movement a revert kept."""
+        """One subject per side per screen: the LEG, not the un-dated movement a revert kept.
+
+        And the leg is counted nowhere among the legs that could not be
+        priced: not in checking's offer set, nor in its review's bound.
+        """
         transfer = _a_transfer(seed_user)
         _settle(seed_user, transfer)
         _revert(seed_user, transfer)
         kept = _side_records(transfer, seed_user["account"].id)
         assert len(kept) == 1 and kept[0].settled_on is None
 
-        (only,) = _of_transfer(
-            _offered(seed_user, seed_user["account"].id).rows, transfer,
-        )
+        offered = _offered(seed_user, seed_user["account"].id)
+        (only,) = _of_transfer(offered.rows, transfer)
 
         assert (only.kind, only.row_id) == (RowKind.LEG, transfer.id)
         assert only.cash_amount == -_AMOUNT
+        # Moved here at plan step balance:X-bi-6-4d-3 from the deleted
+        # test_a_damaged_reverted_transfer_is_offered_once
+        # (ruling R-BAL313): measured 2026-10-18 without these reads, a leg
+        # offered AND listed among the unpriceable failed no test.
+        assert offered.unpriceable == ()
+        assert statement_match.review_set(
+            a_scope(seed_user),
+        ).bounds.unpriceable_count == 0
 
 
 class TestAcceptingALeg:
@@ -541,60 +545,6 @@ class TestAcceptingALeg:
         assert [(r.kind, r.row_id) for r in _of_transfer(on_savings, transfer)] == [
             (RowKind.LEG, transfer.id),
         ]
-
-
-class TestADamagedTransferIsOfferedLikeAnyOther:
-    """Ruling **R-BAL235** ("Offer and settle it"), reversing **R-BAL158**'s skip and count."""
-
-    def test_a_broken_shadow_pair_is_offered_at_its_price_and_counted_nowhere(
-        self, app, db, seed_user,
-    ):
-        """The Savings-side shadow deleted around the service -- a state no door writes.
-
-        Until plan step ``balance:X-bi-6-4d-2`` the leg price refused the
-        broken pair and the leg was counted in the "could not be priced"
-        note; it is priced off its transfer now and offered as its LEG.
-        """
-        savings = _savings(seed_user)
-        transfer = _a_transfer(seed_user, savings)
-        bill = a_transaction(seed_user, name="Power", amount="80.00")
-        _shadow(transfer, savings.id).is_deleted = True
-        db.session.flush()
-
-        offered = _offered(seed_user, seed_user["account"].id)
-
-        assert [
-            (row.kind, row.cash_amount)
-            for row in _of_transfer(offered.rows, transfer)
-        ] == [(RowKind.LEG, -_AMOUNT)]
-        assert offered.unpriceable == ()
-        assert [
-            row.row_id for row in offered.rows
-            if row.kind is RowKind.TRANSACTION
-        ] == [bill.id]
-        review = statement_match.review_set(a_scope(seed_user))
-        assert review.bounds.unpriceable_count == 0
-
-    def test_a_damaged_reverted_transfer_is_offered_once(
-        self, app, db, seed_user,
-    ):
-        """Its kept, un-dated record is not a payment: ONE leg, at its figure."""
-        savings = _savings(seed_user)
-        transfer = _a_transfer(seed_user, savings)
-        _settle(seed_user, transfer)
-        _revert(seed_user, transfer)
-        _shadow(transfer, savings.id).is_deleted = True
-        db.session.flush()
-
-        offered = _offered(seed_user, seed_user["account"].id)
-
-        assert [
-            (row.kind, row.cash_amount)
-            for row in _of_transfer(offered.rows, transfer)
-        ] == [(RowKind.LEG, -_AMOUNT)]
-        assert offered.unpriceable == ()
-        review = statement_match.review_set(a_scope(seed_user))
-        assert review.bounds.unpriceable_count == 0
 
 
 class TestTheParentDecidesADriftedSide:

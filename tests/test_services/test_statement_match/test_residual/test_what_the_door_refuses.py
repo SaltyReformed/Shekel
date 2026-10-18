@@ -20,7 +20,7 @@ from tests.test_services.test_statement_match._builders import (
 )
 from tests._test_helpers import resolved_amount
 
-from ._helpers import _submit, _minted, _a_transfer_shadow, _a_cc_payback, _payroll
+from ._helpers import _submit, _minted, _a_transfer, _a_cc_payback, _payroll
 
 
 class TestTheFigureTheOwnerAcceptedIsReconciled:
@@ -357,29 +357,32 @@ class TestOneRowIsDeterminateHoweverManyLinesExplainIt:
         assert accepted.repriced_count == 1
         assert settled_figure(txn) == Decimal("178.29")
 
-    def test_a_TRANSFER_SHADOW_in_a_group_refuses_the_difference(
+    def test_a_TRANSFER_LEG_in_a_group_refuses_the_difference(
         self, app, db, seed_user,
     ):
         """Transfer invariant 3, carried into the group arm.
 
-        A shadow's amount is held equal to its parent's, so correcting one
-        means correcting the TRANSFER -- and recording the gap beside it as an
-        uncategorized row would book money the transfer already accounts for.
-        A first version of this step asked this only of a LONE row, so ticking
-        one extra turned the refusal into a residual.
+        A leg is one half of its transfer and moves the transfer's one
+        figure, so correcting it means correcting the TRANSFER -- and
+        recording the gap beside it as an uncategorized row would book money
+        the transfer already accounts for.  A first version of this step
+        asked this only of a LONE row, so ticking one extra turned the
+        refusal into a residual.  The transfer was reached through its
+        checking shadow until plan step ``balance:X-bi-6-4d-3``, and the case
+        was named for that shadow.
         """
         statement = an_import(seed_user)
         bank_day = seed_user["bootstrap_period"].start_date
         line = a_bank_line(
             seed_user, statement, amount="-180.06", posted_on=bank_day,
         )
-        shadow = _a_transfer_shadow(seed_user, amount="100.00")
+        transfer = _a_transfer(seed_user, amount="100.00")
         other = a_transaction(seed_user, name="Power", amount="80.00")
 
         with pytest.raises(ValidationError) as caught:
             _submit(
                 seed_user, lines=[line], transactions=[other],
-                transfers=[shadow.transfer], residual="-0.06",
+                transfers=[transfer], residual="-0.06",
             )
 
         assert "one half of a transfer" in str(caught.value)

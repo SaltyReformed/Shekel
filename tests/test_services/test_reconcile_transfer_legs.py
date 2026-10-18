@@ -12,27 +12,32 @@ changed and what it declared:
   ticked under its own form fields (ruling **R-BAL145**), so a transfer whose
   id equals a bill's id is offered and settled beside it rather than
   overwriting it;
-* the loader's scope, and its two drift directions (the PARENT decides);
+* the loader's scope, and that the PARENT's status decides it;
 * the transfer block's heading is the leg's label from the endpoints' current
-  names (declared), and a transfer whose shadow pair is broken is named in a
-  warning and not offered while the rest is listed (ruling **R-BAL148**);
-* the records predicate kept its body, dead shadows included (since plan
-  step ``balance:X-bi-6-4d-2`` it reads each side's record off the transfer,
-  so a twin's state is read by no reader);
+  names (declared), each side is offered on its own account's statement as
+  a TRANSFER, and the detail page, the panel's fragment and the true-up's
+  modal (beside a bill) offer the transfer's tick (ruling **R-BAL235**
+  retired **R-BAL148**'s warning);
 * a carry-forward transfer plan is labelled by its FROM side, in transfer-id
   order (finding **BAL-546**, declared).
+
+Plan step ``balance:X-bi-6-4d-3`` deleted three cases that planted a
+transfer's shadow (ruling **R-BAL313**) -- the records predicate's own case
+(a movement under a hidden shadow), a broken pair offered and settled, and a
+loader case under a Cancelled shadow -- and re-expressed two panel cases
+that hid one: no shadow can be stored since that step's first checkpoint
+(ruling **R-BAL258**), and what each deleted case still read on a plain
+transfer is read by another passing case.
 """
 
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
-import pytest
 from sqlalchemy import text
 
 from app import ref_cache
 from app.enums import SettledDayBasisEnum, StatusEnum
-from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -43,13 +48,11 @@ from app.services import (
     cash_ledger,
     reconcile_service,
     transfer_legs,
-    transfer_service,
 )
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
 from app.services.settle_day import SettleDay, recorded_settle_day
 from tests._test_helpers import (
-    cover_bare_settled_row,
     create_transfer,
     figure_source_columns,
     generate_row_of,
@@ -94,18 +97,6 @@ def _savings(seed_user, name="Savings"):
     db.session.flush()
     open_books_before_the_first_assertion(db.session, account)
     return account
-
-
-def _shadow_on(transfer, account):
-    """Return *transfer*'s shadow row on *account* (a test may read shadows)."""
-    return (
-        db.session.query(Transaction)
-        .filter(
-            Transaction.transfer_id == transfer.id,
-            Transaction.account_id == account.id,
-        )
-        .one()
-    )
 
 
 def _settle(seed_user, *, transaction_ids=(), transfer_ids=(),
@@ -165,7 +156,11 @@ class TestALegIsKeyedApartFromARow:
     def test_a_transfer_whose_id_equals_a_bills_id_is_offered_beside_it(
         self, app, db, seed_user, seed_periods,
     ):
-        """Both blocks are published, each under its own key and kind."""
+        """Both blocks are published, each under its own key and kind.
+
+        And the leg's caption day, printed beside its tick, is its period's
+        first day.
+        """
         with app.app_context():
             bill = _bill(seed_user, seed_periods[0])
             db.session.commit()
@@ -182,6 +177,15 @@ class TestALegIsKeyedApartFromARow:
             leg_key = (transfer.id, seed_user["account"].id)
             assert by_key[leg_key].kind is (
                 reconcile_service.OfferKind.TRANSFER
+            )
+            # The day the panel prints beside the leg's tick: the day the
+            # transfer lands, its period's first.  Moved here at plan step
+            # balance:X-bi-6-4d-3 from the deleted
+            # test_a_transfer_whose_twin_was_deleted_is_offered_and_settles
+            # (ruling R-BAL313): measured 2026-10-18 without this read, a day
+            # added to the expense side's caption failed no test.
+            assert by_key[leg_key].settle.attributed_on == (
+                seed_periods[0].start_date
             )
             # What each tick POSTS: the same number under two fields.
             assert by_key[bill.id].settle.tick_form.ids_field == (
@@ -283,14 +287,18 @@ class TestTheOfferableLegLoader:
             assert offered(owner, both, transfer_ids={later.id}) == {later.id}
             assert offered(seed_second_user["user"].id, both) == set()
 
-    def test_a_parent_that_is_not_projected_is_not_offered_whatever_its_shadow_says(
+    def test_a_parent_that_is_not_projected_is_not_offered(
         self, app, db, seed_user, seed_periods,
     ):
-        """Drift, parent side: a Paid parent over a Projected shadow.
+        """A Paid transfer offers no leg: the PARENT's status decides.
 
-        No door writes it (Transfer Invariants 3 and 4).  The shadow scope this
-        replaced offered the shadow, and a tick then no-opped the settle and
-        linked a Projected row; the parent decides now.
+        Set Paid around the service with neither side holding a record, the
+        shape the status-band rule stores as a ``$0.00`` close.  Until plan
+        step ``balance:X-bi-6-4d-3`` its shadows stayed Projected under it,
+        and this case read one as the drift's control (ruling **R-BAL167**
+        class 1); the shadow scope leaf ``X-bi-6-4c-2`` replaced offered that
+        Projected shadow, and a tick then no-opped the settle and linked a
+        Projected row.
         """
         with app.app_context():
             savings = _savings(seed_user)
@@ -305,44 +313,11 @@ class TestTheOfferableLegLoader:
             )
             db.session.commit()
             db.session.expire_all()
-            assert _shadow_on(transfer, seed_user["account"]).status_id == (
-                ref_cache.status_id(StatusEnum.PROJECTED)
-            ), "the drift did not land: the shadow must stay Projected"
 
             assert transfer_legs.offerable_transfer_legs(
                 seed_user["account"].id, seed_user["user"].id,
                 {seed_periods[0].id}, options=(),
             ) == []
-
-    def test_a_projected_parents_side_is_offered_whatever_its_shadow_says(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Drift, shadow side: a Cancelled shadow under a Projected parent."""
-        with app.app_context():
-            savings = _savings(seed_user)
-            transfer = create_transfer(
-                seed_user, db.session, seed_user["account"], savings,
-                seed_periods[0],
-            )
-            db.session.commit()
-            shadow = _shadow_on(transfer, seed_user["account"])
-            db.session.execute(
-                text(
-                    "UPDATE budget.transactions SET status_id = :s "
-                    "WHERE id = :t",
-                ),
-                {
-                    "s": ref_cache.status_id(StatusEnum.CANCELLED),
-                    "t": shadow.id,
-                },
-            )
-            db.session.commit()
-
-            legs = transfer_legs.offerable_transfer_legs(
-                seed_user["account"].id, seed_user["user"].id,
-                {seed_periods[0].id}, options=(),
-            )
-            assert [leg.transfer.id for leg in legs] == [transfer.id]
 
     def test_a_side_whose_own_movement_is_dated_is_not_offered_but_the_other_is(
         self, app, db, seed_user, seed_periods,
@@ -442,16 +417,19 @@ class TestATickStatesItsOwnSide:
 
 
 class TestTheBlockReadsTheLeg:
-    """What the panel prints for a transfer, and what it refuses."""
+    """What the panel prints for a transfer."""
 
     def test_the_heading_is_the_legs_label_from_the_CURRENT_account_name(
         self, app, db, seed_user, seed_periods,
     ):
-        """DECLARED: a renamed endpoint re-labels the block; the shadow's copy does not.
+        """DECLARED: a renamed endpoint re-labels the block.
 
         The block was headed by the shadow's stored ``name``, written when the
         transfer was created; it is the leg's label now, composed from the
         endpoints' current names -- the change leaf X-bi-6-1 made on the grid.
+        The shadow's stale copy was this case's control until plan step
+        ``balance:X-bi-6-4d-3`` deleted the shadows (ruling **R-BAL167**
+        class 1).
         """
         with app.app_context():
             savings = _savings(seed_user)
@@ -471,59 +449,51 @@ class TestTheBlockReadsTheLeg:
             ]
 
             assert block.name == "Transfer to Emergency Fund"
-            assert _shadow_on(transfer, seed_user["account"]).name == (
-                "Transfer to Savings"
-            ), "the control: the shadow's stored copy did not follow"
 
-    def test_a_transfer_whose_twin_was_deleted_is_offered_and_settles(
+    def test_the_income_side_is_offered_on_its_own_statement_as_a_TRANSFER(
         self, app, db, seed_user, seed_periods,
     ):
-        """Ruling R-BAL235 ("Offer and settle it"), reversing R-BAL148's warning.
+        """The savings statement offers the INCOME side, under its own key, as a TRANSFER.
 
-        Transfer Invariant 1 broken around the service (no door writes it).
-        Through plan step ``balance:X-bi-6-4d-2``'s first checkpoint the leg
-        price asked the verified twin pair, refused it, and the panel named
-        the transfer in a warning and offered no tick.  The leg is priced off
-        its transfer now, so it is offered at its figure beside the bill, and
-        a tick of it settles both sides like any other.
+        The cases above read the from-side on the seed account's panel; the
+        same transfer's to-side is the savings account's to tick, keyed by
+        ``(transfer id, savings id)`` and offered as the one act a transfer
+        is (ruling **R-FC**): the tally counts it a deposit, the section
+        does not.  Its caption day, printed beside the tick, is the day the
+        transfer lands, its period's first.  Added at plan step
+        ``balance:X-bi-6-4d-3``: measured 2026-10-18, offering the income
+        side as a Deposit failed no test, nor did a day added to its caption.
         """
         with app.app_context():
-            bill = _bill(seed_user, seed_periods[0])
             savings = _savings(seed_user)
             transfer = create_transfer(
                 seed_user, db.session, seed_user["account"], savings,
-                seed_periods[0], amount=Decimal("500.00"),
+                seed_periods[0],
             )
             db.session.commit()
-            _shadow_on(transfer, savings).is_deleted = True
-            db.session.commit()
 
-            offered = reconcile_service.outstanding_set(_reconciled(seed_user))
+            groups = reconcile_service.outstanding_set(
+                _reconciled(seed_user, savings.id),
+            ).groups
+            by_key = {group.key: group for group in groups}
 
-            leg_key = (transfer.id, seed_user["account"].id)
-            by_key = {group.key: group for group in offered.groups}
-            assert set(by_key) == {bill.id, leg_key}
-            assert by_key[leg_key].settle.amount == Decimal("500.00")
-            assert by_key[leg_key].settle.attributed_on == (
-                seed_periods[0].start_date
-            )
-            assert offered.payment_count == 2, "the transfer is a payment now"
-            assert _settle(seed_user, transfer_ids=[transfer.id]) == 1
-            db.session.commit()
-            db.session.expire_all()
-            assert db.session.get(Transfer, transfer.id).status_id == (
-                ref_cache.status_id(StatusEnum.DONE)
-            )
+            income_side = by_key[(transfer.id, savings.id)]
+            assert income_side.kind is reconcile_service.OfferKind.TRANSFER
+            assert income_side.settle.attributed_on == seed_periods[0].start_date
 
-    def test_the_panel_offers_its_tick_and_warns_of_nothing(
+    def test_the_panel_offers_its_tick(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Every door that builds the panel offers the transfer's tick; none warns.
+        """The detail page and the panel's fragment offer the tick; the true-up opens its modal.
 
         The true-up (whose response builds the prompt after its write), the
         cash detail page (which builds the panel inline), and the panel's own
         fragment.  With the transfer offerable there IS something to tick, so
         the true-up opens its modal (``prompt_fragment`` gates on ticks).
+        Until plan step ``balance:X-bi-6-4d-3`` the transfer's savings shadow
+        was hidden here and each door was read for no "damaged" warning
+        (ruling **R-BAL235**); no shadow can be stored now, and no template
+        prints that word.
         """
         with app.app_context():
             savings = _savings(seed_user)
@@ -531,8 +501,6 @@ class TestTheBlockReadsTheLeg:
                 seed_user, db.session, seed_user["account"], savings,
                 seed_periods[0], amount=Decimal("500.00"),
             )
-            db.session.commit()
-            _shadow_on(transfer, savings).is_deleted = True
             db.session.commit()
             account_id = seed_user["account"].id
             transfer_id = transfer.id
@@ -550,17 +518,21 @@ class TestTheBlockReadsTheLeg:
         page = auth_client.get(f"/accounts/{account_id}/details")
         assert page.status_code == 200, page.data
         assert tick in page.data.decode()
-        assert "damaged" not in page.data.decode()
         response = auth_client.get(f"/accounts/{account_id}/reconcile")
         assert response.status_code == 200, response.data
         body = response.data.decode()
         assert tick in body, body
-        assert "damaged" not in body
 
     def test_the_true_up_modal_offers_the_transfer_beside_a_bill(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """With a bill to tick too, the post-true-up modal offers both and warns of nothing."""
+        """With a bill to tick too, the post-true-up modal still offers the transfer's tick.
+
+        Until plan step ``balance:X-bi-6-4d-3`` the transfer's savings shadow
+        was hidden here and the modal was read for no "damaged" warning
+        (ruling **R-BAL235**); no shadow can be stored now, and no template
+        prints that word.
+        """
         with app.app_context():
             _bill(seed_user, seed_periods[0])
             savings = _savings(seed_user)
@@ -568,8 +540,6 @@ class TestTheBlockReadsTheLeg:
                 seed_user, db.session, seed_user["account"], savings,
                 seed_periods[0], amount=Decimal("500.00"),
             )
-            db.session.commit()
-            _shadow_on(transfer, savings).is_deleted = True
             db.session.commit()
             account_id = seed_user["account"].id
             transfer_id = transfer.id
@@ -585,76 +555,6 @@ class TestTheBlockReadsTheLeg:
         body = response.data.decode()
         assert "reconcileModal" in body
         assert f'name="transfer_ids" value="{transfer_id}"' in body
-        assert "damaged" not in body
-
-
-class TestTheRecordsPredicateKeptItsBody:
-    """``transfer_legs.transfers_holding_records`` asks every side record, twins aside."""
-
-    def test_a_movement_under_a_DEAD_shadow_still_holds_the_transfer(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The body moved unchanged: no live-shadow term (review LOW 15).
-
-        It planted a dated movement under a Checking shadow and hid the
-        shadow.  Since plan step ``balance:X-bi-6-4d-2`` that plant is
-        REFUSED at commit (the deleted-row rule's row arm, its twin exception
-        retired; ruling **R-BAL167** class 2).  The subject left -- no
-        live-twin term -- is the storable remainder: a transfer settled and
-        set back through the doors, its two sides keeping their records on
-        the TRANSFER (rulings **R-BAL88**, **R-BAL61**), its Checking shadow
-        hidden around the service, read by no reader (class 3).
-        """
-        with app.app_context():
-            savings = _savings(seed_user)
-            held = create_transfer(
-                seed_user, db.session, seed_user["account"], savings,
-                seed_periods[0], amount=Decimal("75.00"),
-            )
-            bare = create_transfer(
-                seed_user, db.session, seed_user["account"], savings,
-                seed_periods[0],
-            )
-            db.session.commit()
-            shadow = _shadow_on(held, seed_user["account"])
-            shadow_id = shadow.id
-            for column, value in settle_day_columns(
-                seed_periods[0].start_date,
-            ).items():
-                setattr(shadow, column, value)
-            shadow.status_id = ref_cache.status_id(StatusEnum.DONE)
-            db.session.flush()
-            cover_bare_settled_row(db.session, shadow, Decimal("75.00"))
-            shadow.is_deleted = True
-            with refused_by_database_rule(
-                "was deleted while it still holds a recorded payment or purchase",
-            ) as caught:
-                db.session.commit()
-            db.session.rollback()
-            assert f"transaction {shadow_id} " in str(caught.value)
-
-            owner = seed_user["user"].id
-            transfer_service.settle_transfer(held.id, owner)
-            transfer_service.update_transfer(
-                held.id, owner,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-            )
-            db.session.execute(
-                text("UPDATE budget.transactions SET is_deleted = TRUE "
-                     "WHERE id = :id"),
-                {"id": shadow_id},
-            )
-            db.session.commit()
-            db.session.expire_all()
-            assert db.session.get(Transaction, shadow_id).is_deleted
-            assert transfer_side_record(
-                db.session, held.id, seed_user["account"].id,
-            ) is not None, "the plant: the hidden shadow's side keeps its record"
-
-            assert transfer_legs.transfers_holding_records(
-                [held.id, bare.id],
-            ) == {held.id}
-            assert transfer_legs.transfers_holding_records([]) == set()
 
 
 class TestCarryForwardWalksTransfers:
