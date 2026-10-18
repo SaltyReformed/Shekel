@@ -48,6 +48,9 @@ from tools.ci.gitcmd import GitError, git, run
 SHIPS, REOPENS = "Ships", "Reopens"
 #: The branch every shipped card's commit is on.
 DEV = "origin/dev"
+#: The branch a release merges into: every commit on it was judged at its pull request,
+#: into ``dev`` or into ``main``.
+MAIN = "origin/main"
 #: A trailer's value naming a card: ``plan#`` and the card's number.
 _CARD = re.compile(r"plan#([1-9][0-9]*)")
 #: The old form, ``<arc>:<id>``, which the plan gate reads until the cutover.

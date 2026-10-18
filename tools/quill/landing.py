@@ -32,15 +32,20 @@ what each card a trailer names IS, before it lands:
    land.
 
 **Each trailer is judged once, when it first lands** (the coordinator, under
-``R-BAL207``, 2026-10-17).  The tracker changes after a trailer lands -- a step shipped,
-undone and re-planned into smaller steps is a container now, which a release judges as
-the work it was (``tools/release/_cards.py``) -- so this check re-run over a trailer
-``dev`` already holds could refuse permanent history for good (``R-BAL184``).  So of the
-change set ``<base>..<head>`` it judges only the commits :data:`tools.ci.trailers.DEV`
-does not hold yet: every commit of a pull request into ``dev``, and of one into ``main``
-a release branch's own.  A change set wholly on ``dev`` judges nothing and says so; a
-checkout that cannot read ``dev`` refuses to judge.  A commit pushed straight to ``dev``,
-outside a pull request, is never judged here.
+``R-BAL207``, 2026-10-17; ``main`` beside ``dev`` since the L9d delta review's
+MEDIUM-1).  The tracker changes after a trailer lands -- a step shipped, undone and
+re-planned into smaller steps is a container now, which a release judges as the work it
+was (``tools/release/_cards.py``) -- so this check re-run over a trailer ``dev`` or
+``main`` already holds could refuse permanent history for good (``R-BAL184``): a release
+branch's own commit, judged at its pull request into ``main``, would be judged again by
+the push to ``main`` and by the pull request bringing ``main`` back into ``dev``.  So of
+the change set ``<base>..<head>`` it judges only the commits that have not landed, which
+neither :data:`tools.ci.trailers.DEV` nor :data:`tools.ci.trailers.MAIN` holds yet:
+every commit of a pull request into ``dev``, of one into ``main`` a release branch's own,
+and of a push to ``main``, which ``main`` then holds, none.  A change set wholly on
+``dev`` or ``main`` judges nothing and says so; a checkout that cannot read either
+refuses to judge.  A commit pushed straight to ``dev``, outside a pull request, is never
+judged here.
 
 **Whether a card is work is git's answer once those commits land**: whether a step is
 split reads which of the steps linked under it git says shipped (a step closed while
@@ -60,8 +65,8 @@ A run that is handed no key mints no token (GitHub documents that a Dependabot r
 fork's pull request get no Actions secrets), so there a change set naming a card refuses
 to judge, and one naming none passes without a read.  **What
 cannot be read refuses to judge**: no token, an error GitHub answers, a tracker that
-cannot be reached, a list GitHub cut short, or a card linked to one the tracker lacks
-exits 2, nothing checked.  So does a change set holding no commit, as
+cannot be reached, a list GitHub cut short or answered as null, or a card linked to one
+the tracker lacks exits 2, nothing checked.  So does a change set holding no commit, as
 :mod:`tools.ci.commit_trailers` refuses one.
 
 Usage, at the repository root::
@@ -69,12 +74,12 @@ Usage, at the repository root::
     python -m tools.quill.landing <base-sha> <head-sha>
 
 The two ends are read by :func:`tools.ci.commit_trailers.ends`, the one rule for them;
-the commits ``dev`` does not hold yet by :func:`tools.ci.commit_trailers.not_on_dev`, the
-one rule for those, which that check's stray rule reads too; and the verdict is printed
-by :func:`tools.ci.commit_trailers.report`.  Exit status: 0
-nothing refused; 1 refused, each reason printed; 2 the command line, git or the
-tracker's read failed, ``dev`` cannot be read, or the change set holds no commit, so
-nothing was checked.
+the commits that have not landed by :func:`tools.ci.commit_trailers.not_landed`, the one
+rule for those, which that check's stray rule reads too; the verdict is printed by
+:func:`tools.ci.commit_trailers.report`, and a git failure by
+:func:`tools.ci.commit_trailers.unjudged`.  Exit status: 0 nothing refused; 1 refused,
+each reason printed; 2 the command line, git or the tracker's read failed, ``dev`` or
+``main`` cannot be read, or the change set holds no commit, so nothing was checked.
 """
 from __future__ import annotations
 
@@ -87,7 +92,7 @@ import requests
 
 from tools.ci import trailers
 from tools.ci.arcs import REPO
-from tools.ci.commit_trailers import ends, not_on_dev, report
+from tools.ci.commit_trailers import ends, not_landed, report, unjudged
 from tools.ci.gitcmd import GitError, git
 from tools.quill._command import with_closure
 from tools.quill._github import GitHub, GitHubError
@@ -116,7 +121,7 @@ def reader_from_environment() -> CardReader:
 
 
 def _shipped_once_landed(root: Path, judged: tuple[trailers.Trailer, ...]) -> set[int]:
-    """Every card git says shipped once the commits ``dev`` does not hold yet land: over
+    """Every card git says shipped once the commits that have not landed land: over
     ``dev``'s history and their trailers, ``judged``."""
     landed = trailers.History(trailers.history(root, trailers.DEV).trailers + judged, ())
     return set(trailers.shipped(root, landed)[0])
@@ -152,7 +157,7 @@ def refusals(named: Mapping[tuple[int, str], Sequence[trailers.Trailer]], shippe
              connect: Callable[[], CardReader]) -> list[str]:
     """One sentence for each ``(card, key)`` in ``named`` the tracker refuses (the module's
     rules), each naming every commit that carries it, by card; ``named`` holds the card
-    trailers of the change set's commits ``dev`` does not hold yet, and ``shipped`` git's
+    trailers of the change set's commits that have not landed, and ``shipped`` git's
     answer once they land.  The tracker is read through the reader ``connect`` makes.
 
     Raises:
@@ -177,18 +182,19 @@ def refusals(named: Mapping[tuple[int, str], Sequence[trailers.Trailer]], shippe
 
 def problems(root: Path, base: str, head: str,
              connect: Callable[[], CardReader]) -> tuple[int, int, list[str]]:
-    """How many commits the change set ``<base>..<head>`` holds, how many of them ``dev``
-    does not hold yet, and one sentence for each card trailer on those the tracker refuses
+    """How many commits the change set ``<base>..<head>`` holds, how many of them have not
+    landed, and one sentence for each card trailer on those the tracker refuses
     (:func:`refusals`); the tracker is not read when none of them names a card.
 
     Raises:
         tools.ci.gitcmd.GitError: when git cannot read the change set or ``dev``'s
-            history (a shallow clone among them), or ``dev`` cannot be read at all.
+            history (a shallow clone among them), or ``dev`` or ``main`` cannot be read at
+            all (:class:`tools.ci.commit_trailers.LandedUnknown`).
         NoToken, _tracker.TrackerError, _github.GitHubError, requests.RequestException: as
             :func:`refusals` raises them.
     """
     count = int(git(root, "rev-list", "--count", f"{base}..{head}"))
-    fresh = not_on_dev(root, base, head)
+    fresh = not_landed(root, base, head)
     judged = tuple(trailer for trailer in trailers.history(root, f"{base}..{head}").trailers
                    if trailer.sha in fresh)
     named: dict[tuple[int, str], list[trailers.Trailer]] = {}
@@ -213,16 +219,18 @@ def main(argv: list[str] | None = None,
     try:
         count, fresh, reasons = problems(root, base, head, connect)
     except GitError as error:
-        print(f"landing check: git could not read {base[:12]}..{head[:12]}: {error}",
-              file=sys.stderr)
-        return 2
-    except (NoToken, TrackerError, GitHubError, requests.RequestException) as error:
+        return unjudged("landing check", base, head, error)
+    except (NoToken, GitHubError, requests.RequestException) as error:
         print(f"landing check: the tracker could not be read, so nothing was checked: {error}",
               file=sys.stderr)
         return 2
+    except TrackerError as error:
+        print("landing check: what the tracker answered cannot be judged, so nothing was "
+              f"checked: {error}", file=sys.stderr)
+        return 2
     if fresh < count:
         print(f"landing check: {count - fresh} of the {count} commit(s) are on "
-              f"{trailers.DEV} already, each judged when it landed there")
+              f"{trailers.DEV} or {trailers.MAIN} already, each judged when it landed there")
     return report("landing check", base, head, count, reasons)
 
 

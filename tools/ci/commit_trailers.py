@@ -59,20 +59,25 @@ the one reader and the one ``shipped`` rule the tracker tool also asks:
    commit's own history is in ``head``'s, since the commit is.  So the answer
    is the one each commit's own history gives.  **Each ``Reopens:`` is judged
    once, when it first lands** (the coordinator, under ``R-BAL207``,
-   2026-10-17): only on the commits of the change set ``dev`` does not hold yet
-   (:func:`not_on_dev`), every commit of a pull request into ``dev``, and of
-   one into ``main`` a release branch's own, since what ``dev`` holds no
-   commit can change (``R-BAL184``).  So this check never refuses a later pull
-   request for a stray that reached ``dev`` without it (none had:
-   ``origin/dev`` held no ``plan#`` trailer on 2026-10-17), or past a check no
-   merge into ``dev`` requires, and undoing one owes nothing (rule 2).  The
+   2026-10-17; ``main`` beside ``dev`` since the L9d delta review's
+   MEDIUM-1): only on the commits of the change set that have not landed,
+   which neither ``dev`` nor ``main`` holds yet (:func:`not_landed`): every
+   commit of a pull request into ``dev``, of one into ``main`` a release
+   branch's own, and of a push to ``main``, which ``main`` then holds, none.
+   A commit ``dev`` or ``main`` holds was judged at the pull request that
+   brought it there, or got there past this check (a push straight to
+   ``dev``); either way no commit can change it (``R-BAL184``), so judging it
+   again could only refuse it for good, never catch it.  So this check never
+   refuses a later pull request for a stray that reached ``dev`` or ``main``
+   without it (none had: neither held a ``plan#`` trailer on 2026-10-18), or
+   past a check no merge requires, and undoing one owes nothing (rule 2).  The
    release tool still counts such a stray: a money one that reached ``dev``
    beside another money change blocks every release, which only a check every
-   merge into ``dev`` requires can prevent.  ``dev`` is read only when the
-   change set carries a ``Reopens:``, and a checkout that cannot read it
-   refuses to judge.  The old ``<arc>:<id>`` form is not read here: it ends at
-   the cutover (``R-BAL287``), and no ``Reopens:`` in it exists (none on any
-   ref, 2026-10-17).
+   merge into ``dev`` requires can prevent.  ``dev`` and ``main`` are read
+   only when the change set carries a ``Reopens:``, and a checkout that cannot
+   read either refuses to judge.  The old ``<arc>:<id>`` form is not read
+   here: it ends at the cutover (``R-BAL287``), and no ``Reopens:`` in it
+   exists (none on any ref, 2026-10-17).
 
 **What a revert is: git's own record, at the start of a line.**  ``git
 revert`` writes ``This reverts commit <id>.``; with ``--reference`` the id is
@@ -98,7 +103,7 @@ not all known.
 **The change set** is ``<base>..<head>``: the commits ``head`` holds and
 ``base`` does not.  ``ci.yml``'s ``scope`` job hands over the pair for a pull
 request, a merge-queue group and a push to ``main``.  Rules 1 and 2 judge
-every commit of it, rule 3 only those ``dev`` does not hold yet.  A change set
+every commit of it, rule 3 only those that have not landed.  A change set
 holding no commit is refused too: none of those events has one, so it means
 the two ends are wrong.
 
@@ -107,12 +112,13 @@ Usage, at the repository root::
     python -m tools.ci.commit_trailers <base-sha> <head-sha>
 
 Exit status: 0 nothing refused; 1 refused, each reason printed; 2 the command
-line or git failed, ``dev`` cannot be read when rule 3 needs it, or the change
-set holds no commit, so nothing was checked.  What a command line must name is
-:func:`ends`, which of its commits ``dev`` does not hold yet is
-:func:`not_on_dev`, and how a verdict is printed and exits is :func:`report`:
-the rules and the one reporter CI's landing check (``tools/quill/landing.py``)
-reads its change set by and prints its verdict with too.
+line or git failed, ``dev`` or ``main`` cannot be read when rule 3 needs them,
+or the change set holds no commit, so nothing was checked.  What a command line
+must name is :func:`ends`, which of its commits have not landed is
+:func:`not_landed`, how a verdict is printed and exits is :func:`report`, and
+how a check that judged nothing says why is :func:`unjudged`: the rules and the
+reporters CI's landing check (``tools/quill/landing.py``) reads its change set
+by and prints its verdict with too.
 """
 from __future__ import annotations
 
@@ -253,33 +259,42 @@ def _revert_reasons(root: Path, commit: tuple[str, str, str],
     ]
 
 
-def not_on_dev(root: Path, base: str, head: str) -> set[str]:
-    """The commits of ``<base>..<head>`` that :data:`tools.ci.trailers.DEV` does not hold yet:
-    the commits a rule judged once, when it first lands, judges (rule 3 here; every rule of
-    CI's landing check).
+class LandedUnknown(GitError):
+    """Which commits have landed is unknown: :data:`tools.ci.trailers.DEV` or
+    :data:`tools.ci.trailers.MAIN` cannot be read in this checkout."""
+
+
+def not_landed(root: Path, base: str, head: str) -> set[str]:
+    """The commits of ``<base>..<head>`` that have not landed: neither
+    :data:`tools.ci.trailers.DEV` nor :data:`tools.ci.trailers.MAIN` holds them yet.  They
+    are the commits a rule judged once, when it first lands, judges (rule 3 here; every rule
+    of CI's landing check).
 
     Raises:
-        GitError: when ``dev`` cannot be read in this checkout, so which commits it holds
-            already is unknown.
+        LandedUnknown: when ``dev`` or ``main`` cannot be read in this checkout, naming it.
     """
-    if run(root, "rev-parse", "--verify", "--quiet", f"{trailers.DEV}^{{commit}}").returncode:
-        raise GitError(f"{trailers.DEV} cannot be read in this checkout, so which commits dev "
-                       "holds already is unknown (in CI, check out with fetch-depth: 0)")
-    return set(git(root, "rev-list", head, f"^{base}", f"^{trailers.DEV}").split())
+    for ref in (trailers.DEV, trailers.MAIN):
+        if run(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").returncode:
+            raise LandedUnknown(f"{ref} cannot be read in this checkout, so which commits have "
+                                "landed already is unknown (in CI, check out with "
+                                "fetch-depth: 0)")
+    return set(git(root, "rev-list", head, f"^{base}", f"^{trailers.DEV}",
+                   f"^{trailers.MAIN}").split())
 
 
 def _stray_reasons(root: Path, base: str, head: str, found: trailers.History) -> list[str]:
     """Why the change set ``<base>..<head>``, whose card trailers ``found`` holds, breaks
-    rule 3: one sentence per stray ``Reopens:`` on a commit ``dev`` does not hold yet, a
-    trailer a commit carries twice named once; empty when it carries no ``Reopens:``, and
-    ``dev`` is then not read.
+    rule 3: one sentence per stray ``Reopens:`` on a commit that has not landed, a trailer
+    a commit carries twice named once; empty when it carries no ``Reopens:``, and ``dev``
+    and ``main`` are then not read.
 
     Raises:
-        GitError: when ``dev`` cannot be read, or git cannot read ``head``'s history.
+        GitError: when ``dev`` or ``main`` cannot be read (:class:`LandedUnknown`), or git
+            cannot read ``head``'s history.
     """
     if not any(trailer.key == trailers.REOPENS for trailer in found.trailers):
         return []
-    fresh = not_on_dev(root, base, head)
+    fresh = not_landed(root, base, head)
     strays = trailers.shipped(root, trailers.history(root, head))[1]
     return [f"{stray.sha[:12]} ({stray.subject}) carries `Reopens: plan#{stray.card}`, but no "
             f"commit in its history ships plan#{stray.card}, so it undoes nothing (a mistyped "
@@ -294,7 +309,7 @@ def problems(root: Path, base: str, head: str) -> tuple[int, list[str]]:
 
     Raises:
         GitError: when git cannot read the change set (a shallow clone among them), or
-            ``dev`` when the change set carries a ``Reopens:``.
+            ``dev`` or ``main`` when the change set carries a ``Reopens:``.
     """
     found = trailers.history(root, f"{base}..{head}")
     reasons = [f"{line} (nor the old <arc>:<id> form, read until the cutover)"
@@ -335,6 +350,17 @@ def report(check: str, base: str, head: str, count: int, reasons: list[str]) -> 
     return 1 if reasons else 0
 
 
+def unjudged(check: str, base: str, head: str, error: GitError) -> int:
+    """Print why the change-set check named ``check`` judged nothing of ``<base>..<head>``:
+    git's ``error``, which names the ref when ``dev`` or ``main`` cannot be read
+    (:class:`LandedUnknown`) and the change set otherwise; exit status 2.  CI's landing
+    check (``tools/quill/landing.py``) prints its git failures here too."""
+    said = (str(error) if isinstance(error, LandedUnknown)
+            else f"git could not read {base[:12]}..{head[:12]}: {error}")
+    print(f"{check}: {said}", file=sys.stderr)
+    return 2
+
+
 def main(argv: list[str] | None = None, root: Path = REPO) -> int:
     """Check the change set ``<base>..<head>``; print each refusal; exit as the module says."""
     args = sys.argv[1:] if argv is None else argv
@@ -346,9 +372,7 @@ def main(argv: list[str] | None = None, root: Path = REPO) -> int:
     try:
         count, reasons = problems(root, base, head)
     except GitError as exc:
-        print(f"commit trailers: git could not read {base[:12]}..{head[:12]}: {exc}",
-              file=sys.stderr)
-        return 2
+        return unjudged("commit trailers", base, head, exc)
     return report("commit trailers", base, head, count, reasons)
 
 

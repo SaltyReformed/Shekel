@@ -189,8 +189,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       # The undone commit a revert names can be anywhere in history, and the
-      # stray rule reads origin/dev, so this checkout is full; the trailers are
-      # only READ.
+      # stray rule reads origin/dev and origin/main, so this checkout is full;
+      # the trailers are only READ.
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -209,8 +209,8 @@ jobs:
       # (or, until X-cx's cutover, ``<arc>:<id>``); a revert carries the
       # ``Reopens:`` or ``Ships:`` that keeps git's answer to "did plan#N
       # ship?" true to the code it removes or brings back (step X-cx's L4,
-      # card plan#4); and a ``Reopens:`` on a commit dev does not hold yet
-      # undoes a ``Ships:`` in its own history (step X-cx's L9d, R-BAL309).
+      # card plan#4); and a ``Reopens:`` on a commit neither dev nor main holds
+      # yet undoes a ``Ships:`` in its own history (step X-cx's L9d, R-BAL309).
       # Git only, no tracker access.  A missing or partial range is a usage
       # error, never an empty change set: it fails, so the verdict is red.
       # Unguarded, like the plan gate: a registry-only pull request carries
@@ -235,9 +235,9 @@ jobs:
       # turns a needed read green.
       PLAN_READER_KEY_PRESENT: ${{ secrets.PLAN_READER_KEY != '' }}
     steps:
-      # The check reads dev's whole history -- what has shipped, and which of
-      # the change set's commits dev already holds -- so this checkout is full;
-      # the history is only READ.
+      # The check reads dev's whole history -- what has shipped -- and which of
+      # the change set's commits dev or main already holds, so this checkout is
+      # full; the history is only READ.
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -285,10 +285,12 @@ jobs:
       # issues of that one repository, and revokes it when the job ends
       # (GitHub expires one within the hour in any case).
       # Only the check step is handed the token in its env, and only the mint
-      # is handed the key, as an input, which the runner puts in that step's
-      # own environment (INPUT_PRIVATE-KEY); but the key is in the runner's
-      # memory for the whole job, so this narrows what a leak from the job
-      # yields and does not close it.
+      # is handed the key, as an input, which the runner puts in the
+      # environment (INPUT_PRIVATE-KEY) of that step and of its post step (the
+      # action's dist/post.cjs, which reads its inputs and revokes the token
+      # when the job ends); but the key is in the runner's memory for the whole
+      # job, so this narrows what a leak from the job yields and does not close
+      # it.
       - name: Mint the tracker read token
         id: token
         if: env.PLAN_READER_KEY_PRESENT == 'true'
@@ -303,7 +305,7 @@ jobs:
       # A trailer naming a card the tracker lacks, a Ships: naming no work,
       # or one naming a card that carries the filing mark (still being filed,
       # or dropped while it was) is refused, each trailer judged once, when
-      # its commit first lands on dev (step X-cx's L9d).
+      # its commit first lands on dev or main (step X-cx's L9d).
       # The tracker is read only when a trailer names a card.  No condition:
       # with the mint skipped the token is empty, and the check decides.
       # The rules: tools/quill/landing.py.

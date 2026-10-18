@@ -10,17 +10,20 @@ import pytest
 
 from tools.ci.commit_trailers import main, problems, reverts
 from tools.ci.scratch import commit as _commit
-from tools.ci.scratch import point_dev
+from tools.ci.scratch import point_dev, point_main
 from tools.ci.scratch import repository
 from tools.ci.scratch import run as _run
-from tools.ci.trailers import history, shipped
+from tools.ci.trailers import DEV, MAIN, history, shipped
 
 
 @pytest.fixture(name="repo")
 def _repo(tmp_path):
-    """A repository with a work tree under tmp_path, one commit on ``dev``; not a real checkout."""
+    """A repository with a work tree under tmp_path, one commit on ``dev``, which
+    ``origin/main`` holds, so every change set below is newer than ``main``; not a real
+    checkout."""
     root = repository(tmp_path)
     _change(root, "base", "base")
+    point_main(root, _head(root))
     return root
 
 
@@ -521,9 +524,10 @@ def _stray(sha, subject, card):
 
 class TestAReopensUndoesAShipInItsOwnHistory:
     """Rule 3 (R-BAL309): a ``Reopens:`` that cancels no ``Ships:`` (trailers.shipped's stray)
-    on a commit ``dev`` does not hold yet is refused.  ``dev`` is the base, as on a pull
-    request into it, unless a test says otherwise: a base ``dev`` does not hold, a ``dev``
-    ahead of it, or none at all."""
+    on a commit that has not landed, which neither ``dev`` nor ``main`` holds yet, is
+    refused.  ``dev`` is the base, as on a pull request into it, unless a test says
+    otherwise: a base ``dev`` does not hold, a ``dev`` ahead of it, or none at all; ``main``
+    holds the fixture's first commit, unless a test points it on."""
 
     def test_a_reopens_naming_a_card_never_shipped_is_refused(self, repo):
         """The mistyped number: plan#9 was never shipped, so the undo names nothing."""
@@ -603,6 +607,18 @@ class TestAReopensUndoesAShipInItsOwnHistory:
         assert problems(repo, base, _head(repo)) == (2, [])
         point_dev(repo, base)
         assert problems(repo, base, _head(repo)) == (2, [_stray(stray, "undo by hand", 9)])
+
+    def test_a_stray_main_already_holds_is_never_judged_again(self, repo):
+        """The L9d delta review's MEDIUM-1: judged once means judged once, on ``main`` as on
+        ``dev``.  A release branch's commit carrying a stray reached ``main`` past the check;
+        the push to ``main``, and the pull request bringing ``main`` back into ``dev``, do
+        not refuse it.  The control: before ``main`` holds it, it is refused."""
+        base = _head(repo)
+        point_dev(repo, base)
+        stray = _change(repo, "undo", "undo by hand", "Reopens: plan#9")
+        assert problems(repo, base, stray) == (1, [_stray(stray, "undo by hand", 9)])
+        point_main(repo, stray)
+        assert problems(repo, base, stray) == (1, [])
 
     def test_a_stray_in_the_bases_history_dev_lacks_is_not_judged_again(self, repo):
         """Review of c1, M2 (mutant R1): only the change set's commits are refused.  A pull
@@ -731,6 +747,21 @@ class TestTheCommandLine:
         _change(repo, "undo", "undo by hand", "Reopens: plan#9")
         assert main([base, _head(repo)], root=repo) == 2
         assert "origin/dev cannot be read in this checkout" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("missing", [DEV, MAIN])
+    def test_a_reopens_with_dev_or_main_unreadable_exits_two_naming_it(self, repo, capsys,
+                                                                         missing):
+        """Rule 3 cannot tell which commits have landed without both: nothing checked, and
+        the message names the ref that cannot be read, never the change set (the L9d delta
+        review's nit)."""
+        base = _head(repo)
+        point_dev(repo, base)
+        _run(repo, "update-ref", "-d", f"refs/remotes/{missing}")
+        _change(repo, "undo", "undo by hand", "Reopens: plan#9")
+        assert main([base, _head(repo)], root=repo) == 2
+        assert capsys.readouterr().err == (
+            f"commit trailers: {missing} cannot be read in this checkout, so which commits "
+            "have landed already is unknown (in CI, check out with fetch-depth: 0)\n")
 
     def test_a_stray_exits_one(self, repo, capsys):
         """Rule 3's refusal through the command line CI runs."""

@@ -93,9 +93,12 @@ and undone.  Two ways out stand:
   a live step dead or a container back into a leaf; the new cut is judged with its own
   read, and no such change makes production hold a step below the group.  Where groups
   nest, the outer group's way out takes the inner one out too.  A ``Reopens:`` can name
-  any card production holds: CI's trailer check reads its shape alone, and L9d's check
-  reading the tracker must let one name a step production holds, a split one included,
-  or this way out cannot land.
+  any card production holds: CI's trailer check refuses one only when it undoes no
+  ``Ships:`` in its own history (``tools/ci/commit_trailers.py``, rule 3), and one made
+  on the cut for a member production holds there undoes that member's ``Ships:``, which
+  the cut's history holds; and L9d's landing check refuses one only when the tracker
+  lacks its card (``tools/quill/landing.py``), so a step production holds, a split one
+  included, may be named and this way out lands.
 - **Ship it whole**: a member named as missing or undone that can still ship can ship,
   or ship back.
 

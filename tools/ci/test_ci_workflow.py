@@ -402,12 +402,15 @@ class TestTheChangeSetIsHandedOver:
     """
 
     def test_the_merge_queue_triggers_the_workflow(self):
-        """``merge_group`` beside ``pull_request``; ``push`` still only to ``main``."""
+        """``merge_group`` beside ``pull_request``, neither filtered; ``push`` still only to
+        ``main``.  A branch filter on ``pull_request`` (``branches: [main]``) would stop both
+        trailer checks on every pull request into ``dev`` (the L9d delta review's LOW-5)."""
         text = (arcs.REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        # PyYAML reads the bare key ``on`` as the boolean True (YAML 1.1).
+        # PyYAML reads the bare key ``on`` as the boolean True (YAML 1.1), and a bare
+        # trigger, one with no filter, as None.
         triggers = yaml.safe_load(text)[True]
-        assert set(triggers) == {"push", "pull_request", "merge_group"}
-        assert triggers["push"] == {"branches": ["main"]}
+        assert triggers == {"push": {"branches": ["main"]}, "pull_request": None,
+                            "merge_group": None}
 
     def test_the_card_trailer_job_checks_the_scope_jobs_range_over_full_history(self):
         """Unguarded, waiting on the scope job, a full checkout, and exactly this command."""

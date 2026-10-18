@@ -277,8 +277,13 @@ class Comment:
     body: str
 
 
-def _counted(connection: dict, what: str, number: int) -> list:
-    """A connection's nodes, refusing one GitHub truncated (a silent partial read)."""
+def _counted(connection: dict | None, what: str, number: int) -> list:
+    """A connection's nodes, refusing one GitHub answered as null or truncated (a silent
+    partial read).  GitHub's schema lets it answer an issue's ``labels`` as null, and any
+    connection's ``nodes`` (read 2026-10-18)."""
+    if connection is None or connection["nodes"] is None:
+        raise TrackerError(f"GitHub answered plan#{number}'s {what} as null, so the read "
+                           "holds none of them")
     if connection["totalCount"] > len(connection["nodes"]):
         raise TrackerError(
             f"plan#{number} has {connection['totalCount']} {what}; the read holds "
