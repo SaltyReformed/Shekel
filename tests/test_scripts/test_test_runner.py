@@ -52,11 +52,16 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TEST_RUNNER = _REPO_ROOT / "scripts/test.sh"
+# The wrapper's start of its cluster through the module, in one command as
+# :func:`_code_lines` gives it.  The ``--`` before the arguments is optional
+# HERE because the dash-image case grades it, so each property has one case.
+_STARTS_THE_CLUSTER = re.compile(
+    r'scripts/private_cluster\.py"\s+start (?:-- )?"\$_run_container" "\$_image"')
 
 
 def _stub_tree(
     tmp_path: Path, *, rootless: bool = True, make_socket: bool = True,
-    survives: bool = False, pytest_status: int = 0,
+    survives: int = 0, pytest_status: int = 0,
 ) -> Path:
     """Write a stub ``docker`` and ``pytest`` into a directory for ``PATH``.
 
@@ -72,10 +77,10 @@ def _stub_tree(
         make_socket: Whether the stub container leaves a socket behind.  A
             container can report ready and still not have one; the cluster's
             start refuses to hand out a socket that is not there.
-        survives: Whether the stub container survives its removal.  The stub
-            holds it as a file that ``run`` makes and ``rm`` removes, and
-            ``ps`` lists it while it exists, as the cluster's start and stop
-            ask by its exact name.
+        survives: How many removals the stub container survives.  The stub
+            holds it as a file that ``run`` makes and each ``rm`` after that
+            many removes, and ``ps`` lists it while it exists, as the
+            cluster's start and stop ask by its exact name.
         pytest_status: The status the stub pytest exits with, which the
             wrapper must exit with too.
 
@@ -117,8 +122,11 @@ def _stub_tree(
         # Bound and deliberately NOT unlinked: the file must outlive the stub.
         f"{socket_arm}\n"
         "    print('stubcontainer')\n"
-        f"elif cmd == 'rm' and not {survives!r} and os.path.exists({str(held)!r}):\n"
-        f"    os.remove({str(held)!r})\n"
+        f"elif cmd == 'rm' and os.path.exists({str(held)!r}):\n"
+        # This removal is already recorded, so it is counted too.
+        f"    removals = sum(line.startswith('rm ') for line in open({str(calls)!r}))\n"
+        f"    if removals > {survives!r}:\n"
+        f"        os.remove({str(held)!r})\n"
         f"elif cmd == 'ps' and os.path.exists({str(held)!r}):\n"
         "    print('stubcontainer')\n"
         "elif cmd == 'inspect':\n"
@@ -210,6 +218,31 @@ def _run_wrapper(
             shutil.rmtree(scratch, ignore_errors=True)
 
 
+def _code_lines() -> list[str]:
+    """The wrapper's commands as bash reads them, one per entry, in order.
+
+    A line ending in a backslash is joined to the next, as bash joins one
+    outside single quotes, and blank and comment lines are dropped.  Read one line at a time, a
+    container command split by a continuation (``docker \\`` and then
+    ``rm -fv "$_run_container"``) slipped past the wiring check: delta
+    review 2's LOW-C.
+
+    Returns:
+        The commands of ``scripts/test.sh``.
+    """
+    commands: list[str] = []
+    pending = ""
+    for line in _TEST_RUNNER.read_text(encoding="utf-8").splitlines():
+        if not pending and (not line.strip() or line.lstrip().startswith("#")):
+            continue
+        if line.endswith("\\"):
+            pending += line[:-1]
+            continue
+        commands.append(pending + line)
+        pending = ""
+    return commands
+
+
 class TestTheWrapperItself:
     """Properties of the script that every other case here presupposes."""
 
@@ -253,17 +286,15 @@ class TestTheWrapperItself:
         run``, one readiness rule, one teardown.  A wrapper that spelled its
         own ``docker run`` again would pass every end-to-end case below, since
         the stub docker cannot tell who called it; this reads the SOURCE for
-        that reason, as the trap-arm case does.
+        that reason, as the trap-arm case does, a command at a time
+        (:func:`_code_lines`).
         """
-        source = _TEST_RUNNER.read_text(encoding="utf-8")
-        code = [line for line in source.splitlines()
-                if line.strip() and not line.lstrip().startswith("#")]
+        code = _code_lines()
 
         assert any('scripts/private_cluster.py" stop "$_run_container"' in line
                    for line in code), "the teardown no longer stops through the module"
-        assert any("scripts/private_cluster.py" in line for line in code) and any(
-            line.strip().startswith('start "$_run_container" "$_image"') for line in code
-        ), "the cluster is no longer started through the module"
+        assert any(_STARTS_THE_CLUSTER.search(line) for line in code), (
+            "the cluster is no longer started through the module")
         # Global flags may come before the subcommand (``docker -H <host> rm``,
         # ``docker --context=x run``); the delta review's D17 slipped one past.
         spelled = [line for line in code if re.search(
@@ -273,6 +304,35 @@ class TestTheWrapperItself:
         assert not spelled, (
             f"scripts/test.sh spells a container command of its own again: {spelled}"
         )
+
+    @pytest.mark.parametrize("image", ["--help", "-x"])
+    def test_an_image_beginning_with_a_dash_reaches_the_start_as_the_image(
+        self, tmp_path: Path, image: str
+    ) -> None:
+        """A ``TEST_DB_IMAGE`` beginning with ``-`` is handed to the cluster's
+        start as the image, never read as one of its options.
+
+        The review of 668b53c99's nit: with no ``--`` ending the start's
+        options, ``-x`` was read as an option, and the start refused for want
+        of an image (exit 2); ``--help`` printed the start's usage and exited
+        0, and the wrapper handed pytest that usage as the socket directory
+        (measured on stubs, 2026-10-18).  The stub docker starts any image; a
+        real one reads such an image as a flag of its own and refuses the
+        run, which the start names as an error (measured the same day on the
+        rootless daemon, from both images: exit 2, nothing left).
+
+        Args:
+            tmp_path: scratch directory.
+            image: The image the wrapper is given.
+        """
+        binaries = _stub_tree(tmp_path)
+        result = _run_wrapper(binaries, {"TEST_DB_IMAGE": image})
+        seen = (tmp_path / "docker-calls").read_text(encoding="utf-8").splitlines()
+        started = [line.split() for line in seen if line.startswith("run ")]
+
+        assert started, f"nothing was started from {image}; docker saw {seen}: {result.stderr}"
+        assert started[0][started[0].index("-v") + 2] == image, started[0]
+        assert result.returncode == 0, result.stderr
 
 
 class TestTheClusterTheChildTalksTo:
@@ -367,12 +427,12 @@ class TestThePrivateClusterIsCleanedUp:
         the name the wrapper chose, removes it.  The review of step X-cx's K1a
         measured the traps moved after the start: a TERM to the whole group
         during the start left the container and its socket directory behind.
-        Read from the SOURCE, as the trap-arm case is.
+        Read from the SOURCE, as the wiring case is (:func:`_code_lines`).
         """
-        lines = _TEST_RUNNER.read_text(encoding="utf-8").splitlines()
-        started = next(index for index, line in enumerate(lines)
-                       if line.strip().startswith('start "$_run_container" "$_image"'))
-        armed = {match.group(1): index for index, line in enumerate(lines)
+        code = _code_lines()
+        started = next(index for index, line in enumerate(code)
+                       if _STARTS_THE_CLUSTER.search(line))
+        armed = {match.group(1): index for index, line in enumerate(code)
                  if (match := re.match(r"trap\s+'_teardown_run_container[^']*'\s+([A-Z]+)$",
                                        line))}
 
@@ -395,7 +455,7 @@ class TestThePrivateClusterIsCleanedUp:
         delta review's MEDIUM-2 measured ``exit 0`` passing a stub exiting 0.
         """
         result = _run_wrapper(
-            _stub_tree(tmp_path, survives=True, pytest_status=3), {})
+            _stub_tree(tmp_path, survives=1, pytest_status=3), {})
 
         assert result.returncode == 3, result.stderr
         assert "survived teardown" in result.stderr, result.stderr
@@ -473,6 +533,33 @@ class TestThePrivateClusterIsCleanedUp:
         assert [line.split()[0] for line in seen] == ["info", "ps", "run", "rm", "ps"], seen
         assert not held.exists(), f"the killed start's container was left; docker saw: {seen}"
         assert not left, f"the killed start's socket directory was left: {left}"
+
+    def test_a_container_a_failed_start_could_not_remove_is_removed_by_the_trap(
+        self, tmp_path: Path
+    ) -> None:
+        """A start that exits 2 naming a container its own stop could not
+        remove has it removed by the EXIT trap, by the name the wrapper chose.
+
+        Delta review 2's LOW-B: the traps stay armed on 2, the start's status
+        once it began making the cluster, and nothing graded it; a wrapper
+        that disarmed on 2 as well as 3 passed every case.  The trap's stop
+        is the only cover once the start's own stop has missed something.
+        Here the start fails (its container leaves no socket) and the stub
+        container survives the start's removal and not the trap's.
+
+        Args:
+            tmp_path: scratch directory.
+        """
+        held = tmp_path / "stub-container"
+        result = _run_wrapper(_stub_tree(tmp_path, make_socket=False, survives=1), {})
+        seen = (tmp_path / "docker-calls").read_text(encoding="utf-8").splitlines()
+
+        assert result.returncode == 2, result.stderr
+        assert "left no socket" in result.stderr, result.stderr
+        assert "Stopping it left something behind" in result.stderr, result.stderr
+        assert [line.split()[0] for line in seen] == [
+            "info", "ps", "run", "exec", "rm", "ps", "rm", "ps"], seen
+        assert not held.exists(), f"the container the start left was left; docker saw: {seen}"
 
     def test_the_container_is_removed_with_its_volume(
         self, tmp_path: Path

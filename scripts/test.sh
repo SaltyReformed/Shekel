@@ -106,10 +106,10 @@
 #     Whatever pytest returns, in the ordinary case.  A bootstrap failure
 #     exits 2 without running pytest: no python interpreter, no docker, a
 #     daemon that is not rootless or cannot be reached, a socket path over
-#     the kernel's 107-byte limit, an image that cannot be prepared, a
-#     cluster name a container already holds, a cluster that does not
-#     accept connections within READINESS_TIMEOUT_SECONDS, and one that
-#     reports ready without leaving a socket (``scripts/private_cluster.py``
+#     the kernel's 107-byte limit or not UTF-8, an image that cannot be
+#     prepared, a cluster name a container already holds, a cluster that
+#     does not accept connections within READINESS_TIMEOUT_SECONDS, and one
+#     that reports ready without leaving a socket (``scripts/private_cluster.py``
 #     refuses the socket path, the name, the readiness and the missing
 #     socket, and any other start it cannot finish).  NO COUNT IS GIVEN:
 #     every attempt to count them in a comment
@@ -390,10 +390,13 @@ trap '_teardown_run_container; exit 129' HUP
 # cluster accepts connections on a socket it has checked is there; a start
 # that cannot finish names why, and what its own stop left behind.  It exits
 # 3 when it refused before making anything (a bad readiness cap, a socket
-# path too long, a name a container already holds, a daemon it cannot ask
-# about the name), and the traps are disarmed before this exits 2: nothing
-# of this run exists, and a stop by its name would remove a container
-# another run holds.  While the start runs, bash holds a TERM or HUP until it
+# path too long or not UTF-8, a name a container already holds, a daemon it
+# cannot ask about the name), and the traps are disarmed before this exits
+# 2: nothing of this run exists, and a stop by its name would remove a
+# container another run holds.  ``--`` ends the start's options, so an image
+# beginning with ``-`` is handed over as the image: without it ``--help``
+# printed the usage and exited 0, and this read the usage as the socket
+# directory.  While the start runs, bash holds a TERM or HUP until it
 # returns (bash services no trap while a foreground child runs), so a signal
 # then waits for the whole start -- up to a minute for each docker command,
 # then the readiness cap, then a failed start's own stop -- and a KILL in
@@ -401,7 +404,7 @@ trap '_teardown_run_container; exit 129' HUP
 # wrapper.
 _start_status=0
 _cluster="$("$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" \
-    start "$_run_container" "$_image")" || _start_status=$?
+    start -- "$_run_container" "$_image")" || _start_status=$?
 if [ "$_start_status" -ne 0 ]; then
     if [ "$_start_status" -eq 3 ]; then
         trap - EXIT INT TERM HUP

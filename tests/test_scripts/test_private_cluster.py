@@ -8,6 +8,7 @@ What a REAL cluster does is graded by every suite run, which starts one here.
 """
 from __future__ import annotations
 
+import itertools
 import os
 import shutil
 import signal
@@ -19,6 +20,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,16 +38,17 @@ _CONTAINER_LEFT = (f"{_NAME} survived teardown -- remove it by hand ('docker rm 
 class _Behaviour:
     """How the stub ``docker`` behaves; each default is a daemon that works.
 
-    ``run`` makes the container (unless ``run_fails``) and the socket in the directory
-    mounted at ``/sockets`` as postgres would (unless ``make_socket`` is false), then, when
-    it ``pins_dir``, takes the write bit off that directory, so the socket in it cannot be
-    unlinked and the directory survives a stop; ``rm`` removes the container unless it
-    ``survives``; ``ps`` lists it while it exists, or exits 1 as an ``unreachable`` daemon
-    does; ``exec`` (the readiness probe) answers ``ready``; the command named ``hangs_on``
-    sleeps past any timeout a case sets; anything else succeeds.
+    ``run`` makes the container and the socket in the directory mounted at ``/sockets`` as
+    postgres would (unless ``make_socket`` is false), then, when it ``pins_dir``, takes the
+    write bit off that directory, so the socket in it cannot be unlinked and the directory
+    survives a stop; given a ``run_error``, ``run`` instead writes those bytes on stderr and
+    exits 125, making nothing; ``rm`` removes the container unless it ``survives``; ``ps``
+    lists it while it exists, or exits 1 as an ``unreachable`` daemon does; ``exec`` (the
+    readiness probe) answers ``ready``; the command named ``hangs_on`` sleeps past any
+    timeout a case sets; anything else succeeds.
     """
 
-    run_fails: bool = False
+    run_error: bytes = b""
     ready: bool = True
     make_socket: bool = True
     pins_dir: bool = False
@@ -98,8 +101,8 @@ class _Stub:
             f"if cmd == {behaviour.hangs_on!r}:\n"
             "    time.sleep(30)\n"
             "if cmd == 'run':\n"
-            f"    if {behaviour.run_fails!r}:\n"
-            "        print('no such image', file=sys.stderr)\n"
+            f"    if {behaviour.run_error!r}:\n"
+            f"        sys.stderr.buffer.write({behaviour.run_error!r})\n"
             "        sys.exit(125)\n"
             f"    open({str(self.held)!r}, 'w').close()\n"
             "    for mount in [args[i + 1] for i, a in enumerate(args) if a == '-v']:\n"
@@ -205,14 +208,20 @@ def test_the_run_is_the_one_the_suite_reads_argument_for_argument(docker, runtim
 
 
 @pytest.mark.parametrize(("behaviour", "said"), [
-    (_Behaviour(run_fails=True), f"docker could not start {_NAME} from {_IMAGE}: no such image"),
+    (_Behaviour(run_error=b"no such image"),
+     f"docker could not start {_NAME} from {_IMAGE}: no such image"),
+    (_Behaviour(run_error=b"no such image \xff"),
+     f"docker could not start {_NAME} from {_IMAGE}: no such image �"),
     (_Behaviour(ready=False), f"{_NAME} did not accept connections within 0s"),
     (_Behaviour(make_socket=False), f"{_NAME} reported ready but left no socket at "),
-], ids=["docker refuses", "never ready", "ready without a socket"])
+], ids=["docker refuses", "docker says a byte that is not UTF-8", "never ready",
+        "ready without a socket"])
 def test_a_start_that_fails_stops_what_it_started(docker, runtime, capsys, behaviour, said):
     """Each way a start can fail once it has made something exits 2 naming it, and leaves
     no container and no socket directory: the start removes what it made before it
-    reports."""
+    reports.  A byte docker prints that is not UTF-8 is named as U+FFFD: decoded strictly,
+    it raised an error that is no ClusterError, so the start skipped its own stop and ended
+    in a traceback (the review of 668b53c99)."""
     stub = docker(behaviour)
     assert private_cluster.main(["start", _NAME, _IMAGE]) == 2
     out = capsys.readouterr()
@@ -246,7 +255,10 @@ def test_a_name_a_container_already_holds_is_refused_and_never_taken_over(
         docker, runtime, capsys):
     """The review's LOW-7: a container already holding the name is not removed, its socket
     directory is not touched, and nothing is started; the start exits 3, the status that
-    tells its caller nothing of this start exists to stop (the delta review's MEDIUM-1)."""
+    tells its caller nothing of this start exists to stop (the delta review's MEDIUM-1).
+    The advice offers no other name, which test.sh cannot choose, and says when removing
+    the container is safe: it may be a live run's, in another PID namespace (delta review
+    2's nit 4)."""
     stub = docker()
     stub.held.write_text("", encoding="utf-8")
     (runtime / _NAME).mkdir()
@@ -254,7 +266,11 @@ def test_a_name_a_container_already_holds_is_refused_and_never_taken_over(
     assert private_cluster.main(["start", _NAME, _IMAGE]) == 3
     assert capsys.readouterr().err == (
         f"[private_cluster] a container named {_NAME} already exists, and a start never "
-        "takes over a name in use: stop that cluster, or name another\n")
+        f"takes over a name in use.  Remove it ('docker rm -fv {_NAME}') only once the run "
+        "that made it has ended: test.sh's names carry its PID, and no two live processes of "
+        "one PID namespace share one, so a test.sh name in use was left by a run that has "
+        "ended unless a run in another PID namespace on this daemon (a container, a sandbox) "
+        "holds it.\n")
     assert stub.calls() == [_PRESENT]
     assert (runtime / _NAME / ".s.PGSQL.5432").exists()
 
@@ -302,20 +318,29 @@ def test_a_symlink_at_the_socket_path_is_replaced_and_its_target_left(docker, ru
     assert (target / "kept").exists()
 
 
-@pytest.mark.parametrize("blocked", ["leftover", "runtime"],
-                         ids=["an unremovable leftover", "an unwritable runtime directory"])
+@pytest.mark.parametrize("blocked", ["leftover", "runtime", "a file"],
+                         ids=["an unremovable leftover", "an unwritable runtime directory",
+                              "a runtime directory that is a file"])
 def test_a_socket_directory_that_cannot_be_made_is_named_never_a_traceback(
-        docker, runtime, capsys, blocked):
-    """A socket directory that cannot be made -- an earlier one this user cannot empty, or a
-    ``XDG_RUNTIME_DIR`` this user cannot write -- exits 2 naming the path and why, with what
-    the start's own stop then left; it never escapes as an exception."""
+        docker, runtime, monkeypatch, capsys, blocked):
+    """A socket directory that cannot be made -- an earlier one this user cannot empty, a
+    ``XDG_RUNTIME_DIR`` this user cannot write, or one that is a FILE -- exits 2 naming the
+    path and why, with what the start's own stop then left; it never escapes as an
+    exception.  The file's error is no PermissionError (delta review 2's nit 1)."""
     stub = docker()
-    held = runtime / _NAME
+    said = "[Errno 13] Permission denied"
+    home = runtime
+    if blocked == "a file":
+        said = "[Errno 20] Not a directory"
+        home = runtime / "a-file"
+        home.write_text("", encoding="utf-8")
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(home))
+    held = home / _NAME
     if blocked == "leftover":
         held.mkdir()
         (held / "left-behind").write_text("", encoding="utf-8")
         held.chmod(0o500)
-    else:
+    elif blocked == "runtime":
         runtime.chmod(0o500)
     try:
         assert private_cluster.main(["start", _NAME, _IMAGE]) == 2
@@ -323,8 +348,7 @@ def test_a_socket_directory_that_cannot_be_made_is_named_never_a_traceback(
     finally:
         runtime.chmod(0o700)
         _unpin(held)
-    assert err.startswith(f"[private_cluster] socket directory {held} cannot be made: "
-                          "[Errno 13] Permission denied")
+    assert err.startswith(f"[private_cluster] socket directory {held} cannot be made: {said}")
     assert err.endswith(f"Stopping it left something behind: {held} survived teardown.\n"
                         if blocked == "leftover" else f"'{held}'\n")
     assert f"rm -fv {_NAME}" in stub.calls()
@@ -385,6 +409,30 @@ def test_ctrl_c_ends_a_start_by_sigint_once_it_has_stopped_what_it_made(
     assert stub.held.exists() is behaviour.survives
     assert (runtime / _NAME).exists() is behaviour.pins_dir
     assert (f"rm -fv {_NAME}" in stub.calls()) is made
+
+
+def test_ctrl_c_reaches_an_in_process_caller_as_a_keyboard_interrupt(docker, monkeypatch):
+    """Delta review 2's nit 2: Ctrl-C during a start that runs IN PROCESS, as these cases
+    run it under pytest, reaches the caller as a KeyboardInterrupt and never an
+    ``Exception``, carrying what the start's stop could not remove.  Measured 2026-10-18
+    with a two-case file: pytest stops its session on a KeyboardInterrupt, and records an
+    ``Exception`` as one failed case and goes on to the next.  The Ctrl-C is raised where
+    the readiness wait sleeps, one of the places a real one lands."""
+    stub = docker(_Behaviour(ready=False, survives=True))
+    monkeypatch.setenv("READINESS_TIMEOUT_SECONDS", "30")
+
+    def ctrl_c(_seconds: float) -> None:
+        """Raise what a Ctrl-C raises."""
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(private_cluster, "time",
+                        SimpleNamespace(monotonic=time.monotonic, sleep=ctrl_c))
+    with pytest.raises(KeyboardInterrupt) as interrupted:
+        private_cluster.start(_NAME, _IMAGE)
+    assert isinstance(interrupted.value, private_cluster.Interrupted)
+    assert not isinstance(interrupted.value, Exception)
+    assert interrupted.value.args == (_CONTAINER_LEFT,)
+    assert f"rm -fv {_NAME}" in stub.calls()
 
 
 def test_stop_names_a_container_that_survived_and_exits_1(docker, runtime, capsys):
@@ -493,31 +541,33 @@ def test_a_socket_directory_of_93_bytes_starts_a_cluster_whose_socket_binds_ther
     assert (padded / _NAME / ".s.PGSQL.5432").is_socket()
 
 
-def test_a_byte_that_is_not_utf8_is_counted_as_one_byte_and_never_raises(docker, runtime,
-                                                                          monkeypatch):
-    """A socket directory of 93 BYTES holding bytes that are not UTF-8 (``XDG_RUNTIME_DIR``
-    may hold them) is counted as 93, one byte each, and counting it does not raise: the start
-    goes on past the guard.  That is all this grades.  The stub binds its socket there; a
-    REAL daemon carries the bind as UTF-8 and replaces such a byte, so a real start there
-    waits out its readiness cap (measured by the review of 668b53c99; reported, not fixed
-    here).
+def test_a_socket_directory_that_is_not_utf8_is_refused_before_docker_is_asked(
+        docker, runtime, monkeypatch):
+    """A socket directory holding bytes that are not UTF-8 (``XDG_RUNTIME_DIR`` may hold
+    them) is refused at the door (:class:`Refused`, so exit 3) before docker is asked
+    anything, though at 93 bytes it fits the length budget: a real daemon is handed such a
+    byte as U+FFFD and mounts another directory, so a real start there waited out its whole
+    readiness cap (the reviews of 668b53c99 and bb2f1492a measured it).  The refusal quotes
+    each such byte escaped.
 
-    Every failure is reported in ASCII and in bytes: a failure message holding such a path
-    cannot be sent between xdist's processes, and would end the whole session instead of
-    failing this case.
+    Everything compared is ASCII (``ascii``): a failure message holding such a path cannot
+    be sent between xdist's processes, and would end the whole session instead of failing
+    this case.
     """
-    docker()
+    stub = docker()
     padded = _padded(runtime, 93, "\udcff")
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(padded))
     try:
-        directory = private_cluster.start(_NAME, _IMAGE).socket_dir
-    except private_cluster.ClusterError as refused:
-        said = ascii(str(refused))
+        started = private_cluster.start(_NAME, _IMAGE)
+    except private_cluster.ClusterError as failed:
+        said = (type(failed).__name__, ascii(str(failed)))
     else:
-        said = ""
-    if said:
-        pytest.fail(said)
-    assert os.fsencode(directory) == os.fsencode(padded / _NAME)
+        said = ("started", ascii(str(started.socket_dir)))
+    shown = os.fsencode(padded / _NAME).decode("utf-8", "backslashreplace")
+    assert said == ("Refused", ascii(
+        f"socket directory {shown} is not UTF-8, so docker would mount another directory in "
+        "its place.  Set XDG_RUNTIME_DIR to a path that is."))
+    assert stub.calls() == [], ascii(stub.calls())
 
 
 @pytest.mark.parametrize("filler", [
@@ -555,3 +605,19 @@ def test_a_readiness_cap_that_is_not_a_finite_number_of_seconds_is_refused(
     assert f"READINESS_TIMEOUT_SECONDS={given!r}" in capsys.readouterr().err
     assert stub.calls() == []
     assert not (runtime / _NAME).exists()
+
+
+def test_an_unset_readiness_cap_is_15_seconds(docker, monkeypatch, capsys):
+    """``READINESS_TIMEOUT_SECONDS`` unset caps the wait at its default, 15 seconds: a
+    default of 0 passed every case before this one (the review of 668b53c99's MX8), since
+    this file's own fixture sets the cap.  A case cannot wait 15 seconds out, so the
+    module's clock moves 5 seconds each time it is read and its sleep returns at once; the
+    start gives up only once that clock reaches 15, naming the cap."""
+    docker(_Behaviour(ready=False))
+    monkeypatch.delenv("READINESS_TIMEOUT_SECONDS")
+    readings = itertools.count(0, 5)
+    monkeypatch.setattr(private_cluster, "time", SimpleNamespace(
+        monotonic=lambda: float(next(readings)), sleep=lambda _seconds: None))
+    assert private_cluster.main(["start", _NAME, _IMAGE]) == 2
+    assert capsys.readouterr().err == (
+        f"[private_cluster] {_NAME} did not accept connections within 15s\n")

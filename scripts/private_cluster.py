@@ -15,7 +15,7 @@ Usage::
 
 ``start`` prints the socket directory, then the container's id, one per line, once the
 cluster accepts connections there.  It makes nothing until the readiness cap, the socket
-path's length and the name are known good, and refuses a name a container already holds.
+path's bytes and the name are known good, and refuses a name a container already holds.
 A start that fails after that stops what it made, naming anything that stop left behind;
 one killed outright (TERM, HUP, KILL) cannot, which is why the caller NAMES the cluster
 before starting it and stops it by that name (``test.sh`` names its cluster after its own
@@ -183,8 +183,14 @@ class Refused(ClusterError):
 
 class Interrupted(KeyboardInterrupt):
     """Ctrl-C ended a start after it began making the cluster.  The start has stopped what it
-    made, and the arguments are what that stop could not remove, one sentence each.  It is a
-    KeyboardInterrupt still, so whatever catches one catches this."""
+    made, and the arguments are what that stop could not remove, one sentence each.
+
+    A KeyboardInterrupt, and so not an ``Exception``, for the caller that runs :func:`start`
+    in process: this module's own cases, under a pytest that stops its session on a Ctrl-C
+    and records an ``Exception`` as one failed case before going on to the next.  As an
+    ``Exception`` it would turn that caller's Ctrl-C into a failure it carries on past, which
+    is the defect :func:`main` ends by SIGINT to prevent in a calling shell.  :func:`main`
+    itself catches it by name and needs neither base."""
 
 
 @dataclass(frozen=True)
@@ -207,11 +213,18 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
     """One docker command, its output captured; a daemon that does not answer within
     :data:`_DOCKER_TIMEOUT_SECONDS` is reported as one, where a shell waited forever.
 
+    Its output is decoded with ``errors="replace"``: a byte it prints that is not UTF-8
+    becomes U+FFFD in the message that quotes it, where a strict decode raised a
+    UnicodeDecodeError that is no ClusterError, so a failed start skipped its own stop and
+    ended in a traceback.  Nothing else reads the text for more than that: the container's id
+    is hex, and :func:`_present` reads only whether ``ps`` printed anything.
+
     Raises:
         ClusterError: when docker cannot be run or does not answer in time.
     """
     try:
-        return subprocess.run(["docker", *args], capture_output=True, text=True, check=False,
+        return subprocess.run(["docker", *args], capture_output=True, text=True,
+                              errors="replace", check=False,
                               timeout=_DOCKER_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
         raise ClusterError(f"docker {args[0]} did not answer within "
@@ -257,15 +270,31 @@ def _readiness_seconds() -> float:
     return seconds
 
 
-def _refuse_a_socket_dir_too_long(directory: Path) -> None:
-    """Refuse a socket directory past the kernel's budget for a socket path, counted in
-    BYTES as the kernel counts them (``os.fsencode``): refused at the door rather than let
-    the limit surface as a connection error from deep inside the caller.
+def _refuse_a_socket_dir_docker_cannot_bind(directory: Path) -> None:
+    """Refuse a socket directory the cluster's socket cannot be bound in and reached at, by
+    the one rule on its BYTES (``os.fsencode``, as the kernel and docker are handed them):
+    they are UTF-8, and they fit the kernel's budget for a socket path.  Refused at the door,
+    where nothing has been made, rather than surfacing later as a connection error from deep
+    inside the caller or a readiness wait that runs out its cap.
+
+    UTF-8 first, so the length refusal's message never holds a byte that is not UTF-8, and
+    this one quotes each such byte escaped.  A byte that is not UTF-8 reaches the daemon as
+    U+FFFD, so it mounts ANOTHER directory and the socket never appears in this one:
+    measured twice on the rootless daemon (the reviews of 668b53c99 and bb2f1492a), a real
+    start waited out its whole cap, exited 2 and left the replaced directory, which its stop
+    could not name.
 
     Raises:
-        Refused: when the directory is too long.
+        Refused: when the directory is not UTF-8, or is too long.
     """
-    if len(os.fsencode(directory)) > _SOCKET_DIR_BYTES:
+    encoded = os.fsencode(directory)
+    try:
+        encoded.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise Refused(f"socket directory {encoded.decode('utf-8', 'backslashreplace')} is "
+                      "not UTF-8, so docker would mount another directory in its place.  "
+                      "Set XDG_RUNTIME_DIR to a path that is.") from exc
+    if len(encoded) > _SOCKET_DIR_BYTES:
         raise Refused(f"socket directory {directory} is too long; a unix socket path "
                       f"cannot exceed {_SUN_PATH_BYTES} bytes.  Set XDG_RUNTIME_DIR to "
                       "something shorter.")
@@ -285,7 +314,11 @@ def _refuse_a_name_in_use(name: str) -> None:
         raise Refused(str(unasked)) from unasked
     if held:
         raise Refused(f"a container named {name} already exists, and a start never takes "
-                      "over a name in use: stop that cluster, or name another")
+                      f"over a name in use.  Remove it ('docker rm -fv {name}') only once the "
+                      "run that made it has ended: test.sh's names carry its PID, and no two "
+                      "live processes of one PID namespace share one, so a test.sh name in "
+                      "use was left by a run that has ended unless a run in another PID "
+                      "namespace on this daemon (a container, a sandbox) holds it.")
 
 
 def _make_socket_dir(directory: Path) -> None:
@@ -377,7 +410,7 @@ def start(name: str, image: str) -> Cluster:
 
     ``image`` ships a populated PGDATA at :data:`_PGDATA`, as the baked test image does
     (:func:`_wait_ready` says why readiness depends on it).  Nothing is made until the
-    readiness cap, the socket path's length and the name are known good, and a refusal
+    readiness cap, the socket path's bytes and the name are known good, and a refusal
     there is :class:`Refused`: a name a container already holds is never taken over, and as
     nothing of this start exists, its caller must not stop that name either.  A start
     refused after that stops what it made, and its error names anything that stop left
@@ -398,7 +431,7 @@ def start(name: str, image: str) -> Cluster:
     """
     seconds = _readiness_seconds()
     directory = socket_dir(name)
-    _refuse_a_socket_dir_too_long(directory)
+    _refuse_a_socket_dir_docker_cannot_bind(directory)
     _refuse_a_name_in_use(name)
     try:
         _make_socket_dir(directory)
