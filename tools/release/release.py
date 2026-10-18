@@ -55,7 +55,7 @@ import yaml
 
 from tools.ci.arcs import REPO
 from tools.ci.gitcmd import GitError
-from tools.quill.door import GitHubError, Tracker, TrackerError
+from tools.quill.door import CredentialsError, GitHubError, Tracker, TrackerError
 from tools.quill.quill import CONNECT
 from tools.release._carried import Declaration
 from tools.release._census import (
@@ -219,7 +219,7 @@ def main(argv: list[str] | None = None, root: Path = REPO,
         print("\n".join(census_lines(found)))
         return 0 if found.proven else UNPROVEN
     except (ReleaseError, GitError, OSError, UnicodeDecodeError, yaml.YAMLError,
-            subprocess.CalledProcessError, GitHubError, TrackerError,
+            subprocess.CalledProcessError, GitHubError, TrackerError, CredentialsError,
             requests.RequestException) as error:
         print(f"release {args.command}: nothing was judged: {error}", file=sys.stderr)
         return CANNOT

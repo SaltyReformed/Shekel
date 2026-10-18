@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import copy
 import re
+from functools import partial
 
 import pytest
 
 from tools.ci.arcs import ARCS
 from tools.quill import setup_tracker
-from tools.quill._github import GitHubError
+from tools.quill._github import GitHubError, app_credentials, app_jwt
 from tools.quill.setup_tracker import (
     APP_PERMISSIONS,
     ISSUE_TYPES,
@@ -580,8 +581,10 @@ def test_check_mode_sends_no_mutation_even_to_a_public_unlinked_board():
     assert report.differences == 6
 
 
-def _app_setup(monkeypatch, *, owner="saltyreformed-labs", installation=None, repos=None):
-    """Point ``check_app`` at a recorded App; nothing reads a key or calls GitHub."""
+def _app_setup(monkeypatch, *, owner="saltyreformed-labs", installation=None, repos=None,
+               slug="shekel-quill"):
+    """Point ``check_app`` at a recorded App whose login is ``slug``; nothing reads a key or
+    calls GitHub."""
     monkeypatch.setattr(setup_tracker, "app_credentials", lambda: ("Iv23client", b"pem"))
     monkeypatch.setattr(setup_tracker, "app_jwt", lambda *_: "jwt")
     def whole_installation(*_, repository):
@@ -599,7 +602,7 @@ def _app_setup(monkeypatch, *, owner="saltyreformed-labs", installation=None, re
 
     monkeypatch.setattr(setup_tracker, "app_installation", installed)
     answers = {
-        "jwt": {("GET", "/app"): {"slug": "shekel-quill", "owner": {"login": owner}}},
+        "jwt": {("GET", "/app"): {"slug": slug, "owner": {"login": owner}}},
         "installation": {("GET", "/installation/repositories"): {
             "repositories": [{"name": name} for name in (repos or ["shekel-plan"])]
         }},
@@ -638,12 +641,46 @@ def test_an_app_registered_by_another_account_is_a_difference(monkeypatch):
     assert report.differences == 1
 
 
+def test_credentials_of_another_app_are_a_difference(monkeypatch):
+    """L9d a1: the App the credentials sign in as is the one quill declares (``APP_LOGIN``),
+    which CI's card-only reader reads without asking GitHub; another is a difference naming
+    both logins, and the other checks still run."""
+    _app_setup(monkeypatch, installation=_installation(), slug="shekel-plan-tool")
+    report = Report()
+    setup_tracker.check_app(report)
+    assert report.differences == 1
+    assert ("sign in as 'shekel-plan-tool', not as quill's App 'shekel-quill'"
+            in "\n".join(report.lines))
+    assert report.lines[-1].startswith("ok      App 'shekel-plan-tool': installed on")
+
+
 def test_an_app_not_yet_installed_is_a_difference_not_a_crash(monkeypatch):
     """GitHub answers 404 for an App with no installation on the organization."""
     _app_setup(monkeypatch, installation=GitHubError(404, "Not Found"))
     report = Report()
     setup_tracker.check_app(report)
     assert report.differences == 1
+
+
+@pytest.mark.parametrize(("files", "said"), [
+    pytest.param({"app.json": b'{"client_id": "Iv23client"}', "app.pem": b"not a pem"},
+                 "private key cannot be loaded", id="app-pem"),
+    pytest.param({"app.json": b"{not json", "app.pem": b"pem"}, "is not JSON", id="app-json"),
+    pytest.param({}, "not in", id="missing"),
+])
+def test_unusable_app_credentials_are_a_difference_not_a_crash(monkeypatch, tmp_path, files,
+                                                               said):
+    """L9d: a corrupt app.json or app.pem, read by the real readers, escaped the setup check
+    as a traceback; it is a difference, as a missing one already was."""
+    _app_setup(monkeypatch, installation=_installation())
+    for name, data in files.items():
+        (tmp_path / name).write_bytes(data)
+    monkeypatch.setattr(setup_tracker, "app_credentials", partial(app_credentials, tmp_path))
+    monkeypatch.setattr(setup_tracker, "app_jwt", app_jwt)
+    report = Report()
+    setup_tracker.check_app(report)
+    assert report.differences == 1
+    assert said in report.lines[-1]
 
 
 @pytest.mark.parametrize(

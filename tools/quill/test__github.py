@@ -13,8 +13,10 @@ from tools.quill._github import (
     API,
     RATE_LIMIT_BUDGET_SECONDS,
     RATE_LIMIT_RETRIES,
+    CredentialsError,
     GitHub,
     GitHubError,
+    app_credentials,
     app_jwt,
     installation_token,
 )
@@ -85,6 +87,105 @@ def test_app_jwt_refuses_a_key_that_is_not_rsa():
     key = ec.generate_private_key(ec.SECP256R1())
     with pytest.raises(ValueError, match="RSA"):
         app_jwt("Iv23client", _pem(key), now=1_000_000)
+
+
+def _unknown_key_type() -> bytes:
+    """A PKCS#8 private key whose algorithm is the OID 1.2.3.4, which ``cryptography``
+    raises UnsupportedAlgorithm for (measured on 50.0.2)."""
+    oid = bytes([0x06, 0x03, 0x2A, 0x03, 0x04])
+    body = bytes([0x02, 0x01, 0x00, 0x30, len(oid)]) + oid + bytes([0x04, 0x02, 0x00, 0x00])
+    der = bytes([0x30, len(body)]) + body
+    return (b"-----BEGIN PRIVATE KEY-----\n" + base64.encodebytes(der)
+            + b"-----END PRIVATE KEY-----\n")
+
+
+def _too_small_to_sign():
+    """An RSA key with a 64-bit modulus: it loads, and signing an RS256 token with it
+    raises ValueError ("Digest or salt length too long for key size", measured)."""
+    p, q, e = 4294967291, 4294967279, 65537
+    d = pow(e, -1, (p - 1) * (q - 1))
+    return rsa.RSAPrivateNumbers(p, q, d, d % (p - 1), d % (q - 1), pow(q, -1, p),
+                                 rsa.RSAPublicNumbers(e, p * q)).private_key()
+
+
+def _encrypted(key) -> bytes:
+    """A private key as PEM, encrypted under a password quill is never given."""
+    return key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                             serialization.BestAvailableEncryption(b"pw"))
+
+
+@pytest.mark.parametrize("pem", [
+    pytest.param(lambda: b"not a pem", id="not-pem"),
+    pytest.param(lambda: _pem(rsa.generate_private_key(public_exponent=65537,
+                                                       key_size=2048))[:200], id="cut-short"),
+    pytest.param(lambda: _encrypted(rsa.generate_private_key(public_exponent=65537,
+                                                             key_size=2048)), id="encrypted"),
+    pytest.param(_unknown_key_type, id="unknown-type"),
+    pytest.param(lambda: _pem(ec.generate_private_key(ec.SECP256R1())), id="not-rsa"),
+    pytest.param(lambda: _pem(_too_small_to_sign()), id="too-small"),
+])
+def test_a_key_quill_cannot_sign_with_is_a_credentials_error(pem):
+    """L9d: a corrupt, encrypted, unknown or non-RSA ``app.pem`` raised ValueError,
+    TypeError or UnsupportedAlgorithm, which escaped every command as a traceback with
+    exit 1, the code that means refused; each is now the one named error."""
+    with pytest.raises(CredentialsError):
+        app_jwt("Iv23client", pem(), now=1_000_000)
+
+
+@pytest.mark.parametrize(("text", "why"), [
+    pytest.param(b"{not json", "is not JSON", id="not-json"),
+    pytest.param(b'{"client_id": "\xff"}', "is not JSON", id="not-utf8"),
+    pytest.param(b'["Iv23client"]', "holds no client_id", id="not-an-object"),
+    pytest.param(b'{"app_id": 7}', "holds no client_id", id="no-client-id"),
+    pytest.param(b'{"client_id": ""}', "holds no client_id", id="empty"),
+    pytest.param(b'{"client_id": 7}', "holds no client_id", id="not-a-string"),
+    pytest.param(b'{"client_id": "x", "n": ' + b"1" * 5000 + b"}", "is not JSON",
+                 id="integer-too-long"),
+])
+def test_an_app_json_holding_no_client_id_is_a_credentials_error(tmp_path, text, why):
+    """L9d: each of these escaped as a traceback (JSONDecodeError, UnicodeDecodeError,
+    ValueError, KeyError, AttributeError or TypeError), or passed on a value that is no
+    client ID.  The parser's RecursionError, the one more escape, has its own case:
+    :func:`test_an_app_json_the_parser_cannot_nest_that_deep_is_a_credentials_error`."""
+    (tmp_path / "app.json").write_bytes(text)
+    (tmp_path / "app.pem").write_bytes(b"pem")
+    with pytest.raises(CredentialsError, match=why):
+        app_credentials(tmp_path)
+
+
+def test_an_app_json_the_parser_cannot_nest_that_deep_is_a_credentials_error(tmp_path,
+                                                                            monkeypatch):
+    """L9d: ``json.loads`` raising RecursionError on nesting deeper than it can parse
+    escaped as a traceback; it is ``app.json`` "is not JSON".  No real input pins this arm
+    on every host: Python 3.14's C parser is bounded by the stack it uses, so where it
+    gives up depends on the host and the Python build.  Measured: on the developer's host
+    (CPython 3.14.8, ``ulimit -s`` 8192) 50,000 nested arrays parse and 75,000 raise
+    "Stack overflow (used 8148 kB) while decoding a JSON array"; GitHub's runner parsed
+    100,000 (CI job 117731545129, 2026-10-18), so a case built on 100,000 failed there.
+    Any deeper input is the same bet on a stack size, so the parse is made to raise what
+    the host measured raises."""
+    def too_deep(_text):
+        """The parser giving up as the host measured it does."""
+        raise RecursionError("Stack overflow (used 8148 kB) while decoding a JSON array "
+                             "from a unicode string")
+
+    monkeypatch.setattr("tools.quill._github.json.loads", too_deep)
+    (tmp_path / "app.json").write_text('{"client_id": "Iv23client"}', encoding="utf-8")
+    (tmp_path / "app.pem").write_bytes(b"pem")
+    with pytest.raises(CredentialsError, match="is not JSON: Stack overflow"):
+        app_credentials(tmp_path)
+
+
+def test_the_app_credentials_are_read_from_their_two_files(tmp_path):
+    """The client ID from ``app.json``, the key's bytes from ``app.pem``; a missing file
+    stays the FileNotFoundError reading it raises, which every command reports already."""
+    with pytest.raises(FileNotFoundError):
+        app_credentials(tmp_path)
+    (tmp_path / "app.json").write_text('{"client_id": "Iv23client"}', encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        app_credentials(tmp_path)
+    (tmp_path / "app.pem").write_bytes(b"pem")
+    assert app_credentials(tmp_path) == ("Iv23client", b"pem")
 
 
 def test_rest_sends_the_token_and_api_version_and_decodes_the_body():

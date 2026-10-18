@@ -79,7 +79,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
-from tools.quill._tracker import Card, Claim
+from tools.quill._tracker import BareCard, Card, Claim
 from tools.quill.setup_tracker import FILING
 
 #: The build plan: "``plan next`` reports a claim older than 3 days with no pushed branch"
@@ -90,7 +90,8 @@ STALE_CLAIM = timedelta(days=3)
 SHIPPABLE = ("step", "finding")
 
 
-def leaves(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> tuple[int, ...]:
+def leaves(card: BareCard, cards: Mapping[int, BareCard],
+           shipped: Iterable[int]) -> tuple[int, ...]:
     """The steps ``card`` splits into, the one spelling: each step linked under it
     (:attr:`_tracker.Card.step_children`; the findings and rulings it owns decide
     nothing, R-BAL177) but one dropped before its filing finished -- CLOSED while still
@@ -118,26 +119,39 @@ def never_split(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -
     return tuple(number for number in card.step_children if number not in split)
 
 
-def is_container(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> bool:
+def is_container(card: BareCard, cards: Mapping[int, BareCard], shipped: Iterable[int]) -> bool:
     """A step split into steps: one with a leaf (:func:`leaves`).  A card that is not a
     step is no container, whatever hangs under it."""
     return card.kind == "step" and bool(leaves(card, cards, shipped))
 
 
-def is_work(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> bool:
+def is_work(card: BareCard, cards: Mapping[int, BareCard], shipped: Iterable[int]) -> bool:
     """Whether a card is something a branch builds and a commit ships: a step or a
     finding, and not a container."""
     return card.kind in SHIPPABLE and not is_container(card, cards, shipped)
 
 
-def withdrawn(card: Card) -> bool:
+def no_work(card: BareCard, cards: Mapping[int, BareCard], shipped: Iterable[int]) -> str | None:
+    """What ``card`` is when it is no work (:func:`is_work`), for a line saying so -- ``a
+    container`` (:func:`is_container`), ``a card with no type``, or its type, ``a ruling``,
+    ``a question`` or any other -- or None when it is work: how ``sync``'s history and CI's
+    landing check both name such a card.  (``tools/release/_cards._what`` still names a
+    card with no type its own way, ``a card of no type``: a tracker card at the cutover.)"""
+    if is_work(card, cards, shipped):
+        return None
+    if is_container(card, cards, shipped):
+        return "a container"
+    return f"a {card.kind}" if card.kind else "a card with no type"
+
+
+def withdrawn(card: BareCard) -> bool:
     """Whether ``card`` is a ruling withdrawn: closed as anything but completed -- not
     planned or a duplicate, by ``quill drop`` or a person (R-BAL206).  A ruling closed as
     completed, by anyone, is a record."""
     return card.kind == "ruling" and not card.is_open and card.state_reason != "COMPLETED"
 
 
-def filing_ended(card: Card) -> bool:
+def filing_ended(card: BareCard) -> bool:
     """Whether ``card``'s filing ended without standing: a ruling :func:`withdrawn`, marked
     or not, or any other card CLOSED while still marked.  A ruling closed as completed
     while marked is no such card: its filing is unfinished.  Of two cards a filing may
@@ -157,7 +171,7 @@ def withdrawn_filing(card: Card, shipped: Iterable[int]) -> bool:
     return filing_ended(card) and not (card.kind in SHIPPABLE and card.number in set(shipped))
 
 
-def filing_unfinished(card: Card) -> bool:
+def filing_unfinished(card: BareCard) -> bool:
     """Whether ``card``'s filing has not finished (R-BAL202) -- one still running, or one a
     failure cut short: it still carries the filing mark, and is open, or is a ruling
     closed as completed, by its own filing (which closes it before the last write removes
@@ -169,7 +183,7 @@ def filing_unfinished(card: Card) -> bool:
         card.kind == "ruling" and not withdrawn(card)))
 
 
-def _shown_shipped(card: Card) -> bool:
+def _shown_shipped(card: BareCard) -> bool:
     """Closed by the tool as completed: the tool's display that git says it shipped,
     which follows git and decides nothing."""
     return not card.is_open and card.closed_by_tool and card.state_reason == "COMPLETED"
@@ -182,13 +196,13 @@ def unshipped_shown_done(card: Card, shipped: Iterable[int]) -> bool:
     return card.number not in set(shipped) and _shown_shipped(card)
 
 
-def _closed_dropped(card: Card) -> bool:
+def _closed_dropped(card: BareCard) -> bool:
     """A card that is no container closed by a person (for any reason), or by the tool as
     not planned (``quill drop``)."""
     return not card.is_open and not _shown_shipped(card)
 
 
-def dropped(number: int, cards: Mapping[int, Card], shipped: set[int]) -> bool:
+def dropped(number: int, cards: Mapping[int, BareCard], shipped: set[int]) -> bool:
     """Whether a card was dropped.
 
     A piece of work: closed as dropped, and not shipped (git's answer, whoever
@@ -211,7 +225,7 @@ def above(card: Card, cards: Mapping[int, Card]) -> Iterator[Card]:
         yield card
 
 
-def missing(cards: Mapping[int, Card]) -> set[int]:
+def missing(cards: Mapping[int, BareCard]) -> set[int]:
     """Cards the decisions below would read that ``cards`` does not hold yet:
     blockers, parents, and every step linked under a card, each read to decide whether
     it is a leaf (:func:`leaves`; the findings and rulings a card owns decide
@@ -702,10 +716,9 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int], claims: Mapping
                 "closes: close it by hand"
             )
         container = is_container(card, cards, shipped)
-        if card.number in shipped and not is_work(card, cards, shipped):
+        if card.number in shipped and (what := no_work(card, cards, shipped)):
             plan.history.append(
-                f"a Ships trailer names plan#{card.number}, a "
-                f"{'container' if container else card.kind or 'card with no type'}, "
+                f"a Ships trailer names plan#{card.number}, {what}, "
                 "which no commit ships: a mistyped or stale number? It is not acted on"
             )
         if container and (claim := claims.get(card.number)):

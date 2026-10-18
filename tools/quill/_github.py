@@ -51,6 +51,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import requests
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
@@ -97,6 +98,16 @@ class GitHubError(RuntimeError):
         """Keep the HTTP status beside the message (200 for a GraphQL error)."""
         super().__init__(message)
         self.status = status
+
+
+class CredentialsError(ValueError):
+    """The App's credentials in :data:`APP_DIR` are there but cannot be used: ``app.json``
+    holds no client ID, or ``app.pem`` no RSA private key quill can sign a token with.
+    Raised where each file is read or parsed (:func:`app_credentials`, :func:`app_jwt`).
+    ``quill`` and ``release plan`` report it as a tracker they cannot reach (exit 2) and
+    ``setup_tracker`` as a difference (exit 1); ``migrate`` does not catch it, and its
+    docstring names an App key file that cannot be parsed as a traceback (exit 1).  A
+    file that is MISSING stays the :class:`FileNotFoundError` reading it raises."""
 
 
 def _graphql_errors_say_rate_limit(response) -> bool:
@@ -285,10 +296,20 @@ def app_jwt(client_id: str, private_key_pem: bytes, now: int) -> str:
 
     RS256 (RSASSA-PKCS1-v1_5 over SHA-256), issuer the App's client ID, which
     GitHub's App documentation recommends over the numeric App ID.
+
+    Raises:
+        CredentialsError: When ``private_key_pem`` is no RSA private key quill can sign
+            with: not PEM or corrupt (``cryptography`` raises ValueError), encrypted
+            (TypeError, no password being given), of a key type it does not support
+            (UnsupportedAlgorithm), a key of another algorithm, or an RSA key too small
+            to sign an RS256 token (ValueError at signing).
     """
-    key = serialization.load_pem_private_key(private_key_pem, password=None)
+    try:
+        key = serialization.load_pem_private_key(private_key_pem, password=None)
+    except (ValueError, TypeError, UnsupportedAlgorithm) as error:
+        raise CredentialsError(f"the App's private key cannot be loaded: {error}") from error
     if not isinstance(key, rsa.RSAPrivateKey):
-        raise ValueError("a GitHub App private key is an RSA key")
+        raise CredentialsError("a GitHub App private key is an RSA key")
     header = _segment(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
     claims = {
         "iat": now - _CLOCK_SKEW_SECONDS,
@@ -296,13 +317,33 @@ def app_jwt(client_id: str, private_key_pem: bytes, now: int) -> str:
         "iss": client_id,
     }
     signing_input = f"{header}.{_segment(json.dumps(claims).encode())}"
-    signature = key.sign(signing_input.encode("ascii"), padding.PKCS1v15(), hashes.SHA256())
+    try:
+        signature = key.sign(signing_input.encode("ascii"), padding.PKCS1v15(),
+                             hashes.SHA256())
+    except ValueError as error:
+        raise CredentialsError(f"the App's private key cannot sign a token: {error}") from error
     return f"{signing_input}.{_segment(signature)}"
 
 
 def app_credentials(app_dir: Path = APP_DIR) -> tuple[str, bytes]:
-    """The App's client ID and private key, read from ``app_dir``."""
-    client_id = json.loads((app_dir / "app.json").read_text())["client_id"]
+    """The App's client ID and private key, read from ``app_dir``.
+
+    Raises:
+        CredentialsError: When ``app.json`` is not UTF-8 JSON that Python's parser takes
+            (``json.loads`` raises ValueError, JSONDecodeError and UnicodeDecodeError among
+            them, and RecursionError past its nesting limit), or not an object holding a
+            ``client_id`` that is a non-empty string.
+        OSError: When either file cannot be read (FileNotFoundError when it is missing).
+    """
+    path = app_dir / "app.json"
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, RecursionError) as error:
+        raise CredentialsError(f"{path} is not JSON: {error}") from error
+    client_id = config.get("client_id") if isinstance(config, dict) else None
+    if not isinstance(client_id, str) or not client_id:
+        raise CredentialsError(f"{path} holds no client_id: it is a JSON object whose "
+                               "client_id is the App's client ID, a non-empty string")
     return client_id, (app_dir / "app.pem").read_bytes()
 
 
