@@ -19,6 +19,8 @@ the source went through, then holds each block against the source's:
   ``__future__`` import, or a ``from ._helpers`` import of helpers; none binds a name pytest
   would collect.  Each output's free names resolve in it, it imports nothing it does not
   read (beyond the plan's placed unused imports), and every source alias lands somewhere.
+  The ``__future__`` statements are a directive, not names to read: each output carries
+  exactly the source's.
 * **Size.**  Every file is under the line budget.
 """
 from __future__ import annotations
@@ -85,15 +87,33 @@ def _same_block(tally: _Tally, where: str, out: tuple[tuple[str, ...], ast.AST],
         tally.fail(f"{where}: ast.dump differs from the source's")
 
 
+def _futures(imports: tuple[ImportStmt, ...]) -> list[tuple[tuple[str, str | None], ...]]:
+    """Each ``from __future__`` statement among ``imports``, as its features in order."""
+    return [tuple((a.name, a.asname) for a in stmt.node.names)
+            for stmt in imports if stmt.is_future]
+
+
 def _check_imports(tally: _Tally, layout: Layout, module: str,
                    imports: tuple[ImportStmt, ...], rules: CollectRules) -> set[str]:
     """Fail any import that is not a filtered source import, the future import, or a
-    helpers import; return the names the output's imports bind."""
-    bound: set[str] = set()
+    helpers import, and an output that does not carry exactly the source's ``__future__``
+    statements; return the names the output's imports bind for its code to read.
+
+    A ``__future__`` statement is a DIRECTIVE to the compiler, not a name an output's code
+    reads: the writer repeats it in every output whether or not anything there reads
+    ``annotations``, so its names are left out of what this returns, and an output that
+    reads none of them is not importing something unread.  It is CONSERVED instead: each
+    output must carry exactly the source's ``__future__`` statements, a fact this proves
+    rather than trusts the writer for, since an output that dropped one would evaluate its
+    annotations differently and a test's outcome need not show it."""
     sources = layout.source.imports
+    if _futures(imports) != _futures(sources):
+        tally.fail(f"{module}: carries the __future__ statements {_futures(imports)}, not the "
+                   f"source's {_futures(sources)}")
+    bound: set[str] = set()
     for stmt in imports:
         node = stmt.node
-        names = stmt.bindings()
+        names = {} if stmt.is_future else stmt.bindings()
         bound |= set(names)
         for name in names:
             if rules.is_test_name(name):
@@ -110,7 +130,7 @@ def _check_imports(tally: _Tally, layout: Layout, module: str,
                 node, "module", None) and getattr(s.node, "level", 0) == getattr(node, "level", 0)
                 and aliases <= {(a.name, a.asname) for a in s.node.names} for s in sources):
             tally.fail(f"{module}: import at line {node.lineno} is not a source import")
-        tally.aliases |= set(names) if not stmt.is_future else set()
+        tally.aliases |= set(names)
     return bound
 
 
