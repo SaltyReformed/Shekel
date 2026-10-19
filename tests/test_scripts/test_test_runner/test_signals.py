@@ -253,6 +253,39 @@ class TestASignalEndsTheRunByItself:
         assert not (tmp_path / "stub-container").exists(), _calls(tmp_path)
         assert not list(runtime.glob("shekel-cluster-*")), "the socket directory was left"
 
+    def test_a_kill_alone_to_the_wrapper_during_docker_run_leaves_nothing(
+        self, tmp_path: Path, runtime: Path
+    ) -> None:
+        """A KILL to the wrapper's PID alone while the start's ``docker run`` is in flight: the
+        start goes on, finds nobody left to hand the cluster over to, and stops what carries its
+        token, naming why.
+
+        Nothing else can stop it: a KILL runs no trap, so the wrapper that made the token is
+        gone.  On commit B2 the start wrote its two lines into stdout's buffer and returned, the
+        write failed only at the interpreter's exit (BrokenPipeError, exit 120), and the
+        container and its socket directory were left, three of three (measured 2026-10-19,
+        T10; K1a commit B3).  The stub ``run`` takes 1.5 s; the case waits for every process
+        holding the wrapper's output, the start among them, so the start's last words are the
+        last on that output.
+
+        Args:
+            tmp_path: The stubs' scratch directory.
+            runtime: ``XDG_RUNTIME_DIR``.
+        """
+        binaries = _stub_tree(tmp_path)
+        (tmp_path / "run-seconds").write_text("1.5", encoding="utf-8")
+        running = _launch_wrapper(binaries, runtime, {})
+        _wait_for(lambda: "run" in _calls(tmp_path), running)
+        _send(running, signal.SIGKILL, False)
+        ended = _end(running)
+
+        assert ended.returncode == -signal.SIGKILL, "the wrapper ended before the KILL"
+        assert not (tmp_path / "stub-container").exists(), _calls(tmp_path)
+        assert not list(runtime.glob("shekel-cluster-*")), "the socket directory was left"
+        assert ended.stderr.endswith(
+            "[private_cluster] container stubcontainer accepts connections but could not be "
+            "handed over: EPIPE (Broken pipe)\n"), ended.stderr
+
     def test_the_start_is_handed_sigint_at_its_default(
         self, tmp_path: Path, runtime: Path
     ) -> None:

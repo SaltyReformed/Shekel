@@ -221,19 +221,22 @@ def _unpin(directory: Path) -> None:
 
 
 def test_a_started_cluster_is_reached_by_its_socket_and_stopping_it_leaves_nothing(
-        docker, runtime, capsys):
+        docker, runtime, capfd):
     """``start`` makes the token's socket directory open to the container (0777), starts the
     container labelled with the token, probes it over ``/sockets`` by its id and prints the
     socket directory, then the container's id; the socket is in it.  ``stop`` lists what
     carries the token, removes it by id with its volume, lists again, removes the directory,
-    names nothing and exits 0.  The start asks docker nothing before its run."""
+    names nothing and exits 0.  The start asks docker nothing before its run.
+
+    The two lines are read from the process's file descriptor 1, where ``test.sh`` reads
+    them: the start writes them there as bytes, never through ``sys.stdout`` (K1a commit B3)."""
     stub = docker()
     assert private_cluster.main(["start", _NAME, _TOKEN, _IMAGE]) == 0
-    assert capsys.readouterr().out.splitlines() == [str(runtime / _DIRECTORY), _MADE]
+    assert capfd.readouterr().out.splitlines() == [str(runtime / _DIRECTORY), _MADE]
     assert (runtime / _DIRECTORY / ".s.PGSQL.5432").is_socket()
     assert (runtime / _DIRECTORY).stat().st_mode & 0o777 == 0o777
     assert private_cluster.main(["stop", _TOKEN]) == 0
-    assert capsys.readouterr().err == ""
+    assert capfd.readouterr().err == ""
     assert not (runtime / _DIRECTORY).exists()
     assert not stub.made.exists()
     calls = stub.calls()
@@ -608,6 +611,120 @@ def test_a_signal_after_the_start_s_last_look_reaches_its_caller(docker, monkeyp
         signal.signal(signal.SIGINT, before)
     assert caught == [signal.SIGINT]
     assert cluster.container == _MADE
+
+
+def _unwritable(kind: str) -> int:
+    """A file descriptor nothing can be written to, for a start's stdout; the caller closes
+    it.  ``"a pipe nobody reads"`` is a pipe whose read end is already closed, as a caller
+    KILLed while it waited leaves one; ``"a full disk"`` is ``/dev/full``."""
+    if kind == "a full disk":
+        return os.open("/dev/full", os.O_WRONLY)
+    reader, writer = os.pipe()
+    os.close(reader)
+    return writer
+
+
+# The module's start as a command, and the same command run with NO descriptor 1 at all: a
+# caller that closed its own stdout first (``1>&-``), which leaves ``sys.stdout`` None.
+_START = [sys.executable, str(_MODULE), "start", _NAME, _TOKEN, _IMAGE]
+_START_WITHOUT_STDOUT = ["bash", "-c", 'exec 1>&-; exec "$@"', "-", *_START]
+
+
+@pytest.mark.parametrize(("command", "unwritable", "said"), [
+    (_START, "a pipe nobody reads", "EPIPE (Broken pipe)"),
+    (_START, "a full disk", "ENOSPC (No space left on device)"),
+    (_START_WITHOUT_STDOUT, "a pipe nobody reads", "EBADF (Bad file descriptor)"),
+], ids=["a pipe nobody reads", "a full disk", "no stdout at all"])
+def test_a_start_that_cannot_hand_its_cluster_over_stops_it_and_exits_2(
+        docker, runtime, command, unwritable, said):
+    """K1a commit B3 (T10): a start whose cluster accepts connections but whose two lines
+    cannot be written stops what carries its token and exits 2, naming the write's own error,
+    with no traceback: whoever started it cannot read the cluster, so nothing else will stop
+    it.  Any write that fails is one: to a closed pipe (its caller gone), to a full disk, or
+    with no stdout at all.  On commit B2 the lines sat in stdout's buffer until the
+    interpreter's exit, where the write failed after the start had returned ("Exception
+    ignored", exit 120), and both were left; with no stdout, B3's first draft, which flushed
+    ``sys.stdout``, ended in an AttributeError traceback, exit 1, and left both too."""
+    stub = docker()
+    out = _unwritable(unwritable)
+    try:
+        started = subprocess.run(command, stdout=out, stderr=subprocess.PIPE, text=True,
+                                 check=False, timeout=30)
+    finally:
+        os.close(out)
+    assert (started.returncode, started.stderr) == (
+        2, f"[private_cluster] container {_MADE} accepts connections but could not be handed "
+           f"over: {said}\n")
+    assert stub.calls()[-2:] == [f"rm -fv {_MADE}", _LISTED]
+    assert not stub.made.exists()
+    assert not (runtime / _DIRECTORY).exists()
+
+
+def test_the_handover_is_the_socket_directory_s_own_bytes_whatever_the_output_encoding(
+        docker, runtime):
+    """The handover writes the socket directory's own bytes (``os.fsencode``), whatever
+    encoding Python's text output has: here ``PYTHONIOENCODING=ascii`` and a socket directory
+    under a directory named U+00E9 (an accented e), which an ASCII text stream cannot spell
+    (it raises UnicodeEncodeError, which is no OSError).  The start succeeds, and its stdout
+    is exactly the directory's bytes, then the container's id: the claim of the
+    coordinator's ruling (a') on commit B3 that this class of failure is gone.
+
+    Compared as bytes, whose repr is ASCII: a failure message holding the path itself cannot
+    be sent between xdist's processes (the not-UTF-8 case below says so)."""
+    stub = docker()
+    accented = runtime / "é"
+    started = subprocess.run(_START, capture_output=True, check=False, timeout=30,
+                             env={**os.environ, "XDG_RUNTIME_DIR": str(accented),
+                                  "PYTHONIOENCODING": "ascii"})
+    assert (started.returncode, started.stderr) == (0, b"")
+    assert started.stdout == os.fsencode(accented / _DIRECTORY) + b"\n" + _MADE.encode() + b"\n"
+    assert stub.made.exists()
+
+
+def test_a_start_whose_stdout_and_stderr_are_both_gone_still_stops_its_cluster(
+        docker, runtime):
+    """``test.sh``'s start inherits the wrapper's stderr, so a run piped into a pipeline that
+    is then killed (``test.sh 2>&1 | tee log``) leaves the start with BOTH outputs gone (the
+    coordinator's condition A on commit B3).  It still stops what carries its token, since
+    it writes nothing on stderr before or during that stop, and only then fails to say so:
+    the report raises in turn, and CPython, unable to flush stderr as it exits, exits 120
+    (measured 2026-10-19), a status ``test.sh`` reads as the failed start it is."""
+    stub = docker()
+    out, err = _unwritable("a pipe nobody reads"), _unwritable("a pipe nobody reads")
+    try:
+        started = subprocess.run(_START, stdout=out, stderr=err, check=False, timeout=30)
+    finally:
+        os.close(out)
+        os.close(err)
+    assert started.returncode == 120
+    assert stub.calls()[-2:] == [f"rm -fv {_MADE}", _LISTED]
+    assert not stub.made.exists()
+    assert not (runtime / _DIRECTORY).exists()
+
+
+def test_a_term_inside_a_failed_handover_s_stop_lets_the_stop_finish(docker, runtime):
+    """A TERM that lands while a start that could not hand its cluster over is stopping it
+    (its slow ``rm``) is HELD like any other: the stop finishes, lists again (the call that
+    names a survivor) and removes the socket directory, and the start then ends BY the TERM
+    with nothing left and nothing said.  The handover is the start's last held step, so its
+    failure takes the start's one stop (the ruling on K1a commit B, item 6: the caller's
+    signals are held until the handover or a finished stop).  A stop run once the hold had
+    ended died at the TERM with its ``rm`` in flight, and left the socket directory."""
+    stub = docker(_Behaviour(slow="rm"))
+    out = _unwritable("a full disk")
+    try:
+        with subprocess.Popen(_START, stdout=out, stderr=subprocess.PIPE, text=True,
+                              start_new_session=True) as start:
+            _wait_for(stub, "rm")
+            start.send_signal(signal.SIGTERM)
+            _, err = _ended(start, runtime)
+    finally:
+        os.close(out)
+    assert (start.returncode, err) == (-signal.SIGTERM, "")
+    calls = stub.calls()
+    assert calls[calls.index(f"rm -fv {_MADE}") + 1:] == [_LISTED], calls
+    assert not stub.made.exists()
+    assert not (runtime / _DIRECTORY).exists()
 
 
 def test_stop_names_a_container_that_survived_and_exits_1(docker, runtime, capsys):

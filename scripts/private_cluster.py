@@ -26,15 +26,20 @@ Usage::
 
 ``token`` prints a new token.  ``start`` prints the socket directory, then the container's
 id, one per line, once the cluster accepts connections there.  A start that fails stops
-what it made, naming anything that stop left behind; one killed outright (KILL) cannot,
-which is why the caller makes the token before starting and stops by it.  ``stop`` removes
+what it made, naming anything that stop left behind, and writing those two lines is the
+last thing it can fail at: a start that cannot write them -- to a pipe nobody reads any
+more, its caller killed while it waited, or anywhere else a write fails -- stops the
+cluster too, since no caller can have it (K1a commit B3).  One killed outright (KILL)
+cannot stop anything, which is why the caller makes the token before starting and stops
+by it.  ``stop`` removes
 the token's container with its anonymous volume, and its socket directory, and names on
 stderr anything that survived or could not be asked about; it is safe to run on a cluster
 that never started, or twice, which is what lets a caller's signal traps call it whenever
 they fire.
 
 From just before it makes anything until it has handed over a cluster that accepts
-connections, or has stopped what it made, the start HOLDS its caller's signals (INT, TERM,
+connections (on the command line: until those two lines are written), or has stopped what
+it made, the start HOLDS its caller's signals (INT, TERM,
 HUP): it acts on one between docker commands, never inside one, and finishes its own stop
 before ending BY that signal, naming what the stop left, so a calling shell sees the signal
 and stops too.  Every docker command runs in a session of its own, so a terminal's Ctrl-C
@@ -43,8 +48,11 @@ reaches this process and never a docker command it is waiting on: aborting the C
 looked (the delta review of 668b53c99 + bb2f1492a, MEDIUM-A).
 
 Exit status: 0 done; 1 ``stop`` left something behind, each named; 2 ``start`` could not give
-a cluster that accepts connections, or refused before making anything (each reason printed,
-and anything its own stop left behind), or the command line was wrong.  A start ended by a
+a cluster that accepts connections, or could not hand one over, or refused before making
+anything (each reason printed, and anything its own stop left behind), or the command line
+was wrong.  A start that cannot write on stderr either, to say why, has run its stop all
+the same, and exits 120, CPython's status for an output it cannot flush as it exits.  A
+start ended by a
 held signal ends BY that signal, as Python ends on an unhandled Ctrl-C; ``main`` ends the
 process it runs in that way, so a caller in process wants :func:`start`, which raises
 :class:`Interrupted` instead.
@@ -61,6 +69,7 @@ Standard library only: ``test.sh`` runs it before any environment is known to ho
 from __future__ import annotations
 
 import argparse
+import errno
 import math
 import os
 import re
@@ -71,6 +80,7 @@ import stat
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import FrameType, TracebackType
@@ -499,7 +509,8 @@ def _wait_ready(name: str, container: str, directory: Path, seconds: float,
         raise ClusterError(f"{name} reported ready but left no socket at {socket_file}")
 
 
-def start(name: str, token: str, image: str) -> Cluster:
+def start(name: str, token: str, image: str, *,
+          hand_over: Callable[[Cluster], None] | None = None) -> Cluster:
     """Start a cluster owned by ``token``, its container named ``name``, from ``image``, and
     wait until it accepts connections.
 
@@ -514,10 +525,17 @@ def start(name: str, token: str, image: str) -> Cluster:
     the signal wins over a failure it met, since the caller asked the start to end.  One
     killed outright (KILL) stops nothing, so its caller, which holds the token, stops by it.
 
-    Once this returns, the cluster is its caller's: a signal recorded after the start's last
-    look is raised again under the caller's own handlers, so it reaches the caller, which
-    holds the token.  A signal that lands after the start has decided how to end, inside
-    its own stop or after, does not change that end.
+    ``hand_over``, when given, is the start's LAST held step: it is called with the cluster
+    once it accepts connections, and a :class:`ClusterError` it raises fails the start like
+    any other failure, so the start stops what it made with the caller's signals still held.
+    :func:`main` hands the cluster over by writing it out (:func:`_hand_over`), the one step
+    that can fail with nobody left to stop the cluster; a caller in process is handed it by
+    this returning, and passes none.
+
+    Once it is handed over, the cluster is its caller's: a signal recorded after the start's
+    last look is raised again under the caller's own handlers, so it reaches the caller,
+    which holds the token.  A signal that lands after the start has decided how to end,
+    inside its own stop or after, does not change that end.
 
     Raises:
         ClusterError: when the start is refused or fails, naming why and what its stop left.
@@ -533,6 +551,9 @@ def start(name: str, token: str, image: str) -> Cluster:
             container = _run_container(name, token, image, directory)
             held.act()
             _wait_ready(name, container, directory, seconds, held)
+            cluster = Cluster(container, directory)
+            if hand_over is not None:
+                hand_over(cluster)
         except KeyboardInterrupt as interrupted:
             # Raised by ``held.act()``, or in process by the caller's own Ctrl-C handler.
             raise Interrupted(held.signals[0] if held.signals else signal.SIGINT,
@@ -545,7 +566,7 @@ def start(name: str, token: str, image: str) -> Cluster:
                 raise ClusterError(f"{failed}.  Stopping it left something behind: "
                                    + " ".join(survived)) from failed
             raise
-    return Cluster(container, directory)
+    return cluster
 
 
 def stop(token: str) -> list[str]:
@@ -597,15 +618,51 @@ def _warn(survived: list[str]) -> None:
         print(f"[private_cluster] WARNING: {line}", file=sys.stderr)
 
 
+def _hand_over(cluster: Cluster) -> None:
+    """Hand ``cluster`` over on file descriptor 1: its socket directory, then its container's
+    id, one per line, as the start's last held step (:func:`start`).
+
+    The lines go out as BYTES, straight to the descriptor and never through ``sys.stdout``,
+    so that every way the write can fail is an OSError raised HERE, where the start can still
+    stop the cluster (the coordinator's ruling (a') on commit B3).  Through Python's text
+    layer, three ways were not.  The lines sat in its buffer until the interpreter's exit, so
+    a write to a caller gone by then -- one KILLed while it waited -- failed after the start
+    had returned: a KILL to ``test.sh`` alone during ``docker run`` left the container and
+    its socket directory, three of three on 184a0fc67 (T10, measured 2026-10-19).
+    ``sys.stdout`` is None when descriptor 1 was closed at launch, and flushing it raised an
+    AttributeError (measured on this commit's first draft: a traceback, exit 1, the cluster
+    left).  And a text stream must spell the path in ITS encoding, which need not hold it.
+    Here the path is encoded by ``os.fsencode``, as it came from the filesystem, and a
+    buffered binary writer writes every byte or raises, flushed and closed here (closing it
+    leaves the descriptor open).  So a pipe nobody reads is EPIPE, a full disk ENOSPC, and no
+    descriptor 1 at all EBADF, each measured, and nothing is left for the exit to flush.  ANY
+    failed write means the caller cannot have the cluster, so the start fails and stops it.
+
+    Raises:
+        ClusterError: when the lines cannot be written, naming the write's own error.
+    """
+    lines = b"".join(os.fsencode(line) + b"\n" for line in (cluster.socket_dir, cluster.container))
+    try:
+        with open(1, "wb", closefd=False) as out:
+            out.write(lines)
+            out.flush()
+    except OSError as exc:
+        raise ClusterError(f"container {cluster.container} accepts connections but could not "
+                           f"be handed over: {errno.errorcode.get(exc.errno, exc.errno)} "
+                           f"({exc.strerror})") from exc
+
+
 def _end_by(signum: int) -> int:
     """End this process BY ``signum``, as Python ends on a Ctrl-C nothing handled, so a
     calling shell sees the signal and stops too: an exit status of 130 tells a shell the
     child dealt with the Ctrl-C itself, and the shell carries on with its next command.
 
-    The default disposition skips the interpreter's own flush, and nothing needs it here:
-    no arm that ends this way has printed to stdout, and stderr is line-buffered, so each
-    warning is written as it is printed.  The status is returned only should the signal not
-    end the process, which is CPython's own fallback in ``exit_sigint`` (128 + the signal).
+    The default disposition skips the interpreter's own flush, and nothing needs it here: no
+    arm that ends this way has printed to ``sys.stdout`` (the handover writes and flushes its
+    own bytes, :func:`_hand_over`), and stderr is line-buffered, so each warning is written as
+    it is printed.  The status is returned only
+    should the signal not end the process, which is CPython's own fallback in
+    ``exit_sigint`` (128 + the signal).
     """
     signal.signal(signum, signal.SIG_DFL)
     os.kill(os.getpid(), signum)
@@ -615,15 +672,13 @@ def _end_by(signum: int) -> int:
 def _start(args: argparse.Namespace) -> int:
     """``start``, as the module says; its exit status."""
     try:
-        cluster = start(args.name, args.token, args.image)
+        start(args.name, args.token, args.image, hand_over=_hand_over)
     except ClusterError as exc:
         print(f"[private_cluster] {exc}", file=sys.stderr)
         return 2
     except Interrupted as interrupted:
         _warn(list(interrupted.args))
         return _end_by(interrupted.signum)
-    print(cluster.socket_dir)
-    print(cluster.container)
     return 0
 
 
