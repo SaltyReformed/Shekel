@@ -49,7 +49,6 @@ from app import ref_cache
 from app.enums import PostingSourceEnum, StatusEnum
 from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import posting_service, transfer_service
@@ -669,12 +668,13 @@ class TestZeroCorrectionWithdrawsTheLegs:
             assert len(movement_sourced) == 4
             assert {e.transaction_entry_id for e in movement_sourced} == {None}
             assert _entries_for_transfer(transfer.id) == []
-            assert (
-                _db.session.query(TransactionEntry)
-                .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
-                .filter(Transaction.transfer_id == transfer.id)
-                .count() == 0
-            )
+            # The pair holds no covering movement, on either side.
+            assert _db.session.query(TransactionEntry).filter(
+                TransactionEntry.expense_transfer_id == transfer.id,
+            ).count() == 0, "the from-side still holds a movement"
+            assert _db.session.query(TransactionEntry).filter(
+                TransactionEntry.income_transfer_id == transfer.id,
+            ).count() == 0, "the to-side still holds a movement"
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("100.00")

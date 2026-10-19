@@ -284,10 +284,6 @@ class TestTheSideKeysCarryAndKeep:
         _db.session.commit()
         with pytest.raises(sa_exc.IntegrityError) as excinfo:
             _db.session.execute(
-                text("DELETE FROM budget.transactions WHERE transfer_id = :t"),
-                {"t": xfer.id},
-            )
-            _db.session.execute(
                 text("DELETE FROM budget.transfers WHERE id = :t"),
                 {"t": xfer.id},
             )
@@ -298,15 +294,11 @@ class TestTheSideKeysCarryAndKeep:
 
 
     def test_deleting_an_empty_transfer_lands(self, app, seed_user):
-        """CONTROL: the same two statements over a transfer holding nothing commit."""
+        """CONTROL: the same statement over a transfer holding nothing commits."""
         del app
         checking, savings, _van = _accounts(seed_user)
         xfer = _transfer(seed_user, checking, savings)
         xfer_id = xfer.id
-        _db.session.execute(
-            text("DELETE FROM budget.transactions WHERE transfer_id = :t"),
-            {"t": xfer_id},
-        )
         _db.session.execute(
             text("DELETE FROM budget.transfers WHERE id = :t"), {"t": xfer_id},
         )

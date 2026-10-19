@@ -247,13 +247,6 @@ class TestClassifyPeriodLock:
             xfer_id = xfer.id
             db.session.execute(
                 db.text(
-                    "UPDATE budget.transactions SET is_deleted = TRUE "
-                    "WHERE transfer_id = :t"
-                ),
-                {"t": xfer_id},
-            )
-            db.session.execute(
-                db.text(
                     "UPDATE budget.transfers SET is_deleted = TRUE WHERE id = :t"
                 ),
                 {"t": xfer_id},

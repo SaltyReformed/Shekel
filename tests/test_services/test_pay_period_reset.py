@@ -352,8 +352,10 @@ class TestResetHappyPath:
 
         *The transaction assertion carried a ``transfer_id=None`` filter until
         an adversarial review of this step: copied from the positive sibling,
-        where the fixture makes it load-bearing, and inert here in a way that
-        narrowed what the negative case could see.*
+        where the fixture made it load-bearing while a transfer still wrote two
+        shadow rows (the sibling's term went at plan step
+        ``balance:X-bi-6-4d-3``), and inert here in a way that narrowed what
+        the negative case could see.*
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -425,9 +427,14 @@ class TestResetHappyPath:
     def test_repopulates_transactions_and_transfers(self, app, db, seed_user):
         """The rebuilt periods get recurring transactions AND transfers.
 
-        The transfer path exercises the two-shadow invariant
-        ``assert_pay_period_invariants`` enforces: each new period holds
-        one transfer with exactly two shadows in the same period.
+        Each new period holds one template expense and one transfer, and the
+        transfer path exercises ``assert_pay_period_invariants``' transfer
+        invariant: every transfer sits in one of the owner's own periods.  The
+        helper also counted two shadows per transfer until plan step
+        ``balance:X-bi-6-4d-3``, and the expense count carried a
+        ``transfer_id=None`` term that kept those shadows out of it; no row
+        names a transfer since (``ck_transactions_names_no_transfer``), so the
+        term changed no count and is gone.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -448,9 +455,9 @@ class TestResetHappyPath:
             for period in new_periods:
                 # One template expense per period.
                 assert db.session.query(Transaction).filter_by(
-                    pay_period_id=period.id, transfer_id=None,
+                    pay_period_id=period.id,
                 ).count() == 1
-                # One transfer per period (with its two shadows).
+                # One transfer per period.
                 assert db.session.query(Transfer).filter_by(
                     pay_period_id=period.id,
                 ).count() == 1
