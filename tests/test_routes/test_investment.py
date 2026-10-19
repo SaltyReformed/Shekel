@@ -19,6 +19,7 @@ from app.models.paycheck_line import PaycheckLine
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.transfer import Transfer
+from app.models.transfer_template import TransferTemplate
 from app.services import (
     account_service,
     balance_at,
@@ -50,6 +51,7 @@ from tests._test_helpers import (
     settle_day_columns,
     settle_instant_on,
     start_test_pay_list,
+    transfer_amount,
 )
 from app.services.investment_dashboard_service import _cards as investment_cards
 from app.services.investment_dashboard_service import _chart as investment_chart
@@ -1498,7 +1500,6 @@ class TestContributionAwareDashboard:
 def _create_transfer_template(db_session, user_id, from_id, to_id,
                                is_active=True):
     """Create a recurring transfer template targeting an account."""
-    from app.models.transfer_template import TransferTemplate
     from tests._test_helpers import make_every_period_rule
 
     # Authored through the write door (plan step R7c-b): the two-axis columns
@@ -1656,8 +1657,6 @@ class TestContributionPrompt:
         self, auth_client, seed_user, db, seed_periods_today,
     ):
         """POST with valid source creates RecurrenceRule + TransferTemplate."""
-        from app.models.transfer_template import TransferTemplate as TT
-
         acct = _create_investment_account(
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
@@ -1681,7 +1680,7 @@ class TestContributionPrompt:
         )
 
         tpl = (
-            db.session.query(TT)
+            db.session.query(TransferTemplate)
             .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
             .first()
         )
@@ -1698,11 +1697,12 @@ class TestContributionPrompt:
     def test_create_transfer_generates_shadows(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """After creation: live transfers INTO the investment account exist.
+        """After creation: a live transfer INTO the account in every pay period.
 
         The route fans its new definition out across the owner's pay periods
         (``generate_transfers_for_all_periods``), so the money it plans
-        arrives on the investment account as transfers whose to-side it is.
+        arrives on the investment account as transfers whose to-side it is:
+        one in each period, each from checking at the $269.23 the case posts.
 
         **Re-expressed onto the TRANSFER at plan step balance:X-bi-6-4d-3**
         (ruling **R-BAL167** class 1).  It counted the live income SHADOW
@@ -1711,6 +1711,20 @@ class TestContributionPrompt:
         since that step (ruling **R-BAL258**), so none can be stored: the
         income side is the transfer's to-side, read off ``budget.transfers``.
         The name is the twin era's, kept so the node id is the baseline's.
+
+        **The fan-out's WINDOW is pinned as today's behaviour, not as a
+        ruling that it is right.**  The route starts its every-period cadence
+        at the opening of the owner's schedule (``PayCalendar.opening_bound``,
+        the first payday), so it writes into EVERY period the owner has,
+        closed ones included: all ten here, because ``seed_periods_today``
+        resets the owner's schedule to exactly those.  Whether it should
+        start at the current paycheck instead is open ledger row
+        **recurrence:D34**, and a change here MOVES MONEY: started at today
+        it wrote six of the ten (measured 2026-10-19), so the four earlier
+        periods' 4 x $269.23 = $1,076.92 of planned contributions went.  That
+        is the developer's decision, not a test edit (CLAUDE.md rule 5).  The
+        read is the SET of periods rather than their number, because a count
+        says how many periods were written and not which.
         """
         acct = _create_investment_account(
             seed_user, db.session, type_name="Roth IRA",
@@ -1730,15 +1744,35 @@ class TestContributionPrompt:
             },
         )
 
-        transfers = (
+        template = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .one()
+        )
+        written = (
             db.session.query(Transfer)
-            .filter(
-                Transfer.to_account_id == acct.id,
-                Transfer.is_deleted.is_(False),
-            )
+            .filter(Transfer.transfer_template_id == template.id)
             .all()
         )
-        assert len(transfers) > 0
+        assert {xfer.pay_period_id for xfer in written} == {
+            period.id for period in seed_periods_today
+        }, (
+            "the contribution route wrote into pay periods "
+            f"{sorted(xfer.pay_period_id for xfer in written)}; it writes into "
+            "every period of the owner's schedule from its first payday on, "
+            "closed ones included "
+            f"({sorted(period.id for period in seed_periods_today)}).  That "
+            "window is open ledger row recurrence:D34: a change here MOVES "
+            "MONEY and is the developer's decision, not a test edit "
+            "(CLAUDE.md rule 5)"
+        )
+        assert {
+            (
+                xfer.from_account_id, xfer.to_account_id,
+                transfer_amount(xfer), xfer.is_deleted,
+            )
+            for xfer in written
+        } == {(checking.id, acct.id, Decimal("269.23"), False)}
 
     def test_create_transfer_redirect_hides_prompt(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1800,8 +1834,6 @@ class TestContributionPrompt:
         is the money-routing guard: NO ``TransferTemplate`` is created, so
         no shadow transactions are generated against the destination.
         """
-        from app.models.transfer_template import TransferTemplate as TT
-
         acct = _create_investment_account(
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
@@ -1830,7 +1862,7 @@ class TestContributionPrompt:
         # up -- no TransferTemplate against the destination, hence no
         # shadow transactions move money into it.
         tpl = (
-            db.session.query(TT)
+            db.session.query(TransferTemplate)
             .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
             .first()
         )
@@ -1872,14 +1904,12 @@ class TestContributionPrompt:
         self, auth_client, seed_user, db, acct, resp, phrase,
     ):
         """The door rolled back, flashed *phrase*, and persisted no template."""
-        from app.models.transfer_template import TransferTemplate as TT
-
         assert resp.status_code == 302, resp.status_code
         assert f"/accounts/{acct.id}/investment" in resp.headers.get(
             "Location", "",
         )
         assert (
-            db.session.query(TT)
+            db.session.query(TransferTemplate)
             .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
             .first()
         ) is None
@@ -1950,8 +1980,6 @@ class TestContributionPrompt:
         self, auth_client, seed_user, db, seed_periods_today,
     ):
         """POST with custom amount: template uses the override amount."""
-        from app.models.transfer_template import TransferTemplate as TT
-
         acct = _create_investment_account(
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
@@ -1969,7 +1997,7 @@ class TestContributionPrompt:
         assert resp.status_code == 302
 
         tpl = (
-            db.session.query(TT)
+            db.session.query(TransferTemplate)
             .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
             .first()
         )
