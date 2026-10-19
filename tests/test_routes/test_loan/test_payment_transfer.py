@@ -10,6 +10,7 @@ from app.enums import AcctTypeEnum
 from app.models.transfer import Transfer
 
 from tests._test_helpers import (
+    create_account_of_type,
     make_cadence_rule,
     make_loan_payment_template,
     select_option_values,
@@ -185,8 +186,11 @@ class TestTransferPrompt:
 
         The route fans its new monthly definition out across the owner's pay
         periods (``generate_transfers_for_all_periods``), so each installment
-        the schedule holds becomes a transfer from checking into the loan, in
-        the pay period holding its due date.
+        the schedule holds becomes a transfer into the loan from the savings
+        account the case posts from, in the pay period holding its due date.
+        The source is a second account the case creates, never the seeded
+        checking: the seed's owner and its checking account are both id 1, so
+        a from-side written as the owner's id would read as checking and pass.
 
         **Re-expressed onto the TRANSFER at plan step balance:X-bi-6-4d-3**
         (ruling **R-BAL167** class 1).  It counted the live income SHADOW
@@ -202,16 +206,29 @@ class TestTransferPrompt:
         originated 2023-06-01, due the 1st, so 2023-07-01), and writes every
         installment from there that the saved schedule (2026-01-02 ..
         2026-05-21) holds: 02-01, 03-01, 04-01 and 05-01.  01-01 falls before
-        the first payday and 06-01 after the last period.  The read is each
-        payment's due date and period rather than their number, because a
-        count could not see a start moved inside the schedule.
+        the first payday and 06-01 after the last period.  The read is the
+        sorted LIST of each payment's due date and period, not their number
+        or their set: a count could not see a start moved inside the
+        schedule, and a set could not see two payments in one slot.
+
+        The start bound is also graded, in both directions, in
+        ``tests/test_services/test_loan_recurrence_start_bound.py``; its
+        EARLIER side is not graded here: the first contractual installment
+        (2023-07-01) falls long before the schedule opens (2026-01-02), so a
+        cadence started earlier than it writes these same four payments
+        here.  Within this file, only this case pins each payment's placement
+        in the period holding its due date.
         """
         acct = _create_mortgage(seed_user, db.session)
-        checking = seed_user["account"]
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "Savings",
+        )
+        # Committed before the request, which cannot see an uncommitted row.
+        db.session.commit()
 
         auth_client.post(
             f"/accounts/{acct.id}/loan/create-transfer",
-            data={"source_account_id": str(checking.id)},
+            data={"source_account_id": str(savings.id)},
         )
 
         template = _payment_template(db.session, seed_user, acct)
@@ -221,15 +238,15 @@ class TestTransferPrompt:
             .all()
         )
         # Each installment, and the seeded period holding its due date.
-        installments = {
+        installments = [
             (date(2026, 2, 1), seed_periods[2].id),  # 01-30 .. 02-12
             (date(2026, 3, 1), seed_periods[4].id),  # 02-27 .. 03-12
             (date(2026, 4, 1), seed_periods[6].id),  # 03-27 .. 04-09
             (date(2026, 5, 1), seed_periods[8].id),  # 04-24 .. 05-07
-        }
-        assert {
+        ]
+        assert sorted(
             (xfer.due_date, xfer.pay_period_id) for xfer in written
-        } == installments, (
+        ) == installments, (
             "the loan payment route wrote (due date, pay period) "
             f"{sorted((xfer.due_date, xfer.pay_period_id) for xfer in written)}; "
             "it writes one payment for every installment from the loan's first "
@@ -239,7 +256,7 @@ class TestTransferPrompt:
         assert {
             (xfer.from_account_id, xfer.to_account_id, xfer.is_deleted)
             for xfer in written
-        } == {(checking.id, acct.id, False)}
+        } == {(savings.id, acct.id, False)}
 
     def test_create_transfer_validates_source_ownership(
         self, auth_client, seed_user, seed_second_user,

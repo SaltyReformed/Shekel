@@ -204,7 +204,11 @@ class TestContributionPrompt:
         The route fans its new definition out across the owner's pay periods
         (``generate_transfers_for_all_periods``), so the money it plans
         arrives on the investment account as transfers whose to-side it is:
-        one in each period, each from checking at the $269.23 the case posts.
+        one in each period, each from the savings account the case posts
+        from, at the $269.23 it posts.  The source is a second account the
+        case creates, never the seeded checking: the seed's owner and its
+        checking account are both id 1, so a from-side written as the owner's
+        id would read as checking and pass.
 
         **Re-expressed onto the TRANSFER at plan step balance:X-bi-6-4d-3**
         (ruling **R-BAL167** class 1).  It counted the live income SHADOW
@@ -225,8 +229,9 @@ class TestContributionPrompt:
         it wrote six of the ten (measured 2026-10-19), so the four earlier
         periods' 4 x $269.23 = $1,076.92 of planned contributions went.  That
         is the developer's decision, not a test edit (CLAUDE.md rule 5).  The
-        read is the SET of periods rather than their number, because a count
-        says how many periods were written and not which.
+        read is the sorted LIST of periods, not their number or their set: a
+        count says how many periods were written and not which, and a set
+        cannot see two transfers in one period.
         """
         acct = _create_investment_account(
             seed_user, db.session, type_name="Roth IRA",
@@ -236,12 +241,16 @@ class TestContributionPrompt:
             db.session, acct.id,
             annual_contribution_limit=Decimal("7000.00"),
         )
-        checking = seed_user["account"]
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "Savings",
+        )
+        # Committed before the request, which cannot see an uncommitted row.
+        db.session.commit()
 
         auth_client.post(
             f"/accounts/{acct.id}/investment/create-contribution-transfer",
             data={
-                "source_account_id": str(checking.id),
+                "source_account_id": str(savings.id),
                 "amount": "269.23",
             },
         )
@@ -256,17 +265,18 @@ class TestContributionPrompt:
             .filter(Transfer.transfer_template_id == template.id)
             .all()
         )
-        assert {xfer.pay_period_id for xfer in written} == {
+        assert sorted(xfer.pay_period_id for xfer in written) == sorted(
             period.id for period in seed_periods_today
-        }, (
+        ), (
             "the contribution route wrote into pay periods "
-            f"{sorted(xfer.pay_period_id for xfer in written)}; it writes into "
-            "every period of the owner's schedule from its first payday on, "
-            "closed ones included "
-            f"({sorted(period.id for period in seed_periods_today)}).  That "
-            "window is open ledger row recurrence:D34: a change here MOVES "
-            "MONEY and is the developer's decision, not a test edit "
-            "(CLAUDE.md rule 5)"
+            f"{sorted(xfer.pay_period_id for xfer in written)}; it writes one "
+            "transfer into every period of the owner's schedule from its first "
+            "payday on, closed ones included "
+            f"({sorted(period.id for period in seed_periods_today)}).  Where "
+            "that window STARTS is open ledger row recurrence:D34: a changed "
+            "start MOVES MONEY and is the developer's decision, not a test "
+            "edit (CLAUDE.md rule 5).  A period missing or doubled after the "
+            "start is a cadence or generation regression, not that row"
         )
         assert {
             (
@@ -274,7 +284,7 @@ class TestContributionPrompt:
                 transfer_amount(xfer), xfer.is_deleted,
             )
             for xfer in written
-        } == {(checking.id, acct.id, Decimal("269.23"), False)}
+        } == {(savings.id, acct.id, Decimal("269.23"), False)}
 
     def test_create_transfer_redirect_hides_prompt(
         self, auth_client, seed_user, db, seed_periods_today,
