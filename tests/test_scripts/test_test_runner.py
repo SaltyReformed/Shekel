@@ -48,9 +48,9 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from tests._repo_root import REPO_ROOT
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_TEST_RUNNER = _REPO_ROOT / "scripts/test.sh"
+_TEST_RUNNER = REPO_ROOT / "scripts/test.sh"
 # The wrapper's start of its cluster through the module, in one command as
 # :func:`_code_lines` gives it.  The ``--`` before the arguments is optional
 # HERE because the dash-image case grades it, so each property has one case.
@@ -194,7 +194,7 @@ def _run_wrapper(
             [str(_TEST_RUNNER), "tests/does_not_matter"],
             capture_output=True,
             text=True,
-            cwd=str(_REPO_ROOT),
+            cwd=str(REPO_ROOT),
             env={
                 **os.environ,
                 "PATH": f"{binaries}:{os.environ['PATH']}",
