@@ -53,6 +53,82 @@ def test_states_are_name_revision_pairs_each_named_once():
         bench.parse_states([])
 
 
+def _side(root: Path, dev: str = "pytest==9.0.0\ntime-machine==3.5.1\n") -> Path:
+    """A planted side's tree: two pins in ``requirements.txt`` and ``dev`` as its dev pins."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "requirements.txt").write_text("Flask==3.1.2\npsycopg[c]==3.3.6\n", encoding="utf-8")
+    (root / "requirements-dev.txt").write_text("-r requirements.txt\n" + dev, encoding="utf-8")
+    return root
+
+
+def test_a_side_s_pins_are_its_requirements_and_its_time_machine_pin(tmp_path):
+    """Exactly ``requirements.txt`` and the one ``time-machine`` line; no pin, or no file, is
+    refused by name."""
+    assert bench.side_pins(_side(tmp_path / "a")) == (
+        "Flask==3.1.2\npsycopg[c]==3.3.6\ntime-machine==3.5.1\n")
+    with pytest.raises(BenchError, match="pins no time-machine"):
+        bench.side_pins(_side(tmp_path / "b", dev="pytest==9.0.0\n"))
+    with pytest.raises(BenchError, match="cannot give its pins"):
+        bench.side_pins(tmp_path / "c")
+
+
+class _Builds:
+    """A stand-in for :func:`bench._run` that records each command and makes a venv's
+    directory as ``python -m venv`` would; pip exits ``pip_status``."""
+
+    def __init__(self, pip_status: int = 0) -> None:
+        """No command run yet; pip will exit ``pip_status``."""
+        self.argvs: list[list[str]] = []
+        self.pip_status = pip_status
+
+    def __call__(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
+        """Record ``argv`` and answer as ``python -m venv`` or pip would."""
+        self.argvs.append(argv)
+        if argv[1:3] == ["-m", "venv"]:
+            (Path(argv[3]) / "bin").mkdir(parents=True)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return subprocess.CompletedProcess(argv, self.pip_status, "", "pip said no\n")
+
+
+@pytest.fixture(name="builds")
+def _builds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Builds:
+    """A throwaway ``XDG_CACHE_HOME`` and the stand-in builder."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    stand_in = _Builds()
+    monkeypatch.setattr(bench, "_run", stand_in)
+    return stand_in
+
+
+def test_a_venv_is_built_once_for_its_pins_and_then_reused_untouched(tmp_path, builds):
+    """The first call builds (venv, then pip on the pins) and marks it built; the second, for
+    a side with the same pins, runs nothing."""
+    python = bench.venv_for(_side(tmp_path / "base"))
+    assert [argv[1:3] for argv in builds.argvs] == [["-m", "venv"], ["-m", "pip"]]
+    assert (python.parent.parent / "rehearsal-requirements.txt").read_text(encoding="utf-8") \
+        == bench.side_pins(tmp_path / "base")
+    assert bench.venv_for(_side(tmp_path / "cut")) == python
+    assert len(builds.argvs) == 2
+
+
+def test_a_venv_whose_build_did_not_finish_is_built_again(tmp_path, builds):
+    """A venv directory with no marker, what a killed build leaves, is removed and rebuilt."""
+    python = bench.venv_for(_side(tmp_path / "base"))
+    venv = python.parent.parent
+    (venv / ".rehearsal-built").unlink()
+    (venv / "half-installed").write_text("", encoding="utf-8")
+    assert bench.venv_for(_side(tmp_path / "base")) == python
+    assert len(builds.argvs) == 4 and not (venv / "half-installed").exists()
+    assert (venv / ".rehearsal-built").is_file()
+
+
+def test_a_venv_pip_could_not_install_is_named_and_never_marked_built(tmp_path, builds):
+    """pip's refusal is quoted, and the venv is left unmarked, so the next run rebuilds it."""
+    builds.pip_status = 1
+    with pytest.raises(BenchError, match="pip could not install .* \\(exit 1\\):\npip said no"):
+        bench.venv_for(_side(tmp_path / "base"))
+    assert not list((tmp_path / "cache").rglob(".rehearsal-built"))
+
+
 @pytest.fixture(name="dump", scope="module")
 def _dump(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     """A ``pg_dump -Fc`` archive of a planted database: one table, two rows of money."""
@@ -110,9 +186,13 @@ def test_a_bench_restores_the_dump_clones_it_per_state_and_leaves_nothing(dump):
             with psycopg.connect(state.url) as connection:
                 assert connection.execute("SELECT id, amount FROM ledger ORDER BY id").fetchall() \
                     == [(1, Decimal("12.34")), (2, Decimal("0.01"))]
+            imported = subprocess.run([str(state.python), "-c", "import flask, time_machine"],
+                                      check=False, capture_output=True, text=True)
+            assert imported.returncode == 0, imported.stderr
     _left_nothing(made)
     assert set(made.timings) == {"image", "start", "restore", "clone base", "worktree base",
-                                 "clone cut", "worktree cut", "teardown"}
+                                 "venv base", "clone cut", "worktree cut", "venv cut",
+                                 "teardown"}
 
 
 @pytest.mark.cluster

@@ -24,6 +24,19 @@ A DUMP FROM ANOTHER POSTGRESQL MAJOR IS REFUSED before it is restored.  Every cu
 archive records the server that made it (``Dumped from database version``), so production's
 major is read from the dump on every run, never by reaching into production.
 
+EACH SIDE RUNS UNDER A VENV OF ITS OWN PINS, never the developer's: THAT side's
+``requirements.txt`` plus the ``time-machine`` pin of its ``requirements-dev.txt`` (the side
+probe pins its clock with it), so a pin that moves between base and cut -- a Dependabot change
+-- is measured rather than masked by one shared venv.  It is CACHED outside git, under
+``${XDG_CACHE_HOME:-~/.cache}/shekel-rehearsal/venvs/``, by the SHA-256 of those lines and the
+interpreter's version, so two sides with the same pins share one and a later run builds
+nothing; the cache is the one thing a teardown deliberately leaves.  A venv counts as built
+only once its marker is written, the last step of a build that succeeded, so one that failed
+or was killed is never taken for built: the next run removes it and builds again.  It is
+built where it stays, never moved, because a venv's scripts hold its path in their shebangs.
+Two runs building the same venv at the same moment would collide in its directory; one kit
+runs at a time.
+
 Usage, which brings a bench up and tears it down, printing what each part took::
 
     python -m tools.rehearsal.bench --dump <pg_dump -Fc file> --state <name>=<revision> ...
@@ -34,6 +47,7 @@ thing named.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
@@ -61,6 +75,12 @@ _STATE_NAME = re.compile(r"[a-z][a-z0-9_]{0,29}")
 _DUMPED_FROM = re.compile(r"^;\s+Dumped from database version: (\d+)", re.MULTILINE)
 #: ``server_version_num`` is the major times 10,000 plus the minor (180006 is 18.6).
 _VERSION_NUM_PER_MAJOR = 10_000
+#: The one line of a side's ``requirements-dev.txt`` its venv takes beside ``requirements.txt``.
+_TIME_MACHINE_PIN = re.compile(r"^time-machine==\S+$", re.MULTILINE)
+#: Written into a venv as the last step of a build that succeeded: what makes it built.
+_BUILT_MARKER = ".rehearsal-built"
+#: How much of a failed pip's stderr a refusal quotes.
+_QUOTED_LINES = 20
 
 
 class BenchError(RuntimeError):
@@ -70,12 +90,13 @@ class BenchError(RuntimeError):
 @dataclass(frozen=True)
 class State:
     """One state of the rehearsal: its name, the commit its worktree holds, the worktree,
-    and the URL of its own clone of the dump."""
+    the URL of its own clone of the dump, and the interpreter of its venv."""
 
     name: str
     commit: str
     worktree: Path
     url: str
+    python: Path
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
@@ -158,6 +179,57 @@ def refuse_another_major(dump: int, server_version_num: int) -> None:
     if dump != server:
         raise BenchError(f"the dump was made by PostgreSQL {dump} and the cluster runs "
                          f"PostgreSQL {server}; the image must match production's major")
+
+
+def side_pins(worktree: Path) -> str:
+    """The pins a side's venv is built from: its ``requirements.txt``, then the ``time-machine``
+    line of its ``requirements-dev.txt``.
+
+    Raises:
+        BenchError: when either file cannot be read, or no ``time-machine`` pin is there.
+    """
+    try:
+        runtime = (worktree / "requirements.txt").read_text(encoding="utf-8")
+        dev = (worktree / "requirements-dev.txt").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise BenchError(f"{worktree} cannot give its pins: {exc}") from exc
+    pin = _TIME_MACHINE_PIN.search(dev)
+    if pin is None:
+        raise BenchError(f"{worktree / 'requirements-dev.txt'} pins no time-machine, which the "
+                         "side probe pins its clock with")
+    return runtime.rstrip("\n") + "\n" + pin.group(0) + "\n"
+
+
+def venv_for(worktree: Path) -> Path:
+    """The interpreter of the venv a side runs under: the cached one for its pins, or one
+    built now (the module says how the cache is keyed and when a venv counts as built).
+
+    Raises:
+        BenchError: when the venv cannot be made or its pins cannot be installed.
+    """
+    pins = side_pins(worktree)
+    key = hashlib.sha256(f"{sys.version}\n{pins}".encode()).hexdigest()[:16]
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    venv = cache / "shekel-rehearsal" / "venvs" / key
+    python = venv / "bin" / "python"
+    if (venv / _BUILT_MARKER).is_file():
+        return python
+    shutil.rmtree(venv, ignore_errors=True)
+    venv.parent.mkdir(parents=True, exist_ok=True)
+    made = _run([sys.executable, "-m", "venv", str(venv)])
+    if made.returncode:
+        raise BenchError(f"python -m venv {venv} exited {made.returncode}: "
+                         f"{made.stderr.strip()}")
+    pinned = venv / "rehearsal-requirements.txt"
+    pinned.write_text(pins, encoding="utf-8")
+    installed = _run([str(python), "-m", "pip", "install", "--quiet",
+                      "--disable-pip-version-check", "-r", str(pinned)])
+    if installed.returncode:
+        quoted = "\n".join(installed.stderr.strip().splitlines()[-_QUOTED_LINES:])
+        raise BenchError(f"pip could not install {worktree}'s pins into {venv} (exit "
+                         f"{installed.returncode}):\n{quoted}")
+    (venv / _BUILT_MARKER).write_text(pins, encoding="utf-8")
+    return python
 
 
 def parse_states(given: list[str]) -> dict[str, str]:
@@ -270,10 +342,11 @@ class Bench:
         self._timed("restore", began)
 
     def _make_state(self, name: str, revision: str, worktree: Path) -> None:
-        """Clone :data:`PRISTINE` for state ``name`` and add its detached ``worktree``.
+        """Clone :data:`PRISTINE` for state ``name``, add its detached ``worktree``, and find
+        or build its venv.
 
         Raises:
-            BenchError: when the clone or the worktree cannot be made.
+            BenchError: when the clone, the worktree or the venv cannot be made.
         """
         database = f"rehearsal_{name}"
         began = time.monotonic()
@@ -289,7 +362,10 @@ class Bench:
         except gitcmd.GitError as exc:
             raise BenchError(f"state {name}'s worktree at {revision!r}: {exc}") from exc
         self._timed(f"worktree {name}", began)
-        self.made[name] = State(name, commit, worktree, self._url(database))
+        began = time.monotonic()
+        python = venv_for(worktree)
+        self._timed(f"venv {name}", began)
+        self.made[name] = State(name, commit, worktree, self._url(database), python)
 
     def _remove_worktree(self, worktree: Path) -> None:
         """Remove one state's worktree; a refusal is noted for the census, which names it."""
@@ -342,7 +418,8 @@ def main(argv: list[str] | None = None) -> int:
         bench = Bench(args.dump, parse_states(args.state))
         with bench:
             for state in bench.made.values():
-                print(f"state {state.name}: {state.commit} at {state.worktree}")
+                print(f"state {state.name}: {state.commit} at {state.worktree}, "
+                      f"under {state.python}")
     except BenchError as exc:
         print(f"[rehearsal] {exc}", file=sys.stderr)
         return 2
