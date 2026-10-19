@@ -6,8 +6,8 @@ owned by a TOKEN its caller makes: the start labels the container with it as doc
 it, and the stop removes only what carries it (the coordinator's ruling on K1a commit B,
 2026-10-19).  These drive the module with a stub ``docker`` on ``PATH`` that keeps its
 containers' names and labels, so they need no daemon, no image and no database; the
-wrapper's own cases (``test_test_runner.py``) drive the same module through ``test.sh``.
-What a REAL cluster does is graded by every suite run, which starts one here.
+wrapper's own cases (the ``test_test_runner`` package) drive the same module through
+``test.sh``.  What a REAL cluster does is graded by every suite run, which starts one here.
 """
 from __future__ import annotations
 

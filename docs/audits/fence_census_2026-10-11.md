@@ -78,7 +78,7 @@ for a fence, the kind is this record's reading.
 | T-100 | `tests/test_adversarial/test_cache_control.py:104` | a vendored file whose hash differs from `VERSIONS.txt` | supply chain |
 | T-101 | `tests/test_routes/test_auth_required.py:224`, `:277` | a route served without login | authentication |
 | T-200 | `tests/test_deploy/` (eight files, e.g. `test_container_hardening.py`, `test_proxy_trust_and_headers.py`) | the hardened deploy posture regressing | YAML, nginx, Dockerfile and shell that no type system spans |
-| T-205 | `scripts/test.sh:180-216`, `tests/test_scripts/test_test_runner.py:357` | a test container spawned on the production daemon | the production-safety boundary; `X-bt` makes it one producer |
+| T-205 | `scripts/test.sh:180-216`, `tests/test_scripts/test_test_runner/test_daemon.py:18` | a test container spawned on the production daemon | the production-safety boundary; `X-bt` makes it one producer |
 | T-227 | `tests/test_scripts/test_seed_redaction.py:68` | an email address printed by `seed_user.py` | personal data in logs |
 | A-57 | `app/login_gate.py:84` (`PUBLIC_ENDPOINTS`) | a route opened without being named | a fail-closed default |
 | A-58 | group of 66 ownership calls, e.g. `app/utils/auth_helpers.py:85`, `app/services/transfer_service/_ownership.py:36` | another owner's row, a 404 either way | authorization; `C13-c` and `X-bc` make some cross-owner states unstorable, and the request check stays |

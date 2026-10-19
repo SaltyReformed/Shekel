@@ -75,7 +75,7 @@
 #                        one.  Skips build_test_db_image.py entirely, so
 #                        whoever sets it owns the image's correctness.  Its
 #                        one caller today is
-#                        tests/test_scripts/test_test_runner.py, which drives
+#                        tests/test_scripts/test_test_runner/, which drives
 #                        a stub docker that cannot satisfy a real
 #                        verification.  It is NOT set by CI: CI's jobs run
 #                        this wrapper like any other run and bake the image on
