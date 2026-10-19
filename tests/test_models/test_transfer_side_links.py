@@ -347,63 +347,110 @@ def _hide_transfer(xfer_id):
     )
 
 
+def _side_link(income):
+    """The record's link column on the to-side (``income``) or the from-side."""
+    return "income_transfer_id" if income else "expense_transfer_id"
+
+
+def _sharing_the_side(seed_user, accounts, income):
+    """A second $500.00 transfer sharing Checking -> Savings' account on one side, committed.
+
+    It shares Savings (the to-side, ``income``) or Checking (the from-side)
+    and has Van Fund on its other end, so the ad-hoc double-submit index
+    does not see the two transfers as one, and a side's record can move
+    between them.
+
+    Args:
+        seed_user: The owner.
+        accounts: ``(checking, savings, van)``, from :func:`_accounts`.
+        income: ``True`` to share the to-account, ``False`` the from-account.
+    """
+    checking, savings, van = accounts
+    if income:
+        return _transfer(seed_user, van, savings)
+    return _transfer(seed_user, checking, van)
+
+
+def _re_point(income, off_id, onto_id):
+    """Stage one side's record moved by its link from transfer *off_id* onto *onto_id*."""
+    link = _side_link(income)
+    _db.session.execute(
+        text(f"UPDATE budget.transaction_entries SET {link} = :onto WHERE {link} = :off"),
+        {"onto": onto_id, "off": off_id},
+    )
+
+
 class TestTheDeletedRowTransferArm:
     """No payment under a deleted transfer, either way round (R-CC89, R-CC92)."""
 
+    @pytest.mark.parametrize("income", [False, True], ids=["from-side", "to-side"])
     def test_a_record_arriving_under_a_deleted_transfer_is_refused(
-        self, app, seed_user,
+        self, app, seed_user, income,
     ):
-        """The arrival arm reads the TRANSFER's ``is_deleted``."""
+        """The arrival arm reads the TRANSFER's ``is_deleted``, on each side's link.
+
+        Each side's record arrives ALONE, because the arm reads whichever of
+        the two link columns the record sets and each must refuse on its
+        own.  The case brought the from-side's record alone until plan step
+        ``balance:X-bi-6-4d-3``'s vacuous-residue checkpoint, where an arm
+        reading the from-side link only failed no test in the suite
+        (measured there).
+        """
         del app
         checking, savings, _van = _accounts(seed_user)
         xfer = _transfer(seed_user, checking, savings)
         _hide_transfer(xfer.id)
         _db.session.commit()
-        _record(xfer)
+        _record(xfer, income=income)
         with refused_by_database_rule(_ARRIVAL_REFUSED):
             _db.session.flush()
         _db.session.rollback()
 
+    @pytest.mark.parametrize("income", [False, True], ids=["from-side", "to-side"])
     def test_a_record_re_pointed_onto_a_deleted_transfer_is_refused(
-        self, app, seed_user,
+        self, app, seed_user, income,
     ):
-        """An UPDATE of the link is an arrival too; the live original is the control."""
+        """An UPDATE of the link is an arrival too, on each side's link.
+
+        The record first lands under a live transfer, then its link is moved
+        onto a hidden one sharing the record's account.  Each side's link is
+        moved ALONE, because the arm reads either link and its early return
+        compares each, so each must refuse on its own.  The case moved the
+        from-side link alone until plan step ``balance:X-bi-6-4d-3``'s
+        vacuous-residue checkpoint, where an arm reading the from-side link
+        only, or an early return comparing it only, failed no test in the
+        suite (measured there).  :meth:`test_a_record_re_pointed_onto_a_live_transfer_lands`
+        is the control, per side.
+        """
         del app
-        checking, savings, van = _accounts(seed_user)
-        live = _transfer(seed_user, checking, savings)
-        _record(live)
-        # Its own to-account, so the ad-hoc double-submit index does not see
-        # the two transfers as one; the from-side record moves between two
-        # transfers sharing its from-account.
-        hidden = _transfer(seed_user, checking, van)
-        _db.session.commit()
+        accounts = _accounts(seed_user)
+        live = _transfer(seed_user, accounts[0], accounts[1])
+        _record(live, income=income)
+        hidden = _sharing_the_side(seed_user, accounts, income)
         _hide_transfer(hidden.id)
         _db.session.commit()
         with refused_by_database_rule(_ARRIVAL_REFUSED):
-            _db.session.execute(
-                text("UPDATE budget.transaction_entries "
-                     "SET expense_transfer_id = :h WHERE expense_transfer_id = :l"),
-                {"h": hidden.id, "l": live.id},
-            )
+            _re_point(income, live.id, hidden.id)
         _db.session.rollback()
 
-    def test_a_record_re_pointed_onto_a_live_transfer_lands(self, app, seed_user):
-        """CONTROL: the same UPDATE onto a live transfer sharing the from-account."""
+    @pytest.mark.parametrize("income", [False, True], ids=["from-side", "to-side"])
+    def test_a_record_re_pointed_onto_a_live_transfer_lands(self, app, seed_user, income):
+        """CONTROL: the same UPDATE onto a live transfer sharing the record's account.
+
+        Per side since plan step ``balance:X-bi-6-4d-3``'s vacuous-residue
+        checkpoint, beside the refusal it controls; until then it moved the
+        from-side link alone.
+        """
         del app
-        checking, savings, van = _accounts(seed_user)
-        first = _transfer(seed_user, checking, savings)
-        _record(first)
-        second = _transfer(seed_user, checking, van)
-        _db.session.commit()
-        _db.session.execute(
-            text("UPDATE budget.transaction_entries "
-                 "SET expense_transfer_id = :s WHERE expense_transfer_id = :f"),
-            {"s": second.id, "f": first.id},
-        )
+        accounts = _accounts(seed_user)
+        first = _transfer(seed_user, accounts[0], accounts[1])
+        _record(first, income=income)
+        second = _sharing_the_side(seed_user, accounts, income)
+        _re_point(income, first.id, second.id)
         _db.session.commit()
         assert _db.session.execute(text(
             "SELECT count(*) FROM budget.transaction_entries "
-            "WHERE expense_transfer_id = :s"
+            f"WHERE {_side_link(income)} = :s"
         ), {"s": second.id}).scalar_one() == 1
 
     @pytest.mark.parametrize("income", [False, True], ids=["from-side", "to-side"])

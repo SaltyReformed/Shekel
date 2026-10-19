@@ -63,10 +63,12 @@ class TestDeleteTransfer:
       transfer hidden first; a PAID one hidden and then removed is
       ``test_transfer_posting_lifecycle.py``'s ``TestDeleteAndRestore`` case
       ``test_hard_delete_of_a_soft_deleted_pair_finds_the_ledger_at_zero``).
-    - Someone else's transfer, or none: not found.  A live one by the hard
-      delete (:meth:`test_wrong_user_rejected`), an already-hidden one by
-      either delete (:meth:`test_someone_elses_hidden_transfer_is_not_found`),
-      and none (:meth:`test_nonexistent_rejected`).
+    - Someone else's transfer, live or already hidden: not found, on either
+      delete, and re-read after a COMMIT still there and still live or
+      still hidden (:meth:`test_wrong_user_rejected`,
+      :meth:`test_someone_elses_hidden_transfer_is_not_found`).  No transfer
+      at all: not found, on the hard delete
+      (:meth:`test_nonexistent_rejected`).
 
     Every case here holds an AD-HOC transfer.  The shape production hides
     is a transfer of a definition (the instance delete hides a linked
@@ -337,16 +339,40 @@ class TestDeleteTransfer:
 
             assert db.session.get(Transfer, xfer_id) is None
 
-    def test_wrong_user_rejected(self, app, db, transfer_data, second_user):
-        """Delete by non-owner raises NotFoundError."""
+    @pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
+    def test_wrong_user_rejected(self, app, db, transfer_data, second_user, soft):
+        """A non-owner's delete of the owner's LIVE transfer is not found and leaves it live.
+
+        On either delete: the service refuses someone else's transfer itself,
+        whether or not any caller reaches the door with one today (the
+        defense in depth the door's ``user_id`` is for).  The case ran the
+        hard delete alone until plan step ``balance:X-bi-6-4d-3``'s
+        vacuous-residue checkpoint, where a delete door letting a non-owner's
+        soft delete of a live transfer through, as if its owner had asked,
+        failed no test in the suite (measured there).  The
+        refused delete is read off the row re-read after a COMMIT, which
+        writes whatever it staged: the transfer is still there and still
+        live.  The owner's same delete then lands on the same id, so the
+        refusal is the ownership check's and not a wrong id's.
+        """
         with app.app_context():
             td = transfer_data
-            xfer = _create_basic_transfer(td)
+            xfer_id = _create_basic_transfer(td).id
+            db.session.commit()
 
-            with pytest.raises(NotFoundError):
+            with pytest.raises(NotFoundError, match="not found"):
                 transfer_service.delete_transfer(
-                    xfer.id, second_user["user"].id
+                    xfer_id, second_user["user"].id, soft=soft,
                 )
+
+            row = _reread(xfer_id)
+            assert row is not None and row.is_deleted is False, (
+                "the refused delete removed or hid the owner's transfer"
+            )
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=soft)
+            # The hard delete removes it; the soft delete leaves it in place.
+            assert (_reread(xfer_id) is None) is not soft
 
     @pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
     def test_someone_elses_hidden_transfer_is_not_found(
@@ -357,8 +383,9 @@ class TestDeleteTransfer:
         The delete reaches a hidden transfer on purpose (``allow_deleted``,
         so a repeated hide and a hard delete of a hidden transfer work), so
         its ownership check must hold for a hidden row, on either delete, as
-        it does for a live one (:meth:`test_wrong_user_rejected`, which runs
-        the hard delete only).  The refused
+        it does for a live one (:meth:`test_wrong_user_rejected`, on either
+        delete since plan step ``balance:X-bi-6-4d-3``'s vacuous-residue
+        checkpoint, where it gained the soft delete).  The refused
         delete is read off the row re-read after a COMMIT, which writes
         whatever it staged: the transfer is still there and still hidden.
         The owner's same delete then lands on the same id, so the refusal is
