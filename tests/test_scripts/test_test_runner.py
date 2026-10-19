@@ -27,8 +27,7 @@ The cluster's own life -- its socket directory, ``docker run``, readiness and
 teardown -- is ``scripts/private_cluster.py``'s since step X-cx's K1a, which
 moved it out of the wrapper; its own cases (the socket path's byte budget
 among them) are ``test_private_cluster.py``.  The cases here drive it THROUGH
-the wrapper, which names the cluster, arms the traps and hands pytest the
-DSNs.
+the wrapper, which makes its token, arms the traps and hands pytest the DSNs.
 
 These drive a stub ``docker`` and a stub ``pytest`` on ``PATH``, so they need
 no daemon, no image and no database, and they run in CI.  The suite-scale
@@ -56,7 +55,7 @@ _TEST_RUNNER = _REPO_ROOT / "scripts/test.sh"
 # :func:`_code_lines` gives it.  The ``--`` before the arguments is optional
 # HERE because the dash-image case grades it, so each property has one case.
 _STARTS_THE_CLUSTER = re.compile(
-    r'scripts/private_cluster\.py"\s+start (?:-- )?"\$_run_container" "\$_image"')
+    r'scripts/private_cluster\.py"\s+start (?:-- )?"\$_run_container" "\$_token" "\$_image"')
 
 
 def _stub_tree(
@@ -77,10 +76,13 @@ def _stub_tree(
         make_socket: Whether the stub container leaves a socket behind.  A
             container can report ready and still not have one; the cluster's
             start refuses to hand out a socket that is not there.
-        survives: How many removals the stub container survives.  The stub
-            holds it as a file that ``run`` makes and each ``rm`` after that
-            many removes, and ``ps`` lists it while it exists, as the
-            cluster's start and stop ask by its exact name.
+        survives: How many removals the stub container survives: the file
+            ``stub-container``, which ``run`` makes holding its ``--label``,
+            ``ps`` lists while its label is the filter's, and each ``rm`` of
+            its id after that many removes.  While a file ``other-container``
+            (ANOTHER run's container) exists, ``run`` refuses as docker
+            refuses a name in use; a file ``run-kills-the-start`` makes
+            ``run`` SIGKILL its start, ``after making`` the container or not.
         pytest_status: The status the stub pytest exits with, which the
             wrapper must exit with too.
 
@@ -99,20 +101,29 @@ def _stub_tree(
         socket_arm = "            pass"
     calls = tmp_path / "docker-calls"
     held = tmp_path / "stub-container"
+    other = tmp_path / "other-container"
+    kills = tmp_path / "run-kills-the-start"
     env_dump = tmp_path / "pytest-env.json"
 
     (binaries / "docker").write_text(
         "#!/usr/bin/env python3\n"
-        "import os, socket, sys\n"
+        "import os, signal, socket, sys\n"
         "args = sys.argv[1:]\n"
         f"open({str(calls)!r}, 'a').write(' '.join(args) + chr(10))\n"
         "cmd = args[0] if args else ''\n"
         "if cmd == 'info':\n"
         f"    print({security_options!r})\n"
+        f"elif cmd == 'run' and os.path.exists({str(kills)!r}):\n"
+        f"    if open({str(kills)!r}).read() == 'after making':\n"
+        f"        open({str(held)!r}, 'w').write(args[args.index('--label') + 1])\n"
+        "    os.kill(os.getppid(), signal.SIGKILL)\n"
+        f"elif cmd == 'run' and os.path.exists({str(other)!r}):\n"
+        "    print('Conflict. The container name is already in use', file=sys.stderr)\n"
+        "    sys.exit(125)\n"
         "elif cmd == 'run':\n"
         # The wrapper mounts the run's socket directory at /sockets; a real
         # postgres would create the socket there, so the stub must too.
-        f"    open({str(held)!r}, 'w').close()\n"
+        f"    open({str(held)!r}, 'w').write(args[args.index('--label') + 1])\n"
         "    mounts = [args[i + 1] for i, a in enumerate(args) if a == '-v']\n"
         "    for mount in mounts:\n"
         "        if mount.endswith(':/sockets'):\n"
@@ -122,15 +133,15 @@ def _stub_tree(
         # Bound and deliberately NOT unlinked: the file must outlive the stub.
         f"{socket_arm}\n"
         "    print('stubcontainer')\n"
-        f"elif cmd == 'rm' and os.path.exists({str(held)!r}):\n"
+        f"elif cmd == 'rm' and 'stubcontainer' in args and os.path.exists({str(held)!r}):\n"
         # This removal is already recorded, so it is counted too.
         f"    removals = sum(line.startswith('rm ') for line in open({str(calls)!r}))\n"
         f"    if removals > {survives!r}:\n"
         f"        os.remove({str(held)!r})\n"
         f"elif cmd == 'ps' and os.path.exists({str(held)!r}):\n"
-        "    print('stubcontainer')\n"
-        "elif cmd == 'inspect':\n"
-        "    sys.exit(1)\n"
+        "    wanted = args[args.index('--filter') + 1].split('=', 1)[1]\n"
+        f"    if open({str(held)!r}).read() == wanted:\n"
+        "        print('stubcontainer')\n"
         "sys.exit(0)\n",
         encoding="utf-8",
     )
@@ -291,7 +302,7 @@ class TestTheWrapperItself:
         """
         code = _code_lines()
 
-        assert any('scripts/private_cluster.py" stop "$_run_container"' in line
+        assert any('scripts/private_cluster.py" stop "$_token"' in line
                    for line in code), "the teardown no longer stops through the module"
         assert any(_STARTS_THE_CLUSTER.search(line) for line in code), (
             "the cluster is no longer started through the module")
@@ -367,13 +378,12 @@ class TestTheClusterTheChildTalksTo:
             assert required in handed, f"{required} was not handed to pytest"
             # The socket DIRECTORY, and this RUN's: a bare ``?host=/`` would
             # pass for any socket-shaped DSN, a dotenv's included.  The
-            # wrapper names the directory after the container, which carries
-            # its PID.
+            # cluster's module names the directory after the run's token.
             assert "?host=" in handed[required], (
                 f"{required} does not name a unix socket at all, so it is not "
                 f"this run's private cluster: {handed[required]}"
             )
-            assert "/shekel-testrun-" in handed[required], (
+            assert "/shekel-cluster-" in handed[required], (
                 f"{required} does not name a directory this invocation made "
                 f"-- it may be coming from somewhere shared: {handed[required]}"
             )
@@ -396,9 +406,9 @@ class TestThePrivateClusterIsCleanedUp:
         closing on a running suite.  HUP was the one missing, while the
         wrapper's own header claimed every exit path was covered.
 
-        A leaked container is not merely untidy: the run names it after its
-        PID, and the teardown warns that a survivor collides with the next
-        cluster of that name, which is the next run reusing that PID.
+        A leaked container is not merely untidy: it keeps its postgres running
+        on the daemon and its socket directory on the tmpfs, and nothing else
+        will ever stop either.
 
         This reads the SOURCE rather than delivering real signals, as the
         wiring case does -- the behaviour needs a live container and a race,
@@ -414,17 +424,16 @@ class TestThePrivateClusterIsCleanedUp:
 
         assert signal_name in armed, (
             f"scripts/test.sh does not trap {signal_name}; it traps {armed}. "
-            "A run ended that way leaks its postgres container and its socket "
-            "directory, and the next run reusing that PID collides with them."
+            "A run ended that way leaks its postgres container and its socket directory."
         )
 
     def test_every_trap_is_armed_before_the_cluster_is_started(self) -> None:
         """The traps come BEFORE the start, so a run killed during the start is
         stopped by name.
 
-        A start ended by Ctrl-C stops what it made itself, but one killed by
-        TERM or HUP cannot: only the trap's stop, which finds the cluster by
-        the name the wrapper chose, removes it.  The review of step X-cx's K1a
+        A start ended by a signal it holds stops what it made itself, but one
+        killed outright cannot: only the trap's stop, which finds the cluster
+        by the token the wrapper made, removes it.  The review of step X-cx's K1a
         measured the traps moved after the start: a TERM to the whole group
         during the start left the container and its socket directory behind.
         Read from the SOURCE, as the wiring case is (:func:`_code_lines`).
@@ -463,89 +472,81 @@ class TestThePrivateClusterIsCleanedUp:
     def test_a_name_another_container_holds_is_left_to_it(
         self, tmp_path: Path
     ) -> None:
-        """A start refused because a container already holds this run's name
-        leaves that container alone, and so does the wrapper.
+        """A container ANOTHER run made, holding the name this run's start
+        asks for, is left alone by the start and by the wrapper.
 
-        The delta review's MEDIUM-1: the start refuses before it makes
-        anything and says so by exiting 3, and the wrapper DISARMS its
-        teardown on that and exits 2.  With the teardown armed, the EXIT
-        trap's stop by name removed the container the start had just refused
-        to take over -- a leaked cluster of a reused PID, or a live one of a
-        run in another PID namespace on the same daemon.
+        The coordinator's MEDIUM-1, held where the ruling on commit B put it:
+        docker refuses the run ("Conflict"), the start exits 2, and the EXIT
+        trap stops by THIS run's token, which that container does not carry.
+        A stop by NAME removed it (a leaked cluster of a reused PID, or a live
+        one of a run in another PID namespace on the same daemon).
         """
-        held = tmp_path / "stub-container"
+        other = tmp_path / "other-container"
         binaries = _stub_tree(tmp_path)
-        held.write_text("", encoding="utf-8")
+        other.write_text("", encoding="utf-8")
 
         result = _run_wrapper(binaries, {})
         calls = (tmp_path / "docker-calls").read_text(encoding="utf-8")
 
         assert result.returncode == 2, result.stderr
-        assert "already exists" in result.stderr, result.stderr
-        assert held.exists(), f"the held container was removed; docker saw:\n{calls}"
+        assert "Conflict" in result.stderr, result.stderr
+        assert other.exists(), f"the other run's container was removed; docker saw:\n{calls}"
         assert not [line for line in calls.splitlines() if line.startswith("rm ")], calls
 
-    def test_a_start_killed_outright_is_stopped_by_the_wrapper_s_trap(
-        self, tmp_path: Path
+    @pytest.mark.parametrize(("kills", "other", "calls"), [
+        ("after making", False, ["info", "run", "ps", "rm", "ps"]),
+        ("before making", True, ["info", "run", "ps"]),
+    ], ids=["after its run made the container",
+            "before it made anything, another run's container holding the name"])
+    def test_a_start_killed_outright_is_stopped_by_the_trap_s_token(
+        self, tmp_path: Path, kills: str, other: bool, calls: list[str]
     ) -> None:
-        """A start killed before it can stop what it made is stopped by the
-        EXIT trap, by the name the wrapper chose.
+        """A start killed outright (SIGKILL from its ``docker run``) runs no
+        stop of its own; the EXIT trap stops by the token the wrapper made.
+        After its run made the container, that stop alone removes it and the
+        socket directory (the review of 668b53c99 measured a wrapper that
+        disarmed on every failed start passing every case).  BEFORE it made
+        anything, with another run's container holding the name (S4 of the
+        commit B design), the stop finds nothing carrying this run's token;
+        a stop by name removed the other run's container.
 
-        The traps are disarmed on the start's exit 3 ONLY.  A start killed
-        outright -- here by SIGKILL as its ``docker run`` returns, the
-        container made -- runs no stop of its own, and the trap's stop is the
-        one thing that removes its container and socket directory.  The review
-        of 668b53c99 measured a wrapper that disarmed on EVERY failed start
-        passing every case.
+        Args:
+            tmp_path: scratch directory.
+            kills: when the stub ``run`` kills the start.
+            other: whether another run's container holds the name.
+            calls: the docker commands the run gives, in order.
         """
         runtime = Path(tempfile.mkdtemp(prefix="skrt", dir="/tmp"))
-        held = tmp_path / "stub-container"
-        calls = tmp_path / "docker-calls"
         binaries = _stub_tree(tmp_path)
-        # A docker whose ``run`` makes the container, then kills the start
-        # that asked for it, as an OOM killer or a ``kill -9`` would.
-        (binaries / "docker").write_text(
-            "#!/usr/bin/env python3\n"
-            "import os, signal, sys\n"
-            "args = sys.argv[1:]\n"
-            f"open({str(calls)!r}, 'a').write(' '.join(args) + chr(10))\n"
-            "cmd = args[0] if args else ''\n"
-            "if cmd == 'info':\n"
-            "    print('[name=seccomp,profile=builtin name=rootless]')\n"
-            "elif cmd == 'run':\n"
-            f"    open({str(held)!r}, 'w').close()\n"
-            "    os.kill(os.getppid(), signal.SIGKILL)\n"
-            f"elif cmd == 'rm' and os.path.exists({str(held)!r}):\n"
-            f"    os.remove({str(held)!r})\n"
-            f"elif cmd == 'ps' and os.path.exists({str(held)!r}):\n"
-            "    print('stubcontainer')\n"
-            "sys.exit(0)\n",
-            encoding="utf-8",
-        )
+        (tmp_path / "run-kills-the-start").write_text(kills, encoding="utf-8")
+        if other:
+            (tmp_path / "other-container").write_text("", encoding="utf-8")
         try:
             result = _run_wrapper(binaries, {"XDG_RUNTIME_DIR": str(runtime)})
-            left = list(runtime.glob("shekel-testrun-*"))
+            left = list(runtime.glob("shekel-cluster-*"))
         finally:
             shutil.rmtree(runtime, ignore_errors=True)
-        seen = calls.read_text(encoding="utf-8").splitlines()
+        seen = (tmp_path / "docker-calls").read_text(encoding="utf-8").splitlines()
 
         assert result.returncode == 2, result.stderr
-        assert [line.split()[0] for line in seen] == ["info", "ps", "run", "rm", "ps"], seen
-        assert not held.exists(), f"the killed start's container was left; docker saw: {seen}"
+        assert [line.split()[0] for line in seen] == calls, seen
+        assert not (tmp_path / "stub-container").exists(), (
+            f"the killed start's container was left; docker saw: {seen}")
         assert not left, f"the killed start's socket directory was left: {left}"
+        assert (tmp_path / "other-container").exists() is other, (
+            f"the other run's container was removed; docker saw: {seen}")
 
     def test_a_container_a_failed_start_could_not_remove_is_removed_by_the_trap(
         self, tmp_path: Path
     ) -> None:
         """A start that exits 2 naming a container its own stop could not
-        remove has it removed by the EXIT trap, by the name the wrapper chose.
+        remove has it removed by the EXIT trap, by the token the wrapper made.
 
-        Delta review 2's LOW-B: the traps stay armed on 2, the start's status
-        once it began making the cluster, and nothing graded it; a wrapper
-        that disarmed on 2 as well as 3 passed every case.  The trap's stop
-        is the only cover once the start's own stop has missed something.
-        Here the start fails (its container leaves no socket) and the stub
-        container survives the start's removal and not the trap's.
+        Delta review 2's LOW-B: nothing graded that the trap still stops after
+        a start's exit 2; a wrapper that disarmed then passed every case.  The
+        trap's stop is the only cover once the start's own stop has missed
+        something.  Here the start fails (its container leaves no socket) and
+        the stub container survives the start's removal and not the trap's.
 
         Args:
             tmp_path: scratch directory.
@@ -558,7 +559,7 @@ class TestThePrivateClusterIsCleanedUp:
         assert "left no socket" in result.stderr, result.stderr
         assert "Stopping it left something behind" in result.stderr, result.stderr
         assert [line.split()[0] for line in seen] == [
-            "info", "ps", "run", "exec", "rm", "ps", "rm", "ps"], seen
+            "info", "run", "exec", "ps", "rm", "ps", "ps", "rm", "ps"], seen
         assert not held.exists(), f"the container the start left was left; docker saw: {seen}"
 
     def test_the_container_is_removed_with_its_volume(
@@ -846,7 +847,7 @@ class TestThePrivateClusterHasNoPort:
                 {"XDG_RUNTIME_DIR": str(runtime)},
             )
             assert result.returncode == 0, result.stderr
-            leftovers = list(runtime.glob("shekel-testrun-*"))
+            leftovers = list(runtime.glob("shekel-cluster-*"))
             assert not leftovers, f"socket directories survived: {leftovers}"
         finally:
             shutil.rmtree(runtime, ignore_errors=True)

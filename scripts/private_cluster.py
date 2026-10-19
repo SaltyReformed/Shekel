@@ -4,35 +4,50 @@
 ``scripts/test.sh`` gives every suite run a cluster of its own (``balance:X-br-4``), and
 starts and stops it here; the release rehearsal kit (step X-cx's K1, not yet built) is to
 start its own here too, so there is one ``docker run``, one readiness rule and one
-teardown (the coordinator's K1 leaf-plan ruling, 2026-10-18, point 1).  The caller names the
-cluster; it is a container of that name on this run's daemon, reached over a UNIX SOCKET in
-a directory of the same name under ``XDG_RUNTIME_DIR``, with no network and no port.
+teardown (the coordinator's K1 leaf-plan ruling, 2026-10-18, point 1).  It is a container on
+this run's daemon, reached over a UNIX SOCKET in a directory under ``XDG_RUNTIME_DIR``, with
+no network and no port.
+
+A cluster is OWNED BY A TOKEN its caller makes before starting it (the coordinator's ruling on
+K1a commit B, 2026-10-19).  The start labels the container with the token as ``docker run``
+creates it, and names the socket directory after it, so whatever a start made carries its
+token from the instant it exists, and the daemon itself can say which containers are this
+caller's.  ``stop`` removes exactly what carries the token and nothing else, so a caller can
+stop by its token in EVERY path -- a normal end, a failed or refused start, a signal, a start
+killed outright -- and never remove a container another caller made, whatever that container
+is named.  The caller still names the container, for the humans reading ``docker ps``;
+correctness never reads the name.
 
 Usage::
 
-    python scripts/private_cluster.py start <name> <image>
-    python scripts/private_cluster.py stop <name>
+    python scripts/private_cluster.py token
+    python scripts/private_cluster.py start <name> <token> <image>
+    python scripts/private_cluster.py stop <token>
 
-``start`` prints the socket directory, then the container's id, one per line, once the
-cluster accepts connections there.  It makes nothing until the readiness cap, the socket
-path's bytes and the name are known good, and refuses a name a container already holds.
-A start that fails after that stops what it made, naming anything that stop left behind;
-one killed outright (TERM, HUP, KILL) cannot, which is why the caller NAMES the cluster
-before starting it and stops it by that name (``test.sh`` names its cluster after its own
-PID).  ``stop`` removes the container with its anonymous volume and the socket directory,
-and names on stderr anything that survived or could not be asked about; it is safe to run
-on a cluster that never started, or twice, which is what lets a caller's signal traps call
-it whenever they fire.
+``token`` prints a new token.  ``start`` prints the socket directory, then the container's
+id, one per line, once the cluster accepts connections there.  A start that fails stops
+what it made, naming anything that stop left behind; one killed outright (KILL) cannot,
+which is why the caller makes the token before starting and stops by it.  ``stop`` removes
+the token's container with its anonymous volume, and its socket directory, and names on
+stderr anything that survived or could not be asked about; it is safe to run on a cluster
+that never started, or twice, which is what lets a caller's signal traps call it whenever
+they fire.
 
-Exit status: 0 done; 1 ``stop`` left something behind, each named; 2 ``start`` began
-making the cluster and could not give one that accepts connections (each reason printed,
-and anything its own stop left behind), or the command line was wrong; 3 ``start`` refused
-before it made anything (the reason printed), so nothing of it exists to stop, and a stop by
-its name could remove a container another holds.  Ctrl-C ends ``start`` BY SIGINT, as
-Python itself ends on one, once it has stopped what it made and named what that stop left,
-so a calling shell sees the signal and stops too; a Ctrl-C inside a failed start's own stop
-ends it there, unnamed, for the caller's stop by name to finish.  ``main`` ends the process
-it runs in that way, so a caller in process wants :func:`start`.
+From just before it makes anything until it has handed over a cluster that accepts
+connections, or has stopped what it made, the start HOLDS its caller's signals (INT, TERM,
+HUP): it acts on one between docker commands, never inside one, and finishes its own stop
+before ending BY that signal, naming what the stop left, so a calling shell sees the signal
+and stops too.  Every docker command runs in a session of its own, so a terminal's Ctrl-C
+reaches this process and never a docker command it is waiting on: aborting the CLI of
+``docker run`` does not abort the create, which the daemon finished after the stop had
+looked (the delta review of 668b53c99 + bb2f1492a, MEDIUM-A).
+
+Exit status: 0 done; 1 ``stop`` left something behind, each named; 2 ``start`` could not give
+a cluster that accepts connections, or refused before making anything (each reason printed,
+and anything its own stop left behind), or the command line was wrong.  A start ended by a
+held signal ends BY that signal, as Python ends on an unhandled Ctrl-C; ``main`` ends the
+process it runs in that way, so a caller in process wants :func:`start`, which raises
+:class:`Interrupted` instead.
 
 Environment variables read:
     XDG_RUNTIME_DIR    Where the socket directory is made.  Default ``/run/user/<uid>``.
@@ -49,19 +64,36 @@ import argparse
 import math
 import os
 import re
+import secrets
 import shutil
 import signal
 import stat
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import FrameType, TracebackType
 
 # The superuser the image was baked with (``scripts/build_test_db_image.py``'s
 # ``_BUILD_USER``); ``test.sh`` builds its connection URLs with the same name and password.
 _USER = "shekel_user"
 _PASSWORD = "shekel_pass"
+
+# The label ``docker run`` puts on the container, its value the caller's token: how the
+# daemon says which containers a caller made.  A ``label=<key>=<value>`` filter matches the
+# value EXACTLY (measured 2026-10-19 on the rootless daemon: ``abcd1234`` did not list a
+# container labelled ``abcd12345``, and ``abcd`` listed neither).
+_TOKEN_LABEL = "shekel.private_cluster.token"
+
+# A token is 128 random bits in lowercase hex: never guessed, never reused, and safe as a
+# label value, in a container name and as a path component.
+_TOKEN_BYTES = 16
+_TOKEN_SHAPE = re.compile(rf"[0-9a-f]{{{2 * _TOKEN_BYTES}}}")
+
+# The socket directory is named after the token, so a stop that holds only the token finds
+# it, and a token's directory can belong to no other cluster.
+_SOCKET_DIR_PREFIX = "shekel-cluster-"
 
 # Where the image keeps its cluster: outside the base image's declared VOLUME, which
 # ``docker commit`` does not capture (``scripts/build_test_db_image.py``'s ``_BAKED_PGDATA``).
@@ -165,32 +197,83 @@ _SETTINGS = (
 _DEFAULT_READINESS_SECONDS = 15
 # How long one docker command may take before the daemon is taken to be wedged.
 _DOCKER_TIMEOUT_SECONDS = 60
-# The conventional exit status of a process ended by Ctrl-C (128 + SIGINT).
-_INTERRUPTED = 130
-# A start refused before it made anything: distinct from 2, because a caller that stops by
-# name after 2 must NOT after this (:class:`Refused`).
-_REFUSED = 3
+# The signals by which a caller asks a start to end: Ctrl-C, and what supervisors and a
+# closing terminal send.  KILL cannot be held, which is why the caller holds the token.
+_CALLERS_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
 
 class ClusterError(RuntimeError):
     """The cluster could not be started, or is not usable; the message says which and why."""
 
 
-class Refused(ClusterError):
-    """A start refused before it made anything.  Nothing of it exists to stop, and a stop by
-    its name could remove a container another caller holds, so its caller must not."""
-
-
 class Interrupted(KeyboardInterrupt):
-    """Ctrl-C ended a start after it began making the cluster.  The start has stopped what it
-    made, and the arguments are what that stop could not remove, one sentence each.
+    """A caller's signal ended a start after it began making the cluster.  The start has
+    stopped what it made; :attr:`signum` is the signal, and the arguments are what the stop
+    could not remove, one sentence each.
 
     A KeyboardInterrupt, and so not an ``Exception``, for the caller that runs :func:`start`
     in process: this module's own cases, under a pytest that stops its session on a Ctrl-C
     and records an ``Exception`` as one failed case before going on to the next.  As an
     ``Exception`` it would turn that caller's Ctrl-C into a failure it carries on past, which
-    is the defect :func:`main` ends by SIGINT to prevent in a calling shell.  :func:`main`
-    itself catches it by name and needs neither base."""
+    is the defect :func:`main` ends by the signal to prevent in a calling shell.  :func:`main`
+    itself catches it by name and needs neither base.
+    """
+
+    def __init__(self, signum: int, survived: list[str]) -> None:
+        super().__init__(*survived)
+        self.signum = signum
+
+
+@dataclass
+class _HeldSignals:
+    """The caller's signals, HELD while a start makes its cluster and while it stops it.
+
+    A handler that raises would raise inside whatever docker command the start is waiting
+    on, and ``subprocess.run`` answers an exception by killing that command: for ``docker
+    run`` the daemon finishes the create anyway, after the start's stop has looked (MEDIUM-A).
+    So each signal is only RECORDED, and the start acts on it between docker commands
+    (:meth:`act`).  A recording handler holds in any caller, where blocking the signals
+    would not: a signal mask is per thread, and a caller with a second thread (xdist's) has a
+    process-directed signal delivered there instead.  Handlers run in the main thread only,
+    so :func:`start` must run there (``signal.signal`` refuses any other).
+
+    On the way out the caller's own handlers are restored, and a signal recorded after the
+    last :meth:`act` is raised again under them, so none is lost.
+    """
+
+    signals: list[int] = field(default_factory=list)
+    _before: dict[int, signal.Handlers | object] = field(default_factory=dict)
+    _acted: bool = False
+
+    def __enter__(self) -> _HeldSignals:
+        """Hold the caller's signals, keeping its handlers to restore."""
+        for signum in _CALLERS_SIGNALS:
+            self._before[signum] = signal.signal(signum, self._record)
+        return self
+
+    def _record(self, signum: int, _frame: FrameType | None) -> None:
+        """The handler: note the signal, and carry on with what was interrupted."""
+        self.signals.append(signum)
+
+    def act(self) -> None:
+        """End the start here if its caller has sent a signal: raise KeyboardInterrupt, which
+        :func:`start` answers by stopping what it made.
+
+        Raises:
+            KeyboardInterrupt: when a signal is held.
+        """
+        if self.signals:
+            self._acted = True
+            raise KeyboardInterrupt
+
+    def __exit__(self, kind: type[BaseException] | None, value: BaseException | None,
+                 traceback: TracebackType | None) -> None:
+        """Restore the caller's handlers, and raise again under them a signal recorded after
+        the last :meth:`act` of a start that is handing its cluster over."""
+        for signum, handler in self._before.items():
+            signal.signal(signum, handler)
+        if self.signals and not self._acted and kind is None:
+            signal.raise_signal(self.signals[0])
 
 
 @dataclass(frozen=True)
@@ -201,30 +284,52 @@ class Cluster:
     socket_dir: Path
 
 
-def socket_dir(name: str) -> Path:
-    """The socket directory of the cluster ``name``: a directory of that name under
-    ``XDG_RUNTIME_DIR`` (``/run/user/<uid>`` when unset or empty), which is 0700, so the
-    socket stays private though its own directory must be open to the container."""
+def new_token() -> str:
+    """A new token, for a caller to own one cluster by (the module says how)."""
+    return secrets.token_hex(_TOKEN_BYTES)
+
+
+def socket_dir(token: str) -> Path:
+    """The socket directory of the cluster owned by ``token``: a directory named after it
+    under ``XDG_RUNTIME_DIR`` (``/run/user/<uid>`` when unset or empty), which is 0700, so
+    the socket stays private though its own directory must be open to the container.
+
+    Raises:
+        ClusterError: when ``token`` is not one :func:`new_token` makes.  It becomes a path
+            component that :func:`stop` removes, so ``..`` or a ``/`` in it would point that
+            removal elsewhere.
+    """
+    if not _TOKEN_SHAPE.fullmatch(token):
+        raise ClusterError(f"{token!r} is not a cluster token: one is {2 * _TOKEN_BYTES} "
+                           "lowercase hex digits ('private_cluster.py token' makes one)")
     runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    return Path(runtime) / name
+    return Path(runtime) / f"{_SOCKET_DIR_PREFIX}{token}"
 
 
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:
     """One docker command, its output captured; a daemon that does not answer within
     :data:`_DOCKER_TIMEOUT_SECONDS` is reported as one, where a shell waited forever.
 
+    It runs in a SESSION OF ITS OWN, so a terminal's Ctrl-C, which goes to the terminal's
+    foreground process group, reaches the caller and never the docker command: the CLI of
+    ``docker run`` aborted that way leaves the daemon to finish the create after whatever
+    stop the caller then runs has looked.  Measured with the delta review of bb2f1492a's race
+    probe on the rootless daemon, 12 rounds a shape: a container left in 4 of 12 rounds of a
+    bare start and 3 of 12 in test.sh's shape on 731b2aa08, and in 0 of 12 of each once the
+    CLI ran apart and the start held its caller's signals (2026-10-19).
+
     Its output is decoded with ``errors="replace"``: a byte it prints that is not UTF-8
     becomes U+FFFD in the message that quotes it, where a strict decode raised a
     UnicodeDecodeError that is no ClusterError, so a failed start skipped its own stop and
-    ended in a traceback.  Nothing else reads the text for more than that: the container's id
-    is hex, and :func:`_present` reads only whether ``ps`` printed anything.
+    ended in a traceback.  Nothing else reads the text for more than that: a container's id
+    is hex.
 
     Raises:
         ClusterError: when docker cannot be run or does not answer in time.
     """
     try:
         return subprocess.run(["docker", *args], capture_output=True, text=True,
-                              errors="replace", check=False,
+                              errors="replace", check=False, start_new_session=True,
                               timeout=_DOCKER_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
         raise ClusterError(f"docker {args[0]} did not answer within "
@@ -233,28 +338,27 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
         raise ClusterError(f"docker cannot be run: {exc}") from exc
 
 
-def _present(name: str) -> bool:
-    """Whether docker holds a container named exactly ``name``, running or not.  Asked by
-    an ANCHORED name filter: docker's ``name`` filter otherwise matches every name that
-    CONTAINS it, and ``inspect`` exits 1 alike for a container that is gone and a daemon
-    that cannot be asked, so a teardown reading it would call an unreachable daemon clean.
+def _labelled(token: str) -> list[str]:
+    """The ids of every container carrying ``token``'s label, running or not.  A daemon
+    that cannot be asked is an error, never an empty answer, so a teardown reading it never
+    calls an unreachable daemon clean.
 
     Raises:
         ClusterError: when docker cannot be asked.
     """
-    asked = _docker("ps", "--all", "--quiet", "--filter", f"name=^{re.escape(name)}$")
+    asked = _docker("ps", "--all", "--quiet", "--filter", f"label={_TOKEN_LABEL}={token}")
     if asked.returncode:
-        raise ClusterError(f"docker could not be asked whether {name} exists: "
+        raise ClusterError(f"docker could not be asked which containers carry {token}: "
                            f"{(asked.stderr or asked.stdout).strip()}")
-    return bool(asked.stdout.strip())
+    return asked.stdout.split()
 
 
 def _readiness_seconds() -> float:
     """The cap on the readiness wait, from ``READINESS_TIMEOUT_SECONDS``.
 
     Raises:
-        Refused: when the variable is set to anything but a finite, non-negative number of
-            seconds (``nan`` and ``inf`` would make the wait endless).
+        ClusterError: when the variable is set to anything but a finite, non-negative number
+            of seconds (``nan`` and ``inf`` would make the wait endless).
     """
     given = os.environ.get("READINESS_TIMEOUT_SECONDS", "")
     if not given:
@@ -262,11 +366,11 @@ def _readiness_seconds() -> float:
     try:
         seconds = float(given)
     except ValueError as exc:
-        raise Refused(f"READINESS_TIMEOUT_SECONDS={given!r} is not a number of "
-                      "seconds") from exc
+        raise ClusterError(f"READINESS_TIMEOUT_SECONDS={given!r} is not a number of "
+                           "seconds") from exc
     if not math.isfinite(seconds) or seconds < 0:
-        raise Refused(f"READINESS_TIMEOUT_SECONDS={given!r} is not a finite, "
-                      "non-negative number of seconds")
+        raise ClusterError(f"READINESS_TIMEOUT_SECONDS={given!r} is not a finite, "
+                           "non-negative number of seconds")
     return seconds
 
 
@@ -285,66 +389,44 @@ def _refuse_a_socket_dir_docker_cannot_bind(directory: Path) -> None:
     could not name.
 
     Raises:
-        Refused: when the directory is not UTF-8, or is too long.
+        ClusterError: when the directory is not UTF-8, or is too long.
     """
     encoded = os.fsencode(directory)
     try:
         encoded.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise Refused(f"socket directory {encoded.decode('utf-8', 'backslashreplace')} is "
-                      "not UTF-8, so docker would mount another directory in its place.  "
-                      "Set XDG_RUNTIME_DIR to a path that is.") from exc
+        raise ClusterError(f"socket directory {encoded.decode('utf-8', 'backslashreplace')} "
+                           "is not UTF-8, so docker would mount another directory in its "
+                           "place.  Set XDG_RUNTIME_DIR to a path that is.") from exc
     if len(encoded) > _SOCKET_DIR_BYTES:
-        raise Refused(f"socket directory {directory} is too long; a unix socket path "
-                      f"cannot exceed {_SUN_PATH_BYTES} bytes.  Set XDG_RUNTIME_DIR to "
-                      "something shorter.")
-
-
-def _refuse_a_name_in_use(name: str) -> None:
-    """Refuse a name a container already holds, running or not: a start never takes one
-    over, so a start only ever stops what it made.
-
-    Raises:
-        Refused: when a container holds ``name``, or docker cannot be asked whether one
-            does.
-    """
-    try:
-        held = _present(name)
-    except ClusterError as unasked:
-        raise Refused(str(unasked)) from unasked
-    if held:
-        raise Refused(f"a container named {name} already exists, and a start never takes "
-                      f"over a name in use.  Remove it ('docker rm -fv {name}') only once the "
-                      "run that made it has ended: test.sh's names carry its PID, and no two "
-                      "live processes of one PID namespace share one, so a test.sh name in "
-                      "use was left by a run that has ended unless a run in another PID "
-                      "namespace on this daemon (a container, a sandbox) holds it.")
+        raise ClusterError(f"socket directory {directory} is too long; a unix socket path "
+                           f"cannot exceed {_SUN_PATH_BYTES} bytes.  Set XDG_RUNTIME_DIR to "
+                           "something shorter.")
 
 
 def _make_socket_dir(directory: Path) -> None:
-    """Make the socket directory afresh, open to the container's postgres user.
+    """Make the socket directory EXCLUSIVELY, open to the container's postgres user.
 
-    0777 because rootless docker maps the container's postgres user into the subuid range,
-    so it cannot write a directory owned by this user.  The socket is still private:
-    ``XDG_RUNTIME_DIR`` itself is 0700.  Whatever an earlier cluster of this name left at
-    the path, a directory or a file, is removed first.
+    Anything already at the path -- a directory, a file, a symlink -- is refused, never
+    taken over: the path is the token's, and a token is new, so whatever is there was made
+    by no start of this cluster, and opening a symlink's target to the container would hand
+    it a directory elsewhere.  0777 because rootless docker maps the container's postgres
+    user into the subuid range, so it cannot write a directory owned by this user.  The
+    socket is still private: ``XDG_RUNTIME_DIR`` itself is 0700.
 
     Raises:
-        ClusterError: when the leftover cannot be removed or the directory made.
+        ClusterError: when anything is at the path, or the directory cannot be made.
     """
     try:
-        if directory.is_dir() and not directory.is_symlink():
-            shutil.rmtree(directory)
-        else:
-            directory.unlink(missing_ok=True)
         directory.mkdir(parents=True)
         directory.chmod(0o777)
     except OSError as exc:
         raise ClusterError(f"socket directory {directory} cannot be made: {exc}") from exc
 
 
-def _run_container(name: str, image: str, directory: Path) -> str:
-    """Start the container ``name`` from ``image``; its id.
+def _run_container(name: str, token: str, image: str, directory: Path) -> str:
+    """Start the container ``name`` from ``image``, labelled with ``token`` as it is
+    created; its id.
 
     NO PUBLISHED PORT.  The cluster serves one process on this machine, so a port buys
     nothing and costs a whole failure class: on a rootless daemon ``dockerd`` picks the port
@@ -361,13 +443,17 @@ def _run_container(name: str, image: str, directory: Path) -> str:
     ``--network=none`` follows from having no port, which also takes the cluster off the
     experimental gvisor-tap-vsock driver the rootless daemon falls back to when slirp4netns
     is absent.  ``--rm`` removes a container whose postgres exits; :func:`stop` removes the
-    rest.
+    rest.  The label is given here, to the create itself, so no instant exists in which the
+    container is this caller's and does not say so.  A name another container already holds
+    makes docker refuse the run ("Conflict"), and the start's stop then removes nothing of
+    that container, which does not carry this token.
 
     Raises:
         ClusterError: when docker refuses to start it.
     """
     started = _docker(
-        "run", "-d", "--rm", "--name", name, "--network=none",
+        "run", "-d", "--rm", "--name", name, "--label", f"{_TOKEN_LABEL}={token}",
+        "--network=none",
         "-e", f"POSTGRES_USER={_USER}", "-e", f"POSTGRES_PASSWORD={_PASSWORD}",
         "-e", "POSTGRES_DB=postgres", "-e", f"PGDATA={_PGDATA}",
         "-v", f"{directory}:{_SOCKETS}",
@@ -380,9 +466,12 @@ def _run_container(name: str, image: str, directory: Path) -> str:
     return started.stdout.strip()
 
 
-def _wait_ready(name: str, directory: Path, seconds: float) -> None:
+def _wait_ready(name: str, container: str, directory: Path, seconds: float,
+                held: _HeldSignals) -> None:
     """Block until the cluster accepts connections on its socket, and the socket is on this
-    side of the mount.
+    side of the mount; a signal its caller sent ends the wait after the probe it landed in.
+    The probe asks the container by its id, which is this start's; ``name`` is for the
+    messages.
 
     Asking over the socket is safe for an image that ships a populated PGDATA, as the
     baked test image does: the entrypoint skips initdb, so the window in which its
@@ -394,9 +483,14 @@ def _wait_ready(name: str, directory: Path, seconds: float) -> None:
 
     Raises:
         ClusterError: when it is not ready within ``seconds``, or left no socket.
+        KeyboardInterrupt: when its caller has sent a signal (:meth:`_HeldSignals.act`).
     """
     deadline = time.monotonic() + seconds
-    while _docker("exec", name, "pg_isready", "-q", "-h", _SOCKETS, "-U", _USER).returncode:
+    while True:
+        probed = _docker("exec", container, "pg_isready", "-q", "-h", _SOCKETS, "-U", _USER)
+        held.act()
+        if not probed.returncode:
+            break
         if time.monotonic() >= deadline:
             raise ClusterError(f"{name} did not accept connections within {seconds:g}s")
         time.sleep(0.1)
@@ -405,52 +499,64 @@ def _wait_ready(name: str, directory: Path, seconds: float) -> None:
         raise ClusterError(f"{name} reported ready but left no socket at {socket_file}")
 
 
-def start(name: str, image: str) -> Cluster:
-    """Start the cluster ``name`` from ``image`` and wait until it accepts connections.
+def start(name: str, token: str, image: str) -> Cluster:
+    """Start a cluster owned by ``token``, its container named ``name``, from ``image``, and
+    wait until it accepts connections.
 
     ``image`` ships a populated PGDATA at :data:`_PGDATA`, as the baked test image does
     (:func:`_wait_ready` says why readiness depends on it).  Nothing is made until the
-    readiness cap, the socket path's bytes and the name are known good, and a refusal
-    there is :class:`Refused`: a name a container already holds is never taken over, and as
-    nothing of this start exists, its caller must not stop that name either.  A start
-    refused after that stops what it made, and its error names anything that stop left
-    behind.  One ended by Ctrl-C after that stops what it made too, and raises
-    :class:`Interrupted` carrying what that stop could not remove.  One killed outright
-    (TERM, HUP) stops nothing, so its caller, which named the cluster, stops it by that name.
+    readiness cap, the token and the socket path's bytes are known good.  From just before
+    the socket directory is made -- the first thing a start makes, the ``docker run`` the
+    second -- until the cluster is handed over or stopped, the caller's signals are HELD
+    (:class:`_HeldSignals`).  A start that fails after that stops what carries its token,
+    and its error names anything that stop left behind.  One ended by a signal stops it too,
+    and raises :class:`Interrupted` carrying the signal and what the stop could not remove;
+    the signal wins over a failure it met, since the caller asked the start to end.  One
+    killed outright (KILL) stops nothing, so its caller, which holds the token, stops by it.
 
-    One window stays open: a container given the name after the check and before ``docker
-    run`` makes the run fail, and this start's stop then removes that container by name.
-    Only another process choosing the same name inside that window opens it.  ``test.sh``'s
-    names carry its PID, unique among the live processes of its PID namespace, so only a
-    run in another namespace on the same daemon could.
+    Once this returns, the cluster is its caller's: a signal recorded after the start's last
+    look is raised again under the caller's own handlers, so it reaches the caller, which
+    holds the token.  A signal that lands after the start has decided how to end, inside
+    its own stop or after, does not change that end.
 
     Raises:
-        Refused: when the start is refused before it makes anything, naming why.
-        ClusterError: when a later step fails, naming it and what its stop left behind.
-        Interrupted: when Ctrl-C ends the start once it has begun making the cluster.
+        ClusterError: when the start is refused or fails, naming why and what its stop left.
+        Interrupted: when a signal ends the start once it has begun making the cluster.
     """
     seconds = _readiness_seconds()
-    directory = socket_dir(name)
+    directory = socket_dir(token)
     _refuse_a_socket_dir_docker_cannot_bind(directory)
-    _refuse_a_name_in_use(name)
-    try:
-        _make_socket_dir(directory)
-        container = _run_container(name, image, directory)
-        _wait_ready(name, directory, seconds)
-    except ClusterError as failed:
-        survived = stop(name)
-        if survived:
-            raise ClusterError(f"{failed}.  Stopping it left something behind: "
-                               + " ".join(survived)) from failed
-        raise
-    except KeyboardInterrupt as interrupted:
-        raise Interrupted(*stop(name)) from interrupted
+    with _HeldSignals() as held:
+        try:
+            _make_socket_dir(directory)
+            held.act()
+            container = _run_container(name, token, image, directory)
+            held.act()
+            _wait_ready(name, container, directory, seconds, held)
+        except KeyboardInterrupt as interrupted:
+            # Raised by ``held.act()``, or in process by the caller's own Ctrl-C handler.
+            raise Interrupted(held.signals[0] if held.signals else signal.SIGINT,
+                              stop(token)) from interrupted
+        except ClusterError as failed:
+            survived = stop(token)
+            if held.signals:
+                raise Interrupted(held.signals[0], survived) from failed
+            if survived:
+                raise ClusterError(f"{failed}.  Stopping it left something behind: "
+                                   + " ".join(survived)) from failed
+            raise
     return Cluster(container, directory)
 
 
-def stop(name: str) -> list[str]:
-    """Remove the cluster ``name``'s container, with its anonymous volume, and its socket
-    directory; one sentence per thing that survived, or that could not be asked about.
+def stop(token: str) -> list[str]:
+    """Remove what carries ``token``: its container, with its anonymous volume, and its
+    socket directory; one sentence per thing that survived, or that could not be asked about.
+
+    It NEVER removes what does not carry the token: the container is found by its LABEL and
+    removed by its id, never by a name, so a container another caller made is left alone
+    whatever it is named -- the guarantee the coordinator's MEDIUM-1 asked for, now held by
+    the daemon's own record of who made what rather than by a caller deciding when not to
+    stop (the ruling on K1a commit B, 2026-10-19).
 
     ``-v`` removes the ANONYMOUS VOLUME too: the baked image inherits the base's ``VOLUME
     /var/lib/postgresql`` though PGDATA lives elsewhere, and plain ``docker rm -f`` left one
@@ -459,22 +565,28 @@ def stop(name: str) -> list[str]:
     the cost is unbounded metadata on a daemon the homelab stack watches, not disk.  A
     survivor is NAMED, never discarded: a teardown that cannot say it failed left a wedged
     or unreachable daemon's container running while its caller exited clean, which is why
-    whether it survived is asked of :func:`_present`, which tells "gone" from "cannot be
-    asked".  The socket directory sits on a tmpfs, so a leak is bounded only by the next
-    reboot; a plain removal suffices because it is mounted at ``/sockets`` (see
-    :data:`_SOCKETS`).
+    the containers are asked for again after the removal, by :func:`_labelled`, which tells
+    "none" from "cannot be asked".  The socket directory sits on a tmpfs, so a leak is
+    bounded only by the next reboot; a plain removal suffices because it is mounted at
+    ``/sockets`` (see :data:`_SOCKETS`).  A symlink at its path is named, never followed.
+
+    Raises:
+        ClusterError: when ``token`` is not a token (:func:`socket_dir`).
     """
+    directory = socket_dir(token)
     survived = []
     try:
-        _docker("rm", "-fv", name)
-        if _present(name):
-            survived.append(f"{name} survived teardown -- remove it by hand ('docker rm -fv "
-                            f"{name}') or the next cluster of that name collides with it.")
+        made = _labelled(token)
+        if made:
+            _docker("rm", "-fv", *made)
+            survived.extend(f"container {container} of cluster {token} survived teardown "
+                            f"-- remove it by hand ('docker rm -fv {container}')."
+                            for container in _labelled(token))
     except ClusterError as exc:
-        survived.append(f"{name} may have survived teardown: {exc}")
-    directory = socket_dir(name)
+        survived.append(f"the container of cluster {token} may have survived teardown: "
+                        f"{exc}")
     shutil.rmtree(directory, ignore_errors=True)
-    if directory.exists():
+    if directory.exists(follow_symlinks=False):
         survived.append(f"{directory} survived teardown.")
     return survived
 
@@ -485,55 +597,65 @@ def _warn(survived: list[str]) -> None:
         print(f"[private_cluster] WARNING: {line}", file=sys.stderr)
 
 
-def _end_by_sigint() -> int:
-    """End this process BY SIGINT, as Python ends on a Ctrl-C nothing handled, so a calling
-    shell sees the signal and stops too: an exit status of 130 tells a shell the child dealt
-    with the Ctrl-C itself, and the shell carries on with its next command.
+def _end_by(signum: int) -> int:
+    """End this process BY ``signum``, as Python ends on a Ctrl-C nothing handled, so a
+    calling shell sees the signal and stops too: an exit status of 130 tells a shell the
+    child dealt with the Ctrl-C itself, and the shell carries on with its next command.
 
     The default disposition skips the interpreter's own flush, and nothing needs it here:
     no arm that ends this way has printed to stdout, and stderr is line-buffered, so each
     warning is written as it is printed.  The status is returned only should the signal not
-    end the process, which is CPython's own fallback in ``exit_sigint`` (128 + SIGINT).
+    end the process, which is CPython's own fallback in ``exit_sigint`` (128 + the signal).
     """
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
-    os.kill(os.getpid(), signal.SIGINT)
-    return _INTERRUPTED
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+    return 128 + signum
+
+
+def _start(args: argparse.Namespace) -> int:
+    """``start``, as the module says; its exit status."""
+    try:
+        cluster = start(args.name, args.token, args.image)
+    except ClusterError as exc:
+        print(f"[private_cluster] {exc}", file=sys.stderr)
+        return 2
+    except Interrupted as interrupted:
+        _warn(list(interrupted.args))
+        return _end_by(interrupted.signum)
+    print(cluster.socket_dir)
+    print(cluster.container)
+    return 0
+
+
+def _stop(args: argparse.Namespace) -> int:
+    """``stop``, as the module says; its exit status."""
+    try:
+        survived = stop(args.token)
+    except ClusterError as exc:
+        print(f"[private_cluster] {exc}", file=sys.stderr)
+        return 2
+    _warn(survived)
+    return 1 if survived else 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Start or stop a cluster, as the module says; its exit status."""
+    """Make a token, or start or stop a cluster, as the module says; its exit status."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    starting = commands.add_parser("start", help="start a cluster; print its socket "
-                                   "directory, then its container id")
+    commands.add_parser("token", help="print a new token, to own a cluster by")
+    starting = commands.add_parser("start", help="start a cluster owned by a token; print "
+                                   "its socket directory, then its container id")
     starting.add_argument("name")
+    starting.add_argument("token")
     starting.add_argument("image")
-    stopping = commands.add_parser("stop", help="stop a cluster, naming what survived")
-    stopping.add_argument("name")
+    stopping = commands.add_parser("stop", help="stop what carries a token, naming what "
+                                   "survived")
+    stopping.add_argument("token")
     args = parser.parse_args(argv)
-    if args.command == "start":
-        try:
-            cluster = start(args.name, args.image)
-        except Refused as exc:
-            print(f"[private_cluster] {exc}", file=sys.stderr)
-            return _REFUSED
-        except ClusterError as exc:
-            print(f"[private_cluster] {exc}", file=sys.stderr)
-            return 2
-        except Interrupted as interrupted:
-            _warn(list(interrupted.args))
-            return _end_by_sigint()
-        except KeyboardInterrupt:
-            # Ctrl-C where the start could not stop what it made: before it made anything,
-            # or inside a failed start's own stop, which the caller's stop by name finishes.
-            # A traceback would say nothing more.
-            return _end_by_sigint()
-        print(cluster.socket_dir)
-        print(cluster.container)
+    if args.command == "token":
+        print(new_token())
         return 0
-    survived = stop(args.name)
-    _warn(survived)
-    return 1 if survived else 0
+    return _start(args) if args.command == "start" else _stop(args)
 
 
 if __name__ == "__main__":

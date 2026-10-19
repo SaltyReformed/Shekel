@@ -1,8 +1,11 @@
-"""The throwaway cluster's one home starts a cluster and stops it leaving nothing behind.
+"""The throwaway cluster's one home starts a cluster and stops what carries its token.
 
 ``scripts/private_cluster.py`` holds the life of the cluster ``scripts/test.sh`` gives every
-suite run, and that the release rehearsal kit is to start (step X-cx's K1a).  These drive it
-with a stub ``docker`` on ``PATH``, so they need no daemon, no image and no database; the
+suite run, and that the release rehearsal kit is to start (step X-cx's K1a).  A cluster is
+owned by a TOKEN its caller makes: the start labels the container with it as docker creates
+it, and the stop removes only what carries it (the coordinator's ruling on K1a commit B,
+2026-10-19).  These drive the module with a stub ``docker`` on ``PATH`` that keeps its
+containers' names and labels, so they need no daemon, no image and no database; the
 wrapper's own cases (``test_test_runner.py``) drive the same module through ``test.sh``.
 What a REAL cluster does is graded by every suite run, which starts one here.
 """
@@ -26,35 +29,46 @@ import pytest
 
 from scripts import private_cluster
 
-_NAME = "shekel-testrun-4242"
+# Fixed and plainly not secrets: a token is any 32 lowercase hex digits.
+_TOKEN = "01" * 16
+_OTHER_TOKEN = "fe" * 16
+_NAME = "shekel-testrun-4242-01010101"
 _IMAGE = "stub-image:test"
 _MODULE = Path(private_cluster.__file__)
-_PRESENT = "ps --all --quiet --filter name=^shekel\\-testrun\\-4242$"
-_CONTAINER_LEFT = (f"{_NAME} survived teardown -- remove it by hand ('docker rm -fv {_NAME}') "
-                   "or the next cluster of that name collides with it.")
+_DIRECTORY = f"shekel-cluster-{_TOKEN}"
+_LABEL = f"shekel.private_cluster.token={_TOKEN}"
+_LISTED = f"ps --all --quiet --filter label={_LABEL}"
+# The id the stub gives the container a start makes.
+_MADE = "c0ffee"
+_CONTAINER_LEFT = (f"container {_MADE} of cluster {_TOKEN} survived teardown -- remove it by "
+                   f"hand ('docker rm -fv {_MADE}').")
 
 
 @dataclass(frozen=True)
 class _Behaviour:
     """How the stub ``docker`` behaves; each default is a daemon that works.
 
-    ``run`` makes the container and the socket in the directory mounted at ``/sockets`` as
-    postgres would (unless ``make_socket`` is false), then, when it ``pins_dir``, takes the
-    write bit off that directory, so the socket in it cannot be unlinked and the directory
-    survives a stop; given a ``run_error``, ``run`` instead writes those bytes on stderr and
-    exits 125, making nothing; ``rm`` removes the container unless it ``survives``; ``ps``
-    lists it while it exists, or exits 1 as an ``unreachable`` daemon does; ``exec`` (the
-    readiness probe) answers ``ready``; the command named ``hangs_on`` sleeps past any
-    timeout a case sets; anything else succeeds.
+    ``run`` refuses a name a container already holds, as docker does ("Conflict"), and
+    otherwise makes the container ``c0ffee``, keeping its name and its ``--label``, and,
+    unless ``socket`` is ``"missing"``, the socket in the directory mounted at ``/sockets``
+    as postgres would; ``socket="pinned"`` then takes the write bit off that directory, so
+    the socket cannot be unlinked and the directory survives a stop.  Given a ``run_error``,
+    ``run`` instead writes those bytes on stderr and exits 125, making nothing.  ``ps``
+    lists the ids of the containers whose label is exactly the one its filter names (any
+    value, given only the key, as docker's filter does), or exits 1 as an ``unreachable``
+    daemon does; ``rm`` removes the containers it is given by id or by name unless
+    ``survives``; ``exec`` (the readiness probe) answers ``ready``.  The command
+    named ``slow`` takes 2 seconds; a ``run`` CLI signalled in that wait exits at once and
+    its create lands 0.5 s later, as the daemon finishes a create its CLI abandoned (the
+    delta review of bb2f1492a's MEDIUM-A).
     """
 
     run_error: bytes = b""
     ready: bool = True
-    make_socket: bool = True
-    pins_dir: bool = False
+    socket: str = "made"
     survives: bool = False
     unreachable: bool = False
-    hangs_on: str = ""
+    slow: str = ""
 
 
 _WORKS = _Behaviour()
@@ -63,7 +77,8 @@ _WORKS = _Behaviour()
 @dataclass(frozen=True)
 class _Stub:
     """A case's stub ``docker``: it lives in ``bin``, records each command it is given in
-    ``docker-calls``, and holds its one container as the file ``container``."""
+    ``docker-calls``, and holds each container as a file in ``containers`` named by its id,
+    holding its name and its label."""
 
     home: Path
 
@@ -73,9 +88,20 @@ class _Stub:
         return self.home / "bin"
 
     @property
-    def held(self) -> Path:
-        """The file that stands for the stub's container while it exists."""
-        return self.home / "container"
+    def containers(self) -> Path:
+        """The directory holding one file per container the stub's daemon holds."""
+        return self.home / "containers"
+
+    @property
+    def made(self) -> Path:
+        """The file that stands for the container a start makes, while it exists."""
+        return self.containers / _MADE
+
+    def hold(self, container: str, name: str, label: str = "") -> Path:
+        """Give the daemon a container no start of this case made; its file."""
+        held = self.containers / container
+        held.write_text(f"{name}\n{label}", encoding="utf-8")
+        return held
 
     def calls(self) -> list[str]:
         """Every command the stub was given, in order; none if it was never run."""
@@ -87,41 +113,72 @@ class _Stub:
     def write(self, behaviour: _Behaviour) -> None:
         """Write the stub ``docker``, behaving as ``behaviour`` says."""
         self.binaries.mkdir()
+        self.containers.mkdir()
         bind = ("        listener.bind(os.path.join(host, '.s.PGSQL.5432'))"
-                if behaviour.make_socket else "        pass")
+                if behaviour.socket != "missing" else "        pass")
         recorded = self.home / "docker-calls"
         (self.binaries / "docker").write_text(
             "#!/usr/bin/env python3\n"
-            "import os, socket, sys, time\n"
+            "import os, signal, socket, sys, time\n"
             "args = sys.argv[1:]\n"
             # surrogateescape: a socket path may hold a byte that is not UTF-8.
             f"open({str(recorded)!r}, 'a', encoding='utf-8', errors='surrogateescape')"
             ".write(' '.join(args) + chr(10))\n"
             "cmd = args[0] if args else ''\n"
-            f"if cmd == {behaviour.hangs_on!r}:\n"
-            "    time.sleep(30)\n"
-            "if cmd == 'run':\n"
-            f"    if {behaviour.run_error!r}:\n"
-            f"        sys.stderr.buffer.write({behaviour.run_error!r})\n"
-            "        sys.exit(125)\n"
-            f"    open({str(self.held)!r}, 'w').close()\n"
+            f"box = {str(self.containers)!r}\n"
+            "def option(flag):\n"
+            "    return args[args.index(flag) + 1]\n"
+            "def held():\n"
+            "    return {c: open(os.path.join(box, c)).read().split(chr(10))\n"
+            "            for c in os.listdir(box)}\n"
+            "def create():\n"
+            f"    open(os.path.join(box, {_MADE!r}), 'w').write(\n"
+            "        option('--name') + chr(10) + option('--label'))\n"
             "    for mount in [args[i + 1] for i, a in enumerate(args) if a == '-v']:\n"
             "        host = mount.rsplit(':', 1)[0]\n"
             "        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
             # Bound and deliberately NOT unlinked: the file must outlive the stub.
             f"{bind}\n"
-            f"        if {behaviour.pins_dir!r}:\n"
+            f"        if {behaviour.socket == 'pinned'!r}:\n"
             "            os.chmod(host, 0o555)\n"
-            "    print('c0ffee')\n"
-            f"elif cmd == 'rm' and not {behaviour.survives!r} and os.path.exists("
-            f"{str(self.held)!r}):\n"
-            f"    os.remove({str(self.held)!r})\n"
+            "def abandoned(signum, _frame):\n"
+            "    if os.fork() == 0:\n"
+            # The daemon's side holds none of the CLI's pipes, so the caller is not kept
+            # waiting for it.
+            "        os.close(1)\n"
+            "        os.close(2)\n"
+            "        time.sleep(0.5)\n"
+            "        create()\n"
+            "        os._exit(0)\n"
+            "    sys.exit(128 + signum)\n"
+            f"if cmd == {behaviour.slow!r}:\n"
+            "    if cmd == 'run':\n"
+            "        signal.signal(signal.SIGINT, abandoned)\n"
+            "        signal.signal(signal.SIGTERM, abandoned)\n"
+            "    time.sleep(2)\n"
+            "if cmd == 'run':\n"
+            f"    if {behaviour.run_error!r}:\n"
+            f"        sys.stderr.buffer.write({behaviour.run_error!r})\n"
+            "        sys.exit(125)\n"
+            "    if any(n == option('--name') for n, _ in held().values()):\n"
+            "        print('Conflict. The container name is already in use', file=sys.stderr)\n"
+            "        sys.exit(125)\n"
+            "    create()\n"
+            f"    print({_MADE!r})\n"
+            # ``rm`` takes an id or a name, as docker does.
+            "elif cmd == 'rm':\n"
+            "    for c, (name, _) in held().items():\n"
+            f"        if (c in args[2:] or name in args[2:]) and not {behaviour.survives!r}:\n"
+            "            os.remove(os.path.join(box, c))\n"
             "elif cmd == 'ps':\n"
             f"    if {behaviour.unreachable!r}:\n"
             "        print('Cannot connect to the Docker daemon', file=sys.stderr)\n"
             "        sys.exit(1)\n"
-            f"    if os.path.exists({str(self.held)!r}):\n"
-            "        print('c0ffee')\n"
+            # A filter naming only the label's key lists every value, as docker's does.
+            "    wanted = option('--filter').split('=', 1)[1]\n"
+            "    for c, (_, label) in held().items():\n"
+            "        if wanted in (label, label.split('=', 1)[0]):\n"
+            "            print(c)\n"
             "elif cmd == 'exec':\n"
             f"    sys.exit(0 if {behaviour.ready!r} else 1)\n"
             "sys.exit(0)\n",
@@ -165,42 +222,51 @@ def _unpin(directory: Path) -> None:
 
 def test_a_started_cluster_is_reached_by_its_socket_and_stopping_it_leaves_nothing(
         docker, runtime, capsys):
-    """``start`` asks whether the name is free, removes what an earlier cluster of the name
-    left at the socket path, makes the directory open to the container (0777), starts the
-    container, probes it over ``/sockets`` and prints the socket directory, then the
-    container's id; the socket is in it.  ``stop`` removes the container with its volume
-    and the directory, asks again by the exact name, names nothing, and exits 0."""
+    """``start`` makes the token's socket directory open to the container (0777), starts the
+    container labelled with the token, probes it over ``/sockets`` by its id and prints the
+    socket directory, then the container's id; the socket is in it.  ``stop`` lists what
+    carries the token, removes it by id with its volume, lists again, removes the directory,
+    names nothing and exits 0.  The start asks docker nothing before its run."""
     stub = docker()
-    (runtime / _NAME).mkdir()
-    (runtime / _NAME / "left-by-an-earlier-run").write_text("", encoding="utf-8")
-    assert private_cluster.main(["start", _NAME, _IMAGE]) == 0
-    assert capsys.readouterr().out.splitlines() == [str(runtime / _NAME), "c0ffee"]
-    assert (runtime / _NAME / ".s.PGSQL.5432").is_socket()
-    assert not (runtime / _NAME / "left-by-an-earlier-run").exists()
-    assert (runtime / _NAME).stat().st_mode & 0o777 == 0o777
-    assert private_cluster.main(["stop", _NAME]) == 0
+    assert private_cluster.main(["start", _NAME, _TOKEN, _IMAGE]) == 0
+    assert capsys.readouterr().out.splitlines() == [str(runtime / _DIRECTORY), _MADE]
+    assert (runtime / _DIRECTORY / ".s.PGSQL.5432").is_socket()
+    assert (runtime / _DIRECTORY).stat().st_mode & 0o777 == 0o777
+    assert private_cluster.main(["stop", _TOKEN]) == 0
     assert capsys.readouterr().err == ""
-    assert not (runtime / _NAME).exists()
+    assert not (runtime / _DIRECTORY).exists()
+    assert not stub.made.exists()
     calls = stub.calls()
-    assert [calls[0], calls[2], calls[3], calls[4]] == [
-        _PRESENT, f"exec {_NAME} pg_isready -q -h /sockets -U shekel_user", f"rm -fv {_NAME}",
-        _PRESENT]
-    assert calls[1].startswith("run ") and len(calls) == 5
+    assert calls[0].startswith("run ") and calls[1:] == [
+        f"exec {_MADE} pg_isready -q -h /sockets -U shekel_user", _LISTED, f"rm -fv {_MADE}",
+        _LISTED]
+
+
+def test_a_token_is_new_each_time_and_is_one_a_start_takes(capsys):
+    """``token`` prints 32 lowercase hex digits, a new one each time, and a start accepts it
+    (its socket directory is named after it)."""
+    assert private_cluster.main(["token"]) == 0
+    assert private_cluster.main(["token"]) == 0
+    first, second = capsys.readouterr().out.split()
+    assert first != second
+    for token in (first, second):
+        assert len(token) == 32 and set(token) <= set("0123456789abcdef"), token
+        assert private_cluster.socket_dir(token).name == f"shekel-cluster-{token}"
 
 
 def test_the_run_is_the_one_the_suite_reads_argument_for_argument(docker, runtime):
-    """The whole ``docker run``, as one literal: detached, removed when postgres exits, no
-    network and no published port, the baked image's user, password, database and PGDATA,
-    the socket directory mounted at ``/sockets`` (never the entrypoint's own
-    ``/var/run/postgresql``), and every ``-c`` setting the suite relies on, the non-durable
-    three among them."""
+    """The whole ``docker run``, as one literal: detached, removed when postgres exits, the
+    name, the token's label given to the create itself, no network and no published port,
+    the baked image's user, password, database and PGDATA, the token's socket directory
+    mounted at ``/sockets`` (never the entrypoint's own ``/var/run/postgresql``), and every
+    ``-c`` setting the suite relies on, the non-durable three among them."""
     stub = docker()
-    private_cluster.start(_NAME, _IMAGE)
-    assert stub.calls()[1].split() == [
-        "run", "-d", "--rm", "--name", _NAME, "--network=none",
+    private_cluster.start(_NAME, _TOKEN, _IMAGE)
+    assert stub.calls()[0].split() == [
+        "run", "-d", "--rm", "--name", _NAME, "--label", _LABEL, "--network=none",
         "-e", "POSTGRES_USER=shekel_user", "-e", "POSTGRES_PASSWORD=shekel_pass",
         "-e", "POSTGRES_DB=postgres", "-e", "PGDATA=/pgdata-baked",
-        "-v", f"{runtime / _NAME}:/sockets", _IMAGE,
+        "-v", f"{runtime / _DIRECTORY}:/sockets", _IMAGE,
         "-c", "idle_in_transaction_session_timeout=30000", "-c", "lock_timeout=10000",
         "-c", "statement_timeout=30000", "-c", "fsync=off", "-c", "synchronous_commit=off",
         "-c", "full_page_writes=off", "-c", "max_locks_per_transaction=256",
@@ -213,120 +279,132 @@ def test_the_run_is_the_one_the_suite_reads_argument_for_argument(docker, runtim
     (_Behaviour(run_error=b"no such image \xff"),
      f"docker could not start {_NAME} from {_IMAGE}: no such image �"),
     (_Behaviour(ready=False), f"{_NAME} did not accept connections within 0s"),
-    (_Behaviour(make_socket=False), f"{_NAME} reported ready but left no socket at "),
+    (_Behaviour(socket="missing"), f"{_NAME} reported ready but left no socket at "),
 ], ids=["docker refuses", "docker says a byte that is not UTF-8", "never ready",
         "ready without a socket"])
 def test_a_start_that_fails_stops_what_it_started(docker, runtime, capsys, behaviour, said):
-    """Each way a start can fail once it has made something exits 2 naming it, and leaves
-    no container and no socket directory: the start removes what it made before it
-    reports.  A byte docker prints that is not UTF-8 is named as U+FFFD: decoded strictly,
-    it raised an error that is no ClusterError, so the start skipped its own stop and ended
-    in a traceback (the review of 668b53c99)."""
+    """Each way a start can fail once it has begun making the cluster exits 2 naming it, and
+    leaves no container and no socket directory: the start stops what carries its token
+    before it reports.  A byte docker prints that is not UTF-8 is named as U+FFFD: decoded
+    strictly, it raised an error that is no ClusterError, so the start skipped its own stop
+    and ended in a traceback (the review of 668b53c99)."""
     stub = docker(behaviour)
-    assert private_cluster.main(["start", _NAME, _IMAGE]) == 2
+    assert private_cluster.main(["start", _NAME, _TOKEN, _IMAGE]) == 2
     out = capsys.readouterr()
     assert out.out == ""
     assert out.err.startswith(f"[private_cluster] {said}")
     assert "left something behind" not in out.err
-    assert f"rm -fv {_NAME}" in stub.calls()
-    assert not (runtime / _NAME).exists()
-    assert not stub.held.exists()
+    assert _LISTED in stub.calls()
+    assert not (runtime / _DIRECTORY).exists()
+    assert not stub.made.exists()
 
 
-@pytest.mark.parametrize("pins_dir", [False, True],
+@pytest.mark.parametrize("socket_kind", ["made", "pinned"],
                          ids=["the container", "the container and the directory"])
-def test_a_failed_start_names_what_its_own_stop_left_behind(docker, runtime, capsys, pins_dir):
+def test_a_failed_start_names_what_its_own_stop_left_behind(docker, runtime, capsys,
+                                                            socket_kind):
     """The review's MEDIUM-2: a start that fails and then cannot remove what it made names
     the failure AND every survivor, never the failure alone, so a caller that trusts its
     exit 2 is told the cluster is still there; with two survivors, both are named."""
-    docker(_Behaviour(ready=False, survives=True, pins_dir=pins_dir))
-    left = f"{_CONTAINER_LEFT} {runtime / _NAME} survived teardown." if pins_dir else (
-        _CONTAINER_LEFT)
+    docker(_Behaviour(ready=False, survives=True, socket=socket_kind))
+    left = (f"{_CONTAINER_LEFT} {runtime / _DIRECTORY} survived teardown."
+            if socket_kind == "pinned" else _CONTAINER_LEFT)
     try:
-        assert private_cluster.main(["start", _NAME, _IMAGE]) == 2
+        assert private_cluster.main(["start", _NAME, _TOKEN, _IMAGE]) == 2
         assert capsys.readouterr().err == (
             f"[private_cluster] {_NAME} did not accept connections within 0s.  Stopping it "
             f"left something behind: {left}\n")
     finally:
-        _unpin(runtime / _NAME)
+        _unpin(runtime / _DIRECTORY)
 
 
-def test_a_name_a_container_already_holds_is_refused_and_never_taken_over(
+def test_a_name_another_container_holds_fails_the_run_and_that_container_is_left(
         docker, runtime, capsys):
-    """The review's LOW-7: a container already holding the name is not removed, its socket
-    directory is not touched, and nothing is started; the start exits 3, the status that
-    tells its caller nothing of this start exists to stop (the delta review's MEDIUM-1).
-    The advice offers no other name, which test.sh cannot choose, and says when removing
-    the container is safe: it may be a live run's, in another PID namespace (delta review
-    2's nit 4)."""
+    """S10 of the commit B design: a container this start did not make already holds the
+    name (it carries no label, as one made outside this module does not).  Docker refuses
+    the run ("Conflict"), the start exits 2 naming it, and its stop removes nothing of that
+    container, which does not carry the token: a stop by NAME removed it."""
     stub = docker()
-    stub.held.write_text("", encoding="utf-8")
-    (runtime / _NAME).mkdir()
-    (runtime / _NAME / ".s.PGSQL.5432").write_text("", encoding="utf-8")
-    assert private_cluster.main(["start", _NAME, _IMAGE]) == 3
+    other = stub.hold("bead01", _NAME)
+    assert private_cluster.main(["start", _NAME, _TOKEN, _IMAGE]) == 2
     assert capsys.readouterr().err == (
-        f"[private_cluster] a container named {_NAME} already exists, and a start never "
-        f"takes over a name in use.  Remove it ('docker rm -fv {_NAME}') only once the run "
-        "that made it has ended: test.sh's names carry its PID, and no two live processes of "
-        "one PID namespace share one, so a test.sh name in use was left by a run that has "
-        "ended unless a run in another PID namespace on this daemon (a container, a sandbox) "
-        "holds it.\n")
-    assert stub.calls() == [_PRESENT]
-    assert (runtime / _NAME / ".s.PGSQL.5432").exists()
+        f"[private_cluster] docker could not start {_NAME} from {_IMAGE}: Conflict. The "
+        "container name is already in use\n")
+    assert other.exists()
+    assert not [call for call in stub.calls() if call.startswith("rm ")], stub.calls()
+    assert not (runtime / _DIRECTORY).exists()
 
 
-def test_a_daemon_that_cannot_say_whether_the_name_is_free_refuses_the_start(
-        docker, runtime, capsys):
-    """Asking whether the name is free is the last thing before anything is made, so a
-    daemon that cannot be asked refuses the start with exit 3 too: nothing was made, and a
-    stop by the name could not even be told what it removed."""
-    stub = docker(_Behaviour(unreachable=True))
-    assert private_cluster.main(["start", _NAME, _IMAGE]) == 3
-    assert capsys.readouterr().err == (
-        f"[private_cluster] docker could not be asked whether {_NAME} exists: Cannot "
-        "connect to the Docker daemon\n")
-    assert stub.calls() == [_PRESENT]
-    assert not (runtime / _NAME).exists()
+def test_stop_removes_only_what_carries_its_token(docker, runtime):
+    """The coordinator's MEDIUM-1 invariant, where the ruling on commit B put it: a stop
+    NEVER removes a container its token's start did not make.  Beside this cluster's own
+    container, the daemon holds one of the same name with no label and one labelled with
+    another token; the stop removes its own and neither of the others, and its socket
+    directory but not the other token's."""
+    stub = docker()
+    private_cluster.start(_NAME, _TOKEN, _IMAGE)
+    unlabelled = stub.hold("bead01", _NAME)
+    another = stub.hold("bead02", "shekel-testrun-4242-fefefefe",
+                        f"shekel.private_cluster.token={_OTHER_TOKEN}")
+    (runtime / f"shekel-cluster-{_OTHER_TOKEN}").mkdir()
+    assert not private_cluster.stop(_TOKEN)
+    assert not stub.made.exists()
+    assert unlabelled.exists() and another.exists()
+    assert (runtime / f"shekel-cluster-{_OTHER_TOKEN}").exists()
+    assert not (runtime / _DIRECTORY).exists()
 
 
-def test_a_leftover_file_at_the_socket_path_is_removed_not_a_traceback(docker, runtime,
-                                                                        capsys):
-    """The review's LOW-8: a FILE left where the socket directory goes is removed, as the
-    shell's ``rm -rf`` removed it, and the start goes on."""
-    docker()
-    (runtime / _NAME).write_text("", encoding="utf-8")
-    assert private_cluster.main(["start", _NAME, _IMAGE]) == 0
-    assert (runtime / _NAME / ".s.PGSQL.5432").is_socket()
-    capsys.readouterr()
+@pytest.mark.parametrize("token", ["../../escape", "0123456789ABCDEF0123456789ABCDEF",
+                                   "0123456789abcdef", ""],
+                         ids=["a path", "upper case", "too short", "empty"])
+def test_a_malformed_token_is_refused_before_anything_is_asked_or_removed(
+        docker, runtime, capsys, token):
+    """A token becomes a path component the stop removes, so one that is not 32 lowercase
+    hex digits is refused by ``start`` and by ``stop`` (exit 2, named) before docker is asked
+    anything and before any path is touched: ``../../escape`` would point the removal
+    outside ``XDG_RUNTIME_DIR``."""
+    stub = docker()
+    (runtime / "kept").mkdir()
+    assert private_cluster.main(["start", _NAME, token, _IMAGE]) == 2
+    assert private_cluster.main(["stop", token]) == 2
+    assert capsys.readouterr().err.count(f"{token!r} is not a cluster token") == 2
+    assert stub.calls() == []
+    assert (runtime / "kept").exists()
 
 
-def test_a_symlink_at_the_socket_path_is_replaced_and_its_target_left(docker, runtime,
-                                                                       capsys):
-    """A SYMLINK left where the socket directory goes is removed as a link, as the shell's
-    ``rm -rf`` removed one: the start makes a real directory in its place, and the directory
-    it pointed at keeps what it held.  Followed as a directory, it would be refused instead
-    (``shutil.rmtree`` will not remove a symlink)."""
-    docker()
+@pytest.mark.parametrize("kind", ["a file", "a symlink"])
+def test_anything_already_at_the_socket_directory_s_path_is_refused_never_taken_over(
+        docker, runtime, capsys, kind):
+    """The token's socket directory is made EXCLUSIVELY: a file or a symlink already at its
+    path fails the start (exit 2, named) before docker is asked to run anything, and a
+    symlink's target is never opened to the container: its mode and what it holds are kept.
+    A token is new, so nothing a start of its cluster made can be there."""
+    stub = docker()
     target = runtime / "elsewhere"
-    target.mkdir()
+    target.mkdir(mode=0o700)
     (target / "kept").write_text("", encoding="utf-8")
-    (runtime / _NAME).symlink_to(target)
-    assert private_cluster.main(["start", _NAME, _IMAGE]) == 0
-    capsys.readouterr()
-    assert not (runtime / _NAME).is_symlink()
-    assert (runtime / _NAME / ".s.PGSQL.5432").is_socket()
+    if kind == "a file":
+        (runtime / _DIRECTORY).write_text("", encoding="utf-8")
+    else:
+        (runtime / _DIRECTORY).symlink_to(target)
+    assert private_cluster.main(["start", _NAME, _TOKEN, _IMAGE]) == 2
+    assert capsys.readouterr().err.startswith(
+        f"[private_cluster] socket directory {runtime / _DIRECTORY} cannot be made: [Errno 17] "
+        "File exists")
+    assert not [call for call in stub.calls() if call.startswith("run ")], stub.calls()
     assert (target / "kept").exists()
+    assert target.stat().st_mode & 0o777 == 0o700
 
 
-@pytest.mark.parametrize("blocked", ["leftover", "runtime", "a file"],
-                         ids=["an unremovable leftover", "an unwritable runtime directory",
+@pytest.mark.parametrize("blocked", ["runtime", "a file"],
+                         ids=["an unwritable runtime directory",
                               "a runtime directory that is a file"])
 def test_a_socket_directory_that_cannot_be_made_is_named_never_a_traceback(
         docker, runtime, monkeypatch, capsys, blocked):
-    """A socket directory that cannot be made -- an earlier one this user cannot empty, a
-    ``XDG_RUNTIME_DIR`` this user cannot write, or one that is a FILE -- exits 2 naming the
-    path and why, with what the start's own stop then left; it never escapes as an
-    exception.  The file's error is no PermissionError (delta review 2's nit 1)."""
+    """A socket directory that cannot be made -- under an ``XDG_RUNTIME_DIR`` this user cannot
+    write, or one that is a FILE -- exits 2 naming the path and why; it never escapes as an
+    exception, and docker is never asked to run anything.  The file's error is no
+    PermissionError (delta review 2's nit 1)."""
     stub = docker()
     said = "[Errno 13] Permission denied"
     home = runtime
@@ -335,23 +413,16 @@ def test_a_socket_directory_that_cannot_be_made_is_named_never_a_traceback(
         home = runtime / "a-file"
         home.write_text("", encoding="utf-8")
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(home))
-    held = home / _NAME
-    if blocked == "leftover":
-        held.mkdir()
-        (held / "left-behind").write_text("", encoding="utf-8")
-        held.chmod(0o500)
-    elif blocked == "runtime":
+    else:
         runtime.chmod(0o500)
+    held = home / _DIRECTORY
     try:
-        assert private_cluster.main(["start", _NAME, _IMAGE]) == 2
+        assert private_cluster.main(["start", _NAME, _TOKEN, _IMAGE]) == 2
         err = capsys.readouterr().err
     finally:
         runtime.chmod(0o700)
-        _unpin(held)
-    assert err.startswith(f"[private_cluster] socket directory {held} cannot be made: {said}")
-    assert err.endswith(f"Stopping it left something behind: {held} survived teardown.\n"
-                        if blocked == "leftover" else f"'{held}'\n")
-    assert f"rm -fv {_NAME}" in stub.calls()
+    assert err == f"[private_cluster] socket directory {held} cannot be made: {said}: '{held}'\n"
+    assert stub.calls() == [_LISTED]
 
 
 def _wait_for(stub: _Stub, command: str) -> None:
@@ -363,61 +434,141 @@ def _wait_for(stub: _Stub, command: str) -> None:
         time.sleep(0.05)
 
 
-_WARNED_CONTAINER = f"[private_cluster] WARNING: {_CONTAINER_LEFT}\n"
-
-
-@pytest.mark.parametrize(("behaviour", "warned"), [
-    (_Behaviour(ready=False), ""),
-    (_Behaviour(ready=False, survives=True), _WARNED_CONTAINER),
-    (_Behaviour(ready=False, survives=True, pins_dir=True),
-     _WARNED_CONTAINER + "[private_cluster] WARNING: {directory} survived teardown.\n"),
-    (_Behaviour(hangs_on="ps"), ""),
-], ids=["during the readiness wait", "its stop leaves the container",
-        "its stop leaves the container and the directory", "before anything is made"])
-def test_ctrl_c_ends_a_start_by_sigint_once_it_has_stopped_what_it_made(
-        docker, runtime, behaviour, warned):
-    """The review's LOW-5 and the delta review's LOW-2: Ctrl-C to the start's whole process
-    group, as a terminal sends it, stops what the start made, NAMES each thing that stop
-    could not remove, and ends the start BY SIGINT with no traceback, so the shell that ran
-    it stops too: an exit status of 130 tells a shell the child dealt with the Ctrl-C, and it
-    went on to its next command.  Before anything is made there is nothing to stop or remove.
+def _start_in_a_shell(tail: str = "") -> subprocess.Popen[str]:
+    """Run the module's ``start`` from a shell that leads a session of its own, as a terminal
+    runs a command, then ``tail``; the shell.
 
     The case's own process may have SIGINT IGNORED (a backgrounded pytest inherits that),
     and an ignored signal is inherited across exec: bash cannot take back one ignored when
     it started, and Python leaves it ignored, so ``env --default-signal`` gives the shell the
     default first.
     """
+    return subprocess.Popen(
+        ["env", "--default-signal=INT", "bash", "-c",
+         '"$0" "$1" start "$2" "$3" "$4"' + tail,
+         sys.executable, str(_MODULE), _NAME, _TOKEN, _IMAGE],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+        env={**os.environ, "READINESS_TIMEOUT_SECONDS": "30"})
+
+
+def _ended(shell: subprocess.Popen[str], runtime: Path) -> tuple[str, str]:
+    """Wait for ``shell``; its stdout and stderr.  It is killed if it outlives the wait."""
+    try:
+        return shell.communicate(timeout=30)
+    finally:
+        if shell.poll() is None:
+            os.killpg(shell.pid, signal.SIGKILL)
+            shell.communicate()
+        _unpin(runtime / _DIRECTORY)
+
+
+_WARNED_CONTAINER = f"[private_cluster] WARNING: {_CONTAINER_LEFT}\n"
+
+
+@pytest.mark.parametrize(("behaviour", "warned"), [
+    (_Behaviour(ready=False), ""),
+    (_Behaviour(ready=False, survives=True), _WARNED_CONTAINER),
+    (_Behaviour(ready=False, survives=True, socket="pinned"),
+     _WARNED_CONTAINER + "[private_cluster] WARNING: {directory} survived teardown.\n"),
+], ids=["during the readiness wait", "its stop leaves the container",
+        "its stop leaves the container and the directory"])
+def test_ctrl_c_ends_a_start_by_sigint_once_it_has_stopped_what_it_made(
+        docker, runtime, behaviour, warned):
+    """The review's LOW-5 and the delta review's LOW-2: Ctrl-C to the start's whole process
+    group, as a terminal sends it, stops what the start made, NAMES each thing that stop
+    could not remove, and ends the start BY SIGINT with no traceback, so the shell that ran
+    it stops too: an exit status of 130 tells a shell the child dealt with the Ctrl-C, and it
+    went on to its next command.  (A Ctrl-C before anything is made has no docker command
+    left to land in: the start asks docker nothing before its run.)"""
     stub = docker(behaviour)
-    with subprocess.Popen(
-            ["env", "--default-signal=INT", "bash", "-c",
-             '"$0" "$1" start "$2" "$3"; echo "carried on: $?"',
-             sys.executable, str(_MODULE), _NAME, _IMAGE],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
-            env={**os.environ, "READINESS_TIMEOUT_SECONDS": "30"}) as shell:
-        try:
-            _wait_for(stub, behaviour.hangs_on or "exec")
-            os.killpg(shell.pid, signal.SIGINT)
-            out, err = shell.communicate(timeout=30)
-        finally:
-            if shell.poll() is None:
-                os.killpg(shell.pid, signal.SIGKILL)
-                shell.communicate()
-            _unpin(runtime / _NAME)
-    made = not behaviour.hangs_on
+    with _start_in_a_shell('; echo "carried on: $?"') as shell:
+        _wait_for(stub, "exec")
+        os.killpg(shell.pid, signal.SIGINT)
+        out, err = _ended(shell, runtime)
     assert (shell.returncode, out, err) == (
-        -signal.SIGINT, "", warned.format(directory=runtime / _NAME))
-    assert stub.held.exists() is behaviour.survives
-    assert (runtime / _NAME).exists() is behaviour.pins_dir
-    assert (f"rm -fv {_NAME}" in stub.calls()) is made
+        -signal.SIGINT, "", warned.format(directory=runtime / _DIRECTORY))
+    assert stub.made.exists() is behaviour.survives
+    assert (runtime / _DIRECTORY).exists() is (behaviour.socket == "pinned")
+    assert f"rm -fv {_MADE}" in stub.calls()
+
+
+def test_ctrl_c_while_docker_run_is_in_flight_leaves_nothing(docker, runtime):
+    """MEDIUM-A of the delta review of bb2f1492a: Ctrl-C to the start's whole process group
+    while ``docker run`` is in flight.  Had it reached the run's CLI, the CLI would have
+    exited and the daemon finished the create AFTER the start's stop had looked (the stub's
+    slow ``run`` does exactly that), leaving a container nothing names.  The CLI runs in a
+    session of its own, so the Ctrl-C reaches only the start, which holds it until the run
+    returns, then stops what it made and ends by SIGINT; a second later nothing is left."""
+    stub = docker(_Behaviour(slow="run"))
+    with _start_in_a_shell() as shell:
+        _wait_for(stub, "run")
+        os.killpg(shell.pid, signal.SIGINT)
+        _ended(shell, runtime)
+    time.sleep(1)
+    assert shell.returncode == -signal.SIGINT
+    assert not list(stub.containers.iterdir()), stub.calls()
+    assert not (runtime / _DIRECTORY).exists()
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP], ids=["TERM", "HUP"])
+def test_term_or_hup_to_the_start_is_held_until_docker_run_returns(docker, runtime, signum):
+    """TERM or HUP to the start's process alone, as a supervisor or a closing terminal sends
+    it, while ``docker run`` is in flight: the start holds it until the run returns, stops
+    what it made and ends BY that signal.  At the default disposition the start died at once
+    and its run's CLI went on to make a container nothing would stop."""
+    stub = docker(_Behaviour(slow="run"))
+    with subprocess.Popen([sys.executable, str(_MODULE), "start", _NAME, _TOKEN, _IMAGE],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                          start_new_session=True) as start:
+        _wait_for(stub, "run")
+        start.send_signal(signum)
+        _ended(start, runtime)
+    # Past the stub run's 2 s, so a CLI the start abandoned has made its container.
+    time.sleep(2.5)
+    assert start.returncode == -signum
+    assert not list(stub.containers.iterdir()), stub.calls()
+    assert f"rm -fv {_MADE}" in stub.calls()
+
+
+def test_a_signal_that_meets_a_failure_ends_the_start_by_the_signal(docker, runtime):
+    """A Ctrl-C held while ``docker run`` is in flight, and the run then fails: the start
+    stops what carries its token and ends BY SIGINT, not with the failure's exit 2, since
+    its caller asked it to end; the failure is not reported over the signal."""
+    stub = docker(_Behaviour(slow="run", run_error=b"no such image"))
+    with _start_in_a_shell() as shell:
+        _wait_for(stub, "run")
+        os.killpg(shell.pid, signal.SIGINT)
+        out, err = _ended(shell, runtime)
+    assert (shell.returncode, out, err) == (-signal.SIGINT, "", "")
+    assert _LISTED in stub.calls()
+
+
+def test_a_second_ctrl_c_inside_the_start_s_own_stop_lets_the_stop_finish(docker, runtime):
+    """A Ctrl-C during the readiness wait starts the start's stop, and a second one lands
+    while its slow ``rm`` runs.  The stop is HELD too, so it finishes: after the removal it
+    lists again (the call that names a survivor), and the start ends by SIGINT with nothing
+    left and no traceback.  Before, a second Ctrl-C ended a stop half-done, unnamed."""
+    stub = docker(_Behaviour(ready=False, slow="rm"))
+    with _start_in_a_shell() as shell:
+        _wait_for(stub, "exec")
+        os.killpg(shell.pid, signal.SIGINT)
+        _wait_for(stub, "rm")
+        os.killpg(shell.pid, signal.SIGINT)
+        out, err = _ended(shell, runtime)
+    assert (shell.returncode, out, err) == (-signal.SIGINT, "", "")
+    calls = stub.calls()
+    assert calls[calls.index(f"rm -fv {_MADE}") + 1:] == [_LISTED], calls
+    assert not stub.made.exists()
+    assert not (runtime / _DIRECTORY).exists()
 
 
 def test_ctrl_c_reaches_an_in_process_caller_as_a_keyboard_interrupt(docker, monkeypatch):
     """Delta review 2's nit 2: Ctrl-C during a start that runs IN PROCESS, as these cases
     run it under pytest, reaches the caller as a KeyboardInterrupt and never an
-    ``Exception``, carrying what the start's stop could not remove.  Measured 2026-10-18
-    with a two-case file: pytest stops its session on a KeyboardInterrupt, and records an
-    ``Exception`` as one failed case and goes on to the next.  The Ctrl-C is raised where
-    the readiness wait sleeps, one of the places a real one lands."""
+    ``Exception``, carrying the signal and what the start's stop could not remove.  Measured
+    2026-10-18 with a two-case file: pytest stops its session on a KeyboardInterrupt, and
+    records an ``Exception`` as one failed case and goes on to the next.  The Ctrl-C is
+    raised where the readiness wait sleeps, as an in-process caller's own handler raises it."""
     stub = docker(_Behaviour(ready=False, survives=True))
     monkeypatch.setenv("READINESS_TIMEOUT_SECONDS", "30")
 
@@ -428,36 +579,59 @@ def test_ctrl_c_reaches_an_in_process_caller_as_a_keyboard_interrupt(docker, mon
     monkeypatch.setattr(private_cluster, "time",
                         SimpleNamespace(monotonic=time.monotonic, sleep=ctrl_c))
     with pytest.raises(KeyboardInterrupt) as interrupted:
-        private_cluster.start(_NAME, _IMAGE)
+        private_cluster.start(_NAME, _TOKEN, _IMAGE)
     assert isinstance(interrupted.value, private_cluster.Interrupted)
     assert not isinstance(interrupted.value, Exception)
     assert interrupted.value.args == (_CONTAINER_LEFT,)
-    assert f"rm -fv {_NAME}" in stub.calls()
+    assert interrupted.value.signum == signal.SIGINT
+    assert f"rm -fv {_MADE}" in stub.calls()
+
+
+def test_a_signal_after_the_start_s_last_look_reaches_its_caller(docker, monkeypatch):
+    """A signal that lands after the start's last look at its caller's signals, as it hands
+    the cluster over (here while it checks the socket), is not lost: once the caller's own
+    handlers are back it is raised again under them, and the cluster is the caller's."""
+    docker()
+    caught: list[int] = []
+    socket_kind = private_cluster.stat.S_ISSOCK
+
+    def ctrl_c_then(mode: int) -> bool:
+        """Send this process a Ctrl-C, then answer as the real check does."""
+        os.kill(os.getpid(), signal.SIGINT)
+        return socket_kind(mode)
+
+    monkeypatch.setattr(private_cluster, "stat", SimpleNamespace(S_ISSOCK=ctrl_c_then))
+    before = signal.signal(signal.SIGINT, lambda signum, _frame: caught.append(signum))
+    try:
+        cluster = private_cluster.start(_NAME, _TOKEN, _IMAGE)
+    finally:
+        signal.signal(signal.SIGINT, before)
+    assert caught == [signal.SIGINT]
+    assert cluster.container == _MADE
 
 
 def test_stop_names_a_container_that_survived_and_exits_1(docker, runtime, capsys):
-    """The planted leftover: docker still lists the container by its exact name after its
-    removal, so ``stop`` names it and how to remove it, and exits 1; it never reports
-    clean."""
-    docker(_Behaviour(survives=True)).held.write_text("", encoding="utf-8")
-    assert private_cluster.main(["stop", _NAME]) == 1
+    """The planted leftover: docker still lists the token's container after its removal, so
+    ``stop`` names it and how to remove it, and exits 1; it never reports clean."""
+    docker(_Behaviour(survives=True)).hold(_MADE, _NAME, _LABEL)
+    assert private_cluster.main(["stop", _TOKEN]) == 1
     assert capsys.readouterr().err == f"[private_cluster] WARNING: {_CONTAINER_LEFT}\n"
-    assert not (runtime / _NAME).exists()
+    assert not (runtime / _DIRECTORY).exists()
 
 
 @pytest.mark.parametrize(("behaviour", "said"), [
-    (_Behaviour(unreachable=True), f"docker could not be asked whether {_NAME} exists: Cannot "
-                                   "connect to the Docker daemon"),
-    (_Behaviour(hangs_on="rm"), "docker rm did not answer within 1s; the daemon may be wedged"),
+    (_Behaviour(unreachable=True), f"docker could not be asked which containers carry "
+                                   f"{_TOKEN}: Cannot connect to the Docker daemon"),
+    (_Behaviour(slow="rm"), "docker rm did not answer within 1s; the daemon may be wedged"),
 ], ids=["unreachable", "wedged"])
 def test_stop_names_a_daemon_it_cannot_ask_never_reporting_clean(docker, monkeypatch,
                                                                 behaviour, said):
-    """A daemon that cannot be asked whether the container survived (``inspect`` exited 1
-    alike for "gone" and for that), or that does not answer within the per-command cap
-    (here 1 s), is named, never read as a clean teardown."""
-    docker(behaviour)
+    """A daemon that cannot say which containers carry the token, or that does not answer
+    within the per-command cap (here 1 s), is named, never read as a clean teardown."""
+    docker(behaviour).hold(_MADE, _NAME, _LABEL)
     monkeypatch.setattr(private_cluster, "_DOCKER_TIMEOUT_SECONDS", 1)
-    assert private_cluster.stop(_NAME) == [f"{_NAME} may have survived teardown: {said}"]
+    assert private_cluster.stop(_TOKEN) == [
+        f"the container of cluster {_TOKEN} may have survived teardown: {said}"]
 
 
 def test_stop_names_a_docker_it_cannot_run_never_a_traceback(tmp_path, monkeypatch):
@@ -468,21 +642,21 @@ def test_stop_names_a_docker_it_cannot_run_never_a_traceback(tmp_path, monkeypat
     (binaries / "docker").write_text("#!/bin/sh\n", encoding="utf-8")
     (binaries / "docker").chmod(0o644)
     monkeypatch.setenv("PATH", str(binaries))
-    assert private_cluster.stop(_NAME) == [
-        f"{_NAME} may have survived teardown: docker cannot be run: [Errno 13] Permission "
-        "denied: 'docker'"]
+    assert private_cluster.stop(_TOKEN) == [
+        f"the container of cluster {_TOKEN} may have survived teardown: docker cannot be "
+        "run: [Errno 13] Permission denied: 'docker'"]
 
 
 def test_stop_names_a_socket_directory_that_survived(docker, runtime, capsys):
     """A socket directory that cannot be removed (here a file in it this user cannot
     unlink) is named, and ``stop`` exits 1."""
     docker()
-    held = runtime / _NAME
+    held = runtime / _DIRECTORY
     held.mkdir()
     (held / "left-behind").write_text("", encoding="utf-8")
     held.chmod(0o500)
     try:
-        assert private_cluster.main(["stop", _NAME]) == 1
+        assert private_cluster.main(["stop", _TOKEN]) == 1
         assert capsys.readouterr().err == f"[private_cluster] WARNING: {held} survived teardown.\n"
     finally:
         held.chmod(0o700)
@@ -492,9 +666,9 @@ def test_stop_of_a_cluster_that_never_started_is_clean(docker, runtime, capsys):
     """What lets a caller's traps call ``stop`` whenever they fire: nothing to remove is
     nothing survived, exit 0, said by nobody."""
     docker()
-    assert private_cluster.main(["stop", _NAME]) == 0
+    assert private_cluster.main(["stop", _TOKEN]) == 0
     assert capsys.readouterr().err == ""
-    assert not (runtime / _NAME).exists()
+    assert not (runtime / _DIRECTORY).exists()
 
 
 def test_a_socket_path_binds_at_107_bytes_and_not_at_108():
@@ -521,12 +695,12 @@ def test_a_socket_path_binds_at_107_bytes_and_not_at_108():
 
 
 def _padded(runtime: Path, size: int, filler: str) -> Path:
-    """An ``XDG_RUNTIME_DIR`` under ``runtime`` whose socket directory for :data:`_NAME` is
+    """An ``XDG_RUNTIME_DIR`` under ``runtime`` whose socket directory for :data:`_TOKEN` is
     ``size`` BYTES: ``filler`` as often as it fits, then ``d`` to the exact count."""
-    room = size - len(os.fsencode(runtime / _NAME)) - 1
+    room = size - len(os.fsencode(runtime / _DIRECTORY)) - 1
     each = len(os.fsencode(filler))
     padding = filler * (room // each) + "d" * (room % each)
-    assert len(os.fsencode(runtime / padding / _NAME)) == size
+    assert len(os.fsencode(runtime / padding / _DIRECTORY)) == size
     return runtime / padding
 
 
@@ -537,18 +711,18 @@ def test_a_socket_directory_of_93_bytes_starts_a_cluster_whose_socket_binds_ther
     docker()
     padded = _padded(runtime, 93, "d")
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(padded))
-    assert private_cluster.start(_NAME, _IMAGE).socket_dir == padded / _NAME
-    assert (padded / _NAME / ".s.PGSQL.5432").is_socket()
+    assert private_cluster.start(_NAME, _TOKEN, _IMAGE).socket_dir == padded / _DIRECTORY
+    assert (padded / _DIRECTORY / ".s.PGSQL.5432").is_socket()
 
 
 def test_a_socket_directory_that_is_not_utf8_is_refused_before_docker_is_asked(
         docker, runtime, monkeypatch):
     """A socket directory holding bytes that are not UTF-8 (``XDG_RUNTIME_DIR`` may hold
-    them) is refused at the door (:class:`Refused`, so exit 3) before docker is asked
-    anything, though at 93 bytes it fits the length budget: a real daemon is handed such a
-    byte as U+FFFD and mounts another directory, so a real start there waited out its whole
-    readiness cap (the reviews of 668b53c99 and bb2f1492a measured it).  The refusal quotes
-    each such byte escaped.
+    them) is refused at the door (exit 2) before docker is asked anything, though at 93
+    bytes it fits the length budget: a real daemon is handed such a byte as U+FFFD and
+    mounts another directory, so a real start there waited out its whole readiness cap (the
+    reviews of 668b53c99 and bb2f1492a measured it).  The refusal quotes each such byte
+    escaped.
 
     Everything compared is ASCII (``ascii``): a failure message holding such a path cannot
     be sent between xdist's processes, and would end the whole session instead of failing
@@ -558,13 +732,13 @@ def test_a_socket_directory_that_is_not_utf8_is_refused_before_docker_is_asked(
     padded = _padded(runtime, 93, "\udcff")
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(padded))
     try:
-        started = private_cluster.start(_NAME, _IMAGE)
+        started = private_cluster.start(_NAME, _TOKEN, _IMAGE)
     except private_cluster.ClusterError as failed:
         said = (type(failed).__name__, ascii(str(failed)))
     else:
         said = ("started", ascii(str(started.socket_dir)))
-    shown = os.fsencode(padded / _NAME).decode("utf-8", "backslashreplace")
-    assert said == ("Refused", ascii(
+    shown = os.fsencode(padded / _DIRECTORY).decode("utf-8", "backslashreplace")
+    assert said == ("ClusterError", ascii(
         f"socket directory {shown} is not UTF-8, so docker would mount another directory in "
         "its place.  Set XDG_RUNTIME_DIR to a path that is."))
     assert stub.calls() == [], ascii(stub.calls())
@@ -578,18 +752,18 @@ def test_a_socket_directory_that_is_not_utf8_is_refused_before_docker_is_asked(
 def test_a_socket_directory_of_94_bytes_is_refused_before_docker_is_asked(
         docker, runtime, monkeypatch, filler):
     """The guard counts BYTES as the kernel does: a socket directory of 94 bytes is refused
-    naming the 107-byte limit, before docker is asked anything (so exit 3), and so is one of
-    94 bytes in two-byte characters, whose characters would fit."""
+    naming the 107-byte limit, before docker is asked anything, and so is one of 94 bytes in
+    two-byte characters, whose characters would fit."""
     stub = docker()
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(_padded(runtime, 94, filler)))
-    with pytest.raises(private_cluster.Refused, match="cannot exceed 107 bytes"):
-        private_cluster.start(_NAME, _IMAGE)
+    with pytest.raises(private_cluster.ClusterError, match="cannot exceed 107 bytes"):
+        private_cluster.start(_NAME, _TOKEN, _IMAGE)
     assert stub.calls() == []
 
 
 def test_the_budget_counts_what_would_fit_in_characters_as_too_long(runtime):
     """The control for the two-byte case above: its characters would fit the budget."""
-    directory = _padded(runtime, 94, "é") / _NAME
+    directory = _padded(runtime, 94, "é") / _DIRECTORY
     assert len(str(directory)) <= 93 < len(os.fsencode(directory))
 
 
@@ -597,14 +771,14 @@ def test_the_budget_counts_what_would_fit_in_characters_as_too_long(runtime):
 def test_a_readiness_cap_that_is_not_a_finite_number_of_seconds_is_refused(
         docker, runtime, monkeypatch, capsys, given):
     """``READINESS_TIMEOUT_SECONDS`` set to anything but a finite, non-negative number of
-    seconds exits 3 naming it, before anything is asked or started (``nan`` and ``inf``
+    seconds exits 2 naming it, before anything is asked or started (``nan`` and ``inf``
     would make the readiness wait endless: the review's LOW-4)."""
     stub = docker()
     monkeypatch.setenv("READINESS_TIMEOUT_SECONDS", given)
-    assert private_cluster.main(["start", _NAME, _IMAGE]) == 3
+    assert private_cluster.main(["start", _NAME, _TOKEN, _IMAGE]) == 2
     assert f"READINESS_TIMEOUT_SECONDS={given!r}" in capsys.readouterr().err
     assert stub.calls() == []
-    assert not (runtime / _NAME).exists()
+    assert not (runtime / _DIRECTORY).exists()
 
 
 def test_an_unset_readiness_cap_is_15_seconds(docker, monkeypatch, capsys):
@@ -618,6 +792,6 @@ def test_an_unset_readiness_cap_is_15_seconds(docker, monkeypatch, capsys):
     readings = itertools.count(0, 5)
     monkeypatch.setattr(private_cluster, "time", SimpleNamespace(
         monotonic=lambda: float(next(readings)), sleep=lambda _seconds: None))
-    assert private_cluster.main(["start", _NAME, _IMAGE]) == 2
+    assert private_cluster.main(["start", _NAME, _TOKEN, _IMAGE]) == 2
     assert capsys.readouterr().err == (
         f"[private_cluster] {_NAME} did not accept connections within 15s\n")

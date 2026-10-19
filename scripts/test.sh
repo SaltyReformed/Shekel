@@ -16,8 +16,8 @@
 #     settings, the readiness wait and the teardown -- is
 #     ``scripts/private_cluster.py``'s, the one home the release rehearsal
 #     kit (step X-cx's K1, not yet built) is to start its own cluster through
-#     too; this wrapper names the cluster, arms the traps that stop it, and
-#     runs pytest against it.
+#     too; this wrapper makes the token that owns the cluster, arms the traps
+#     that stop it by that token, and runs pytest against it.
 #
 #     NOTHING IS SHARED, SO NOTHING NEEDS COORDINATING.  Until
 #     ``balance:X-br-4`` this wrapper also carried a hygiene restart, a
@@ -107,11 +107,11 @@
 #     exits 2 without running pytest: no python interpreter, no docker, a
 #     daemon that is not rootless or cannot be reached, a socket path over
 #     the kernel's 107-byte limit or not UTF-8, an image that cannot be
-#     prepared, a cluster name a container already holds, a cluster that
-#     does not accept connections within READINESS_TIMEOUT_SECONDS, and one
-#     that reports ready without leaving a socket (``scripts/private_cluster.py``
-#     refuses the socket path, the name, the readiness and the missing
-#     socket, and any other start it cannot finish).  NO COUNT IS GIVEN:
+#     prepared, a container name docker refuses, a cluster that does not
+#     accept connections within READINESS_TIMEOUT_SECONDS, and one that
+#     reports ready without leaving a socket (``scripts/private_cluster.py``
+#     refuses the socket path, the readiness and the missing socket, and
+#     any other start it cannot finish).  NO COUNT IS GIVEN:
 #     every attempt to count them in a comment
 #     has been wrong.  Other non-pytest statuses are docker's or the shell's,
 #     not this script's.
@@ -343,20 +343,31 @@ if command -v pgrep >/dev/null 2>&1; then
     unset _peers _peer_pid _peer_argv _peer_arg _peer_is_pytest _peer_collects_only
 fi
 
-# The name carries the PID because the whole point is that two runs can
-# coexist -- including two in the SAME worktree, which no per-worktree
-# database prefix ever fixed.  It is chosen HERE, before anything starts, so
-# a trap that fires mid-start still knows what to stop; the socket directory
-# is named after it (``scripts/private_cluster.py``).
-_run_container="shekel-testrun-$$"
+# THE CLUSTER IS OWNED BY A TOKEN this run makes HERE, before anything
+# starts, so a trap that fires at any moment -- the start killed outright
+# included -- stops exactly what this run's start made and nothing else: the
+# start labels its container with the token as docker creates it and names
+# the socket directory after it, and the stop removes only what carries it
+# (``scripts/private_cluster.py``; the coordinator's ruling on K1a commit B,
+# 2026-10-19).  So every path below stops by the token, with no decision
+# about whether the start made anything: a container another run made is
+# never this run's to remove, whatever it is named.
+#
+# The container's NAME carries the PID and the token's first eight digits:
+# the PID for the humans reading ``docker ps``, and the token so no other
+# run's container can already hold the name.  Two runs can coexist --
+# including two in the SAME worktree, which no per-worktree database prefix
+# ever fixed.  Nothing reads the name to decide anything.
+_token="$("$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" token)"
+_run_container="shekel-testrun-$$-${_token:0:8}"
 
-# Stopping is the one home's: it removes the container with its anonymous
-# volume and the socket directory, and NAMES on stderr anything that
-# survived.  The wrapper still exits with pytest's status, as it always has;
-# ``|| true`` because a survivor is reported there, not by aborting the
-# teardown under ``set -e``.
+# Stopping is the one home's: it removes what carries the token -- the
+# container with its anonymous volume, and the socket directory -- and NAMES
+# on stderr anything that survived.  The wrapper still exits with pytest's
+# status, as it always has; ``|| true`` because a survivor is reported
+# there, not by aborting the teardown under ``set -e``.
 _teardown_run_container() {
-    "$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" stop "$_run_container" || true
+    "$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" stop "$_token" || true
 }
 
 # Forward the signal to pytest FIRST, so the run stops rather than being
@@ -375,12 +386,10 @@ _stop_run() {
 # and was missing -- closing the terminal on a running suite leaked both the
 # container and the socket directory, while this file's own prose claimed
 # every exit path was covered.  Adding the arm was the way to make that
-# sentence true.  The traps are armed BEFORE the start.  A start ended by
-# Ctrl-C stops what it made itself; one killed by TERM or HUP cannot, and
-# the trap's stop finds its cluster by the name chosen above.  A start that
-# refuses before it makes anything has the traps DISARMED before this exits
-# (below), so the wrapper never stops a name its start refused; a signal
-# that lands before that refusal still stops by the name.
+# sentence true.  The traps are armed BEFORE the start, and every one of
+# them stops by the token whatever the start did: a start that stopped what
+# it made leaves its token nothing to find, and one killed outright leaves
+# the trap's stop everything it made.
 trap '_teardown_run_container' EXIT
 trap '_teardown_run_container; exit 130' INT
 trap '_teardown_run_container; exit 143' TERM
@@ -388,31 +397,20 @@ trap '_teardown_run_container; exit 129' HUP
 
 # The start prints the socket directory, then the container's id, once the
 # cluster accepts connections on a socket it has checked is there; a start
-# that cannot finish names why, and what its own stop left behind.  It exits
-# 3 when it refused before making anything (a bad readiness cap, a socket
-# path too long or not UTF-8, a name a container already holds, a daemon it
-# cannot ask about the name), and the traps are disarmed before this exits
-# 2: nothing of this run exists, and a stop by its name would remove a
-# container another run holds.  ``--`` ends the start's options, so an image
-# beginning with ``-`` is handed over as the image: without it ``--help``
-# printed the usage and exited 0, and this read the usage as the socket
-# directory.  While the start runs, bash holds a TERM or HUP until it
-# returns (bash services no trap while a foreground child runs), so a signal
-# then waits for the whole start -- up to a minute for each docker command,
-# then the readiness cap, then a failed start's own stop -- and a KILL in
-# that wait leaves what the start made, since the start goes on without its
-# wrapper.
-_start_status=0
+# that cannot finish names why, and what its own stop left behind, and this
+# exits 2, its EXIT trap stopping by the token.  ``--`` ends the start's
+# options, so an image beginning with ``-`` is handed over as the image:
+# without it ``--help`` printed the usage and exited 0, and this read the
+# usage as the socket directory.  While the start runs, bash holds a TERM or
+# HUP until it returns (bash services no trap while a foreground child
+# runs), so a signal then waits for the whole start -- up to a minute for
+# each docker command, then the readiness cap, then a failed start's own
+# stop -- and a KILL in that wait leaves what the start made, since the
+# start goes on without its wrapper.
 _cluster="$("$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" \
-    start -- "$_run_container" "$_image")" || _start_status=$?
-if [ "$_start_status" -ne 0 ]; then
-    if [ "$_start_status" -eq 3 ]; then
-        trap - EXIT INT TERM HUP
-    fi
-    exit 2
-fi
+    start -- "$_run_container" "$_token" "$_image")" || exit 2
 read -r _run_sockdir <<<"$_cluster"
-unset _cluster _start_status
+unset _cluster
 
 # libpq reads a ``host`` beginning with ``/`` as a socket DIRECTORY, and
 # SQLAlchemy passes the query string through untouched, so one URL shape
