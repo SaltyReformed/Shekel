@@ -15,9 +15,9 @@
 #     whole life -- the socket directory, the ``docker run`` and its
 #     settings, the readiness wait and the teardown -- is
 #     ``scripts/private_cluster.py``'s, the one home the release rehearsal
-#     kit (step X-cx's K1, not yet built) is to start its own cluster through
-#     too; this wrapper makes the token that owns the cluster, arms the traps
-#     that stop it by that token, and runs pytest against it.
+#     kit's bench (``tools/rehearsal/bench.py``) starts its own cluster
+#     through too; this wrapper makes the token that owns the cluster, arms
+#     the traps that stop it by that token, and runs pytest against it.
 #
 #     NOTHING IS SHARED, SO NOTHING NEEDS COORDINATING.  Until
 #     ``balance:X-br-4`` this wrapper also carried a hygiene restart, a
@@ -475,13 +475,16 @@ read -r _run_sockdir <&"$_start_out"
 exec {_start_out}<&-
 unset _start_out _start_status
 
-# libpq reads a ``host`` beginning with ``/`` as a socket DIRECTORY, and
-# SQLAlchemy passes the query string through untouched, so one URL shape
-# serves both.  tests/conftest.py rewrites only the PATH of these URLs to
-# reach a per-worker database, and urlparse/urlunparse preserve the query, so
-# the socket survives that rewrite.
-export TEST_ADMIN_DATABASE_URL="postgresql://shekel_user:shekel_pass@/postgres?host=${_run_sockdir}"
-export TEST_DATABASE_URL="postgresql://shekel_user:shekel_pass@/shekel_test?host=${_run_sockdir}"
+# The URLs are the one home's (``private_cluster.py url``): the image's user
+# and password, the database, and the socket directory as libpq's host.
+# tests/conftest.py rewrites only the PATH of these URLs to reach a
+# per-worker database, and urlparse/urlunparse preserve the query, so the
+# socket survives that rewrite.
+TEST_ADMIN_DATABASE_URL="$("$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" \
+    url "$_run_sockdir" postgres)"
+TEST_DATABASE_URL="$("$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" \
+    url "$_run_sockdir" shekel_test)"
+export TEST_ADMIN_DATABASE_URL TEST_DATABASE_URL
 
 echo "[test.sh] private cluster $_run_container on ${_run_sockdir}" \
     "from $_image" >&2

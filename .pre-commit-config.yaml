@@ -233,6 +233,29 @@ repos:
         files: ^tools/(split|ci)/.*\.py$
         pass_filenames: false
         args: [tools/split, -c, /dev/null, -q]
+      # tools/rehearsal: the release rehearsal kit (step X-cx's K1).  The same
+      # 10.00/10 floor and the same tests ci.yml step 4b runs, the ``cluster``
+      # ones deselected there and here (they start a real private cluster;
+      # run them by hand with ``-m cluster``).  The bench runs git through
+      # tools/ci, so an edit there runs its tests too.
+      - id: pylint-rehearsal
+        name: pylint tools/rehearsal (10.00/10 floor)
+        entry: pylint
+        language: system
+        types: [python]
+        files: ^tools/rehearsal/.*\.py$
+        pass_filenames: false
+        args:
+          - tools/rehearsal/
+          - --fail-under=10
+          - --fail-on=E,F
+      - id: rehearsal-tests
+        name: tools/rehearsal unit tests
+        entry: pytest
+        language: system
+        files: ^tools/(rehearsal|ci)/.*\.py$
+        pass_filenames: false
+        args: [tools/rehearsal, -c, /dev/null, -q, -m, not cluster]
 
       # The planning REGISTRIES and the four arc documents.  Every finding
       # names a LIVE owner, the stated row count matches the table, every

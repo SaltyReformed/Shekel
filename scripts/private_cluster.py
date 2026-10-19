@@ -2,9 +2,10 @@
 """A throwaway PostgreSQL cluster of one caller's own: the ONE home of its life.
 
 ``scripts/test.sh`` gives every suite run a cluster of its own (``balance:X-br-4``), and
-starts and stops it here; the release rehearsal kit (step X-cx's K1, not yet built) is to
-start its own here too, so there is one ``docker run``, one readiness rule and one
-teardown (the coordinator's K1 leaf-plan ruling, 2026-10-18, point 1).  It is a container on
+starts and stops it here; the release rehearsal kit's bench
+(``tools/rehearsal/bench.py``, step X-cx's K1) starts its own here too, so there is one
+``docker run``, one readiness rule and one teardown (the coordinator's K1 leaf-plan ruling,
+2026-10-18, point 1).  It is a container on
 this run's daemon, reached over a UNIX SOCKET in a directory under ``XDG_RUNTIME_DIR``, with
 no network and no port.
 
@@ -23,9 +24,12 @@ Usage::
     python scripts/private_cluster.py token
     python scripts/private_cluster.py start <name> <token> <image>
     python scripts/private_cluster.py stop <token>
+    python scripts/private_cluster.py url <socket-dir> <database>
 
-``token`` prints a new token.  ``start`` prints the socket directory, then the container's
-id, one per line, once the cluster accepts connections there.  A start that fails stops
+``token`` prints a new token.  ``url`` prints the URL a caller connects to a database of a
+started cluster by, from the socket directory ``start`` handed over (:func:`url`).
+``start`` prints the socket directory, then the container's id, one per line, once the
+cluster accepts connections there.  A start that fails stops
 what it made, naming anything that stop left behind, and writing those two lines is the
 last thing it can fail at: a start that cannot write them -- to a pipe nobody reads any
 more, its caller killed while it waited, or anywhere else a write fails -- stops the
@@ -318,6 +322,17 @@ def socket_dir(token: str) -> Path:
                            "lowercase hex digits ('private_cluster.py token' makes one)")
     runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
     return Path(runtime) / f"{_SOCKET_DIR_PREFIX}{token}"
+
+
+def url(directory: Path | str, database: str) -> str:
+    """The URL a caller connects to ``database`` of a started cluster by: the image's user
+    and password, and the cluster's socket ``directory`` (what ``start`` hands over) as
+    libpq's ``host``, which libpq reads as a socket directory because it begins with ``/``.
+    The one home of how a caller reaches the cluster (the coordinator's fork B on K1a-2,
+    2026-10-19): ``test.sh`` builds its two URLs here, and the rehearsal kit its own.
+    SQLAlchemy passes the query string through to libpq untouched, so one URL serves both.
+    """
+    return f"postgresql://{_USER}:{_PASSWORD}@/{database}?host={directory}"
 
 
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:
@@ -712,9 +727,16 @@ def main(argv: list[str] | None = None) -> int:
     stopping = commands.add_parser("stop", help="stop what carries a token, naming what "
                                    "survived")
     stopping.add_argument("token")
+    connecting = commands.add_parser("url", help="print the URL of a database on a started "
+                                     "cluster, from its socket directory")
+    connecting.add_argument("socket_dir")
+    connecting.add_argument("database")
     args = parser.parse_args(argv)
     if args.command == "token":
         print(new_token())
+        return 0
+    if args.command == "url":
+        print(url(args.socket_dir, args.database))
         return 0
     return _start(args) if args.command == "start" else _stop(args)
 
