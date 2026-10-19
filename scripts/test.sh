@@ -347,13 +347,16 @@ fi
 
 # THE CLUSTER IS OWNED BY A TOKEN this run makes HERE, before anything
 # starts, so a trap that fires at any moment -- the start killed outright
-# included -- stops exactly what this run's start made and nothing else: the
+# included -- stops by it what this run's start made and nothing else: the
 # start labels its container with the token as docker creates it and names
 # the socket directory after it, and the stop removes only what carries it
 # (``scripts/private_cluster.py``; the coordinator's ruling on K1a commit B,
 # 2026-10-19).  So every path below stops by the token, with no decision
 # about whether the start made anything: a container another run made is
-# never this run's to remove, whatever it is named.
+# never this run's to remove, whatever it is named.  One thing outlives that
+# stop: a start KILLed while its ``docker run`` is in flight leaves its
+# socket directory, empty, which docker makes again as the mount's source
+# after the stop has removed it (16 of 16, K1a's review, 2026-10-19).
 #
 # The container's NAME carries the PID and the token's first eight digits:
 # the PID for the humans reading ``docker ps``, and the token so no other
@@ -438,7 +441,8 @@ _end_by() {
 # sentence true.  The traps are armed BEFORE the start, and every one of
 # them stops by the token whatever the start did: a start that stopped what
 # it made leaves its token nothing to find, and one killed outright leaves
-# the trap's stop everything it made.
+# the trap's stop everything it made, save the socket directory of one
+# KILLed during its ``docker run`` (the block above the token says why).
 trap '_teardown_run_container' EXIT
 trap '_end_by INT' INT
 trap '_end_by TERM' TERM

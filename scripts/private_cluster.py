@@ -31,7 +31,11 @@ last thing it can fail at: a start that cannot write them -- to a pipe nobody re
 more, its caller killed while it waited, or anywhere else a write fails -- stops the
 cluster too, since no caller can have it (K1a commit B3).  One killed outright (KILL)
 cannot stop anything, which is why the caller makes the token before starting and stops
-by it.  ``stop`` removes
+by it.  That stop leaves nothing, but for one window: a start KILLed while its ``docker
+run`` is in flight leaves its socket directory, empty.  The create finishes after the
+caller's stop has removed the directory, and docker makes it again as the mount's source
+(16 of 16 on the rootless daemon, K1a's review, 2026-10-19; the container ends by itself
+under ``--rm``).  ``stop`` removes
 the token's container with its anonymous volume, and its socket directory, and names on
 stderr anything that survived or could not be asked about; it is safe to run on a cluster
 that never started, or twice, which is what lets a caller's signal traps call it whenever
@@ -534,8 +538,10 @@ def start(name: str, token: str, image: str, *,
 
     Once it is handed over, the cluster is its caller's: a signal recorded after the start's
     last look is raised again under the caller's own handlers, so it reaches the caller,
-    which holds the token.  A signal that lands after the start has decided how to end,
-    inside its own stop or after, does not change that end.
+    which holds the token.  A signal that lands inside the stop of a start that FAILED
+    ends it BY that signal once the stop has finished, as one that landed before the
+    failure would: a TERM there turns exit 2 into death by TERM.  One that lands inside
+    the stop of a start a signal already ended changes nothing; the first signal ends it.
 
     Raises:
         ClusterError: when the start is refused or fails, naming why and what its stop left.
