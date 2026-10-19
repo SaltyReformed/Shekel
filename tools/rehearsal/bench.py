@@ -15,10 +15,17 @@ What it is built from, each its one home's:
   ``private_cluster.py url`` gives; a host with no ``pg_restore``, or one too old for the
   dump, is refused by name.
 
-THE CLUSTER IS OWNED BY A TOKEN made before anything starts, and stopping by it is the first
-step the teardown is handed, so a failure or a Ctrl-C at any later point stops what the start
-made.  One window outlives that stop, the cluster module's own: a start KILLed while its
+THE CLUSTER IS OWNED BY A TOKEN made before anything starts, and the stop by it is handed to
+the teardown before the start runs, so a failure or a Ctrl-C at any later point stops what the
+start made.  One window outlives that stop, the cluster module's own: a start KILLed while its
 ``docker run`` is in flight leaves its socket directory, empty.
+
+THE BENCH CHOOSES NO DAEMON.  The cluster goes to the daemon docker itself picks: the one
+``DOCKER_HOST`` names, or else docker's default context, which on this host is the SYSTEM
+daemon that runs production.  ``test.sh`` refuses that daemon and the bench does not (K1a-2's
+review, B1: nothing it does can name or stop another container, so it is churn beside
+production, not a risk to its data), so run it with ``DOCKER_HOST`` at the rootless daemon:
+``export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock``.
 
 A DUMP FROM ANOTHER POSTGRESQL MAJOR IS REFUSED before it is restored.  Every custom-format
 archive records the server that made it (``Dumped from database version``), so production's

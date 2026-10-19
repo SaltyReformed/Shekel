@@ -2,9 +2,10 @@
 teardown whose census names anything left (step X-cx's K1a-2).
 
 The cases marked ``cluster`` start a real private cluster (``scripts/private_cluster.py``) on
-the daemon ``DOCKER_HOST`` names, and restore a dump planted by the module's fixture, so they
-need docker, the test-db image and the host's ``pg_dump`` and ``pg_restore``; the conftest
-says where they run.  The rest grade the bench's pure parts on planted inputs.
+the daemon docker picks (``DOCKER_HOST``, which the conftest says to point at the rootless
+one), and restore a dump planted by the module's fixture, so they need docker, the test-db
+image and the host's ``pg_dump`` and ``pg_restore``; the conftest says where they run.  The
+rest grade the bench's pure parts on planted inputs.
 """
 from __future__ import annotations
 
