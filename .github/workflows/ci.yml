@@ -392,6 +392,13 @@ jobs:
       # packages, at the same floor, so every tools package holds one floor in
       # one step; a change to it is still ``full`` (it is no registry-only
       # prefix), which ``tools/ci/test_ci_scope.py`` holds.
+      #
+      # ``tools/rehearsal`` (the release rehearsal kit; step X-cx's K1, rulings
+      # R-BAL314 and R-BAL315) reads no registry either, and holds the same
+      # floor here.  Its tests that start a real private cluster carry the
+      # ``cluster`` marker and are deselected: a registry-only change set
+      # cannot change the kit, so a cluster here would grade nothing new (the
+      # coordinator's K1 leaf-plan ruling, item 3).
       - name: Plan gate (every scope)
         run: |
           pylint tools/plan_gate/ --fail-under=10 --fail-on=E,F --output-format=colorized
@@ -404,6 +411,8 @@ jobs:
           pytest tools/release -c /dev/null -q
           pylint tools/split/ --fail-under=10 --fail-on=E,F --output-format=colorized
           pytest tools/split -c /dev/null -q
+          pylint tools/rehearsal/ --fail-under=10 --fail-on=E,F --output-format=colorized
+          pytest tools/rehearsal -c /dev/null -q -m "not cluster"
 
   tax-law:
     runs-on: ubuntu-24.04

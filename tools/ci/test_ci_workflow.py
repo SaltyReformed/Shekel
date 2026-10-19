@@ -178,6 +178,13 @@ class TestTheWorkflowIsWiredToTheAnswer:
         assert "pylint tools/split/ --fail-under=10 --fail-on=E,F" in run
         assert "pytest tools/split -c /dev/null -q" in run
 
+    def test_the_rehearsal_kit_is_linted_and_tested_in_both_scopes(self):
+        """``tools/rehearsal`` (step X-cx's K1) holds the same floor in the same step, and its
+        tests run there with the ``cluster`` ones deselected (the K1 leaf-plan ruling, item 3)."""
+        run = _steps("plan-gate")["Plan gate (every scope)"]["run"]
+        assert "pylint tools/rehearsal/ --fail-under=10 --fail-on=E,F" in run
+        assert 'pytest tools/rehearsal -c /dev/null -q -m "not cluster"' in run
+
     def test_no_code_running_job_escapes_the_guard(self):
         """A job that runs pytest, pylint, a script or ``test.sh`` is guarded or named here."""
         for name, job in _jobs().items():
