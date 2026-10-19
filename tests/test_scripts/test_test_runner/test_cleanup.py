@@ -54,21 +54,22 @@ class TestThePrivateClusterIsCleanedUp:
 
     def test_every_trap_is_armed_before_the_cluster_is_started(self) -> None:
         """The traps come BEFORE the start, so a run killed during the start is
-        stopped by name.
+        stopped by its token.
 
         A start ended by a signal it holds stops what it made itself, but one
         killed outright cannot: only the trap's stop, which finds the cluster
         by the token the wrapper made, removes it.  The review of step X-cx's K1a
         measured the traps moved after the start: a TERM to the whole group
         during the start left the container and its socket directory behind.
-        Read from the SOURCE, as the wiring case is (:func:`_code_lines`).
+        Read from the SOURCE, as the wiring case is (:func:`_code_lines`); that
+        each arm stops the cluster is graded by running them
+        (``test_signals.py``).
         """
         code = _code_lines()
         started = next(index for index, line in enumerate(code)
                        if _STARTS_THE_CLUSTER.search(line))
         armed = {match.group(1): index for index, line in enumerate(code)
-                 if (match := re.match(r"trap\s+'_teardown_run_container[^']*'\s+([A-Z]+)$",
-                                       line))}
+                 if (match := re.match(r"trap\s+'[^']+'\s+([A-Z]+)$", line))}
 
         assert set(armed) == {"EXIT", "INT", "TERM", "HUP"}, armed
         late = sorted(name for name, index in armed.items() if index > started)
@@ -117,6 +118,26 @@ class TestThePrivateClusterIsCleanedUp:
         assert "Conflict" in result.stderr, result.stderr
         assert other.exists(), f"the other run's container was removed; docker saw:\n{calls}"
         assert not [line for line in calls.splitlines() if line.startswith("rm ")], calls
+
+    def test_the_container_s_name_carries_its_token_s_first_eight_digits(
+        self, tmp_path: Path
+    ) -> None:
+        """The run names its container ``shekel-testrun-<pid>-<the token's first
+        eight digits>``, the token being the one the container is labelled with.
+
+        The coordinator's ruling on commit B, item 4: with the token in the
+        name, no other run's container can already hold it, which is why the
+        start no longer asks docker whether the name is free.  The PID stays
+        for the humans reading ``docker ps``.  Nothing else reads the name.
+        """
+        _run_wrapper(_stub_tree(tmp_path), {})
+        calls = (tmp_path / "docker-calls").read_text(encoding="utf-8")
+        started = [line.split() for line in calls.splitlines() if line.startswith("run ")]
+
+        assert started, f"no container was started; docker saw:\n{calls}"
+        name = started[0][started[0].index("--name") + 1]
+        token = started[0][started[0].index("--label") + 1].split("=", 1)[1]
+        assert re.fullmatch(rf"shekel-testrun-[0-9]+-{token[:8]}", name), (name, token)
 
     @pytest.mark.parametrize(("kills", "other", "calls"), [
         ("after making", False, ["info", "run", "ps", "rm", "ps"]),

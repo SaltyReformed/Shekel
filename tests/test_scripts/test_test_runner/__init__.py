@@ -16,7 +16,9 @@ findings has since been deleted rather than fixed:
 * A signal to the wrapper could not be serviced while pytest ran in the
   FOREGROUND, so ``timeout`` stopped working and the SIGKILL escalation left
   a live container plus an orphaned pytest.  pytest is backgrounded and
-  ``wait``ed now, because ``wait`` is interruptible.
+  ``wait``ed now, because ``wait`` is interruptible, and since K1a commit B2
+  so is the cluster's start, each with SIGINT at its default
+  (``test_signals.py``).
 * ``TEST_DB_PER_RUN`` was INHERITED by pytest, so a child that re-invoked the
   wrapper started two more containers nested inside the suite.  The wrapper
   scrubbed the flag before handing the environment on.  With the flag gone

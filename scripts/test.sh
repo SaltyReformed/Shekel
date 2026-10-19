@@ -113,8 +113,10 @@
 #     refuses the socket path, the readiness and the missing socket, and
 #     any other start it cannot finish).  NO COUNT IS GIVEN:
 #     every attempt to count them in a comment
-#     has been wrong.  Other non-pytest statuses are docker's or the shell's,
-#     not this script's.
+#     has been wrong.  A run that INT, TERM or HUP ends has no status: it
+#     stops its cluster, then dies BY that signal, as a command a terminal's
+#     Ctrl-C ended does (the block above the traps says why).  Other
+#     non-pytest statuses are docker's or the shell's, not this script's.
 
 set -euo pipefail
 
@@ -370,14 +372,61 @@ _teardown_run_container() {
     "$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" stop "$_token" || true
 }
 
-# Forward the signal to pytest FIRST, so the run stops rather than being
-# abandoned, then tear down and exit with the conventional status.
+# THE RUN'S TWO LONG CHILDREN -- the start, then pytest -- RUN IN THE
+# BACKGROUND AND ARE ``wait``ED, so a trap runs the moment a signal lands
+# rather than once the child has ended: bash services no trap while a
+# FOREGROUND child runs, and ``wait`` is interruptible.  ``_child`` is the
+# running one's PID, empty while none runs.  Each is launched with SIGINT
+# back at its default (``trap - INT``): bash starts a background child of a
+# non-interactive shell with SIGINT IGNORED, so pytest sat out a terminal's
+# Ctrl-C and the wrapper waited for its whole run (12.1 s for a stub pytest
+# sleeping 12, measured 2026-10-19).  Both stay in the wrapper's process
+# group, so what reaches the group reaches them as it reaches a foreground
+# command: a terminal's Ctrl-C, a supervisor's KILL to the group, Ctrl-Z.
+#
+# Each trap passes TERM and HUP on to the running child, and NOT INT.  A
+# supervisor sends TERM or HUP to the wrapper's PID alone; a terminal sends
+# Ctrl-C to the whole group, so the child already has that one, and a second
+# SIGINT 10-50 ms after the first cut pytest-xdist's own shutdown short --
+# death by SIGINT with a traceback, where one gives its summary and exit 2
+# (measured 2026-10-19).  Then it waits for the child, stops by the token, and
+# ends the wrapper BY that signal rather than by an exit status, so a shell
+# that ran it sees the Ctrl-C and stops too: an ``exit 130`` told that shell
+# the wrapper had dealt with the signal, and it carried on with its next
+# command (measured).
+#
+# What is NOT passed on: an INT sent to the wrapper's PID ALONE, not to its
+# group.  The wrapper then waits for the running child's own end and stops by
+# the token.  The one way to pass INT on exactly once from every source --
+# each child in a process group of its own, every signal passed on to that
+# group -- puts the child out of reach of anything sent to the wrapper's
+# group: a KILL to the group would orphan a twelve-worker suite with nobody
+# to stop it, and Ctrl-Z would stop the wrapper and not the suite.
+#
+# The bounds this gives.  A signal during the start ends the wrapper within
+# the docker command the start is waiting on (the start HOLDS the signal
+# until that command returns; ``scripts/private_cluster.py``), then the
+# start's own stop and this one.  A Ctrl-C during pytest ends it as a
+# Ctrl-C'd pytest ends in a terminal, then one stop; a TERM or HUP during
+# pytest, once pytest has died of it, then one stop.  A TERM and then a KILL
+# to the wrapper's PID during the start leave nothing behind: the start,
+# passed the TERM, stops what it made whether or not its wrapper is alive to
+# wait for it.  ``_child`` is set by the command after each launch and emptied
+# by the one after each wait, so a signal landing between the two misses the
+# child or names one already reaped; that window is the length of one
+# assignment.
+_child=""
 # shellcheck disable=SC2329 # invoked only through the INT, TERM and HUP traps below, which shellcheck cannot follow
-_stop_run() {
-    kill -"$2" "$1" 2>/dev/null || true
-    wait "$1" 2>/dev/null || true
+_end_by() {
+    if [ -n "$_child" ]; then
+        if [ "$1" != INT ]; then
+            kill -"$1" "$_child" 2>/dev/null || true
+        fi
+        wait "$_child" 2>/dev/null || true
+    fi
     _teardown_run_container
-    exit "$3"
+    trap - EXIT "$1"
+    kill -"$1" "$$"
 }
 # EXIT alone is not enough: an untrapped fatal signal terminates bash WITHOUT
 # running the EXIT trap, so the container outlives the run and the next one
@@ -391,9 +440,9 @@ _stop_run() {
 # it made leaves its token nothing to find, and one killed outright leaves
 # the trap's stop everything it made.
 trap '_teardown_run_container' EXIT
-trap '_teardown_run_container; exit 130' INT
-trap '_teardown_run_container; exit 143' TERM
-trap '_teardown_run_container; exit 129' HUP
+trap '_end_by INT' INT
+trap '_end_by TERM' TERM
+trap '_end_by HUP' HUP
 
 # The start prints the socket directory, then the container's id, once the
 # cluster accepts connections on a socket it has checked is there; a start
@@ -401,16 +450,26 @@ trap '_teardown_run_container; exit 129' HUP
 # exits 2, its EXIT trap stopping by the token.  ``--`` ends the start's
 # options, so an image beginning with ``-`` is handed over as the image:
 # without it ``--help`` printed the usage and exited 0, and this read the
-# usage as the socket directory.  While the start runs, bash holds a TERM or
-# HUP until it returns (bash services no trap while a foreground child
-# runs), so a signal then waits for the whole start -- up to a minute for
-# each docker command, then the readiness cap, then a failed start's own
-# stop -- and a KILL in that wait leaves what the start made, since the
-# start goes on without its wrapper.
-_cluster="$("$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" \
-    start -- "$_run_container" "$_token" "$_image")" || exit 2
-read -r _run_sockdir <<<"$_cluster"
-unset _cluster
+# usage as the socket directory.  It runs as a PROCESS SUBSTITUTION, so it can
+# be waited for (the block above the traps says why) while its output still
+# comes back, through a pipe read once it has ended: no temporary file for a
+# KILL to leave behind.
+# shellcheck disable=SC2312 # the start's status is not masked: the wait on its PID ($!) below reads it
+exec {_start_out}< <(
+    trap - INT
+    exec "$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" \
+        start -- "$_run_container" "$_token" "$_image"
+)
+_child=$!
+_start_status=0
+wait "$_child" || _start_status=$?
+_child=""
+if [ "$_start_status" -ne 0 ]; then
+    exit 2
+fi
+read -r _run_sockdir <&"$_start_out"
+exec {_start_out}<&-
+unset _start_out _start_status
 
 # libpq reads a ``host`` beginning with ``/`` as a socket DIRECTORY, and
 # SQLAlchemy passes the query string through untouched, so one URL shape
@@ -440,21 +499,19 @@ PYTEST_MARKER_EXPR="${PYTEST_MARKER_EXPR:-not docker}"
 # exec'd process has no after.  pytest's status is preserved and re-raised so
 # the wrapper stays transparent to callers and to CI.
 #
-# BACKGROUNDED, then waited.  Bash does not service a trap while waiting on a
-# FOREGROUND child, so with pytest in the foreground a SIGTERM to the wrapper
-# did nothing until pytest finished -- measured 20 s of silence -- which broke
+# BACKGROUNDED, then waited, with SIGINT at its default: the block above the
+# traps says why.  With pytest in the foreground a SIGTERM to the wrapper did
+# nothing until pytest finished -- measured 20 s of silence -- which broke
 # `timeout` and left the SIGKILL escalation leaking a container AND orphaning
-# pytest onto PID 1.  ``wait`` is interruptible, so the traps below can
-# actually run.
-set +e
-pytest -m "$PYTEST_MARKER_EXPR" "$@" &
-_pytest_pid=$!
-trap '_stop_run "$_pytest_pid" INT 130' INT
-trap '_stop_run "$_pytest_pid" TERM 143' TERM
-trap '_stop_run "$_pytest_pid" HUP 129' HUP
-wait "$_pytest_pid"
-_pytest_status=$?
-set -e
+# pytest onto PID 1.
+(
+    trap - INT
+    exec pytest -m "$PYTEST_MARKER_EXPR" "$@"
+) &
+_child=$!
+_pytest_status=0
+wait "$_child" || _pytest_status=$?
+_child=""
 _teardown_run_container
 trap - EXIT INT TERM HUP
 exit "$_pytest_status"
