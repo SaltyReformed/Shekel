@@ -236,7 +236,8 @@ repos:
       # tools/rehearsal: the release rehearsal kit (step X-cx's K1).  The same
       # 10.00/10 floor and the same tests ci.yml step 4b runs, the ``cluster``
       # ones deselected there and here (they start a real private cluster;
-      # run them by hand with ``-m cluster``).
+      # run them by hand with ``-m cluster``).  The bench runs git through
+      # tools/ci, so an edit there runs its tests too.
       - id: pylint-rehearsal
         name: pylint tools/rehearsal (10.00/10 floor)
         entry: pylint
@@ -252,7 +253,7 @@ repos:
         name: tools/rehearsal unit tests
         entry: pytest
         language: system
-        files: ^tools/rehearsal/.*\.py$
+        files: ^tools/(rehearsal|ci)/.*\.py$
         pass_filenames: false
         args: [tools/rehearsal, -c, /dev/null, -q, -m, not cluster]
 

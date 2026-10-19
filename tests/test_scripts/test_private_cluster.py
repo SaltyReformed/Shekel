@@ -257,6 +257,14 @@ def test_a_token_is_new_each_time_and_is_one_a_start_takes(capsys):
         assert private_cluster.socket_dir(token).name == f"shekel-cluster-{token}"
 
 
+def test_url_names_the_database_on_the_socket_directory_as_the_cluster_s_user(capsys):
+    """``url`` prints the URL ``test.sh`` spelled itself until fork B (2026-10-19), byte for
+    byte: the baked image's user and password, the database, the socket directory as host."""
+    assert private_cluster.main(["url", "/run/user/1000/shekel-cluster-ab", "shekel_test"]) == 0
+    assert capsys.readouterr().out == (
+        "postgresql://shekel_user:shekel_pass@/shekel_test?host=/run/user/1000/shekel-cluster-ab\n")
+
+
 def test_the_run_is_the_one_the_suite_reads_argument_for_argument(docker, runtime):
     """The whole ``docker run``, as one literal: detached, removed when postgres exits, the
     name, the token's label given to the create itself, no network and no published port,
