@@ -406,14 +406,23 @@ class TestTheDeletedRowTransferArm:
             "WHERE expense_transfer_id = :s"
         ), {"s": second.id}).scalar_one() == 1
 
+    @pytest.mark.parametrize("income", [False, True], ids=["from-side", "to-side"])
     def test_hiding_a_transfer_that_holds_a_record_is_refused_at_commit(
-        self, app, seed_user,
+        self, app, seed_user, income,
     ):
-        """The hiding arm is deferred: the flush passes and COMMIT refuses."""
+        """The hiding arm is deferred: the flush passes and COMMIT refuses.
+
+        Each side ALONE holds the record, because the arm asks two link
+        columns and each must refuse on its own.  The case held the
+        from-side's record alone until plan step ``balance:X-bi-6-4d-3``'s
+        vacuous-residue checkpoint, where an arm asking the from-side link
+        only failed no test in the suite (measured there); each side's record
+        is planted with the bare ORM, as every record in this module is.
+        """
         del app
         checking, savings, _van = _accounts(seed_user)
         xfer = _transfer(seed_user, checking, savings)
-        _record(xfer)
+        _record(xfer, income=income)
         _db.session.commit()
         _hide_transfer(xfer.id)
         with refused_by_database_rule(_HIDING_REFUSED):

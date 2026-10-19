@@ -637,6 +637,16 @@ class TestZeroCorrectionWithdrawsTheLegs:
         withdrawal, which is why they are read by source kind here); Savings
         back on its 100.00 opening, Checking on its 1000.00, transit 0.00,
         and the pair holds no covering movement.
+
+        That last is graded by two reads before any count of the side links,
+        and none is taken: the two counts this case took were reached by no
+        app mutant (measured at plan step ``balance:X-bi-6-4d-3``'s
+        vacuous-residue checkpoint, where they went).  The COMMIT is the
+        first: the status-band rule refuses a settled transfer whose sides
+        hold one dated record, so a correction that withdraws either side's
+        movement alone fails there.  The movement-sourced entry count is the
+        second: a correction that withdraws neither, which the band rule
+        admits, leaves two entries, not four.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -668,13 +678,6 @@ class TestZeroCorrectionWithdrawsTheLegs:
             assert len(movement_sourced) == 4
             assert {e.transaction_entry_id for e in movement_sourced} == {None}
             assert _entries_for_transfer(transfer.id) == []
-            # The pair holds no covering movement, on either side.
-            assert _db.session.query(TransactionEntry).filter(
-                TransactionEntry.expense_transfer_id == transfer.id,
-            ).count() == 0, "the from-side still holds a movement"
-            assert _db.session.query(TransactionEntry).filter(
-                TransactionEntry.income_transfer_id == transfer.id,
-            ).count() == 0, "the to-side still holds a movement"
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("100.00")

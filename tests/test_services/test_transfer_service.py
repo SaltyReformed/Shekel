@@ -1141,8 +1141,10 @@ class TestDeleteTransfer:
       transfer hidden first; a PAID one hidden and then removed is
       ``test_transfer_posting_lifecycle.py``'s ``TestDeleteAndRestore`` case
       ``test_hard_delete_of_a_soft_deleted_pair_finds_the_ledger_at_zero``).
-    - Someone else's transfer, or none: not found
-      (:meth:`test_wrong_user_rejected`, :meth:`test_nonexistent_rejected`).
+    - Someone else's transfer, or none: not found.  A live one by the hard
+      delete (:meth:`test_wrong_user_rejected`), an already-hidden one by
+      either delete (:meth:`test_someone_elses_hidden_transfer_is_not_found`),
+      and none (:meth:`test_nonexistent_rejected`).
 
     Every case here holds an AD-HOC transfer.  The shape production hides
     is a transfer of a definition (the instance delete hides a linked
@@ -1424,6 +1426,42 @@ class TestDeleteTransfer:
                     xfer.id, second_user["user"].id
                 )
 
+    @pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
+    def test_someone_elses_hidden_transfer_is_not_found(
+        self, app, db, transfer_data, second_user, soft,
+    ):
+        """A non-owner's delete of the owner's HIDDEN transfer is not found and leaves it hidden.
+
+        The delete reaches a hidden transfer on purpose (``allow_deleted``,
+        so a repeated hide and a hard delete of a hidden transfer work), so
+        its ownership check must hold for a hidden row, on either delete, as
+        it does for a live one (:meth:`test_wrong_user_rejected`, which runs
+        the hard delete only).  The refused
+        delete is read off the row re-read after a COMMIT, which writes
+        whatever it staged: the transfer is still there and still hidden.
+        The owner's same delete then lands on the same id, so the refusal is
+        the ownership check's and not a wrong id's.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer_id = _create_basic_transfer(td).id
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.commit()
+
+            with pytest.raises(NotFoundError, match="not found"):
+                transfer_service.delete_transfer(
+                    xfer_id, second_user["user"].id, soft=soft,
+                )
+
+            row = _reread(xfer_id)
+            assert row is not None and row.is_deleted is True, (
+                "the refused delete removed or un-hid the owner's transfer"
+            )
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=soft)
+            # The hard delete removes it; the soft delete leaves it in place.
+            assert (_reread(xfer_id) is None) is not soft
+
     def test_nonexistent_rejected(self, app, db, transfer_data):
         """Delete of non-existent transfer raises NotFoundError."""
         with app.app_context():
@@ -1447,8 +1485,10 @@ class TestRestoreTransfer:
     transfer reads the row re-read from the database since plan step
     ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2b, where they read the
     object in the session and the transfer's two shadow rows (ruling
-    R-BAL290 part 1); the not-found cases and the both-archived refusal
-    read no row.  "Unchanged" is the ruling's three fields: no case here
+    R-BAL290 part 1).  The nonexistent-transfer case and the both-archived
+    refusal read no row; the wrong-owner case reads it after the refusal
+    and after the owner's restore since that step's vacuous-residue
+    checkpoint.  "Unchanged" is the ruling's three fields: no case here
     reads a restored transfer's due date, category, override flag or notes,
     and a restore that moved its due date or cleared its category fails
     none (measured by the review of that checkpoint).
@@ -1572,18 +1612,35 @@ class TestRestoreTransfer:
         with a user_id that does not own the transfer.  The error message
         must be identical to the nonexistent case to prevent ownership
         enumeration.
+
+        The refused restore leaves the owner's transfer hidden: the row is
+        read re-read after a COMMIT, which writes whatever the refused
+        restore staged, so a restore that un-hid the transfer before its
+        ownership refusal fails it (never a rollback before the read, which
+        would discard such a staged un-hide).  The owner's own restore then
+        lands on the same id, so the refusal is the ownership check's and not
+        a wrong id's.  It read the raise alone until plan step
+        ``balance:X-bi-6-4d-3``'s vacuous-residue checkpoint.
         """
         with app.app_context():
             td = transfer_data
-            xfer = _create_basic_transfer(td)
+            xfer_id = _create_basic_transfer(td).id
             transfer_service.delete_transfer(
-                xfer.id, td["user"].id, soft=True
+                xfer_id, td["user"].id, soft=True
             )
+            db.session.commit()
 
             with pytest.raises(NotFoundError, match="not found"):
                 transfer_service.restore_transfer(
-                    xfer.id, second_user["user"].id
+                    xfer_id, second_user["user"].id
                 )
+
+            assert _reread(xfer_id).is_deleted is True, (
+                "the refused restore un-hid the owner's transfer"
+            )
+
+            transfer_service.restore_transfer(xfer_id, td["user"].id)
+            assert _reread(xfer_id).is_deleted is False
 
     def test_idempotent_on_active_transfer(self, app, transfer_data):
         """Verify that calling restore_transfer on an already-active

@@ -844,10 +844,13 @@ class TestTheWalkSeesOnlyItsOwnRows:
         the save and refused at its commit** (ruling **R-BAL167** class 2):
         the delete door takes the payments off (ruling
         **credit_card:R-CC75**) and the deleted-row rule's transfer arm
-        refuses a transfer hidden holding one.  The transfer and its twins
-        are hidden by SQL with the payments left on, the Checking leg -- its
-        transfer and its side's record, the twin holding none since that
-        step -- is valued inside the save, and the commit is then refused.
+        refuses a transfer hidden holding one.  The transfer is hidden by
+        SQL with the payments left on, the Checking leg -- its transfer and
+        its side's record -- is valued inside the save, and the commit is
+        then refused.  It also hid the transfer's two twin rows by SQL; from
+        plan step ``balance:X-bi-6-4d-3``'s create door on there are none, so
+        that statement touched no row (measured at that step's
+        vacuous-residue checkpoint), and it is dropped.
         DROPPED: ``settled_cash_facts(...) == []``.  Inside the save the walk
         lists the hidden transfer's record as a fact at ``0.00``: finding
         **BAL-534** deleted the walk's hidden-transfer filter, because the
@@ -878,13 +881,10 @@ class TestTheWalkSeesOnlyItsOwnRows:
             account.id, scenario.id,
         )] == [Decimal("-80.00")], "the leg must reach the walk while it counts"
 
-        # Hidden the way the soft delete left it until the step: the
-        # transfer and both twins flagged, the payments in place.  STAGED.
-        db.session.execute(
-            text("UPDATE budget.transactions SET is_deleted = TRUE "
-                 "WHERE transfer_id = :t"),
-            {"t": xfer.id},
-        )
+        # Hidden the way the soft delete left it until the step, less the
+        # twins it also flagged (none exist since plan step
+        # ``balance:X-bi-6-4d-3``): the transfer flagged, the payments in
+        # place.  STAGED.
         db.session.execute(
             text("UPDATE budget.transfers SET is_deleted = TRUE WHERE id = :t"),
             {"t": xfer.id},
