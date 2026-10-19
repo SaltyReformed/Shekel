@@ -1,30 +1,22 @@
-"""
-Shekel Budget App - Auth Helpers Tests
-
-Tests for the reusable ownership verification helpers in
-app/utils/auth_helpers.py.  Uses test_request_context + login_user
-to set up a real Flask-Login request context for each test.
-
-The access-denied logging tests near the bottom of this file cover
-audit finding F-144 / commit C-14: the previously-silent ownership
-failure paths now emit structured ``log_event`` records so cross-user
-probing leaves a forensic trail.
+"""Auth helpers tests: the denial each ownership door logs (F-144), another owner's deleted row
+probed at the transaction door, and require_owner failing closed.
 """
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 from decimal import Decimal
 
 import pytest
-from flask import Blueprint, Flask
 from flask_login import current_user, login_user
+from sqlalchemy import text
 
+from app import ref_cache
+from app.enums import RoleEnum
 from app.extensions import db
 from app.models.account import Account
-from app.models.ref import Status, TransactionType
+from app.models.ref import TransactionType
 from app.models.transaction import Transaction
 from app.utils.auth_helpers import (
-    fresh_login_required,
     get_accessible_transaction,
     get_accessible_transaction_or_deleted,
     get_or_404,
@@ -37,435 +29,36 @@ from app.utils.log_events import (
     EVT_ACCESS_DENIED_OWNER_ONLY,
     EVT_RESOURCE_NOT_FOUND,
 )
-from app.utils.session_helpers import FRESH_LOGIN_AT_KEY
 from tests._test_helpers import rhythm_of, one_off_row_of
 from tests._test_helpers import record_paydays_across_a_hole
 from tests._test_helpers import a_deleted_occurrence
+from tests._test_helpers import create_account_of_type
+
+from ._helpers import _AuthHelpersLogCapture
 
 
-class TestGetOr404:
-    """Tests for the get_or_404 ownership helper (Pattern A)."""
+def _the_next_row_takes_id(sequence, row_id):
+    """Restart *sequence* so the next row built from it takes *row_id*.
 
-    def test_returns_owned_record(self, app, db, seed_user):
-        """Happy path: returns the record when it belongs to the current user."""
-        with app.test_request_context():
-            login_user(seed_user["user"])
-            result = get_or_404(Account, seed_user["account"].id)
-            assert result is not None
-            assert result.id == seed_user["account"].id
+    A denial's ``pk`` read grades a door only while the probed row's id differs from every
+    other id the denying branch holds: the requester, the owner it acts for, the row's owner.
+    Left to the order the fixtures build in, ids of different kinds coincide: the first
+    transaction a case builds and ``seed_user`` are both id 1, and ``second_user``'s account
+    and ``second_user`` are both id 2, so a door logging one of those user ids as the ``pk``
+    passed.  The builders take no id, hence the restart.  A rollback does not undo
+    ``setval``, but the autouse ``db`` fixture re-clones the database before every test, so
+    the restart reaches no other case.  Each caller asserts its row took *row_id*, and that
+    the ids its denial could name are pairwise distinct.
 
-    def test_returns_none_for_nonexistent_pk(self, app, db, seed_user):
-        """Returns None when no record exists at the given PK."""
-        with app.test_request_context():
-            login_user(seed_user["user"])
-            result = get_or_404(Account, 999999)
-            assert result is None
-
-    def test_returns_none_for_other_users_record(self, app, db, seed_user, second_user):
-        """Core security test: user A cannot load user B's record."""
-        with app.test_request_context():
-            login_user(seed_user["user"])
-            # second_user's account belongs to a different user.
-            result = get_or_404(Account, second_user["account"].id)
-            assert result is None
-
-    def test_returns_none_for_pk_zero(self, app, db, seed_user):
-        """PK=0 does not exist in PostgreSQL autoincrement; must not crash."""
-        with app.test_request_context():
-            login_user(seed_user["user"])
-            result = get_or_404(Account, 0)
-            assert result is None
-
-    def test_custom_user_id_field_nonexistent(self, app, db, seed_user):
-        """Passing a nonexistent field name returns None (safe fallback)."""
-        with app.test_request_context():
-            login_user(seed_user["user"])
-            # Account has user_id, but "nonexistent" does not exist --
-            # getattr returns None which != current_user.id.
-            result = get_or_404(Account, seed_user["account"].id,
-                                user_id_field="nonexistent")
-            assert result is None
-
-
-class TestGetOwnedViaParent:
-    """Tests for the get_owned_via_parent ownership helper (Pattern B)."""
-
-    def _create_transaction(self, seed_user, period):
-        """Helper: create a projected expense in the given period."""
-        expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-
-        txn = one_off_row_of(
-            period,
-            name="Test Expense",
-            amount=Decimal("50.00"),
-            user_id=period.user_id,
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            transaction_type_id=expense_type.id,
-            category_id=seed_user["categories"]["Groceries"].id,
-        )
-        db.session.flush()
-        return txn
-
-    def test_returns_owned_child_record(self, app, db, seed_user, seed_periods):
-        """Happy path: returns the child when its parent belongs to the current user."""
-        with app.test_request_context():
-            login_user(seed_user["user"])
-            txn = self._create_transaction(seed_user, seed_periods[0])
-            result = get_owned_via_parent(Transaction, txn.id, "pay_period")
-            assert result is not None
-            assert result.id == txn.id
-
-    def test_returns_none_for_nonexistent_pk(self, app, db, seed_user, seed_periods):
-        """Returns None when no child record exists at the given PK."""
-        with app.test_request_context():
-            login_user(seed_user["user"])
-            result = get_owned_via_parent(Transaction, 999999, "pay_period")
-            assert result is None
-
-    def test_returns_none_for_other_users_child(self, app, db, seed_user, second_user, seed_periods):
-        """Core security test: user A cannot load user B's child record."""
-        with app.test_request_context():
-            login_user(seed_user["user"])
-
-            # Create a pay period for the second user.
-            from app.services import pay_period_write
-            periods2 = record_paydays_across_a_hole(
-                user_id=second_user["user"].id,
-                first_payday=date(2026, 3, 1),
-                num_periods=2,
-                rhythm=rhythm_of(14),
-            )
-            db.session.flush()
-
-            # Create a transaction owned by the second user.
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            txn2 = one_off_row_of(
-                periods2[0],
-                name="Other User Expense",
-                amount=Decimal("99.00"),
-                user_id=periods2[0].user_id,
-                account_id=second_user["account"].id,
-                scenario_id=second_user["scenario"].id,
-                transaction_type_id=expense_type.id,
-                category_id=second_user["categories"]["Rent"].id,
-            )
-            db.session.flush()
-
-            result = get_owned_via_parent(Transaction, txn2.id, "pay_period")
-            assert result is None
-
-    def test_returns_none_when_parent_attr_missing(self, app, db, seed_user, seed_periods):
-        """Bad parent_attr name returns None instead of crashing."""
-        with app.test_request_context():
-            login_user(seed_user["user"])
-            txn = self._create_transaction(seed_user, seed_periods[0])
-            result = get_owned_via_parent(
-                Transaction, txn.id, "nonexistent_relationship",
-            )
-            assert result is None
-
-    def test_returns_none_when_parent_user_id_attr_missing(self, app, db, seed_user, seed_periods):
-        """Bad parent_user_id_attr name returns None instead of crashing."""
-        with app.test_request_context():
-            login_user(seed_user["user"])
-            txn = self._create_transaction(seed_user, seed_periods[0])
-            result = get_owned_via_parent(
-                Transaction, txn.id, "pay_period",
-                parent_user_id_attr="nonexistent",
-            )
-            assert result is None
-
-
-class TestFreshLoginRequiredMisuse:
-    """``fresh_login_required`` MUST be called with parentheses.
-
-    Without the runtime guard, a developer who writes
-    ``@fresh_login_required`` (no parens) would silently bind the
-    view function as ``max_age_minutes`` -- the wrapper would then
-    call ``timedelta(minutes=<view_function>)`` on the first request,
-    surfacing as a confusing TypeError far from the actual mistake.
-    The guard catches the misuse at decoration time so the error
-    points directly at the bad source line.
+    Args:
+        sequence: The id sequence to restart, schema-qualified
+            (``"budget.transactions_id_seq"``).
+        row_id: The id the next row built from *sequence* takes.
     """
-
-    def test_no_parens_misuse_raises_typeerror(self):
-        """Calling without parens (passing a function) raises TypeError."""
-        def fake_view():
-            """Fake view function used to trigger the misuse."""
-            return "fake-view-body"
-
-        with pytest.raises(TypeError, match="parentheses"):
-            fresh_login_required(fake_view)
-
-    def test_parens_with_no_args_works(self):
-        """``@fresh_login_required()`` returns a usable decorator.
-
-        Smoke test that the documented call form -- empty parens --
-        produces a decorator that wraps a view without raising.
-        """
-        decorator = fresh_login_required()
-
-        @decorator
-        def view():
-            """Fake view function."""
-            return "ok"
-
-        # Just verify the wrap succeeded and the wrapper is callable;
-        # behavior is exercised in the integration tests in
-        # ``tests/test_adversarial/test_step_up.py``.
-        assert callable(view)
-
-    def test_explicit_max_age_works(self):
-        """``@fresh_login_required(max_age_minutes=N)`` is accepted."""
-        decorator = fresh_login_required(max_age_minutes=10)
-
-        @decorator
-        def view():
-            """Fake view function."""
-            return "ok"
-
-        assert callable(view)
-
-
-class TestFreshLoginRequiredDecorator:
-    """The decorator allows or redirects based on ``_fresh_login_at``.
-
-    Tests use a tiny throwaway Flask app rather than the project's
-    full app so the decorator is exercised in isolation -- a
-    regression in any other middleware (CSRF, login_required,
-    rate-limiting) cannot mask a regression in the decorator
-    itself.
-    """
-
-    def _make_test_app(self):
-        """Build a minimal Flask app with one decorated test route.
-
-        The route is registered without ``login_required`` so the
-        test can drive ``_fresh_login_at`` manipulation directly via
-        ``session_transaction`` without first having to log in via
-        a full ``/login`` round-trip.
-        """
-        app = Flask(__name__)
-        app.config["SECRET_KEY"] = "test-key-for-fresh-login-decorator-tests"
-        app.config["FRESH_LOGIN_MAX_AGE_MINUTES"] = 5
-
-        # Register a fake auth.reauth endpoint so url_for inside the
-        # decorator can resolve it.  The decorator does not actually
-        # call the view, only generates a URL pointing at it.
-        bp = Blueprint("auth", __name__)
-
-        @bp.route("/reauth")
-        def reauth():
-            """Fake reauth view; only here so url_for resolves."""
-            return "fake-reauth"
-
-        app.register_blueprint(bp)
-
-        @app.route("/decorated", methods=["POST"])
-        @fresh_login_required()
-        def decorated():
-            """Decorated test endpoint; returns marker on success."""
-            return "decorated-body"
-
-        @app.route("/decorated-strict", methods=["POST"])
-        @fresh_login_required(max_age_minutes=1)
-        def decorated_strict():
-            """Decorated test endpoint with explicit 1-min window."""
-            return "strict-body"
-
-        return app
-
-    def test_fresh_session_passes(self):
-        """A fresh ``_fresh_login_at`` lets the request through."""
-        app = self._make_test_app()
-        client = app.test_client()
-        with client.session_transaction() as sess:
-            sess[FRESH_LOGIN_AT_KEY] = (
-                datetime.now(timezone.utc).isoformat()
-            )
-
-        resp = client.post("/decorated")
-        assert resp.status_code == 200
-        assert resp.data == b"decorated-body"
-
-    def test_missing_fresh_login_redirects(self):
-        """A missing ``_fresh_login_at`` redirects to /reauth."""
-        app = self._make_test_app()
-        client = app.test_client()
-
-        resp = client.post("/decorated")
-        assert resp.status_code == 302
-        assert "/reauth" in resp.headers.get("Location", "")
-
-    def test_stale_fresh_login_redirects(self):
-        """A stale ``_fresh_login_at`` redirects to /reauth."""
-        app = self._make_test_app()
-        client = app.test_client()
-        with client.session_transaction() as sess:
-            sess[FRESH_LOGIN_AT_KEY] = (
-                datetime.now(timezone.utc) - timedelta(minutes=10)
-            ).isoformat()
-
-        resp = client.post("/decorated")
-        assert resp.status_code == 302
-        assert "/reauth" in resp.headers.get("Location", "")
-
-    def test_explicit_max_age_overrides_config(self):
-        """A view-level ``max_age_minutes`` overrides app config.
-
-        ``decorated_strict`` declares ``max_age_minutes=1``.  A
-        2-minute-old fresh-login passes the config-default 5-minute
-        window but must FAIL the explicit 1-minute window.
-        """
-        app = self._make_test_app()
-        client = app.test_client()
-        with client.session_transaction() as sess:
-            sess[FRESH_LOGIN_AT_KEY] = (
-                datetime.now(timezone.utc) - timedelta(minutes=2)
-            ).isoformat()
-
-        # Default-window endpoint: 2 min < 5 min, passes.
-        resp = client.post("/decorated")
-        assert resp.status_code == 200
-
-        # Strict endpoint: 2 min > 1 min, redirects.
-        resp = client.post("/decorated-strict")
-        assert resp.status_code == 302
-
-    def test_htmx_request_returns_204_with_hx_redirect(self):
-        """HTMX requests get ``204 + HX-Redirect``, not 302.
-
-        See the integration test in ``test_step_up.py`` for the
-        rationale: a 302 would render /reauth's HTML into whatever
-        fragment slot the original request targeted.
-        """
-        app = self._make_test_app()
-        client = app.test_client()
-
-        resp = client.post("/decorated", headers={"HX-Request": "true"})
-        assert resp.status_code == 204
-        assert "HX-Redirect" in resp.headers
-        assert "/reauth" in resp.headers["HX-Redirect"]
-        assert resp.data == b""
-
-    def test_malformed_fresh_login_treated_as_stale(self):
-        """A non-ISO-8601 ``_fresh_login_at`` is treated as stale.
-
-        Fail-closed for tampered cookies -- matches the policy of
-        ``_idle_session_is_fresh`` and ``_mfa_pending_is_fresh``.
-        Without this, a tampered cookie would 500 the request via
-        a ``ValueError`` from ``fromisoformat``.
-        """
-        app = self._make_test_app()
-        client = app.test_client()
-        with client.session_transaction() as sess:
-            sess[FRESH_LOGIN_AT_KEY] = "not-an-iso-timestamp"
-
-        resp = client.post("/decorated")
-        assert resp.status_code == 302
-        assert "/reauth" in resp.headers.get("Location", "")
-
-    def test_naive_fresh_login_treated_as_stale(self):
-        """A timezone-naive ``_fresh_login_at`` is treated as stale.
-
-        Naive datetimes raise ``TypeError`` on the timezone-aware
-        subtraction.  Reject explicitly so the failure mode is
-        consistent with the malformed case.
-        """
-        app = self._make_test_app()
-        client = app.test_client()
-        with client.session_transaction() as sess:
-            sess[FRESH_LOGIN_AT_KEY] = (
-                datetime.now().replace(tzinfo=None).isoformat()
-            )
-
-        resp = client.post("/decorated")
-        assert resp.status_code == 302
-
-    def test_future_dated_fresh_login_treated_as_fresh(self):
-        """A future-dated ``_fresh_login_at`` is treated as fresh.
-
-        Mirrors ``_idle_session_is_fresh``: a clock jump (NTP
-        correction, manual adjustment, VM resume) must not silently
-        force every active session through /reauth.  An attacker who
-        forged a future-dated value would already need ``SECRET_KEY``,
-        at which point the future-date check adds no defensive value
-        beyond the cookie signature itself.
-
-        This is the INVERSE of ``_mfa_pending_is_fresh`` (commit
-        C-08), which DOES reject future-dated -- that gate is
-        single-use and the strict-rejection cost is one extra
-        password retry, vs. a 30-minute window of being bumped
-        through /reauth on every request here.
-        """
-        app = self._make_test_app()
-        client = app.test_client()
-        with client.session_transaction() as sess:
-            sess[FRESH_LOGIN_AT_KEY] = (
-                datetime.now(timezone.utc) + timedelta(hours=1)
-            ).isoformat()
-
-        resp = client.post("/decorated")
-        assert resp.status_code == 200, (
-            "Future-dated _fresh_login_at must be accepted; "
-            "rejecting it would log every user out after a clock "
-            "jump."
-        )
-
-    def test_redirect_includes_next_param(self):
-        """The /reauth URL carries the original request URL as ``next``."""
-        app = self._make_test_app()
-        client = app.test_client()
-
-        resp = client.post("/decorated")
-        location = resp.headers.get("Location", "")
-        assert "next=" in location, (
-            "Decorator must include the original URL as ``next`` so "
-            "/reauth can return the user there after success.  "
-            f"Got Location={location!r}."
-        )
-
-
-class _AuthHelpersLogCapture:
-    """Context manager that captures records on the auth_helpers logger.
-
-    The helpers emit on ``app.utils.auth_helpers``; capturing on that
-    specific logger keeps the assertion targeted -- a new event from
-    an unrelated module cannot accidentally satisfy the test.
-    """
-
-    def __init__(self, level=logging.DEBUG):
-        self._logger = logging.getLogger("app.utils.auth_helpers")
-        self._level = level
-        self.records: list[logging.LogRecord] = []
-        self._handler = logging.Handler()
-        self._handler.emit = lambda record: self.records.append(record)
-        self._prior_level = None
-        self._prior_propagate = None
-
-    def __enter__(self):
-        self._prior_level = self._logger.level
-        self._prior_propagate = self._logger.propagate
-        self._logger.addHandler(self._handler)
-        self._logger.setLevel(self._level)
-        # Disable propagation so the captured records do not also fire
-        # on parent loggers (the project's root JSON handler would
-        # spam stdout during the test).
-        self._logger.propagate = False
-        return self
-
-    def __exit__(self, *exc):
-        self._logger.removeHandler(self._handler)
-        self._logger.setLevel(self._prior_level)
-        self._logger.propagate = self._prior_propagate
-
-    def find(self, event_name):
-        """Return the first record whose ``event`` field matches *event_name*."""
-        for record in self.records:
-            if getattr(record, "event", None) == event_name:
-                return record
-        return None
+    db.session.execute(
+        text("SELECT setval(CAST(:seq AS regclass), :v, false)"),
+        {"seq": sequence, "v": row_id},
+    )
 
 
 class TestAccessDeniedLogging:
@@ -509,9 +102,27 @@ class TestAccessDeniedLogging:
         is WARNING (not INFO like the missing-PK case).
         """
         with app.test_request_context("/some/path"):
-            login_user(seed_user["user"])
+            # The probed account is built here, after a stated sequence restart
+            # (``_the_next_row_takes_id`` says why), not taken from ``second_user``: the
+            # fixture's account and its owner are both id 2.
+            probed_account_id = 9_001
+            _the_next_row_takes_id("budget.accounts_id_seq", probed_account_id)
+            theirs = create_account_of_type(
+                second_user, db.session, "Checking", "Probed Checking",
+            )
+            requester = seed_user["user"]
+            ids = {
+                "the probed account": theirs.id,
+                "its owner": theirs.user_id,
+                "the requester": requester.id,
+            }
+            assert theirs.id == probed_account_id, f"The sequence restart did not take: {ids}"
+            assert len(set(ids.values())) == len(ids), (
+                f"The ids the denial could name are not pairwise distinct: {ids}"
+            )
+            login_user(requester)
             with _AuthHelpersLogCapture() as cap:
-                result = get_or_404(Account, second_user["account"].id)
+                result = get_or_404(Account, theirs.id)
 
         assert result is None
         record = cap.find(EVT_ACCESS_DENIED_CROSS_USER)
@@ -524,7 +135,7 @@ class TestAccessDeniedLogging:
         assert record.category == ACCESS
         assert record.user_id == seed_user["user"].id
         assert record.model == "Account"
-        assert record.pk == second_user["account"].id
+        assert record.pk == theirs.id
         assert record.owner_id == second_user["user"].id
         assert record.path == "/some/path"
 
@@ -571,7 +182,6 @@ class TestAccessDeniedLogging:
     ):
         """A cross-user denial through the parent path emits ``access_denied_cross_user``."""
         # Build a transaction owned by the second user.
-        from app.services import pay_period_write  # noqa: WPS433
         periods2 = record_paydays_across_a_hole(
             user_id=second_user["user"].id,
             first_payday=date(2026, 3, 1),
@@ -619,9 +229,6 @@ class TestAccessDeniedLogging:
         forensic event lands even though the response shape mirrors
         a true 404.
         """
-        from app import ref_cache  # noqa: WPS433
-        from app.enums import RoleEnum  # noqa: WPS433
-
         # Build a companion user attached to the seed user.
         from app.models.user import User  # noqa: WPS433
         companion_role_id = ref_cache.role_id(RoleEnum.COMPANION)
@@ -741,7 +348,6 @@ class TestAccessDeniedLogging:
         deep-hunt #85: the owner-path denial was silent before.  WARNING
         level matches the sibling get_or_404 cross-user event.
         """
-        from app.services import pay_period_write  # noqa: WPS433
         with app.test_request_context("/some/path"):
             login_user(seed_user["user"])
             periods2 = record_paydays_across_a_hole(
@@ -751,7 +357,25 @@ class TestAccessDeniedLogging:
                 rhythm=rhythm_of(14),
             )
             db.session.flush()
+            probed_row_id = 9_001
+            _the_next_row_takes_id("budget.transactions_id_seq", probed_row_id)
             txn = self._make_owned_txn(db, second_user, periods2[0])
+            requester = seed_user["user"]
+            # Precondition: the requester is an OWNER (its ``role_id``, the one read the
+            # door branches on), so the owner branch refuses the row, and an owner acts on
+            # its own data (``User.data_owner_id``, the door's ``acts_on``), so the owner it
+            # acts for IS the requester and the ids below hold that id once.
+            assert requester.role_id != ref_cache.role_id(RoleEnum.COMPANION)
+            assert requester.data_owner_id == requester.id
+            ids = {
+                "the probed row": txn.id,
+                "the row's owner": txn.user_id,
+                "the requester, the owner it acts for": requester.id,
+            }
+            assert txn.id == probed_row_id, f"The sequence restart did not take: {ids}"
+            assert len(set(ids.values())) == len(ids), (
+                f"The ids the denial could name are not pairwise distinct: {ids}"
+            )
 
             with _AuthHelpersLogCapture() as cap:
                 result = get_accessible_transaction(txn.id)
@@ -781,10 +405,28 @@ class TestAccessDeniedLogging:
         so this isolates the ``not visible_to_companion`` denial.
         """
         with app.test_request_context("/some/path"):
+            probed_row_id = 9_001
+            _the_next_row_takes_id("budget.transactions_id_seq", probed_row_id)
             # Ad-hoc txn owned by seed_user -> companion_visible False.
             txn = self._make_owned_txn(db, seed_user, seed_periods[0])
             assert txn.visible_to_companion is False
-            login_user(seed_companion["user"])
+            companion = seed_companion["user"]
+            # Precondition: the requester is a COMPANION (its ``role_id``, the one read the
+            # door branches on) acting for the row's own owner (``User.data_owner_id``, the
+            # door's ``acts_on``), so only the visibility arm refuses the row, and the owner
+            # it acts for IS the row's owner: the ids below hold that id once.
+            assert companion.role_id == ref_cache.role_id(RoleEnum.COMPANION)
+            assert companion.data_owner_id == txn.user_id
+            ids = {
+                "the probed row": txn.id,
+                "the row's owner, the owner the companion acts for": txn.user_id,
+                "the companion": companion.id,
+            }
+            assert txn.id == probed_row_id, f"The sequence restart did not take: {ids}"
+            assert len(set(ids.values())) == len(ids), (
+                f"The ids the denial could name are not pairwise distinct: {ids}"
+            )
+            login_user(companion)
             with _AuthHelpersLogCapture() as cap:
                 result = get_accessible_transaction(txn.id)
 
@@ -877,33 +519,45 @@ class TestAccessDeniedLogging:
 
 
 class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
-    """Another owner's DELETED row, probed by a stranger or a companion: a denial, not "not found".
+    """Deleted-row probes, one case per denial arm: owner, companion visibility, companion owner.
 
-    ``get_accessible_transaction_or_deleted`` asks the not-found predicate
+    Each case names another owner's DELETED row, and a different arm of
+    ``get_accessible_transaction_or_deleted`` refuses it: the owner check refuses a stranger
+    (``owner_id != acts_on``, ``test_a_strangers_probe``); the companion check refuses the
+    owner's companion a HIDDEN row (``not txn.visible_to_companion``,
+    ``test_a_companions_probe``) and another household's companion a companion-VISIBLE row
+    (its ``owner_id != acts_on``, ``test_a_companions_probe_of_another_household``).
+    The door asks the not-found predicate
     (``is_not_found_to_transaction_doors``) AFTER both access branches, and its
-    comment says why: either probe is an access denial first (``access_denied_cross_user``
+    comment says why: every such probe is an access denial first (``access_denied_cross_user``
     at WARNING, the F-144 contract) and "not found" second, so the predicate never runs
     and logs nothing.  Measured at plan step ``balance:X-bi-6-4d-3`` (ruling **R-BAL300**):
     evaluating the predicate ahead of the access branches, every return unchanged, logged
     the row as ``resource_not_found`` before the denial and failed no test that captures a
-    log, for either requester (for the companion, at the deletion's parent too).  These two
+    log, for either requester (for the companion, at the deletion's parent too).  These
     cases are that grade.  Moving the whole block ahead also hands the requester the row's
-    NAME: both cases fail on that too, and ``TestNothingLeaksThroughTheName``
+    NAME: every case fails on that too, and ``TestNothingLeaksThroughTheName``
     (``tests/test_routes/test_cc5_4a4_hidden_row_doors.py``) grades the name at every
     surface.
     """
 
     @staticmethod
     def _probe(requester, row):
-        """*requester* asks the door for *row*: ``(its answer, the auth_helpers records)``."""
+        """*requester* asks the door for *row*: ``(its answer, the auth_helpers capture)``."""
         login_user(requester)
         with _AuthHelpersLogCapture() as cap:
             answer = get_accessible_transaction_or_deleted(row.id)
         return answer, cap
 
     @staticmethod
-    def _is_the_denial_alone(answer, cap):
-        """Assert the door answered None, logged ONE WARNING denial and no "not found"."""
+    def _is_the_denial_alone(requester, answer, cap):
+        """Assert the door answered None, denied *requester* once at WARNING, logged no not-found.
+
+        ``None`` is also the no-name assertion: a HiddenRow is the only refusal that carries a
+        row's name.  The denial's ``user_id`` tells the requester from an anonymous principal,
+        which a login that silently failed would leave probing, and which logs the same records.
+        Returns the denial, for a case that reads more of it.
+        """
         seen = [(r.levelname, getattr(r, "event", None)) for r in cap.records]
         assert answer is None, (
             f"The requester was answered {answer!r}, not None; records: {seen}"
@@ -915,9 +569,14 @@ class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
         assert [r.levelno for r in denials] == [logging.WARNING], (
             f"Expected exactly one WARNING access denial; records: {seen}"
         )
+        assert denials[0].user_id == requester.id, (
+            f"The denial names user {denials[0].user_id!r}, not the requester "
+            f"{requester.id}; records: {seen}"
+        )
         assert cap.find(EVT_RESOURCE_NOT_FOUND) is None, (
             f"The requester's probe logged the row as not found; records: {seen}"
         )
+        return denials[0]
 
     def test_a_strangers_probe(self, app, seed_user, seed_second_user):
         """seed_user names another user's deleted $45.00 Pool: one WARNING, no "not found"."""
@@ -927,13 +586,16 @@ class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
                 amount="45.00", name="Pool",
             )
             # Precondition, read back after the builder's commit: a DELETED
-            # row of another user's, so the probe below is a stranger's.
+            # row of another user's, and a requester that is not a companion
+            # (its ``role_id``, the one read the door branches on; the owner
+            # check is the other branch), so the probe below is a stranger's.
             assert theirs.is_deleted is True
             assert theirs.user_id == seed_second_user["user"].id
             assert theirs.user_id != seed_user["user"].id
+            assert seed_user["user"].role_id != ref_cache.role_id(RoleEnum.COMPANION)
             answer, cap = self._probe(seed_user["user"], theirs)
 
-        self._is_the_denial_alone(answer, cap)
+        self._is_the_denial_alone(seed_user["user"], answer, cap)
 
     def test_a_companions_probe(self, app, seed_user, seed_companion):
         """The owner's deleted $70.00 Massage, never shown to the companion: the same denial."""
@@ -952,7 +614,56 @@ class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
             assert row.is_deleted is True
             answer, cap = self._probe(companion, row)
 
-        self._is_the_denial_alone(answer, cap)
+        self._is_the_denial_alone(companion, answer, cap)
+
+    def test_a_companions_probe_of_another_household(
+        self, app, seed_user, seed_second_user, seed_companion,
+    ):
+        """seed_user's companion names another owner's deleted $45.00 Pool, shown to companions."""
+        with app.test_request_context("/some/path"):
+            # The probed row's id is set by a stated sequence restart, not left to the
+            # order the fixtures build in (``_the_next_row_takes_id`` says why):
+            # left alone, the row and the owner this companion acts for are both id 1.
+            probed_row_id = 9_001
+            _the_next_row_takes_id("budget.transactions_id_seq", probed_row_id)
+            theirs = a_deleted_occurrence(
+                db.session, seed_second_user, seed_second_user["bootstrap_period"],
+                amount="45.00", name="Pool", companion_visible=True,
+            )
+            companion = seed_companion["user"]
+            # Precondition, read back after the builder's commit: the requester is a
+            # COMPANION (its ``role_id``, the one read the door branches on), the row is
+            # companion-VISIBLE and DELETED, and its owner is not the owner this
+            # companion acts for (``User.data_owner_id``), so only the companion check's
+            # owner arm refuses it.
+            assert companion.role_id == ref_cache.role_id(RoleEnum.COMPANION)
+            assert companion.data_owner_id == seed_user["user"].id
+            assert companion.data_owner_id != theirs.user_id
+            assert theirs.visible_to_companion is True
+            assert theirs.is_deleted is True
+            # And the restart took: the row holds the id it set, apart from all three users'.
+            ids = {
+                "the probed row": theirs.id,
+                "the row's owner": theirs.user_id,
+                "the owner the companion acts for": companion.data_owner_id,
+                "the companion": companion.id,
+            }
+            assert theirs.id == probed_row_id, f"The sequence restart did not take: {ids}"
+            assert len(set(ids.values())) == len(ids), (
+                f"The ids the denial could name are not pairwise distinct: {ids}"
+            )
+            answer, cap = self._probe(companion, theirs)
+
+        denial = self._is_the_denial_alone(companion, answer, cap)
+        # The F-144 trail names the household whose row was probed, and the row: the
+        # owner the denial logs is the row's, not the one this companion acts for.
+        assert denial.owner_id == theirs.user_id, (
+            f"The denial names owner {denial.owner_id!r}, not the probed row's owner "
+            f"{theirs.user_id}"
+        )
+        assert denial.pk == theirs.id, (
+            f"The denial names row {denial.pk!r}, not the probed row {theirs.id}"
+        )
 
 
 class TestRequireOwnerFailsClosed:

@@ -24,7 +24,6 @@ from tests._test_helpers import (
     one_off_row_of,
     open_books_before_the_first_assertion,
     settlement_if_settling,
-    shadow_amount,
     transfer_side_settle_day,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -286,7 +285,7 @@ class TestUnmarkCreditStateMachine:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Transfer-shadow propagation: route exception handling
+# Transfer legs: route exception handling
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -294,16 +293,21 @@ class TestTransferShadowMarkDoneStateMachine:
     """``transfer_service.update_transfer`` already enforces the state
     machine (commit C-21).  These tests confirm the route layer's
     exception handling translates the resulting ValidationError into
-    a clean 400 instead of a 500 when mark_done is invoked on a
-    transfer shadow whose parent transfer is in a non-mutable state."""
+    a clean 400 instead of a 500 when mark_done is invoked from a
+    transfer's grid leg while the transfer is in a non-mutable state.
 
-    def _create_transfer_with_shadows(
+    The class name is history: each case reached its leg through a shadow
+    (twin) row until plan step ``balance:X-bi-6-4d-3``, and a transfer
+    stores no leg row since migration 82f7 (ruling **R-BAL167** class 1)."""
+
+    def _create_transfer(
         self, app, db_session, seed_user, seed_periods_today,
     ):
         """Helper -- builds a savings account, the Transfers categories
-        the service requires, and a Projected transfer with two
-        shadows.  Returns the parent transfer so tests can drive
-        status changes through it.
+        the service requires, and a Projected transfer.  Returns the
+        transfer so tests can drive status changes through it.  Named
+        ``_create_transfer_with_shadows`` until plan step
+        ``balance:X-bi-6-4d-3``.
         """
         from app.models.category import Category
         from app.models.ref import AccountType
@@ -377,10 +381,13 @@ class TestTransferShadowMarkDoneStateMachine:
         The refusal is graded on the TRANSFER, the one status, and on the
         leg's side, which holds no dated payment record; it was graded on the
         shadow's status until plan step ``balance:X-bi-6-4d-2`` stopped keeping
-        one (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+        one (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  The leg
+        is the transfer's from-side; it was the first shadow row the session
+        returned until plan step ``balance:X-bi-6-4d-3``, which deleted the
+        twins (ruling R-BAL167 class 1).
         """
         with app.app_context():
-            xfer = self._create_transfer_with_shadows(
+            xfer = self._create_transfer(
                 app, db.session, seed_user, seed_periods_today,
             )
             from app.services import transfer_service
@@ -391,26 +398,22 @@ class TestTransferShadowMarkDoneStateMachine:
             )
             db.session.commit()
 
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .first()
-            )
+            leg_account_id = xfer.from_account_id
             resp = auth_client.post(
                 f"/transfers/instance/{xfer.id}/mark-done",
-                data={"leg_account_id": str(shadow.account_id)},
+                data={"leg_account_id": str(leg_account_id)},
             )
             assert resp.status_code == 400
             html = resp.data.decode()
             assert "Invalid transfer status transition" in html
-            assert f'data-leg-account-id="{shadow.account_id}"' in html
+            assert f'data-leg-account-id="{leg_account_id}"' in html
 
             db.session.expire_all()
             assert db.session.get(Transfer, xfer.id).status_id == (
                 ref_cache.status_id(StatusEnum.CANCELLED)
             )
             assert transfer_side_settle_day(
-                db.session, xfer.id, shadow.account_id,
+                db.session, xfer.id, leg_account_id,
             ) is None
 
     def test_cancel_on_paid_transfer_from_its_leg_returns_400(
@@ -418,9 +421,11 @@ class TestTransferShadowMarkDoneStateMachine:
     ):
         """Cancel on a Paid transfer from its grid LEG returns 400 (Done ->
         Cancelled is illegal under the state machine).  Re-expressed on the
-        transfer door at plan step balance:X-bi-6-1 (ruling R-BAL87)."""
+        transfer door at plan step balance:X-bi-6-1 (ruling R-BAL87); its leg
+        is the from-side since plan step balance:X-bi-6-4d-3 deleted the shadow
+        row it was reached through (ruling R-BAL167 class 1)."""
         with app.app_context():
-            xfer = self._create_transfer_with_shadows(
+            xfer = self._create_transfer(
                 app, db.session, seed_user, seed_periods_today,
             )
             from app.services import transfer_service
@@ -431,17 +436,13 @@ class TestTransferShadowMarkDoneStateMachine:
             )
             db.session.commit()
 
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .first()
-            )
+            leg_account_id = xfer.from_account_id
             resp = auth_client.post(
                 f"/transfers/instance/{xfer.id}/cancel",
-                data={"leg_account_id": str(shadow.account_id)},
+                data={"leg_account_id": str(leg_account_id)},
             )
             assert resp.status_code == 400
-            assert f'data-leg-account-id="{shadow.account_id}"' in resp.data.decode()
+            assert f'data-leg-account-id="{leg_account_id}"' in resp.data.decode()
 
     def test_rejected_transfer_update_rolls_back_staged_mutations(
         self, app, seed_user, seed_periods_today,
@@ -457,12 +458,14 @@ class TestTransferShadowMarkDoneStateMachine:
         rollback under test -- and which had no rollback control of its own
         until this re-expression.
 
-        transfer_service.update_transfer mutates xfer.amount and both
-        shadows' estimated_amount in-memory BEFORE the state-machine
-        transition check raises ValidationError, so without the
-        except-branch rollback those dirty mutations sit on the session and
-        any later commit in the same request would flush the half-applied
-        change (transfer invariant 3).  Drive the path directly (a
+        transfer_service.update_transfer mutates the transfer's amount
+        in-memory BEFORE the state-machine transition check raises
+        ValidationError, so without the except-branch rollback that dirty
+        mutation sits on the session and any later commit in the same request
+        would flush the half-applied change.  It read the shadow's amount
+        beside the transfer's until plan step ``balance:X-bi-6-4d-3``: a
+        transfer stores no leg row since migration 82f7 (ruling **R-BAL167**
+        class 1).  Drive the path directly (a
         route-level test cannot observe this -- per-request teardown
         discards the session either way) and assert the session is clean
         after the 400.
@@ -481,7 +484,7 @@ class TestTransferShadowMarkDoneStateMachine:
 
         with app.test_request_context():
             login_user(seed_user["user"])
-            xfer = self._create_transfer_with_shadows(
+            xfer = self._create_transfer(
                 app, db.session, seed_user, seed_periods_today,
             )
             # The transfer STAYS Projected, and that is deliberate: the row
@@ -505,11 +508,6 @@ class TestTransferShadowMarkDoneStateMachine:
             # is the only thing that unstages it.
             assert not db.session.dirty  # clean baseline before the PATCH
 
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .first()
-            )
             # PATCH carries an amount change AND an illegal transition
             # (transfer projected -> credit): update_transfer stages the
             # amount mutation, then verify_transition raises ValidationError.
@@ -522,10 +520,10 @@ class TestTransferShadowMarkDoneStateMachine:
                 amount_authored=True,
             )
             assert result is not None and result[1] == 400
-            # The except branch must have rolled back the staged xfer +
-            # shadow mutations.
+            # The except branch must have rolled back the staged transfer
+            # mutation.
             assert not db.session.dirty, (
-                f"rejected shadow update left mutations staged: "
+                f"rejected transfer update left mutations staged: "
                 f"{db.session.dirty}"
             )
             # **AND A LATER COMMIT WRITES NOTHING**, which is the assertion
@@ -548,11 +546,7 @@ class TestTransferShadowMarkDoneStateMachine:
             # route did.
             db.session.commit()
             db.session.expire_all()
-            reread_shadow = db.session.get(Transaction, shadow.id)
             reread_xfer = db.session.get(Transfer, xfer.id)
-            assert shadow_amount(reread_shadow) == Decimal("100.00"), (
-                "a commit after the refused PATCH wrote the shadow's amount"
-            )
             assert reread_xfer.amount == Decimal("100.00"), (
                 "a commit after the refused PATCH wrote the transfer's amount"
             )
