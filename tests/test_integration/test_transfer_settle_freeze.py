@@ -324,7 +324,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
     # ``_update._fields_the_settle_left`` and ``_apply_remaining_fields``
     # document the same removal on the app side.  The act that DOES release a
     # record is leaving the settled band, graded by
-    # ``test_transfer_service.TestUpdateTransfer.
+    # ``test_transfer_service.test_the_edit_door.TestUpdateTransfer.
     # test_a_REVERT_is_what_clears_a_settled_transfers_figure``.
 
     def test_is_override_in_the_SAME_call_suppresses_the_freeze(

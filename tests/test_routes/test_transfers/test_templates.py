@@ -806,7 +806,7 @@ class TestUnarchiveUsesService:
         (the database refuses one), and the re-sync is an arm leaf 3b
         deletes.  What the door does after 3b that the route could not do
         itself is ``assert_restorable``'s archived-endpoint refusal (F-164),
-        graded at the service, in ``test_transfer_service.py``'s
+        graded at the service, in ``test_transfer_service/test_the_restore_door.py``'s
         ``TestRestoreTransfer``, not through this route.  Re-expressed by the
         coordinator's ruling (option A, R-BAL207, ruling R-BAL167 class 1,
         plan step balance:X-bi-6-4d-3).

@@ -156,7 +156,7 @@ class TestBothSidesShowTheTransfer:
         joined the table at plan step ``balance:X-bi-6-4d-3``'s checkpoint
         2e-2b-1b-2: until then both rows carried a category, and a side that
         answered one for a transfer filed under none failed only
-        ``test_transfer_service.py``'s
+        ``test_transfer_service/test_the_edit_door.py``'s
         ``test_a_category_cleared_to_none_leaves_the_transfer_under_none``,
         whose two side reads were dropped there.  None of the three is
         settled: a settled status writes the payment records this case is
@@ -363,7 +363,7 @@ class TestALegsDisplayProjections:
         ``TestATransfersPaymentIsNamedByItsLeg`` read the expense side's
         label alone.
 
-        ``test_transfer_service.py``'s ``test_with_custom_name`` and
+        ``test_transfer_service/test_the_create_door.py``'s ``test_with_custom_name`` and
         ``test_with_template_id`` asked a created transfer's two sides these
         questions until plan step ``balance:X-bi-6-4d-3``'s checkpoint
         2e-2b-1b-2, which moved them here (ruling R-BAL290 part 1); the
@@ -442,7 +442,7 @@ class TestALegsDisplayProjections:
         corners a saved transfer passes through on its way to being paid.
         First still Projected, no side carrying a record: the state a
         generated transfer is born in and keeps until it is settled or
-        cancelled, and the state ``test_transfer_service.py``'s
+        cancelled, and the state ``test_transfer_service/test_the_create_door.py``'s
         ``test_with_template_id`` asked each side in until plan step
         ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2.  Then settled, each
         side carrying its RECORD (its payment).  Every leg the grid draws in

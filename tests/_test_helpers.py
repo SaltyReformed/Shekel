@@ -10629,7 +10629,7 @@ def write_past_the_amount_seam(row, value):
     invariant under a rival figure (``test_amount_source.py``), and the two
     that prove the database still refuses the drift a transfer shadow could
     once hold (``test_a_transfer_shadow_is_derived.py``,
-    ``test_transfer_service.py``).  Each is constructing the shape
+    ``test_transfer_service/``).  Each is constructing the shape
     :class:`~app.models.amount_ownership.AmountOwnership` has no member for, so
     none of them can go through the seam.
 

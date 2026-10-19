@@ -52,7 +52,7 @@ def _reread(xfer_id):
 
     What a door WROTE is what the database holds after the commit, not what
     the session's in-memory object says, so a case reads the row this returns
-    (ruling R-BAL290 part 1), as ``test_transfer_service.py``'s helper of the
+    (ruling R-BAL290 part 1), as ``test_transfer_service/_helpers.py``'s helper of the
     same name does.  The commit writes whatever a REFUSED door staged, so a
     refusal case reads what the session would have written.  The cases read
     the transfer's two legs, by side, until plan step
