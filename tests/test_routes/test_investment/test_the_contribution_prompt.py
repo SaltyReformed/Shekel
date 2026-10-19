@@ -244,7 +244,9 @@ class TestContributionPrompt:
         savings = create_account_of_type(
             seed_user, db.session, "Savings", "Savings",
         )
-        # Committed before the request, which cannot see an uncommitted row.
+        # Committed like the helpers' rows above.  Only a GET or HEAD refuses
+        # to start on a transaction that has already written
+        # (app/db_transaction.py); this POST would see the row merely flushed.
         db.session.commit()
 
         auth_client.post(
@@ -275,8 +277,8 @@ class TestContributionPrompt:
             f"({sorted(period.id for period in seed_periods_today)}).  Where "
             "that window STARTS is open ledger row recurrence:D34: a changed "
             "start MOVES MONEY and is the developer's decision, not a test "
-            "edit (CLAUDE.md rule 5).  A period missing or doubled after the "
-            "start is a cadence or generation regression, not that row"
+            "edit (CLAUDE.md rule 5).  A period missing or doubled at or after "
+            "the start is a cadence or generation regression, not that row"
         )
         assert {
             (

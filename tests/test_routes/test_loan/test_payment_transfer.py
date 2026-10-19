@@ -223,7 +223,9 @@ class TestTransferPrompt:
         savings = create_account_of_type(
             seed_user, db.session, "Savings", "Savings",
         )
-        # Committed before the request, which cannot see an uncommitted row.
+        # Committed like the helpers' rows above.  Only a GET or HEAD refuses
+        # to start on a transaction that has already written
+        # (app/db_transaction.py); this POST would see the row merely flushed.
         db.session.commit()
 
         auth_client.post(
