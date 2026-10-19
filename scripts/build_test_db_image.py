@@ -85,9 +85,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-# The exact postgres build the suite's template is made against.  Kept
-# identical to docker-compose.dev.yml's test-db service: a template built on
-# one PostgreSQL build and cloned on another is not a supported combination.
+# The exact postgres build the suite's template is made against, which every
+# run's cluster then boots as the baked image: a template built on one
+# PostgreSQL build and cloned on another is not a supported combination.
 _BASE_IMAGE = (
     "postgres:18-alpine@sha256:"
     "6c538e7206ea40ff740ef27883529390a690b6ead6ba96b44c67a9f7c638e8fd"

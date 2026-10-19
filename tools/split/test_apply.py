@@ -22,9 +22,13 @@ from tools.split._render import (
 )
 from tools.split._run import pylint_messages
 from tools.split._source import collect_rules, read_module
-from tools.split.conftest import SAMPLE, SOURCE, layout_of
+from tools.split.conftest import SAMPLE, SOURCE, build, layout_of
 
 PACKAGE = "tests/test_area/test_sample"
+
+#: A ``from __future__`` import, and the sample carrying one after its docstring.
+FUTURE = "from __future__ import annotations\n"
+FUTURE_SAMPLE = SAMPLE.replace("\nimport re\n", f"\n{FUTURE}\nimport re\n", 1)
 
 
 def applied(repo: Path) -> Layout:
@@ -101,6 +105,16 @@ class TestTheSampleSplits:
         applied(repo)
         importer = (repo / "tests/test_other.py").read_text(encoding="utf-8")
         assert "from tests.test_area.test_sample._helpers import _make" in importer
+
+    def test_a_future_import_is_carried_by_every_output_and_proves(self, tmp_path):
+        """A source's ``from __future__`` import is repeated in every output, and the proof
+        passes.  Read as a name each output must read, it failed every output ("imports
+        annotations and never reads it"), so no source carrying one could be split."""
+        repo = build(tmp_path, FUTURE_SAMPLE)
+        layout = applied(repo)
+        assert not proof(repo, layout)
+        for module in ("test_first", "test_big_early", "test_big_late", "conftest", "_helpers"):
+            assert FUTURE in text(repo, module), module
 
 
 class TestEveryProofArmFails:
@@ -221,6 +235,17 @@ class TestEveryProofArmFails:
         rewrite(repo, "_helpers", '"""The big class, which is split across two parts."""',
                 '"""The big class."""')
         assert any("not the class's docstring and members" in f for f in proof(repo, layout))
+
+    def test_a_future_import_dropped_from_a_part(self, tmp_path):
+        """A part written without the source's ``from __future__`` import is refused, by that
+        arm alone of the static proof's: nothing reads ``annotations``, so no other one can
+        see it."""
+        repo = build(tmp_path, FUTURE_SAMPLE)
+        layout = applied(repo)
+        rewrite(repo, "test_first", f"{FUTURE}\n", "")
+        assert proof(repo, layout) == [
+            "test_first: carries the __future__ statements [], not the source's "
+            "[(('annotations', None),)]"]
 
     def test_an_importer_left_pointing_at_the_source(self, repo):
         """An importer reverted to the old module path is still importing the source."""
