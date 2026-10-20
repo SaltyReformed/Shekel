@@ -346,3 +346,14 @@ def test_a_request_with_no_query_is_new_once_per_screen_and_screens_are_apart():
     assert asked.new(("a", (("id", 2),), False), _request("/a/2?day=2026-01-02")) is True
     assert asked.new(("a", (("id", 2),), True), _request("/a/2?day=2026-01-02")) is True
     assert asked.new(("a", (("id", 2),), True), _request("/a/2?day=2026-01-02")) is False
+
+
+def test_a_year_with_its_month_is_one_month_new_while_that_month_is():
+    """``balance:R-BAL343``: a ``year`` with its ``month`` names ONE month, as THE BOUND reads
+    it, so a month whose year (a year view) and whose month (another year's) were each carried
+    apart is new; that month again is not."""
+    asked = frontier.Asked()
+    assert asked.new("cal", _request("/cal?view=year&year=2027")) is True
+    assert asked.new("cal", _request("/cal?month=1&view=month&year=2026")) is True
+    assert asked.new("cal", _request("/cal?month=1&view=month&year=2027")) is True
+    assert asked.new("cal", _request("/cal?month=1&view=month&year=2027")) is False

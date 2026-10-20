@@ -56,18 +56,26 @@ on the seeded pages that review read, only the ``required`` one met a template
   (measured 2026-10-20 at Python's default limit: 950 reads);
 * ``hx-vals``: see :func:`_vals` and :func:`_js_string`.
 
-THE RULE (:class:`Asked`; ``balance:R-BAL334``, "Every figure once", and ``balance:R-BAL340``,
-no list kept by hand): a request is followed only when it NAMES SOMETHING NEW, a value under a
-key of its query (:func:`canonical`) that no request followed before it on the same SCREEN
-carried; a request with no query is followed once per screen.  A screen is the app's own URL
-rule (two rules of one view, ``/`` and ``/dashboard``, are two), the ids its path names (an
-account, a loan, a transaction) and whether htmx issues it,
+THE RULE (:class:`Asked`; ``balance:R-BAL334``, "Every figure once", ``balance:R-BAL340``, no
+list kept by hand, and ``balance:R-BAL343``, a month is one value): a request is followed only
+when it NAMES SOMETHING NEW, a value under a key of its query (:func:`canonical`) or a span of
+days its query names (:func:`_dates`, read as THE BOUND reads it, so a ``year`` with its
+``month`` is ONE month), that no request followed before it on the same SCREEN carried; a
+request with no query is followed once per screen.  A screen is the app's own URL rule (two
+rules of one view, ``/`` and ``/dashboard``, are two), the ids its path names (an account, a
+loan, a transaction) and whether htmx issues it,
 since a view answers htmx with a fragment and a link with a page; the crawl probe reads it
-from the side's URL map.  So each scroll position, column count, pay period, transaction and
-statement day is fetched once per screen and per object its path names, never their product,
-and a form like any page.  WHAT IT DOES NOT SEE: a figure shown only where two values meet on
-one screen (the grid at 26 columns from 14 months out) and a display variant (a column swap
-only in one column count).  A request's headers ride with the first of its kind followed.
+from the side's URL map.  So each scroll position, column count, pay period, month,
+transaction and statement day is fetched once per screen and per object its path names, never
+their product, and a form like any page.  WHAT IT DOES NOT SEE: a figure shown only where two
+values meet on one screen (the grid at 26 columns from 14 months out; an object a QUERY names,
+a salary profile's projection at a period another profile's carried, since such an id is a
+value like any other); a display variant (a column swap only in one column count); and, since
+a value is new only against the requests followed BEFORE it, which requests are followed
+depends on the order they are met, so a cut that only reorders a page's links can follow
+another set than base does (the grid's offset 1 at 6 columns, met after offset 1 at 13 and
+offset 0 at 6, is not followed).  A request's headers ride with the first of its kind
+followed.
 
 THE BOUND (:func:`followed`): a request whose query names a date outside the user's
 pay-period span is not followed: an ISO day or month value under any key, and a ``year``
@@ -596,18 +604,20 @@ def followed(request: Request, span: Span | None) -> bool:
 
 class Asked:
     """What one walk has followed, by screen (THE RULE): each value it carried under each key
-    of its query, and each screen followed with no query."""
+    of its query, each span of days its query named, and each screen followed with no query."""
 
     def __init__(self) -> None:
         """Nothing followed yet."""
-        self._named: set[tuple[Hashable, str | None, str | None]] = set()
+        self._named: set[tuple[Hashable, str | None, str | tuple[date, date] | None]] = set()
 
     def new(self, screen: Hashable, request: Request) -> bool:
         """Whether ``request``, of ``screen``, names something no request followed before it
-        did, recording what it names when it does: a value under a key of its query, or, with
-        no query, the screen itself."""
-        named = {(screen, key, value) for key, value
-                 in parse_qsl(urlsplit(request.url).query, keep_blank_values=True)}
+        did, recording what it names when it does: a value under a key of its query, a span of
+        days its query names (:func:`_dates`), or, with no query, the screen itself."""
+        pairs = parse_qsl(urlsplit(request.url).query, keep_blank_values=True)
+        named: set[tuple[Hashable, str | None, str | tuple[date, date] | None]] = {
+            (screen, key, value) for key, value in pairs}
+        named |= {(screen, None, days) for days in _dates(pairs)}
         named = named or {(screen, None, None)}
         if named <= self._named:
             return False

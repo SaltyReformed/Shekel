@@ -4,9 +4,11 @@ s.3 items 2 and 9).
 
 EVERY TABLE IN THE CATALOG, every row, every column.  A table with a primary key is compared
 row by row by that key; one without, or one whose key is not the same on both sides, as a
-multiset of its rows, and the report names it.  ``system.audit_log`` is a multiset of what each
-event wrote and when: never its id or database user, since its ids come from a sequence every
-deploy advances.  Each row is hashed in SQL; only a row that differs is fetched whole.
+multiset of its rows, and the report names it.  ``system.audit_log`` is a multiset of its rows,
+each read whole as every table's is, but never its id or database user
+(:data:`AUDIT_UNCOMPARED`), since its ids come from a sequence every deploy advances: a column a
+cut adds to it is compared like any other.  Each row is hashed in SQL; only a row that differs
+is fetched whole.
 
 THE STAMPS ARE COMPARED, BUT FOR THE ONES A DEPLOY WROTE (``balance:R-BAL331``).  A stamp is a
 timestamp whose default is a read of the server's clock and nothing else, as both sides'
@@ -33,9 +35,12 @@ from tools.rehearsal import bench
 
 #: A table's ``(schema, name)``.
 Table = tuple[str, str]
-#: A row as compared: a table's JSON object, or the audit log's array (:meth:`Reading.image`).
-Image = dict[str, object] | list[object]
+#: A row as compared: its JSON object (:meth:`Reading.image`).
+Image = dict[str, object]
 AUDIT_LOG: Table = ("system", "audit_log")
+#: The audit log's columns never compared (:data:`.rows.NOT_COMPARED` names them): its id and
+#: the database user that wrote it.
+AUDIT_UNCOMPARED = ("id", "db_user")
 #: What a stamp later than the line reads as (:class:`Reading`).
 DEPLOY = "deploy"
 #: The reads of the server's clock a timestamp's default can be, as ``pg_get_expr`` prints
@@ -116,25 +121,26 @@ class Reading:
 
     def parts(self, table: Table) -> list[tuple[str, sql.Composable, sql.Composable]]:
         """What of a row of ``table`` (aliased ``x``) holds stamps, each as the prefix its
-        stamps are named by, a JSON object, and its stamps' names (a ``text[]``): the row
-        itself, when it has stamps; for the audit log, its own clock and the two images of
-        the row each event wrote, whose stamps are those of the table the event names."""
+        stamps are named by, a JSON object, and its stamps' names (a ``text[]``): the row whole
+        (:func:`whole`), when it has stamps; for the audit log, the row whole and the two
+        images of the row each event wrote, whose stamps are those of the table the event
+        names."""
         own = sql.SQL("{}::text[]").format(sql.Literal(list(self.stamps.get(table, ()))))
         if table != AUDIT_LOG:
-            return [("", sql.SQL("to_jsonb(x)"), own)] if self.stamps.get(table) else []
+            return [("", whole(table), own)] if self.stamps.get(table) else []
         audited = sql.SQL(
             "ARRAY(SELECT jsonb_array_elements_text({}::jsonb -> "
             "(x.table_schema || '.' || x.table_name)))").format(sql.Literal(json.dumps(
                 {qualified(stamped): list(names) for stamped, names in self.stamps.items()
                  if names})))
-        return [("", sql.SQL("jsonb_build_object('executed_at', x.executed_at)"), own),
+        return [("", whole(table), own),
                 ("old_data.", sql.SQL("x.old_data"), audited),
                 ("new_data.", sql.SQL("x.new_data"), audited)]
 
     def image(self, table: Table) -> sql.Composable:
-        """A row of ``table`` (aliased ``x``) as compared, each stamp later than the line read
-        as :data:`DEPLOY`: the audit log's event (what it wrote and when, never its id or
-        database user, as an array), or the row whole."""
+        """A row of ``table`` (aliased ``x``) as compared, whole (:func:`whole`), each stamp
+        later than the line read as :data:`DEPLOY`: for the audit log, its own and those of
+        the rows its events wrote (``old_data``, ``new_data``)."""
         stamped = [sql.SQL(
             "({document} || coalesce((SELECT jsonb_object_agg(k, {deploy}::text) "
             "FROM unnest({names}) AS k WHERE {later}), '{{}}'::jsonb))").format(
@@ -143,10 +149,16 @@ class Reading:
             for _, document, names in self.parts(table)]
         if table == AUDIT_LOG:
             return sql.SQL(
-                "jsonb_build_array(x.table_schema, x.table_name, x.operation, x.row_id, "
-                "x.changed_fields, {}, {}, x.user_id, {})").format(
-                    stamped[1], stamped[2], stamped[0])
-        return stamped[0] if stamped else sql.SQL("to_jsonb(x)")
+                "({} || jsonb_build_object('old_data', {}, 'new_data', {}))").format(*stamped)
+        return stamped[0] if stamped else whole(table)
+
+
+def whole(table: Table) -> sql.Composable:
+    """A row of ``table`` (aliased ``x``) whole, as a JSON object: every column, the audit
+    log's but :data:`AUDIT_UNCOMPARED`."""
+    if table != AUDIT_LOG:
+        return sql.SQL("to_jsonb(x)")
+    return sql.SQL("(to_jsonb(x) - {}::text[])").format(sql.Literal(list(AUDIT_UNCOMPARED)))
 
 
 def qualified(table: Table) -> str:
@@ -338,17 +350,16 @@ def read_line(url: str) -> datetime:
     return line
 
 
-def _sides(row: Moved) -> tuple[dict[str, object], dict[str, object]] | None:
-    """A row's two images when it is on both sides as a table's row (never an audit event,
-    which is an array), else None."""
-    if isinstance(row.before, dict) and isinstance(row.after, dict):
+def _sides(row: Moved) -> tuple[Image, Image] | None:
+    """A row's two images when it is on both sides, else None."""
+    if row.before is not None and row.after is not None:
         return row.before, row.after
     return None
 
 
 def changed_columns(row: Moved) -> list[str]:
-    """The columns whose value differs in a row on both sides (none for an audit event or a
-    row on one side only); a column one side lacks differs."""
+    """The columns whose value differs in a row on both sides (none for a row on one side
+    only, as every multiset's row is); a column one side lacks differs."""
     sides = _sides(row)
     if sides is None:
         return []
@@ -403,7 +414,7 @@ def _shown(value: object) -> str:
 
 def report(moved: list[Moved], before: str, after: str) -> Iterator[str]:
     """One line per differing row: its table and key, and the row where it is on one side
-    only or is an audit event, else each changed column's value before and after."""
+    only, else each changed column's value before and after."""
     for row in moved:
         where = f"{row.table} {row.key or '(no key)'}"
         sides = _sides(row)
