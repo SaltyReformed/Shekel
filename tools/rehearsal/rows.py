@@ -28,10 +28,11 @@ stamps in the rows its events wrote included.  The line is checked every run: a 
 restored dump later than it stops the run, named.
 
 THE NOISE GATE: base is deployed on two clones, and both must read identical.  A difference
-there is the kit's failure, never the release's (exit 2).  It catches a clock column the stamp
-list does not name only where base's deploy writes one; on a dump at base's own revision that
-deploy writes nothing, and a clock column only cut's deploy writes is a difference (exit 1),
-never an exit 0.
+there is the kit's failure, never the release's (exit 2).  It catches a column the server's
+clock writes that the catalogs do not call a stamp (one an UPDATE alone sets to the clock, with
+no clock default: :func:`stamps`) only where base's deploy writes one; on a dump at base's own
+revision that deploy writes nothing, and such a column only cut's deploy writes is a difference
+(exit 1), never an exit 0.
 
 THE PLANTED CONTROLS, every run, each on a clone of base's deployed copy, nothing else
 touched (triggers and foreign-key checks are off for the plant): a cent added to a numeric
@@ -63,9 +64,9 @@ Usage, which brings a bench up (:mod:`.bench`), deploys, compares and tears it d
 Exit status: 0 no row differs and the rollback holds; 1 rows differ (each one in the report,
 summed per table and column on stdout), cut's deploy refused the copy base's deployed, or the
 rollback to base on cut's deployed copy fails (named); 2 nothing was measured:
-the bench, base's deploy, the noise gate, a control, or the run itself (a file it could not
-write, a database error) failed, each named.  A failure of the run is never exit 1, which
-says rows differ.
+the bench, the dump's stamps against the line (:func:`read_line`), base's deploy, the noise
+gate, a control, or the run itself (a file it could not write, a database error) failed, each
+named.  A failure of the run is never exit 1, which says rows differ.
 """
 from __future__ import annotations
 
