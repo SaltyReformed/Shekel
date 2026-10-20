@@ -218,9 +218,9 @@ vs after; then the full suite. No financial logic is touched.
      Steel Ink dark id. Exact shape of `users.role_id`; matches the deep-hunt #38 normalization that
      just PROMOTED string-CHECK columns to ref FKs.
    - String column + named CHECK (the `SecurityEventKind` precedent): cheaper, but the pattern #38
-     spent a migration eliminating.
-   Migration is additive (static server_default backfills, like aeb04f13caff); test both directions;
-   rebuild the test template (`python scripts/build_test_template.py`).
+     spent a migration eliminating. Migration is additive (static server_default backfills, like
+     aeb04f13caff); test both directions; rebuild the test template
+     (`python scripts/build_test_template.py`).
 2. Server-render `data-bs-theme` from `current_user.settings` (context processor). Kills the FOUC
    for logged-in users; preference roams across devices.
 3. Settings UI: one `render_select` in `settings/_general.html`, one field in `UserSettingsSchema`

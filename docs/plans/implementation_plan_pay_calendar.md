@@ -265,9 +265,9 @@ their only live specimen from them, which both `_staging` docstrings predict and
       per-render count: no module under `app/services/**` calls `BalanceContext.build`.
       `loan_recurrence_sync` is a WRITER and takes its own by design, so the rule carves it out or
       takes it from its caller. Collapses the +1 `C2-f3a` left on `/analytics/taxes`. Closes
-      **P56**, **P69**.
-**The `C14` span is ARCHIVED under rule 5** (2026-09-11) to
-`historical/pay_calendar_c14_as_built_2026-09-11.md`, one line each below; the COMMIT is the record.
+      **P56**, **P69**. **The `C14` span is ARCHIVED under rule 5** (2026-09-11) to
+      `historical/pay_calendar_c14_as_built_2026-09-11.md`, one line each below; the COMMIT is the
+      record.
 - [x] **C14 -- the pay schedule carries its shift convention.** `5d14e4d4`. The DECOMPOSED parent,
       ticked with `C14-f` (**R-PC47**, **R-PC54**-**R-PC57**, **R-PC59**-**R-PC61**, **R-PC63**).
 - [x] **C14-a -- the shared business-day module.** `088339f5`. `app/utils/business_days.py`; its
@@ -283,8 +283,9 @@ their only live specimen from them, which both `_staging` docstrings predict and
       **PC-497** fault 1 (the row was carried open through two re-points in error).
 - [x] **C14-f -- the generate door asks one job's questions.** `5d14e4d4`. **P80** re-pointed at
       `C17` as an era question; **N-493**, **N-494** narrowed.
-**The `C18` span, and `C5`'s below, are ARCHIVED under rule 5** (2026-09-29) to
-`historical/pay_calendar_c18_c5_archived_2026-09-29.md`, one line each; the COMMIT is the record.
+      **The `C18` span, and `C5`'s below, are ARCHIVED under rule 5** (2026-09-29) to
+      `historical/pay_calendar_c18_c5_archived_2026-09-29.md`, one line each; the COMMIT is the
+      record.
 - [x] **C18 -- a payday before the earliest, nothing below the books.** `f23fef7b` (**R-PC62**).
 - [x] **C18-a -- the books bound.** `22f3d85b` (**R-PC85**-**R-PC102**). Closed **PC-500**.
 - [x] **C18-b -- "Add earlier paychecks".** `f23fef7b` (**R-PC87**, **R-PC103**-**R-PC107**). Closed
@@ -308,10 +309,9 @@ their only live specimen from them, which both `_staging` docstrings predict and
       **`effective_from` IS the grid's phase**: R-PC61's anchor is absorbed into it, not carried
       beside it. An era governs from its `effective_from` to the next era's; the EARLIEST also runs
       backward below the record, bounded by `history_opens_on`. The DECOMPOSED parent, ticking with
-      `C17-e` (**R-PC77**).
-**The `C17-a`..`C17-c-2b` span is ARCHIVED under rule 5** (2026-09-13) to
-`historical/pay_calendar_c17_a_to_c_as_built_2026-09-13.md`, one line each below; the COMMIT is the
-record.
+      `C17-e` (**R-PC77**). **The `C17-a`..`C17-c-2b` span is ARCHIVED under rule 5** (2026-09-13)
+      to `historical/pay_calendar_c17_a_to_c_as_built_2026-09-13.md`, one line each below; the
+      COMMIT is the record.
 - [x] **C17-a -- the relation.** `6caf56bc`, migration `6fc77e86d76f`. Narrowed **N-494**.
 - [x] **C17-b-1 -- the forward continuation leaves `_derive.py`.** `1ae0cd02`. Closed **PC-498**.
 - [x] **C17-b-2 -- readers anchor on the era's phase.** `06fc0d33`; MOVED MONEY (**R-PC72**).
