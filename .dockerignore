@@ -78,6 +78,7 @@ htmlcov
 .coverage
 coverage.xml
 pytest.ini
+conftest.py
 
 # ── Dev-only toolchain configs ─────────────────────────────────────
 requirements-dev.txt

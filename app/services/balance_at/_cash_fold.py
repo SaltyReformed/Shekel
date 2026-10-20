@@ -526,28 +526,32 @@ class CashDayFacts:
 
 @dataclass(frozen=True)
 class CashDaySeries:
-    """A day-grain reading of one account's fold, and where its records START.
+    """A day-grain reading of one account's fold, and the day its books OPENED.
 
     Attributes:
         facts: One :class:`CashDayFacts` per requested day.
-        first_event_on: The earliest day this account has ANY cash fact -- a
-            settled row or a balance assertion -- or ``None`` for an account
-            with neither.
+        opened_on: The day the account's books opened -- the governing
+            :attr:`~app.services.cash_ledger.CashOpeningFact.opened_on` off
+            the walk this fold was built from.  Never ``None``: the walk cannot
+            be loaded without an opening.
 
-    **``first_event_on`` travels with the facts because the walk already knows
-    it and every other way of learning it is worse.**  A reader comparing the
-    app against an outside record has to tell "we disagree here" from "the app
-    has no records this far back", and the developer's own Checking account is
-    the case: his bank statement starts 2026-01-02 where his records start
-    2026-03-26, so 83 days would otherwise read as 83 defects.  Inferring it
-    from a flat PREFIX of the requested range would misread a quiet opening
-    week as unrecorded and drop real disagreements out of the totals; asking a
-    second walk for it would be the redundant derivation the read pass exists
-    to prevent.
+    **``opened_on`` travels with the facts because the walk already holds it.**
+    A reader comparing the app against an outside record has to tell "we
+    disagree here" from "the books do not know this day", and the books'
+    boundary is read two ways (:mod:`app.utils.books_boundary`, ruling
+    **R-HG**): a balance from ``opened_on`` on, a movement only after it.  The
+    facts stay TOTAL -- the flat opening level included -- because what a
+    day's figures MEAN beside an outside record is that reader's question
+    (:mod:`app.services.bank_agreement`, plan step ``balance:X-f3c-2b-2c``).
+    *Until that step this carried the account's first CASH FACT instead*
+    (finding **BAL-616**), which counted the opening day's lines as
+    disagreements wherever an assertion fell on it and compared a quiet books
+    day only once something (a row or a back-dated balance) was recorded on
+    or before it.
     """
 
     facts: "dict[date, CashDayFacts]"
-    first_event_on: "date | None"
+    opened_on: date
 
 
 def _day_sums(
@@ -587,7 +591,7 @@ def day_facts(
 
     Returns:
         The :class:`CashDaySeries` -- one :class:`CashDayFacts` per distinct
-        requested day, and the account's first recorded day.
+        requested day, and the day the account's books opened.
 
     **The three components sum to the day's change in the running total**, and
     that is arithmetic rather than a claim: ``_running_steps`` assembles exactly
@@ -617,12 +621,6 @@ def day_facts(
             for correction in folded.corrections
         ]
     )
-    starts = [
-        events[0] for events in (
-            [fact.settled_on for fact in folded.walk.source_facts],
-            [fact.observed_on for fact in folded.walk.anchor_facts],
-        ) if events
-    ]
     return CashDaySeries(
         facts={
             day: CashDayFacts(
@@ -633,7 +631,7 @@ def day_facts(
             )
             for day, balance in balances.items()
         },
-        first_event_on=min(starts) if starts else None,
+        opened_on=folded.walk.opening.opened_on,
     )
 
 

@@ -1,13 +1,15 @@
 # Shekel Budget App -- Continuous Integration
 #
-# Seven jobs grade a pull request, and an eighth -- lint-and-test -- answers
-# for the six it needs (polyglot-lint is a required check of its own):
+# Eight jobs grade a pull request, and a ninth -- lint-and-test -- answers
+# for the seven it needs (polyglot-lint is a required check of its own):
 #
 #   scope          classifies the change set: ``registry-only`` or ``full``
 #                  (tools/ci/ci_scope.py; step 2b below), and hands its two
-#                  ends to commit-trailers.
+#                  ends to commit-trailers and landing.
 #   commit-trailers  refuses a commit that breaks the card-trailer rules
 #                  (tools/ci/commit_trailers.py), in EVERY scope (step 4d).
+#   landing        refuses a trailer naming a card the tracker says no commit
+#                  may land (tools/quill/landing.py), in EVERY scope (step 4e).
 #   plan-gate      the plan gate, quill and tools/ci, in EVERY scope
 #                  (step 4b).
 #   tax-law        refuses from December 1 until next year's tax law is in
@@ -15,10 +17,11 @@
 #   lint           every pylint floor and the checker tests (steps 5-5c),
 #                  skipped when the scope is ``registry-only``.
 #   test           the suite in six shards, each on its own runner through
-#                  ``scripts/test.sh`` (steps 5d-7b), skipped likewise.
+#                  ``scripts/test.sh`` (steps 5d-7b), and the rehearsal kit's
+#                  cluster tests on one of them (step 7c), skipped likewise.
 #   polyglot-lint  the non-Python linters, in every scope (its own check).
-#   lint-and-test  the check branch protection on ``main`` requires.  It
-#                  NEEDS the first six and runs ``if: always()``, because a
+#   lint-and-test  the check the ``dev`` and ``main`` rulesets require.  It
+#                  NEEDS the first seven and runs ``if: always()``, because a
 #                  SKIPPED required check counts as passing and a job that
 #                  merely depended on a failed shard would be skipped --
 #                  green.  tools/ci/ci_verdict.py judges every result.
@@ -44,16 +47,17 @@ name: CI
 # ── Triggers ──────────────────────────────────────────────────────
 # Run on pushes to main and on all pull requests.  An open PR (open it
 # as a draft early for pre-merge feedback) runs this check on every
-# push to its branch, and the branch protection rule on main requires
-# that check green before merge.  ``push`` is intentionally NOT
+# push to its branch, and the rulesets on dev and main require that
+# check green before merge.  ``push`` is intentionally NOT
 # extended to dev: dev work is already covered by the pull_request
 # trigger, and listing dev here double-runs CI (push + pull_request)
 # on every PR'd dev push for zero added coverage.
 #
-# ``merge_group`` is what GitHub's merge queue runs the required checks on
-# (step X-cx's L5 turns the queue on for dev): each queued group is a
-# change set of its own, classified and checked like a pull request.  Until
-# the queue is required, no merge group exists and the trigger fires nothing.
+# ``merge_group`` is what GitHub's merge queue runs the required checks on:
+# since 2026-10-19 dev and main each take a change only through a queue
+# (rulesets ``dev-queue`` and ``main-queue``, ruling R-BAL322), and each
+# queued group is a change set of its own, classified and checked like a
+# pull request.
 on:
   push:
     branches: [main]
@@ -132,14 +136,15 @@ jobs:
       # Markdown.  Every code-grading JOB (lint, test) is guarded
       # ``!= 'registry-only'``, so a missing output runs everything rather
       # than nothing; the plan gate (step 4b) is unguarded.  Approved by the
-      # developer 2026-09-11 as its own PR; ``test_ci_scope.py`` holds this
-      # wiring, and that PR's body cites the runs that proved each scope.
+      # developer 2026-09-11 as its own PR; ``tools/ci/test_ci_workflow.py``
+      # holds this wiring (split out of ``test_ci_scope.py`` at step X-cx's
+      # L4), and that PR's body cites the runs that proved each scope.
       #
       # A pull_request event and a merge-queue group have a change set: a
       # push to main is a release and runs everything.  The step hands every
       # event's two ends -- a push's included, its before and after -- to the
-      # commit-trailers job, so which payload field holds them is read here
-      # and nowhere else.  The three-dot diff is the branch's own
+      # commit-trailers and landing jobs, so which payload field holds them is
+      # read here and nowhere else.  The three-dot diff is the branch's own
       # changes since it forked from its base, so a ``git merge origin/dev``
       # on the branch does not drag dev's files into the set; --no-renames
       # shows a rename as its old AND new path, so a file renamed out of
@@ -185,8 +190,9 @@ jobs:
     needs: scope
     runs-on: ubuntu-24.04
     steps:
-      # The undone commit a revert names can be anywhere in history, so this
-      # checkout is full; the trailers are only READ.
+      # The undone commit a revert names can be anywhere in history, and the
+      # stray rule reads origin/dev and origin/main, so this checkout is full;
+      # the trailers are only READ.
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -202,12 +208,13 @@ jobs:
       # ── 4d. The card-trailer rules, in EVERY scope ───────────────
       # Every commit of the change set (``base..head``, handed over by the
       # scope job) names a card as ``Ships: plan#N`` / ``Reopens: plan#N``
-      # (or, until X-cx's cutover, ``<arc>:<id>``), and a revert carries the
+      # (or, until X-cx's cutover, ``<arc>:<id>``); a revert carries the
       # ``Reopens:`` or ``Ships:`` that keeps git's answer to "did plan#N
       # ship?" true to the code it removes or brings back (step X-cx's L4,
-      # card plan#4).  Git only, no tracker access.  A missing or partial
-      # range is a usage error, never an empty change set: it fails, so the
-      # verdict is red.
+      # card plan#4); and a ``Reopens:`` on a commit neither dev nor main holds
+      # yet undoes a ``Ships:`` in its own history (step X-cx's L9d, R-BAL309).
+      # Git only, no tracker access.  A missing or partial range is a usage
+      # error, never an empty change set: it fails, so the verdict is red.
       # Unguarded, like the plan gate: a registry-only pull request carries
       # commits too.  The rules: tools/ci/commit_trailers.py.
       - name: Card trailers (every scope)
@@ -215,6 +222,106 @@ jobs:
           BASE_SHA: ${{ needs.scope.outputs.base }}
           HEAD_SHA: ${{ needs.scope.outputs.head }}
         run: python -m tools.ci.commit_trailers "${BASE_SHA}" "${HEAD_SHA}"
+
+  landing:
+    needs: scope
+    runs-on: ubuntu-24.04
+    env:
+      # Whether this run was handed the reader App's key at all: GitHub
+      # documents that a Dependabot run and a fork's pull request get no
+      # Actions secrets.  A boolean only -- the key itself never enters the
+      # job's env.
+      # It decides the mint step alone; whether the tracker must be read is
+      # tools/quill/landing.py's to decide, and with no token it refuses to
+      # judge a change set naming a card (exit 2), so a skipped mint never
+      # turns a needed read green.
+      PLAN_READER_KEY_PRESENT: ${{ secrets.PLAN_READER_KEY != '' }}
+    steps:
+      # The check reads the whole history of dev, main and the head -- what
+      # will have shipped once the head and main reach dev -- and which of the
+      # change set's commits dev or main already holds, so this checkout is
+      # full; the history is only READ.
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      # This job holds a token, so it runs the least third-party code it can:
+      # the two packages the check imports (``requests``, and ``cryptography``
+      # through quill's GitHub client), at the versions requirements.txt pins
+      # -- read from that file, their one home -- and no pip upgrade.  (A
+      # constraints file cannot be used: pip refuses one holding extras, and
+      # requirements.txt has two.)  A package the check comes to import
+      # beyond these fails the job red.
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          grep -E '^(requests|cryptography)==' requirements.txt > "${RUNNER_TEMP}/landing-requirements.txt"
+          python -m pip install -r "${RUNNER_TEMP}/landing-requirements.txt"
+
+      # The tracker's owner and repository, from quill's PLAN
+      # (tools/quill/setup_tracker.py), their one home: the mint reads them
+      # from this step rather than spelling them.
+      - name: Read the tracker's place
+        id: plan
+        run: |
+          set -euo pipefail
+          python - >> "${GITHUB_OUTPUT}" <<'EOF'
+          from tools.quill.setup_tracker import PLAN
+          print(f"owner={PLAN.owner}")
+          print(f"name={PLAN.name}")
+          EOF
+
+      # ── 4e. The card trailers against the tracker, in EVERY scope ─
+      # Ruling balance:R-BAL289 (CI reads the tracker with a read-only token)
+      # as balance:R-BAL311 makes it: the read-only App "Shekel plan reader"
+      # (Issues read-only, installed on the tracker only), its private key in
+      # the PLAN_READER_KEY secret and its Client ID in the
+      # PLAN_READER_CLIENT_ID variable.  GitHub's own action mints an
+      # installation token for this run, narrowed again here to reading
+      # issues of that one repository, and revokes it when the job ends
+      # (GitHub expires one within the hour in any case).
+      # Only the check step is handed the token in its env, and only the mint
+      # is handed the key, as an input, which the runner puts in the
+      # environment (INPUT_PRIVATE-KEY) of that step and of its post step (the
+      # action's dist/post.cjs, which reads its inputs and revokes the token
+      # when the job ends); but the key is in the runner's memory for the whole
+      # job, so this narrows what a leak from the job yields and does not close
+      # it.
+      - name: Mint the tracker read token
+        id: token
+        if: env.PLAN_READER_KEY_PRESENT == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.PLAN_READER_CLIENT_ID }}
+          private-key: ${{ secrets.PLAN_READER_KEY }}
+          owner: ${{ steps.plan.outputs.owner }}
+          repositories: ${{ steps.plan.outputs.name }}
+          permission-issues: read
+
+      # A trailer naming a card the tracker lacks, a Ships: naming no work,
+      # or one naming a card that carries the filing mark (still being filed,
+      # or dropped while it was) is refused, each trailer judged once, by the
+      # pull request or merge group that lands its commit on dev or main (step
+      # X-cx's L9d).  Never judged: a commit pushed straight to dev, and the
+      # merge commit GitHub writes when it merges a pull request into dev or
+      # main outside a merge queue (main's protection binds administrators,
+      # R-BAL319, so no commit is pushed straight to main).
+      # The tracker is read only when a trailer names a card.  No condition:
+      # with the mint skipped the token is empty, and the check decides.
+      # The rules: tools/quill/landing.py.
+      - name: Card trailers against the tracker (every scope)
+        env:
+          BASE_SHA: ${{ needs.scope.outputs.base }}
+          HEAD_SHA: ${{ needs.scope.outputs.head }}
+          PLAN_READ_TOKEN: ${{ steps.token.outputs.token }}
+        run: python -m tools.quill.landing "${BASE_SHA}" "${HEAD_SHA}"
 
   plan-gate:
     runs-on: ubuntu-24.04
@@ -262,7 +369,7 @@ jobs:
       # pre-commit alone until 2026-09-11 (its hook comment says so); a
       # registry-only run that edits the gate would otherwise merge unlinted,
       # so the floor is held here too, in both scopes.  ``yaml`` (PyYAML,
-      # pinned in requirements-dev.txt) is what ``tools/ci/test_ci_scope.py``
+      # pinned in requirements-dev.txt) is what ``tools/ci/test_ci_workflow.py``
       # reads THIS file with, which is why the step follows the install.
       #
       # Quill (tools/quill/: the private tracker's setup, and from
@@ -281,6 +388,20 @@ jobs:
       # steps.md as each commit holds it until the cutover, so, like quill's,
       # its tests run in every scope rather than being skipped by a
       # registry-only change set.
+      #
+      # ``tools/split`` (the proved test-file split; step balance:X-er, ruling
+      # R-BAL301) reads no registry.  It is graded here beside the other tools
+      # packages, at the same floor, so every tools package holds one floor in
+      # one step; a change to it is still ``full`` (it is no registry-only
+      # prefix), which ``tools/ci/test_ci_scope.py`` holds.
+      #
+      # ``tools/rehearsal`` (the release rehearsal kit; step X-cx's K1, rulings
+      # R-BAL314 and R-BAL315) reads no registry either, and holds the same
+      # floor here.  Its tests that start a real private cluster carry the
+      # ``cluster`` marker and are deselected: a registry-only change set
+      # cannot change the kit, so a cluster here would grade nothing new (the
+      # coordinator's K1 leaf-plan ruling, item 3).  They run in the test job,
+      # step 7c.
       - name: Plan gate (every scope)
         run: |
           pylint tools/plan_gate/ --fail-under=10 --fail-on=E,F --output-format=colorized
@@ -291,6 +412,10 @@ jobs:
           pytest tools/ci -c /dev/null -q
           pylint tools/release/ --fail-under=10 --fail-on=E,F --output-format=colorized
           pytest tools/release -c /dev/null -q
+          pylint tools/split/ --fail-under=10 --fail-on=E,F --output-format=colorized
+          pytest tools/split -c /dev/null -q
+          pylint tools/rehearsal/ --fail-under=10 --fail-on=E,F --output-format=colorized
+          pytest tools/rehearsal -c /dev/null -q -m "not cluster"
 
   tax-law:
     runs-on: ubuntu-24.04
@@ -489,9 +614,12 @@ jobs:
         # so a check named ``test (0)`` runs shard 0.
         shard: [0, 1, 2, 3, 4, 5]
     steps:
+      # Depth 2, not the default 1: step 7c's bench case checks out ``HEAD~1``
+      # as its base state, and a depth-1 clone does not hold that commit.
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Set up Python 3.14
@@ -598,8 +726,25 @@ jobs:
         if: strategy.job-index == 0
         run: ./scripts/test.sh tests/test_performance -q -n 0 -p no:randomly --override-ini=addopts=
 
+      # ── 7c. The rehearsal kit's cluster tests, on ONE shard ──────
+      # ``tools/rehearsal``'s ``cluster`` tests start a real private cluster
+      # from the image step 7 built or verified, and dump and restore with the
+      # IMAGE's own ``pg_dump`` and ``pg_restore``, run inside the cluster's
+      # container, so the runner needs no PostgreSQL tools (ruling
+      # balance:R-BAL327).  The plan gate's step deselects them, since a
+      # registry-only change set cannot change the kit; here they run in the
+      # full scope.  ``CI`` sanctions the runner's own daemon, as in step 7.
+      #
+      # Shard 3 because it had the lowest mean wall time of the six over the
+      # six newest green runs (449-693 s, against 704-742 s for shard 0, which
+      # carries step 7b), measured 2026-10-20.  The bench case's base state is
+      # ``HEAD~1``: hence the checkout's depth of 2.
+      - name: Run the rehearsal kit's cluster tests (shard 3)
+        if: strategy.job-index == 3
+        run: pytest tools/rehearsal -c /dev/null -q -m cluster
+
   lint-and-test:
-    needs: [scope, commit-trailers, plan-gate, tax-law, lint, test]
+    needs: [scope, commit-trailers, landing, plan-gate, tax-law, lint, test]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -630,9 +775,8 @@ jobs:
   # Binary tools are pinned by version and downloaded (no extra
   # third-party actions to SHA-pin); the pip tools (yamllint, zizmor,
   # djlint) come from requirements-dev.txt. Each tool reads its own
-  # in-repo config file. NOTE: add this job to the branch-protection
-  # required checks to make the floor block merges (it runs on every PR
-  # regardless).
+  # in-repo config file. The dev and main rulesets require it beside
+  # lint-and-test, so the floor blocks merges.
   polyglot-lint:
     runs-on: ubuntu-24.04
     steps:

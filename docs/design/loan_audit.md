@@ -156,8 +156,8 @@ Rebuild in the account-detail band grammar, cockpit rules:
 - **Sections:** this month's allocation bar (principal/interest/escrow); confirmed payment history
   table (cash + per-payment split, CONFIRMED badges, view-all link); balance anchors (true-up events
   - origination + drift column); escrow active components with closed history behind a toggle;
-  Secured By (market value, equity, LTV); loan parameters card with Edit parameters / Record balance
-  actions.
+    Secured By (market value, equity, LTV); loan parameters card with Edit parameters / Record
+    balance actions.
 - **Amortization schedule:** demoted to a footer link (own page/fragment), Confirmed/Projected
   badges preserved.
 
@@ -368,8 +368,9 @@ on every row-covered month (measured 2026-09-14: `$626.46` arrived and the month
 
 Verified: both themes shot through `tests/manual/shoot.py` on the same fixtures as the card above
 plus the schedule page and the lever's partial. The route-level locks in
-`tests/test_routes/test_loan.py` (`TestBandChartLongestBaseline`, `TestDashboardChartComposer`,
-`TestAmortizationSchedule`, `TestOneWalkEdges`) pin hand-derived figures and the shapes the
+`tests/test_routes/test_loan/` (`test_payoff_chart.py::TestBandChartLongestBaseline`,
+`test_dashboard_charts.py::TestDashboardChartComposer`, `test_schedule.py::TestAmortizationSchedule`
+and `test_payoff_projection.py::TestOneWalkEdges`) pin hand-derived figures and the shapes the
 adversarial review traced (an ARM paying before its first charge, a retired loan, an installment due
 today, a plan that never clears, a loan behind); the seam parity oracles in
 `tests/test_services/test_loan_payoff_date_oracle.py` and

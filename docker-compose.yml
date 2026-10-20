@@ -306,7 +306,7 @@ services:
     # for the audit's production hardening but should still pin a
     # digest by adding a sibling ``docker-compose.override.yml``
     # (see deploy/README.md) before any non-trivial deployment.
-    image: ghcr.io/saltyreformed/shekel:latest
+    image: ghcr.io/saltyreformed-labs/shekel:latest
     # Always pull the latest image -- prevents stale cached :latest tags
     # from causing port mismatches or missing fixes.  When the prod
     # override pins a digest, this is a no-op for that pull because

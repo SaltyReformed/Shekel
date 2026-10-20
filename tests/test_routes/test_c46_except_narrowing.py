@@ -45,14 +45,14 @@ from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.services import account_service
 from tests._test_helpers import freeze_today
-from tests.test_routes.test_salary import _create_profile
+from tests.test_routes.test_salary._helpers import _create_profile
 
 
 @pytest.fixture(autouse=True)
 def _freeze_today_inside_seed_range(monkeypatch):
     """Freeze today inside the seeded period range.
 
-    Matches the same freeze used by ``test_salary.py`` so the
+    Matches the same freeze used by ``test_salary/conftest.py`` so the
     ``_create_profile`` helper and ``seed_periods`` fixture cooperate
     deterministically regardless of wall-clock date.
     """

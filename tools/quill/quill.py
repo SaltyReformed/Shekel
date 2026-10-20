@@ -81,7 +81,7 @@ from tools.quill._command import (
     with_closure,
 )
 from tools.quill._filing import cmd_file
-from tools.quill._github import GitHubError
+from tools.quill._github import CredentialsError, GitHubError
 from tools.quill._state import (
     SyncPlan,
     Unsplit,
@@ -909,7 +909,7 @@ def main(argv: list[str] | None = None, connect: Callable[[], Tracker] = CONNECT
         print(f"refused: {refused}", file=sys.stderr)
         return 1
     except (GitHubError, TrackerError, GitError, requests.RequestException,
-            OSError) as error:
+            OSError, CredentialsError) as error:
         print(f"failed: {error}", file=sys.stderr)
         return 2
 

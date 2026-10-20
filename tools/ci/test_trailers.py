@@ -187,6 +187,15 @@ def test_a_range_reads_only_the_commits_it_names(repo):
     assert {t.card for t in history(repo, leaf).trailers} == {2, 3}
 
 
+def test_several_tips_are_read_as_one_history_each_commit_once(repo):
+    """Two lines beside each other, each named: one walk reads both, and the commit they
+    share once (CI's landing check reads dev, main and a change set's head so)."""
+    base = _commit(repo, "base", "Ships: plan#2")
+    left = _commit(repo, "left", "Ships: plan#3", parents=[base])
+    right = _commit(repo, "right", "Ships: plan#4", parents=[base])
+    assert sorted(t.card for t in history(repo, left, right).trailers) == [2, 3, 4]
+
+
 def test_a_shallow_clone_is_refused_not_read_as_nothing_shipped(repo, tmp_path):
     """A depth-1 clone holds no commit before its tip: every older ship would vanish."""
     base = _commit(repo, "base", "Ships: plan#19")

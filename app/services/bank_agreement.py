@@ -36,14 +36,39 @@ whole span rather than a difference that varies by day -- so the summary says
 whether the offset is constant, which is the one shape that convicts the
 anchor instead of the books.
 
-**Days before the app's records begin are LABELLED, not counted.**  The
-developer's statement starts 2026-01-02 and his records start 2026-03-26, so
-83 days show real bank movement against an app that holds nothing -- which is
-finding **N-314**, owned by ``balance:X-f3c``, and not a disagreement this
-report can act on.  They are shown, because hiding a day the bank describes
-would be the report deciding what the owner may see, and excluded from every
-total and count, because a figure this arc cannot act on must not be added to
-one it can.
+**Each side shows only what it KNOWS, and a comparison exists only where
+both sides have a figure** (plan step ``balance:X-f3c-2b-2c``; rulings
+**R-BAL286** for the balance, **R-BAL291** for the movement, re-hearing
+**R-BAL285**).  A figure a side does not know is ``None`` on the
+:class:`AgreementDay`, never a ``0.00`` standing in for it:
+
+* **The books** open at the CLOSE of their ``opened_on`` (ruling **R-HG**),
+  so they state a closing BALANCE for that day and every later one
+  (:func:`~app.utils.books_boundary.books_state_balance`) and hold MOVEMENT
+  only from the day after (:func:`~app.utils.books_boundary.books_hold`).
+  Whatever the bank moved on or before the opening day is already inside the
+  opening figure -- the developer's statement reaches back months before his
+  books open, which is finding **N-314**'s shape and not a disagreement this
+  report can act on.
+* **The bank** covers a day's MOVEMENT when the day lies inside the window an
+  import declares (:attr:`BankAgreement.runs`), and its BALANCE where a run's
+  anchor reaches the day.
+
+So a day's MOVEMENT is compared only when BOTH records cover it, and its
+BALANCE only when both state one.  A day only one side covers is still shown,
+because hiding a day either record describes would be the report deciding
+what the owner may see, and it is counted in no total, because a figure only
+one side holds is not an agreement or a disagreement.  *Until this step the
+movement half had two other boundaries.*  The books' was the account's first
+CASH FACT (finding **BAL-616**): an assertion dated on the opening day put
+that day's lines into the totals although the opening had absorbed them, and
+a books day before the first cash fact was never compared -- its bank line
+was shown and never counted, and a quiet such day was compared only once
+something (a row or a back-dated balance) was recorded on or before it.  The
+bank's was none at all (finding **BAL-650**): a drawn day between two
+imports read ``0.00`` for the bank and was compared against it, so the
+counts and totals took a figure the bank never stated, and the reconcile
+verdict came out right only through a separate count of imported days.
 
 Services-boundary discipline: no Flask import, no clock read -- the reader's
 NOW arrives on the :class:`~app.services.balance_at.BalanceContext`.
@@ -60,6 +85,7 @@ from app.extensions import db
 from app.models.transaction_entry import TransactionEntry
 from app.services import balance_at, cash_ledger, statement_import
 from app.services.statement_match import matched_subjects
+from app.utils.books_boundary import books_hold, books_state_balance
 from app.utils.dates import days_in_range
 
 _ZERO_MONEY = Decimal("0.00")
@@ -81,8 +107,8 @@ _ONE_DAY = timedelta(days=1)
 #: :attr:`BankAgreement.recorded_through` applies at the other end.
 _MAX_COMPARED_DAYS = 731
 
-#: How many compared days a CONSTANT offset needs before it means
-#: anything.  One day satisfies "every gap is equal" vacuously.
+#: How many days a CONSTANT offset needs before it means anything.  One day
+#: satisfies "every gap is equal" vacuously.
 _MIN_DAYS_FOR_A_CONSTANT = 2
 
 
@@ -90,73 +116,114 @@ _MIN_DAYS_FOR_A_CONSTANT = 2
 class AgreementDay:
     """One day of the two records, side by side.
 
+    **Every figure is ``None`` where its side does not know it** (plan step
+    ``balance:X-f3c-2b-2c``, see the module docstring), and that absence is
+    the whole of what decides which days are compared: a day is compared when
+    its :attr:`residue` exists, and its balances are compared when its
+    :attr:`gap` does.  There is no flag beside the figures saying which days
+    count -- *an ``in_records`` boolean did that until this step, a second
+    statement of the books boundary that the figures had to be kept in step
+    with, and the bank side had no such flag at all (finding* **BAL-650** *)*.
+
     Attributes:
         day: The civil day.
         bank_lines: What the bank's recorded lines moved -- signed, positive
             money IN, the convention
             :class:`~app.models.statement_import.BankStatementLine` states once
-            and the app's own cash leg already shares.
-        recorded: What the app's own SETTLED rows moved that day.
+            and the app's own cash leg already shares.  ``0.00`` on a quiet
+            day inside an imported window, and ``None`` on a day inside NO
+            import's window: nothing the bank said reaches it, which is an
+            absence rather than the bank saying nothing moved.
+        recorded: What the app's own SETTLED rows moved that day, or ``None``
+            on and before the day the books opened
+            (:func:`~app.utils.books_boundary.books_hold`): that day's money is
+            inside the opening equity (ruling **R-HG**), so the books hold no
+            movement for it.
         asserted: What a balance assertion moved that day, EVERY assertion
-            included.  What an account's books OPENED with contributes nothing
-            here -- it is the fold's seed, a stored
-            ``budget.account_openings`` fact establishing the level rather than
-            moving money on any day.  *The account's first ASSERTION was held
-            back too until plan step X-f3c-2a, because the fold had swallowed
-            its whole correction into that seed (ruling R-I); it books an
-            ordinary correction now, ``$0.00`` wherever the declaration agrees
-            with the books.*
-        app_balance: What the app says the account held at the day's end.
+            included, or ``None`` exactly when :attr:`recorded` is -- an
+            assertion's correction is a movement of the books like a row's.
+            What an account's books OPENED with contributes nothing here -- it
+            is the fold's seed, a stored ``budget.account_openings`` fact
+            establishing the level rather than moving money on any day.  *The
+            account's first ASSERTION was held back too until plan step
+            X-f3c-2a, because the fold had swallowed its whole correction into
+            that seed (ruling R-I); it books an ordinary correction now,
+            ``$0.00`` wherever the declaration agrees with the books.*
+        app_balance: What the app says the account held at the day's end, or
+            ``None`` BEFORE the day the books opened
+            (:func:`~app.utils.books_boundary.books_state_balance`, ruling
+            **R-BAL286**): the books state a balance from the close of their
+            opening day, and on an earlier day they did not exist, so no
+            figure the fold carries there is a balance the books held.
         bank_balance: What the bank's own record says it held, or ``None``
             when no anchor reaches the day: it lies in a run no statement
             prices, or between runs -- bar the day before an anchored run's
             first line, which that run's lines start from and its anchor
             reaches.
-        in_records: Whether the app's records reach back this far.  ``False``
-            for a day before the account's first cash fact, where a zero
-            :attr:`recorded` means "nothing recorded" rather than "nothing
-            happened".
     """
 
     day: date
-    bank_lines: Decimal
-    recorded: Decimal
-    asserted: Decimal
-    app_balance: Decimal
+    bank_lines: "Decimal | None"
+    recorded: "Decimal | None"
+    asserted: "Decimal | None"
+    app_balance: "Decimal | None"
     bank_balance: "Decimal | None"
-    in_records: bool
 
     @property
-    def residue(self) -> Decimal:
-        """Return what the app records that the bank does not, signed.
+    def residue(self) -> "Decimal | None":
+        """Return what the app records that the bank does not, signed, or ``None``.
 
         **The instrument.**  Positive means the app's own rows moved MORE into
         the account than the bank's lines did that day; negative means the
         bank moved more.  Either way it is money exactly one of the two
         records has, which is the question a reconciliation asks.
+
+        ``None`` unless BOTH movements are known (ruling **R-BAL291**): a day
+        only one record covers has nothing to subtract from, and reading the
+        missing side as ``0.00`` is the defect finding **BAL-650** names.
         """
+        if self.recorded is None or self.bank_lines is None:
+            return None
         return self.recorded - self.bank_lines
+
+    @property
+    def compared(self) -> bool:
+        """Return whether both records cover this day's movement.
+
+        **The one statement of which days the comparison COUNTS**: every
+        MOVEMENT total and count on :class:`BankAgreement`, and the verdicts
+        :mod:`app.services.outstanding_difference` folds out of it, are taken
+        over the days this holds for (the LEVEL readers read the balances
+        instead).  It is :attr:`residue` existing, and nothing else.
+        """
+        return self.residue is not None
 
     @property
     def gap(self) -> "Decimal | None":
         """Return how far the two running balances stand apart, or ``None``.
 
-        ``None`` exactly when :attr:`bank_balance` is -- there is no second
-        figure to stand apart from.
+        ``None`` unless BOTH balances are known (ruling **R-BAL286**) -- there
+        is no second figure to stand apart from.  So the opening day itself
+        has a gap -- the books' close that day, which is the opening equity
+        as moved by any assertion dated on or before it (the routine
+        back-dated assertion finding **N-400** names), against the bank's --
+        and a day before it has none.
         """
-        if self.bank_balance is None:
+        if self.app_balance is None or self.bank_balance is None:
             return None
         return self.app_balance - self.bank_balance
 
     @property
     def agrees(self) -> bool:
-        """Return whether this day's two records say the same thing.
+        """Return whether this day is compared and its two records say the same thing.
 
         **Tested on the RESIDUE, never on the gap.**  A gap of zero over a
         non-zero residue is the exact shape this report exists to stop reading
         as agreement: the owner's own true-up cancelled the error that day, and
         eleven of the developer's thirty-five real disagreements look like
-        that.
+        that.  **False on a day that is not** :attr:`compared`, where there is
+        no agreement to report -- so a reader counting disagreements takes
+        them over compared days, as :attr:`BankAgreement.disagreeing` does.
         """
         return self.residue == _ZERO_MONEY
 
@@ -215,9 +282,12 @@ class BankAgreement:
     Attributes:
         account_id: The account compared.
         span: The :class:`ComparedSpan` -- what was drawn, against what exists.
-        records_begin: The day the app's own records start, or ``None`` for an
-            account holding none.  Days before it are :attr:`AgreementDay`
-            values with ``in_records`` False.
+        books_opened_on: The day the account's books opened -- the governing
+            opening's ``opened_on``, read off the same walk that priced
+            :attr:`days`.  On it and before it the books' movement is ``None``
+            on every :class:`AgreementDay`, and before it their balance is
+            too.  Never ``None``: an account's fold cannot be built without
+            its opening.
         runs: The account's imported spans merged into contiguous runs, each
             with what prices it: a
             :class:`~app.services.statement_import.RecordedRun` carrying the
@@ -247,20 +317,9 @@ class BankAgreement:
 
     account_id: int
     span: ComparedSpan
-    records_begin: "date | None"
+    books_opened_on: date
     runs: "list[statement_import.RecordedRun]"
     days: "list[AgreementDay]"
-
-    @property
-    def imports(self) -> "list[tuple[date, date]]":
-        """Return the runs' spans, ``[(first_day, last_day), ...]``.
-
-        What :mod:`app.services.outstanding_difference` reads to count the
-        days of a span the bank's lines cover; DERIVED from :attr:`runs`
-        rather than stored beside them (ruling **R-BAL65**), so there is no
-        second list to agree with the first.
-        """
-        return [(run.first_day, run.last_day) for run in self.runs]
 
     @property
     def anchored(self) -> bool:
@@ -274,13 +333,16 @@ class BankAgreement:
 
     @property
     def compared(self) -> "list[AgreementDay]":
-        """Return only the days the app's records reach.
+        """Return only the days BOTH records cover (:attr:`AgreementDay.compared`).
 
-        The days every total below is taken over.  A day the app has no
-        records for is not a disagreement, so counting one would report
-        finding **N-314** as this arc's defect 83 times.
+        The days every movement total below is taken over.  A day on or before
+        the books opened is not a disagreement -- its bank lines are inside the
+        opening equity -- so counting one would report finding **N-314** as
+        this arc's defect once per such day; and a day inside no import's
+        window is not an agreement, since nothing the bank said reaches it
+        (finding **BAL-650**).
         """
-        return [day for day in self.days if day.in_records]
+        return [day for day in self.days if day.compared]
 
     @property
     def disagreeing(self) -> "list[AgreementDay]":
@@ -343,6 +405,13 @@ class BankAgreement:
         sum taken BEFORE the opening assertion was excluded, ``$798.03`` stale,
         found by adversarial review 2026-08-24.  Measurements now live in the
         step's own plan entry, where they are re-derived rather than remembered.
+
+        **Over the compared days only**, like every movement total here, so a
+        correction dated on a day no import covers is LEFT OUT (finding
+        **BAL-650**, plan step ``balance:X-f3c-2b-2c``): the bank says nothing
+        about that day, and the size of a true-up is reported against the
+        days the bank's lines can be set beside.  The day-by-day table still
+        shows it on its own row.
         """
         return sum((day.asserted for day in self.compared), _ZERO_MONEY)
 
@@ -389,7 +458,7 @@ class BankAgreement:
 
     @property
     def headline(self) -> "AgreementDay | None":
-        """Return the latest compared day the bank's own record can PRICE.
+        """Return the latest day BOTH records state a balance for.
 
         **The Reconcile screen's hero day** (plan step ``bank_import:X-gj-1a``,
         the direction locked in ``docs/design/bank_import_audit.md``): the
@@ -408,21 +477,25 @@ class BankAgreement:
         carries a figure, so the hero states a real comparison or says there is
         none at all.
 
-        **Over** :attr:`compared` **rather than** :attr:`days`, because a day
-        the app has no records for has no books side to compare: its
-        :attr:`AgreementDay.recorded` of zero means *nothing recorded*, and
-        pricing a difference against it would report finding **N-314** as this
-        arc\'s defect.
+        **A LEVEL reader, so it reads the balances and no movement**: the day
+        is one whose :attr:`AgreementDay.gap` exists, and the books' balance
+        exists from the CLOSE of their opening day (ruling **R-BAL286**).  So
+        the opening day itself qualifies, where the books' close that day
+        stands beside the bank's -- and a day before it never does, because
+        the books state no balance there.  *Until plan step
+        balance:X-f3c-2b-2c this walked the days on and after the account's
+        first cash fact, a row or an assertion (finding* **BAL-616** *), so
+        books restated back before that fact could not put the hero on their
+        opening day or a quiet day after it.*
 
         Returns:
-            The :class:`AgreementDay`, whose :attr:`~AgreementDay.bank_balance`
-            is guaranteed non-``None`` and whose :attr:`~AgreementDay.gap` is
-            therefore a figure rather than an absence; or ``None`` when no
-            compared day is priced at all -- an account with no anchor, or one
-            whose recorded lines never reach a day its records cover.
+            The :class:`AgreementDay`, whose :attr:`~AgreementDay.gap` is
+            guaranteed a figure rather than an absence; or ``None`` when no
+            drawn day carries both balances -- no anchor places a bank
+            balance, or every day one places falls before the books open.
         """
-        for day in reversed(self.compared):
-            if day.bank_balance is not None:
+        for day in reversed(self.days):
+            if day.gap is not None:
                 return day
         return None
 
@@ -431,21 +504,24 @@ class BankAgreement:
         """Return how far the two running balances stand apart at the END.
 
         The LEVEL, as one number: what the app says the account held on the
-        last compared day, less what the bank's own record says.  Reported
+        span's last day (:attr:`ComparedSpan.last_day`, the day the page
+        captions it with), less what the bank's own record says.  Reported
         because the residue cannot say it -- a residue is per day, and the
         question "how far apart are my books and my bank right now" is about
         the running totals.
 
         Returns:
-            The last compared day's gap, or ``None`` when there is no compared
-            day or no anchor places a bank balance on it.
+            The last drawn day's :attr:`~AgreementDay.gap`, or ``None`` when no
+            day was drawn, when no anchor places a bank balance on that day, or
+            when that day falls before the books open (ruling **R-BAL286**: the
+            books state a balance from their opening day's close, the opening
+            day included).
         """
-        compared = self.compared
-        return compared[-1].gap if compared else None
+        return self.days[-1].gap if self.days else None
 
     @property
     def constant_offset(self) -> "Decimal | None":
-        """Return the offset both records share on EVERY compared day, or ``None``.
+        """Return the offset shared on EVERY day the books state a balance for, or ``None``.
 
         **A constant offset convicts a STARTING FIGURE, not the movements**
         (ruling **R-GF**, finding **N-342**): a level wrong by ``K`` shifts
@@ -458,29 +534,39 @@ class BankAgreement:
         assumption (**N-342**), and the app's own opening ASSERTION.  A constant
         gap is exactly as consistent with one being wrong as the other.
 
+        **The days are those the books state a balance for** -- the opening
+        day and every later drawn day (ruling **R-BAL286**) -- and **a day
+        among them the bank cannot price makes the answer** ``None``: the
+        offset was not seen to hold there, so it is not called constant.  A
+        day before the books open is not among them, since the books state no
+        level there to be offset.  *Until plan step balance:X-f3c-2b-2c the
+        days were those on and after the account's first cash fact (finding*
+        **BAL-616** *), so books restated back before that fact left out
+        their opening day and the quiet days after it.*
+
         Returns:
             The shared offset, or ``None``.  ``None`` covers three cases: no
-            anchor places a bank balance, the offset MOVES (which says
-            something about the records instead), or **too little was compared
-            to call anything constant**.
+            anchor places a bank balance on one of those days, the offset
+            MOVES (which says something about the records instead), or **too
+            few days carry a books balance to call anything constant**.
 
-        **"Constant" needs something to be constant ACROSS.** One compared day
+        **"Constant" needs something to be constant ACROSS.** One day
         satisfies "every gap is equal" vacuously, and an earlier draft reported
         a single day's offset as the signature -- on exactly the population
         N-342 describes, an owner who imports a statement the same week they
         start recording.  Reproduced by adversarial review 2026-08-24.  Two
-        compared days are therefore required.
+        days are therefore required.
 
         **A further guard on "some money actually MOVED" was written and then
         dropped**, because the span's own endpoints are line days: the last
-        compared day carries a line in every reachable case, so the guard could
+        drawn day carries a line in every reachable case, so the guard could
         not be constructed and would have been an untested branch standing for
         a case that does not arise.
         """
-        compared = self.compared
-        if len(compared) < _MIN_DAYS_FOR_A_CONSTANT:
+        stated = [day for day in self.days if day.app_balance is not None]
+        if len(stated) < _MIN_DAYS_FOR_A_CONSTANT:
             return None
-        gaps = {day.gap for day in compared}
+        gaps = {day.gap for day in stated}
         if len(gaps) != 1:
             return None
         # A single-element set of ``None`` pops ``None``, which is the answer
@@ -596,10 +682,9 @@ def bank_agreement(
     )
     bank_moves = _bank_moves(account.id, first_day, last_day)
     # ONE fold prices the days AND says which runs the lines form and what
-    # each walks from; the runs are read off it rather than queried again.
+    # each walks from; the runs are read off it rather than queried again --
+    # and they are also what says which days the bank's movement covers.
     folded = statement_import.fold_bank_balances(account.id, days)
-    records_begin = series.first_event_on
-
     return BankAgreement(
         account_id=account.id,
         span=ComparedSpan(
@@ -608,23 +693,102 @@ def bank_agreement(
             recorded_from=span.first_day,
             recorded_through=span.last_day,
         ),
-        records_begin=records_begin,
+        books_opened_on=series.opened_on,
         runs=folded.runs,
         days=[
-            AgreementDay(
-                day=day,
-                bank_lines=bank_moves.get(day, _ZERO_MONEY),
-                recorded=series.facts[day].recorded,
-                asserted=series.facts[day].asserted,
-                app_balance=series.facts[day].balance,
-                bank_balance=folded.balances.get(day),
-                in_records=(
-                    records_begin is not None and day >= records_begin
-                ),
-            )
-            for day in days
+            _agreement_day(day, series, bank_moves, folded) for day in days
         ],
     )
+
+
+def _agreement_day(
+    day: date,
+    series: "balance_at.CashDaySeries",
+    bank_moves: "dict[date, Decimal]",
+    folded: "statement_import.BankBalances",
+) -> AgreementDay:
+    """Return one day of the two records, each figure ``None`` where its side does not know it.
+
+    **The one place each side's knowledge is decided** (plan step
+    ``balance:X-f3c-2b-2c``): the books' through the two readings of their
+    boundary (:mod:`app.utils.books_boundary`), the bank's movement through
+    the imported windows and its balance through the anchors -- both read off
+    the fold that is already loaded, so this issues no query.
+
+    Args:
+        day: The civil day.
+        series: The account's day facts, and the day its books opened.
+        bank_moves: What the bank's lines moved on each drawn day carrying one.
+        folded: The bank's fold, whose runs are the imported windows.
+
+    Returns:
+        The :class:`AgreementDay`.
+    """
+    facts = series.facts[day]
+    books_moved = books_hold(series.opened_on, day)
+    return AgreementDay(
+        day=day,
+        bank_lines=(
+            bank_moves.get(day, _ZERO_MONEY)
+            if _imported(folded.runs, day) else None
+        ),
+        recorded=facts.recorded if books_moved else None,
+        asserted=facts.asserted if books_moved else None,
+        app_balance=(
+            facts.balance
+            if books_state_balance(series.opened_on, day) else None
+        ),
+        bank_balance=folded.balances.get(day),
+    )
+
+
+def _imported(runs: "list[statement_import.RecordedRun]", day: date) -> bool:
+    """Return whether *day* lies inside some import's declared window.
+
+    Args:
+        runs: The account's runs (:attr:`BankAgreement.runs`) -- the declared
+            windows, merged.
+        day: The civil day.
+
+    Returns:
+        True when a run spans *day*, so the bank's lines describe its
+        movement: a quiet day there moved ``0.00``.  False on a day between
+        or outside every run, which nothing the bank said reaches (finding
+        **BAL-650**).
+    """
+    return bool(covered_pieces(runs, day, day))
+
+
+def covered_pieces(
+    runs: "list[statement_import.RecordedRun]", first_day: date, last_day: date,
+) -> "list[tuple[date, date]]":
+    """Return the pieces of ``[first_day, last_day]`` the imported windows cover.
+
+    **The one statement of which days an import covers** (``CLAUDE.md`` rule
+    14, plan step ``balance:X-f3c-2b-2c``), read by :func:`_imported` per
+    drawn day, by ``outstanding_difference.span_agreement``'s ``imported``
+    count and by its ``_cut_at_windows``.  *Before this step the last two
+    spelled it for themselves -- the count and the cut's edges -- and nothing
+    asked it of a day's movement, so a compared day need not have been an
+    imported one (finding* **BAL-650** *: its fixture compared 16 days, 14 of
+    them inside no import's window).*  Interval arithmetic, never a day list:
+    a mistyped 1900 costs one piece per run, not 46,000 days.
+
+    Args:
+        runs: The merged windows (:attr:`BankAgreement.runs`), ascending and
+            disjoint.
+        first_day: The range's first day, inclusive.
+        last_day: Its last day, inclusive.  An inverted range has no piece.
+
+    Returns:
+        ``[(first, last), ...]``, ascending and disjoint: each run clipped to
+        the range, for every run that overlaps it.
+    """
+    return [
+        (max(run.first_day, first_day), min(run.last_day, last_day))
+        for run in runs
+        if max(run.first_day, first_day) <= min(run.last_day, last_day)
+    ]
 
 
 def day_detail(

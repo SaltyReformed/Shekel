@@ -1,0 +1,521 @@
+"""Loan route tests: the recurring-transfer prompt on the loan page.
+
+Split from ``tests/test_routes/test_loan.py`` by ``tools/split`` (ruling R-BAL301).
+"""
+
+from datetime import date
+from decimal import Decimal
+
+from app import ref_cache
+from app.enums import AcctTypeEnum
+
+from tests._test_helpers import (
+    make_cadence_rule,
+    make_loan_payment_template,
+    select_option_values,
+    state_template_price,
+)
+from tests.oracles.recurrence_baseline import MONTHLY
+
+from ._helpers import _create_loan_account, _payment_template, _create_mortgage
+
+
+# ── Transfer Prompt Tests (Commit 5.1-3) ─────────────────────────
+
+
+class TestTransferPrompt:
+    """Tests for the recurring payment transfer prompt on the loan dashboard
+    and the create_payment_transfer route.
+    """
+
+    def test_dashboard_shows_prompt_no_transfer(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Dashboard with LoanParams but no recurring transfer: prompt visible."""
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No recurring payment" in html
+        assert "Create Recurring Transfer" in html
+
+    def test_dashboard_hides_prompt_transfer_exists(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Dashboard with active recurring transfer template: prompt hidden."""
+        from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+
+        # Create an active recurring transfer template targeting this account.
+        tpl = TransferTemplate(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=acct.id,
+            name="Existing Mortgage Payment",
+            default_amount=Decimal("1500.00"),
+            is_active=True,
+        )
+        db.session.add(tpl)
+        db.session.commit()
+        # Priced, as every real definition is (the loan page's plan sums this
+        # definition's occurrences since plan step R16-b-2 and refuses a
+        # series nobody stated).
+        state_template_price(tpl)
+        db.session.commit()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            tpl, MONTHLY,
+            fires_on_day=1,
+        )
+        # And the cadence is COMMITTED before the request (plan step X-i3):
+        # ``make_cadence_rule``'s contract is that the caller commits, and a
+        # request cannot see a row this test never committed.
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No recurring payment" not in html
+
+    def test_dashboard_shows_prompt_inactive_template(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Inactive (archived) transfer template: prompt still shown.
+
+        The user may have deactivated a prior transfer. The prompt
+        should reappear so they can create a new one.
+        """
+        from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+
+        tpl = TransferTemplate(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=acct.id,
+            name="Old Mortgage Payment",
+            default_amount=Decimal("1500.00"),
+            is_active=False,  # Deactivated
+        )
+        db.session.add(tpl)
+        db.session.commit()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            tpl, MONTHLY,
+            fires_on_day=1,
+        )
+        # Committed before the request, for the reason the sibling above states.
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No recurring payment" in html
+
+    def test_create_transfer_success(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST with valid source account creates RecurrenceRule + TransferTemplate.
+
+        Redirects to the loan dashboard after successful creation.
+        """
+        from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+        assert resp.status_code == 302
+        assert f"/accounts/{acct.id}/loan" in resp.headers.get("Location", "")
+
+        # Verify records were created.
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        assert tpl is not None
+        assert tpl.is_active is True
+        assert tpl.from_account_id == checking.id
+        assert tpl.recurrence_rule is not None
+        assert tpl.default_amount > 0
+        # No "amount" override was posted, so the route defaults to the
+        # full monthly payment and opts into live derivation: the loan-only
+        # derive_from_loan flag lives in the 1:1 loan_payment_settings row
+        # (decision B), which the loan route creates on the template (a
+        # generic transfer / investment contribution gets no settings row).
+        assert tpl.settings is not None
+        assert tpl.settings.derive_from_loan is True
+
+        # Reached through the OWNING relationship (plan step R-F6): the
+        # rule names this template back, which is the arc the schema holds.
+        assert tpl.recurrence_rule is not None
+        assert tpl.recurrence_rule.transfer_template_id == tpl.id
+
+    def test_create_transfer_redirect_hides_prompt(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """After creation, GET dashboard: prompt no longer visible."""
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+
+        # Create the recurring transfer.
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+
+        # Dashboard should no longer show the prompt.
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No recurring payment" not in html
+
+    def test_create_transfer_generates_shadow_transactions(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """After creation: shadow transactions exist on the loan account."""
+        from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+
+        # Shadow income transactions should exist on the loan account.
+        income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+        shadows = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.account_id == acct.id,
+                Transaction.transfer_id.isnot(None),
+                Transaction.transaction_type_id == income_type_id,
+                Transaction.is_deleted.is_(False),
+            )
+            .all()
+        )
+        assert len(shadows) > 0
+
+    def test_create_transfer_validates_source_ownership(
+        self, auth_client, seed_user, seed_second_user,
+        seed_second_periods, db, seed_periods,
+    ):
+        """POST with other user's account as source returns 404 (security)."""
+        acct = _create_mortgage(seed_user, db.session)
+        other_account = seed_second_user["account"]
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(other_account.id)},
+        )
+        # Should not succeed -- security response rule (404 for not-yours).
+        assert resp.status_code == 404
+
+    def test_create_transfer_validates_source_not_self(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST with debt account as source: validation error."""
+        acct = _create_mortgage(seed_user, db.session)
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(acct.id)},
+        )
+        assert resp.status_code == 302
+        assert f"/accounts/{acct.id}/loan" in resp.headers.get("Location", "")
+
+    def test_create_transfer_idor_debt_account(
+        self, auth_client, seed_user, seed_second_user,
+        seed_second_periods, db, seed_periods,
+    ):
+        """POST to other user's debt account returns 404 (security)."""
+        other_loan = _create_loan_account(
+            seed_second_user, db.session, AcctTypeEnum.MORTGAGE, "Other Mortgage",
+            Decimal("200000.00"), Decimal("0.06000"), 360,
+            date(2024, 1, 1), 1,
+        )
+        checking = seed_user["account"]
+
+        resp = auth_client.post(
+            f"/accounts/{other_loan.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+        assert resp.status_code == 404
+
+    def test_create_transfer_amount_override(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST with custom amount: template uses the override amount."""
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": "2000.00",
+            },
+        )
+        assert resp.status_code == 302
+
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        assert tpl is not None
+        assert tpl.default_amount == Decimal("2000.00")
+        # Manual mode (typed amount) still gets a loan_payment_settings row,
+        # but with derive_from_loan False -- the cash stays the typed base
+        # (decision B / decision D).
+        assert tpl.settings is not None
+        assert tpl.settings.derive_from_loan is False
+
+    def test_create_transfer_with_extra_principal(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Creating a payment with an extra stores it on settings, not the base.
+
+        The standing extra rides the settings row (spec Sec. 6.3); the
+        ``default_amount`` stays the derived base (P&I + escrow), NOT base +
+        extra -- the extra is applied live, never baked in.
+        """
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "extra_principal": "100.00",
+            },
+        )
+        assert resp.status_code == 302
+
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        assert tpl is not None
+        assert tpl.settings is not None
+        assert tpl.settings.derive_from_loan is True
+        assert tpl.settings.extra_principal == Decimal("100.00")
+        # The base is the derived P&I + escrow, NOT base + extra.
+        assert tpl.default_amount > Decimal("100.00")
+
+    def test_update_payment_settings_changes_extra(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The per-definition settings door updates that payment's extra in place.
+
+        No shadow regeneration is needed (the extra is a live parameter): the
+        settings row's ``extra_principal`` is set to the new value.  The 302
+        is also the proof that the moved door still ROUTES: the ownership 404s
+        below are only meaningful beside it.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+        tpl = _payment_template(db.session, seed_user, acct)
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings",
+            data={"extra_principal": "150.00"},
+        )
+        assert resp.status_code == 302
+
+        db.session.expire(tpl)
+        assert tpl.settings.extra_principal == Decimal("150.00")
+
+    def test_update_payment_settings_unknown_template_404s(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A template id that names none of this loan's payments is a 404.
+
+        The door names the definition it writes (plan step R7d-g-3, ruling
+        R-R83); with no recurring payment there is no id to name, and an id
+        that names nothing reads the same as one that is not the owner's.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/999999/settings",
+            data={"extra_principal": "150.00"},
+        )
+        assert resp.status_code == 404
+
+    def test_update_payment_settings_refuses_another_loans_template(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The owner's OWN payment into a different loan is a 404 on this loan's door.
+
+        The template must pay INTO the loan the URL names -- the set the card
+        renders a strip for -- so a valid id on the wrong loan writes nothing.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        other = _create_mortgage(seed_user, db.session, name="Other Mortgage")
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{other.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+        other_tpl = _payment_template(db.session, seed_user, other)
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{other_tpl.id}/settings",
+            data={"extra_principal": "150.00"},
+        )
+        assert resp.status_code == 404
+        db.session.expire(other_tpl)
+        assert other_tpl.settings.extra_principal == Decimal("0.00")
+
+    def test_update_payment_settings_refuses_an_archived_template(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """An ARCHIVED payment is not in the loan's active set, so its door is a 404."""
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+        tpl = _payment_template(db.session, seed_user, acct)
+        resp = auth_client.post(f"/transfers/{tpl.id}/archive")
+        assert resp.status_code == 302
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings",
+            data={"extra_principal": "150.00"},
+        )
+        assert resp.status_code == 404
+
+    def test_update_payment_settings_rejects_negative_extra(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A negative extra is rejected (danger flash) and never mutates settings."""
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "extra_principal": "50.00",
+            },
+        )
+
+        tpl = _payment_template(db.session, seed_user, acct)
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings",
+            data={"extra_principal": "-5.00"},
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        assert b"valid extra principal" in resp.data.lower()
+        # The original extra is untouched.
+        db.session.expire(tpl)
+        assert tpl.settings.extra_principal == Decimal("50.00")
+
+    def test_update_payment_settings_idor(
+        self, second_auth_client, seed_user, db, seed_periods,
+    ):
+        """A non-owner editing a loan's extra gets a 404 (not-yours == not-found).
+
+        With the owner's real template id in the URL, so the 404 is the
+        ownership gate's and not the URL map's -- the sibling
+        ``test_update_payment_settings_changes_extra`` proves the same URL
+        shape routes (302) for the owner.  The owner's payment is built
+        through the ORM rather than the owner's client.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        tpl = make_loan_payment_template(
+            db.session, seed_user, acct, amount="1500.00",
+        )
+        db.session.commit()
+
+        resp = second_auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings",
+            data={"extra_principal": "150.00"},
+        )
+        assert resp.status_code == 404
+        db.session.expire(tpl)
+        assert tpl.settings.extra_principal == Decimal("0.00")
+
+    def test_dashboard_shows_extra_control_when_payment_exists(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The payment card renders the definition's extra control once it exists.
+
+        Prefilled from THAT payment's stored extra ($125.00), posting to its
+        own per-definition settings door.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "extra_principal": "125.00",
+            },
+        )
+        tpl = _payment_template(db.session, seed_user, acct)
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings" in html
+        assert 'value="125.00"' in html
+
+    def test_source_accounts_exclude_debt_account(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Source accounts dropdown does not include the current debt account.
+
+        Scopes the assertion to the ``source_account_id`` select.  A
+        naive ``f'value="{acct.id}" not in html`` check would falsely
+        match the loan account's id when it appears in any unrelated
+        attribute on the page (e.g., the dashboard's hidden form
+        carrying ``value="N"`` for some other model whose id happens
+        to equal the loan account's id).  The OR with ``"No recurring
+        payment" not in html`` papered over collisions when the
+        prompt was hidden, but failed deterministically when the
+        prompt was shown AND ``acct.id`` collided with another
+        element's value.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        source_options = select_option_values(html, "source_account_id")
+        # When the prompt is shown, ``source_options`` carries the
+        # eligible source accounts and the loan account itself must
+        # not be among them.  When the prompt is hidden (no source
+        # accounts available, e.g. the user has no non-loan
+        # accounts), ``source_options`` is the empty list and the
+        # assertion is vacuously true.
+        assert str(acct.id) not in source_options, (
+            f"Loan account {acct.id} ({acct.name}) is listed as a "
+            f"source-account option on its own loan dashboard; got "
+            f"source_account_id options {source_options!r}"
+        )

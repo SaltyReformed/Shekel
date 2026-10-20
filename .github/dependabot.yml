@@ -39,6 +39,14 @@ updates:
       # their findings and moved both pins; a lint-tool release that flags
       # unchanged files now arrives as a red grouped PR, which is the
       # signal to read its findings the same way.)
+      # rumdl 0.2.79 and 0.3.0 re-wrap a checkbox item that has nested
+      # sub-items wrongly: the "[x] " counts as zero width, so their own
+      # fix writes lines over 100 characters, and one item has no form
+      # 0.2.79 accepts at all (developer ruling R-BAL332, 2026-10-20).
+      # Exact versions, not a range: every later release is still
+      # proposed, and polyglot-lint judges it.
+      - dependency-name: rumdl
+        versions: ["0.2.79", "0.3.0"]
       # redis-py 8.x is out of reach while limits (Flask-Limiter's storage
       # layer) declares redis<8.0.0 in its redis extra -- an extra nothing
       # pinned requests, so pip alone would not refuse it.

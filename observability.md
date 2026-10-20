@@ -743,7 +743,7 @@ Suggested initial rules:
 
 ## Phase 6 — Shekel logging fix (upstream)
 
-Apply this PR to `https://github.com/saltyreformed/shekel`:
+Apply this PR to `https://github.com/saltyreformed-labs/Shekel`:
 
 In `app/utils/logging_config.py`, replace the `formatters.json` block. Recommended path is
 **Option B** (true RFC3339, microsecond precision):
@@ -780,7 +780,7 @@ not support `%f`).
 
 **Activation order:**
 
-1. PR + merge in saltyreformed/shekel
+1. PR + merge in saltyreformed-labs/Shekel
 2. Image rebuild and `docker compose pull && docker compose up -d shekel-prod-app`
 3. Verify: `docker logs --tail 5 shekel-prod-app | grep '"timestamp"'`
 4. The `loki.process.shekel` block in `config.alloy` already expects field name `timestamp` — once
@@ -846,7 +846,7 @@ Prometheus and Loki data are time-bounded and re-creatable; skip them.
 
 - `/opt/docker/jellyfin/config/system.xml` — `<EnableMetrics>true</EnableMetrics>`
 - `/opt/docker/immich/.env` — `IMMICH_TELEMETRY_INCLUDE=all`
-- Upstream `app/utils/logging_config.py` in saltyreformed/shekel (Phase 6)
+- Upstream `app/utils/logging_config.py` in saltyreformed-labs/Shekel (Phase 6)
 
 ### Existing patterns reused (no edits needed beyond what's listed above)
 
@@ -916,4 +916,4 @@ After all phases:
   <https://nhairs.github.io/python-json-logger/latest/quickstart/>
 - Intel GPU exporter — <https://github.com/onedr0p/intel-gpu-exporter>
 - Shekel logging_config.py —
-  <https://github.com/saltyreformed/shekel/blob/main/app/utils/logging_config.py>
+  <https://github.com/saltyreformed-labs/Shekel/blob/main/app/utils/logging_config.py>

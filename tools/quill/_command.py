@@ -8,13 +8,15 @@ since the tool's rename), so that ``_filing`` (the ``file`` command) and ``quill
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import Protocol
 
 from tools.ci import trailers
 from tools.ci.arcs import ARCS
 from tools.quill import _git
 from tools.quill._state import filing_unfinished, missing
-from tools.quill._tracker import Card, Tracker, TrackerError
+from tools.quill._tracker import BareCard, Card, Tracker, TrackerError
 
 
 #: The kinds of card the board holds, in the developer's order (R-BAL177).
@@ -25,8 +27,21 @@ class Refused(Exception):
     """A command that will not run as asked; its message says why."""
 
 
-def with_closure(tracker: Tracker, cards: dict[int, Card]) -> dict[int, Card]:
-    """``cards`` plus every card a decision over them reads (blockers, parents, children)."""
+class _ReadsCards[CardT: BareCard](Protocol):  # pylint: disable=too-few-public-methods
+    """A reader of cards by number, each of the type it reads: a :class:`_tracker.Tracker`
+    reads :class:`_tracker.Card`\\ s, a :class:`_tracker.CardReader` :class:`BareCard`\\ s.
+
+    Pylint: too-few-public-methods (1/2) -- **a protocol names the one method its
+    readers share**, which is all :func:`with_closure` asks of one."""
+
+    def cards(self, numbers: Iterable[int]) -> Mapping[int, CardT]:
+        """The cards numbered ``numbers`` that exist."""
+
+
+def with_closure[CardT: BareCard](tracker: _ReadsCards[CardT],
+                                  cards: dict[int, CardT]) -> dict[int, CardT]:
+    """``cards`` plus every card a decision over them reads (blockers, parents, children),
+    each of the type ``tracker`` reads."""
     while wanted := missing(cards):
         found = tracker.cards(wanted)
         absent = wanted - set(found)

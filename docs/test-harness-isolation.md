@@ -201,16 +201,13 @@ once per run.
 **Wire the suite to it**: IMPLEMENTED in `scripts/test.sh` at `balance:X-br-3`, inside the
 wrapper -- unconditionally since `balance:X-br-4`, which deleted the opt-in `TEST_DB_PER_RUN` flag
 along with the shared-container path it chose between. When `DOCKER_HOST` is unset and a rootless
-socket exists it is selected automatically; then the wrapper asks the daemon what it IS and refuses
-a non-rootless one:
-
-```bash
-# Only when DOCKER_HOST is unset AND that socket actually exists; the wrapper
-# does not invent an endpoint, and it refuses rather than falling back.
-if [ -z "${DOCKER_HOST:-}" ] && [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/docker.sock" ]; then
-    export DOCKER_HOST="unix://${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/docker.sock"
-fi
-```
+socket exists it is selected automatically; then the daemon is asked what it IS and a non-rootless
+one is refused. Since step X-cx's K1a-3 (2026-10-20) that rule lives in `scripts/private_cluster.py`
+(`daemon()`), the act that starts a cluster, so the release rehearsal kit's bench inherits it too:
+the wrapper asks `private_cluster.py daemon` before it prepares the image and exports the endpoint
+it names, and the start asks again before it makes anything. The selection happens only when
+`DOCKER_HOST` is unset AND that socket actually exists; nothing invents an endpoint, and an absent
+rootless daemon is refused rather than fallen back from.
 
 Two properties worth keeping if this is ever rewritten. It reads `docker info` rather than
 pattern-matching the socket path, because "rootless" is a property of a daemon and a path is only a
@@ -222,7 +219,7 @@ deliberately, shared with `tests/test_deploy/conftest.py`.
 
 **The POLICY, however, is not yet single-homed, and an earlier draft of this section wrongly said it
 was.** Two producers decide "is this daemon isolated" by contradictory methods that agree today:
-`scripts/test.sh` asks the daemon (`docker info` -> `rootless`), while
+`scripts/private_cluster.py` asks the daemon (`docker info` -> `rootless`), while
 `tests/test_deploy/conftest.py` classifies by a path allowlist (`_SYSTEM_DOCKER_ENDPOINTS`) -- the
 exact heuristic the wrapper's own comment argues has a hole, since a `tcp://` endpoint aimed at the
 `socket-proxy` container reads as isolated while being the production daemon at another address.

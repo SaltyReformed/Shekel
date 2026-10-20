@@ -92,7 +92,7 @@ from tests.test_services.test_paycheck_calculator import (
 )
 from tests.test_services.test_retirement_dashboard_service import _picture
 from tests.test_services.test_salary_cockpit_service import _pair
-from tests.test_services.test_savings_dashboard_service import _create_small_loan
+from tests.test_services.test_savings_dashboard_service._helpers import _create_small_loan
 
 _NONE = BusinessDayShiftEnum.NONE
 

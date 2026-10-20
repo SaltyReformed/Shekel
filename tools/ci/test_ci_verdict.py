@@ -7,7 +7,8 @@ dependency failed reports ``"skipped"``, and a job skipped by its own ``if:``
 reports ``"skipped"`` too -- which is why ``skipped`` is judged against the
 scope rather than trusted.  Every entry carries ``result`` and ``outputs``, and
 only ``scope`` has outputs (its answer, and since step X-cx's L4 the change
-set's two ends it hands the ``commit-trailers`` job).
+set's two ends it hands the ``commit-trailers`` job, and since L9d the
+``landing`` job too).
 """
 from __future__ import annotations
 
@@ -35,6 +36,7 @@ def _needs(scope_output="full", **results):
             "outputs": {} if scope_output is None else {"scope": scope_output, **ends},
         },
         "commit-trailers": {"result": "success", "outputs": {}},
+        "landing": {"result": "success", "outputs": {}},
         "plan-gate": {"result": "success", "outputs": {}},
         "tax-law": {"result": "success", "outputs": {}},
         "lint": {"result": "success", "outputs": {}},
@@ -52,8 +54,8 @@ class TestAFullRunIsGreenOnlyWhenEveryGraderPassed:
         """The one green shape of a full run."""
         assert not ci_verdict.verdict(_needs())
 
-    @pytest.mark.parametrize("job", ["scope", "commit_trailers", "plan_gate", "tax_law",
-                                     "lint", "test"])
+    @pytest.mark.parametrize("job", ["scope", "commit_trailers", "landing", "plan_gate",
+                                     "tax_law", "lint", "test"])
     @pytest.mark.parametrize("result", ["failure", "cancelled", "skipped"])
     def test_any_grader_not_succeeding_is_red(self, job, result):
         """A failed, cancelled or SKIPPED grader turns the check red.
@@ -105,6 +107,14 @@ class TestARegistryOnlyRunSkipsOnlyTheCodeGraders:
         )
         assert reasons == [f"commit-trailers: {result!r}, where this scope requires success"]
 
+    @pytest.mark.parametrize("result", ["failure", "cancelled", "skipped"])
+    def test_the_landing_check_must_still_succeed(self, result):
+        """The tracker is asked about a registry pass's trailers too (step X-cx's L9d)."""
+        reasons = ci_verdict.verdict(
+            _needs(scope_output="registry-only", landing=result, lint="skipped", test="skipped")
+        )
+        assert reasons == [f"landing: {result!r}, where this scope requires success"]
+
     @pytest.mark.parametrize("result", ["failure", "cancelled"])
     def test_a_code_grader_that_ran_and_failed_is_still_red(self, result):
         """Skipping is allowed; failing is not, in any scope."""
@@ -129,17 +139,18 @@ class TestAnUnreadableScopeIsFull:
     def test_a_failed_classifier_is_red_whatever_follows(self):
         """The classifier failing leaves no output; its own result is red.
 
-        Its dependants are skipped for want of it, so they are red too: four
+        Its dependants are skipped for want of it, so they are red too: five
         reasons, the classifier first (``commit-trailers`` waits on it for the
-        change set's two ends since step X-cx's L4).
+        change set's two ends since step X-cx's L4, and ``landing`` since L9d).
         """
         reasons = ci_verdict.verdict(
             _needs(scope_output=None, scope="failure", commit_trailers="skipped",
-                   lint="skipped", test="skipped")
+                   landing="skipped", lint="skipped", test="skipped")
         )
         assert reasons == [
             "scope: 'failure', where this scope requires success",
             "commit-trailers: 'skipped', where this scope requires success",
+            "landing: 'skipped', where this scope requires success",
             "lint: 'skipped', where this scope requires success",
             "test: 'skipped', where this scope requires success",
         ]
@@ -155,8 +166,8 @@ class TestTheVerdictKnowsExactlyWhatItGrades:
             "benchmarks: a job this verdict does not know how to grade",
         ]
 
-    @pytest.mark.parametrize("job", ["scope", "commit-trailers", "plan-gate", "tax-law",
-                                     "lint", "test"])
+    @pytest.mark.parametrize("job", ["scope", "commit-trailers", "landing", "plan-gate",
+                                     "tax-law", "lint", "test"])
     def test_a_named_job_missing_from_needs_is_red(self, job):
         """Dropping a grader from ``needs`` cannot quietly stop grading it."""
         needs = _needs()

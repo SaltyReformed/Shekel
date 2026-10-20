@@ -433,7 +433,7 @@ services:
     # clear remediation message, matching the rest of the compose
     # stack's required-secret handling (SECRET_KEY, POSTGRES_PASSWORD,
     # APP_ROLE_PASSWORD).  Audit findings F-060, F-155 / Commit C-36.
-    image: ghcr.io/saltyreformed/shekel@${SHEKEL_IMAGE_DIGEST:?Set SHEKEL_IMAGE_DIGEST=sha256:... in /opt/docker/shekel/.env to pin the production image (audit finding F-060). See deploy/README.md "Image digest pinning" for the procedure.}
+    image: ghcr.io/saltyreformed-labs/shekel@${SHEKEL_IMAGE_DIGEST:?Set SHEKEL_IMAGE_DIGEST=sha256:... in /opt/docker/shekel/.env to pin the production image (audit finding F-060). See deploy/README.md "Image digest pinning" for the procedure.}
     environment:
       # Pin the app's civil timezone (parity audit 2026-06-12, finding
       # M01 in docs/audits/dev-prod-parity/findings.md).  The image

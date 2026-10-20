@@ -45,6 +45,8 @@ run with its own level, two checkpoints and a run with no level, where the
 moved lines are the step's own claim.  The shape keys moved with the value
 (``fold.anchor`` became ``fold.runs``; ``agreement.anchor`` and
 ``agreement.imports`` became ``agreement.runs``) and are compared by hand.
+Plan step ``balance:X-f3c-2b-2c`` deleted the ``imports`` projection derived
+from ``runs`` and its dump key with it: ``runs`` carries the same spans.
 
 Usage::
 
@@ -172,10 +174,12 @@ def _with_context(account, ctx):
     if agreement is not None:
         out["agreement"] = {
             "span": _plain(agreement.span),
-            "records_begin": _plain(agreement.records_begin),
+            "books_opened_on": _plain(agreement.books_opened_on),
             "runs": _plain(agreement.runs),
-            "imports": _plain(agreement.imports),
             "days": _plain(agreement.days),
+            # Which days COUNT is a property of each day's figures since plan
+            # step balance:X-f3c-2b-2c (no field says it), so it is dumped.
+            "compared": len(agreement.compared),
             "unpriced_days": agreement.unpriced_days,
             "headline": _plain(agreement.headline),
             "standing_gap": _plain(agreement.standing_gap),

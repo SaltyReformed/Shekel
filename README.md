@@ -30,9 +30,9 @@ docker compose version
 
 ```bash
 mkdir -p shekel/deploy/nginx-bundled && cd shekel
-curl -O https://raw.githubusercontent.com/SaltyReformed/Shekel/main/docker-compose.yml
-curl -O https://raw.githubusercontent.com/SaltyReformed/Shekel/main/.env.example
-curl -o deploy/nginx-bundled/nginx.conf https://raw.githubusercontent.com/SaltyReformed/Shekel/main/deploy/nginx-bundled/nginx.conf
+curl -O https://raw.githubusercontent.com/saltyreformed-labs/Shekel/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/saltyreformed-labs/Shekel/main/.env.example
+curl -o deploy/nginx-bundled/nginx.conf https://raw.githubusercontent.com/saltyreformed-labs/Shekel/main/deploy/nginx-bundled/nginx.conf
 cp .env.example .env
 ```
 
@@ -123,7 +123,7 @@ docker volume rm shekel-prod-pgdata
 | `shekel-prod-pgdata ... not found` on first run | Run `docker volume create shekel-prod-pgdata` before `docker compose up`. |
 | MFA enable fails with "TOTP_ENCRYPTION_KEY" message | Set `TOTP_ENCRYPTION_KEY` in `.env`. See [MFA Setup](#mfa-setup) for generation instructions. |
 | `/register` returns 404 | `REGISTRATION_ENABLED` is `false` (the production default). Set `REGISTRATION_ENABLED=true` in `.env` to re-enable. |
-| Nginx fails with "mount ... not a directory" | The `deploy/nginx-bundled/nginx.conf` file is missing. Re-run the download step: `mkdir -p deploy/nginx-bundled && curl -o deploy/nginx-bundled/nginx.conf https://raw.githubusercontent.com/SaltyReformed/Shekel/main/deploy/nginx-bundled/nginx.conf` |
+| Nginx fails with "mount ... not a directory" | The `deploy/nginx-bundled/nginx.conf` file is missing. Re-run the download step: `mkdir -p deploy/nginx-bundled && curl -o deploy/nginx-bundled/nginx.conf https://raw.githubusercontent.com/saltyreformed-labs/Shekel/main/deploy/nginx-bundled/nginx.conf` |
 | App does not start or shows blank page | Run `docker compose logs app` and check for error messages. |
 | Container keeps restarting | Run `docker compose logs app` -- a missing required variable or database connection issue is the most common cause. |
 | Container marked unhealthy during first startup | First-time initialization (schema creation, migrations, seeding) can take over 60 seconds. The healthcheck `start_period` allows 120 seconds before failures count. Wait and check `docker compose logs -f app`. |
@@ -345,7 +345,7 @@ python --version
 
 ```bash
 cd ~/projects  # or wherever you keep code
-git clone https://github.com/SaltyReformed/Shekel.git
+git clone https://github.com/saltyreformed-labs/Shekel.git
 cd Shekel
 
 # Create a virtual environment

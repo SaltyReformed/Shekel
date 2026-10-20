@@ -42,7 +42,7 @@ from tools.quill._tracker import (
     TrackerError,
     WholeCard,
 )
-from tools.quill.setup_tracker import FILING, PLAN
+from tools.quill.setup_tracker import APP_LOGIN, FILING, PLAN
 
 
 class FakeBoard:
@@ -101,7 +101,7 @@ class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-
     tenth and eleventh.
     """
 
-    app_login = "shekel-quill"
+    app_login = APP_LOGIN
     place = PLAN
 
     def __init__(self):

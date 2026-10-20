@@ -76,7 +76,7 @@ Measured against the running maintainer host 2026-08-08. The nginx row differs b
 |-----------|-------|------------|--------------|
 | `shekel-prod-db` | `postgres:18-alpine` (digest-pinned; server 18.4) | backend | `pg_isready` every 10s |
 | `shekel-prod-redis` | `redis:7.4-alpine` | backend | `redis-cli ping` every 10s |
-| `shekel-prod-app` | `ghcr.io/saltyreformed/shekel@sha256:...`, the digest `shekel-deploy` pins in `.env` | backend, monitoring | `GET /health` every 30s |
+| `shekel-prod-app` | `ghcr.io/saltyreformed-labs/shekel@sha256:...`, the digest `shekel-deploy` pins in `.env` | backend, monitoring | `GET /health` every 30s |
 | `shekel-prod-nginx` | the `nginx:<minor>-alpine` tag `docker-compose.yml` pins (`1.29-alpine` since #434) -- **bundled mode only**. In shared mode (this host) there is no such container; the shared `nginx` reverse proxy fronts it | frontend, backend | `wget /health` every 30s |
 
 ### Script Inventory
@@ -131,7 +131,7 @@ produced, not by which script you remember.
 | Script | `shekel-deploy` | `scripts/deploy.sh` |
 | Canonical source | `deploy/shekel-deploy.sh` in the repo, symlinked to `/opt/docker/scripts/` | `scripts/deploy.sh` |
 | Stack | `/opt/docker/shekel` (hardened, digest-pinned) | `/opt/shekel` (`docker-compose.yml` + `docker-compose.build.yml`) |
-| Image | `ghcr.io/saltyreformed/shekel@sha256:...`, cosign-verified | built locally from the working tree |
+| Image | `ghcr.io/saltyreformed-labs/shekel@sha256:...`, cosign-verified | built locally from the working tree |
 | Rollback | digest revert, decided by the re-read schema stamp (2.3) | `:previous` image tag |
 
 `scripts/deploy.sh` **refuses to run when `/opt/docker/shekel` exists** (`--force-self-hosted`
@@ -395,9 +395,9 @@ docker compose up -d --no-deps --force-recreate app
 # deploy.sh tags the in-place image as ${APP_CONTAINER}:previous
 # (so shekel-prod-app:previous) before each deploy, then on rollback
 # re-tags it as <compose_image>:latest.  The compose image for the
-# bundled deployment is ghcr.io/saltyreformed/shekel:latest -- adjust
+# bundled deployment is ghcr.io/saltyreformed-labs/shekel:latest -- adjust
 # below if you build a custom image with a different name.
-docker tag shekel-prod-app:previous ghcr.io/saltyreformed/shekel:latest
+docker tag shekel-prod-app:previous ghcr.io/saltyreformed-labs/shekel:latest
 docker compose up -d --no-deps --force-recreate app
 ```
 
@@ -636,7 +636,7 @@ pulling the trigger. Its trailing output prints the exact post-script commands.
   entrypoint contains the `_load_secret` function:
 
   ```bash
-  docker run --rm --entrypoint sh ghcr.io/saltyreformed/shekel@sha256:<pinned> \
+  docker run --rm --entrypoint sh ghcr.io/saltyreformed-labs/shekel@sha256:<pinned> \
       -c 'grep -c _load_secret /home/shekel/app/entrypoint.sh'
   # Output must be >= 5 (one definition + four call sites).
   ```
@@ -1252,7 +1252,7 @@ in-image directory ownership, so this is mostly defensive. Verify once:
 sudo docker run --rm \
     -v shekel-prod-app-state:/d \
     --entrypoint sh \
-    ghcr.io/saltyreformed/shekel:latest \
+    ghcr.io/saltyreformed-labs/shekel:latest \
     -c 'stat -c "%u:%g %n" /d'
 # Expected: <shekel uid>:<shekel gid> /d
 ```
