@@ -260,15 +260,19 @@ def _settle_and_revert(seed_user, txn):
 
 
 class TestTheAccountDoor:
-    """A hidden row still holding a payment archives the account."""
+    """An account a hidden transfer named archives on its posting-ledger history.
 
-    def test_a_hidden_transfer_leg_holding_its_payment_archives_the_account(
+    The transfer's soft delete took both sides' payments off, so the hidden
+    transfer holds none; the settle's journal entries stay.
+    """
+
+    def test_a_hidden_transfer_whose_payments_went_archives_the_account_on_its_ledger(
         self, app, db, auth_client, seed_user,
     ):
         """Ruling R-CC65: the cleanup deleted the hidden row AND its money.
 
         No live row, no Paid row -- so the history arms say nothing.  **The
-        hidden row is a transfer's leg because no other could hold money**
+        hidden row was a transfer's leg because no other could hold money**
         (ruling **R-CC92**): this was a one-off envelope on Savings,
         soft-deleted with its purchase inside, the state an archive left
         before this step.  Re-expressed under rule 5, developer-confirmed
@@ -609,8 +613,9 @@ class TestTheRowDoorsSoftArm:
         """A row the occurrence delete hides holds no money, so nothing refuses over it.
 
         What THIS door leaves (ruling R-CC75).  A row hidden before this
-        release still holding one refuses the migration (R-CC82); a transfer
-        leg the transfer's soft delete hides is BAL-532's.
+        release still holding one refuses the migration (R-CC82); a
+        transfer's soft delete takes both sides' payments off the same way
+        since plan step ``balance:X-bi-6-4d-2`` (finding BAL-532 closed).
         """
         with app.app_context():
             periods = seed_periods_today

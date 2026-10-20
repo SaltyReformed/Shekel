@@ -630,8 +630,7 @@ def _items(
 
     **One premise the DOORS hold and no key does** (the reason
     :func:`settled_items` gives for status drift, for the period a shadow
-    mirrors; the account a shadow mirrors is
-    ``archive_helpers.account_holding_movements``' premise).  A shadow's
+    mirrors).  A shadow's
     ``pay_period_id`` is its transfer's (Transfer Invariant 3:
     ``transfer_service`` moves both together, a restore re-aligns them,
     carry-forward's bulk moves exclude shadows), so the row query's

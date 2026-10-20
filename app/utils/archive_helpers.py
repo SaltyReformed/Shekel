@@ -28,7 +28,7 @@ ever named a status.
 **R-CC65**).  A movement is money that moved (ruling **R-BAL80**), and a
 Projected envelope holding a bank-confirmed purchase is exactly as much a
 record as a Paid bill.  The ``*_holding_movements`` family below asks it of a
-definition, a recurring transfer and an account, and :func:`holds_nothing` is
+definition and a recurring transfer, and :func:`holds_nothing` is
 the clause an archive keeps such rows OUT of; the pay-period doors ask it per
 period (``pay_period_locks``).  Until that step these doors judged "history"
 by row STATUS alone, and a permanent delete permitted on that answer
@@ -275,9 +275,8 @@ def transfers_holding_movements(*transfer_scope: ColumnElement) -> HeldMovements
     """Return what the legs of the transfers matching *transfer_scope* hold.
 
     The recurring-transfer permanent delete's refusal
-    (:func:`transfer_template_holding_movements`), the transfer archive's
-    receipt (``routes/transfers/lifecycle._archive``) and the account
-    delete's transfer arm (:func:`account_holding_movements`) ask it.  Over
+    (:func:`transfer_template_holding_movements`) and the transfer archive's
+    receipt (``routes/transfers/lifecycle._archive``) ask it.  Over
     the one ``transfer_legs`` join the pay-period doors' question reads
     (:func:`~app.services.transfer_legs.held_transfer_entries`, ruling
     **R-BAL125**), and counted by TRANSFER, so a transfer whose two legs
@@ -293,74 +292,6 @@ def transfers_holding_movements(*transfer_scope: ColumnElement) -> HeldMovements
         transfer_legs.held_transfer_entries(*transfer_scope),
         unit=Transfer.id,
         live=Transfer.is_deleted.is_(False),
-    )
-
-
-def account_holding_movements(account_id: int) -> HeldMovements:
-    """Return what the rows an account's permanent delete would remove hold.
-
-    The account door's cleanup deletes every transfer from or to the account
-    (both legs), every row ON it, and every row under one of its rule-less
-    definitions (``routes/accounts/crud.hard_delete_account``, steps 1-2b).
-    Its history arm already archives the account for any LIVE such row, so
-    what this adds is the soft-deleted ones: a hidden row still holding a
-    payment or purchase (ruling **R-CC65**).  Not the movements ON this
-    account under another account's rows --
-    :func:`account_holds_other_rows_movements` asks that, with its own
-    sentence.
-
-    **Two statements, rows then transfers** (plan step
-    ``balance:X-bi-6-4a-3``): the row arm excludes the shadows, whose
-    ``account_id`` put a transfer's leg on this account in its scope, and
-    the transfer arm asks :func:`transfers_holding_movements` of every
-    transfer from or to the account.  ``live_rows`` then counts rows and
-    transfers together, as the owner sees them; the one caller
-    (``routes/accounts/crud._history_refusal``) reads only whether anything
-    is held and :attr:`HeldMovements.noun`.
-
-    **The row arm drops the shadows on a premise the DOORS hold and no key
-    does**: a shadow on this account is a leg of a transfer from or to it
-    (``transfer_service`` writes the expense shadow on the from-account and
-    the income shadow on the to-account, and an endpoint move re-points
-    both), so the transfer arm asks everything the row arm dropped.  On the
-    ACCOUNT drift no door writes -- a shadow on this account under a
-    transfer that names neither end here -- its movement is asked by
-    neither arm here.  A LIVE such shadow still archives the account
-    through :func:`account_has_history`, and one whose postings reached
-    this account's ledger through :func:`account_has_ledger_postings`; a
-    hidden one with neither, at worst, reaches the door's step-2 delete of
-    the rows ON the account and meets
-    ``fk_transaction_entries_transaction_id``'s refusal (an error page,
-    nothing lost) instead of this designed one.  0 of 358 shadows on the
-    2026-09-30 00:11 production dump.
-
-    Args:
-        account_id: The Account.id to check.
-
-    Returns:
-        The removable rows' :class:`HeldMovements`; falsy when none holds one.
-    """
-    rows = rows_holding_movements(
-        db.or_(
-            Transaction.account_id == account_id,
-            Transaction.template_id.in_(
-                db.session.query(TransactionTemplate.id).filter(
-                    TransactionTemplate.account_id == account_id,
-                )
-            ),
-        ),
-        Transaction.transfer_id.is_(None),
-    )
-    transfers = transfers_holding_movements(
-        db.or_(
-            Transfer.from_account_id == account_id,
-            Transfer.to_account_id == account_id,
-        ),
-    )
-    return HeldMovements(
-        payment=rows.payment or transfers.payment,
-        purchase=rows.purchase or transfers.purchase,
-        live_rows=rows.live_rows + transfers.live_rows,
     )
 
 
@@ -613,18 +544,17 @@ def account_holds_other_rows_movements(account_id: int) -> bool:
     refused a recurring one), so a movement on this account under a row that
     is NEITHER -- a plan item that lives elsewhere and whose money crossed
     here -- is what this counts, whatever its row's ``is_deleted`` says.  (A
-    hidden row that is not a transfer's leg holds none, which the database
-    holds: none can arrive under a hidden row, ruling **R-CC89**; no row can
-    be hidden holding one, **R-CC92**; neither in either order of a race,
-    because the arrival check locks the row, **R-CC96**; and the release's
-    migration refuses to inherit one, **R-CC82**.  A hidden leg can still hold its kept payment,
-    finding **BAL-532**.  The count relies on none of this.)  The row is not
+    hidden row holds none, which the database holds: none can arrive under a
+    hidden row, ruling **R-CC89**; no row can be hidden holding one,
+    **R-CC92**; neither in either order of a race, because the arrival check
+    locks the row, **R-CC96**; and the release's migration refuses to inherit
+    one, **R-CC82**.  The count relies on none of this.)  The row is not
     checking's ghost to hard-delete, and the swipe still names the card.  A
-    movement under a row the cleanup DOES remove is
-    :func:`account_holding_movements`' (plan step ``credit_card:CC-5-4a-4``):
-    until that step a ghost's movement cascaded with it
-    (``fk_transaction_entries_owner_transaction``), and now a row holding
-    one archives the account instead.
+    movement under a row the cleanup DOES remove was asked by the door's own
+    arm from plan step ``credit_card:CC-5-4a-4`` (until then a ghost's
+    movement cascaded with it, ``fk_transaction_entries_owner_transaction``)
+    until plan step ``balance:X-bi-6-4d-3`` deleted that arm: a live row
+    holding one is history, and the database refuses a hidden one.
 
     Args:
         account_id: The Account.id to check.
