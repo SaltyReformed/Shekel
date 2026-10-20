@@ -26,7 +26,9 @@ THE DOCUMENT.  A fragment is swapped into the page that requested it, so its lin
 and its ``HX-Current-URL`` reads, against that page's URL; ``hx-push-url`` makes a request's
 own URL the document's for what its response issues.  A plain selector is looked for in the
 fragment, and only when nothing there matches, in the page it was swapped into AS SERVED: a
-LIMIT, since earlier swaps may have changed that page in a browser.
+LIMIT, since earlier swaps may have changed that page in a browser.  A page is parsed once,
+the first time it is read (:attr:`Page.tree`), so the crawl hands every fragment swapped into
+one page that same :class:`Page`.
 
 WHAT IT CANNOT ASSEMBLE IS NAMED, never guessed (:attr:`Found.unassembled`): an ``hx-vals``
 evaluated as script, a selector in a form this module does not read, an ``hx-target`` found
@@ -69,6 +71,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from functools import cached_property
 from html.parser import HTMLParser
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
@@ -179,6 +182,12 @@ class Page:
     document: str
     body: str
     within: Page | None = None
+
+    @cached_property
+    def tree(self) -> Node:
+        """The body as a tree (:func:`parse`), parsed the first time it is read and kept: a page
+        whose fragments are read one by one is parsed once, not once per fragment."""
+        return parse(self.body)
 
 
 @dataclass(frozen=True)
@@ -512,8 +521,8 @@ def _get_form(form: Node, page: Page) -> Iterator[Request]:
 
 def issued(page: Page) -> Found:
     """Every GET request ``page`` issues, in document order, and what it could not assemble."""
-    tree = parse(page.body)
-    scope = _Scope(tree, parse(page.within.body) if page.within is not None else None)
+    tree = page.tree
+    scope = _Scope(tree, page.within.tree if page.within is not None else None)
     found = Found()
     for node in tree.walk():
         if node.tag == "a" and "href" in node.attrs:

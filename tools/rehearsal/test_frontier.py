@@ -216,6 +216,26 @@ def test_a_selector_the_fragment_misses_is_looked_for_in_the_page_as_served():
     assert _one(body, "/frag", within=page).url == "/x?h=page&k=fragment"
 
 
+def test_a_page_is_parsed_once_however_many_of_its_fragments_are_read(monkeypatch):
+    """The page three fragments are swapped into is parsed once, and each fragment once,
+    though every fragment reads the page (K1c-1's review, finding 8: about 55 ms per MB for
+    every fragment read)."""
+    parsed: list[str] = []
+    parse = frontier.parse
+
+    def counted(body: str):
+        parsed.append(body)
+        return parse(body)
+
+    monkeypatch.setattr(frontier, "parse", counted)
+    page = frontier.Page("/page", "/page", '<input id="h" name="h" value="page">')
+    fragments = [f'<button hx-get="/x{index}" hx-include="#h">x</button>' for index in range(3)]
+    urls = [request.url for index, body in enumerate(fragments) for request in frontier.issued(
+        frontier.Page(f"/frag{index}", "/page", body, page)).requests]
+    assert urls == ["/x0?h=page", "/x1?h=page", "/x2?h=page"]
+    assert sorted(parsed) == sorted([page.body, *fragments])
+
+
 def test_a_selector_in_a_form_not_read_is_named_and_selects_nothing():
     """A descendant combinator and an htmx keyword this module does not read are named."""
     found = _found('<button hx-get="/x" hx-include="div input, next">x</button>')
