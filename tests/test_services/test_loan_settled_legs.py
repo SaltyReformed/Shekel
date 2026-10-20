@@ -679,9 +679,12 @@ class TestTheSettledHalfComplementsThePlanHalf:
         clause is graded where it fails first -- ``Transfer.is_deleted`` by
         ``test_loan_payment_service.py``'s ``test_excludes_deleted_transactions``,
         the Projected test by
-        :meth:`test_every_transfer_state_lands_in_exactly_one_half` -- and the
-        status guard here holds the Paid that keeps the second true.  It
-        stays as the claim's other half.
+        :meth:`test_every_transfer_state_lands_in_exactly_one_half` and by the
+        two ``$0.00``-close dating cases above,
+        ``test_the_close_is_visible_from_its_installment_not_its_settle_day``
+        and ``test_a_close_due_mar_10_is_dated_by_the_feb_22_installment`` --
+        and the status guard here holds the Paid that keeps the second true.
+        It stays as the claim's other half.
 
         Added at plan step ``balance:X-bi-6-4d-3``, because no PASSING test
         failed with the settled half's filter dropped (measured 2026-10-15:

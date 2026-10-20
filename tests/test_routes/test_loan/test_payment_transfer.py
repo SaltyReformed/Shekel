@@ -6,10 +6,11 @@ Split from ``tests/test_routes/test_loan.py`` by ``tools/split`` (ruling R-BAL30
 from datetime import date
 from decimal import Decimal
 
-from app import ref_cache
 from app.enums import AcctTypeEnum
+from app.models.transfer import Transfer
 
 from tests._test_helpers import (
+    create_account_of_type,
     make_cadence_rule,
     make_loan_payment_template,
     select_option_values,
@@ -181,31 +182,83 @@ class TestTransferPrompt:
     def test_create_transfer_generates_shadow_transactions(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """After creation: shadow transactions exist on the loan account."""
-        from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
-        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        """After creation: a live payment INTO the loan for every installment.
 
+        The route fans its new monthly definition out across the owner's pay
+        periods (``generate_transfers_for_all_periods``), so each installment
+        the schedule holds becomes a transfer into the loan from the savings
+        account the case posts from, in the pay period holding its due date.
+        The source is a second account the case creates, never the seeded
+        checking: the seed's owner and its checking account are both id 1, so
+        a from-side written as the owner's id would read as checking and pass.
+
+        **Re-expressed onto the TRANSFER at plan step balance:X-bi-6-4d-3**
+        (ruling **R-BAL167** class 1).  It counted the live income SHADOW
+        rows on the loan account -- a ``budget.transactions`` row of income
+        type carrying a ``transfer_id`` -- and a transfer is one row since
+        that step (ruling **R-BAL258**), so none can be stored: the income
+        side is the transfer's to-side, read off ``budget.transfers``.  The
+        name is the twin era's, kept so the node id is the baseline's.
+
+        **The window is the loan's contract, a decided rule.**  The route
+        seats its cadence at the loan's first contractual installment
+        (``loan_recurrence_sync.loan_cadence_start``; this mortgage
+        originated 2023-06-01, due the 1st, so 2023-07-01), and writes every
+        installment from there that the saved schedule (2026-01-02 ..
+        2026-05-21) holds: 02-01, 03-01, 04-01 and 05-01.  01-01 falls before
+        the first payday and 06-01 after the last period.  The read is the
+        sorted LIST of each payment's due date and period, not their number
+        or their set: a count could not see a start moved inside the
+        schedule, and a set could not see two payments in one slot.
+
+        The start bound is also graded, in both directions, in
+        ``tests/test_services/test_loan_recurrence_start_bound.py``; its
+        EARLIER side is not graded here: the first contractual installment
+        (2023-07-01) falls long before the schedule opens (2026-01-02), so a
+        cadence started earlier than it writes these same four payments
+        here.  Within this file, only this case pins each payment's placement
+        in the period holding its due date.
+        """
         acct = _create_mortgage(seed_user, db.session)
-        checking = seed_user["account"]
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "Savings",
+        )
+        # Committed like the helpers' rows above.  Only a GET or HEAD refuses
+        # to start on a transaction that has already written
+        # (app/db_transaction.py); this POST would see the row merely flushed.
+        db.session.commit()
 
         auth_client.post(
             f"/accounts/{acct.id}/loan/create-transfer",
-            data={"source_account_id": str(checking.id)},
+            data={"source_account_id": str(savings.id)},
         )
 
-        # Shadow income transactions should exist on the loan account.
-        income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-        shadows = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.account_id == acct.id,
-                Transaction.transfer_id.isnot(None),
-                Transaction.transaction_type_id == income_type_id,
-                Transaction.is_deleted.is_(False),
-            )
+        template = _payment_template(db.session, seed_user, acct)
+        written = (
+            db.session.query(Transfer)
+            .filter(Transfer.transfer_template_id == template.id)
             .all()
         )
-        assert len(shadows) > 0
+        # Each installment, and the seeded period holding its due date.
+        installments = [
+            (date(2026, 2, 1), seed_periods[2].id),  # 01-30 .. 02-12
+            (date(2026, 3, 1), seed_periods[4].id),  # 02-27 .. 03-12
+            (date(2026, 4, 1), seed_periods[6].id),  # 03-27 .. 04-09
+            (date(2026, 5, 1), seed_periods[8].id),  # 04-24 .. 05-07
+        ]
+        assert sorted(
+            (xfer.due_date, xfer.pay_period_id) for xfer in written
+        ) == installments, (
+            "the loan payment route wrote (due date, pay period) "
+            f"{sorted((xfer.due_date, xfer.pay_period_id) for xfer in written)}; "
+            "it writes one payment for every installment from the loan's first "
+            "contractual one on (loan_recurrence_sync.loan_cadence_start), each "
+            "in the period holding its due date"
+        )
+        assert {
+            (xfer.from_account_id, xfer.to_account_id, xfer.is_deleted)
+            for xfer in written
+        } == {(savings.id, acct.id, False)}
 
     def test_create_transfer_validates_source_ownership(
         self, auth_client, seed_user, seed_second_user,
