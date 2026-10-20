@@ -684,7 +684,7 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     ``budget.journal_entries`` -- the linked ledger's nonzero per-row nets on
     the account side (``account_posting_service._walk._source_net_days``), the
     stale lineage transfers and stale payment shadows on the loan side, and
-    the loan walk's own ``settled_income_shadows``.  A freshly generated row is
+    the loan walk's own ``settled_income_legs``.  A freshly generated row is
     ``Projected`` and posts nothing, so it is in none of those sets.  *A first
     draft of this paragraph said the account half "reads no transaction or
     transfer at all" and enumerated two readers on the loan side; an

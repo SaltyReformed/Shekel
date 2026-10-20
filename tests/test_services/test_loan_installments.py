@@ -37,7 +37,7 @@ from app.extensions import db
 from app.services.amortization_engine import schedule_dates, slotted_dates
 from app.services.loan_ledger import payment_installments
 from app.models.transfer import Transfer
-from app.services.loan_loaders import _shadows
+from app.services.loan_loaders import _legs
 from app.utils.balance_predicates import balance_excluded_status_ids
 from app.services.loan_payment_service import get_payment_history, load_loan_context
 from app.services.cash_ledger import derived_amount_basis
@@ -793,13 +793,13 @@ class TestThePartitionIsTotal:
             scenario_id = seed_user["scenario"].id
             # It places the row before the predicate is narrowed, so the refusal
             # below is the narrowing and not the fixture.
-            assert _shadows.income_shadows(
+            assert _legs.income_legs(
                 loan.id, scenario_id, options=(), leg_options=(),
             ).settled
 
-            monkeypatch.setattr(_shadows, "settled_status_ids", frozenset)
+            monkeypatch.setattr(_legs, "settled_status_ids", frozenset)
 
             with pytest.raises(ValueError, match="neither settled nor Projected"):
-                _shadows.income_shadows(
+                _legs.income_legs(
                     loan.id, scenario_id, options=(), leg_options=(),
                 )

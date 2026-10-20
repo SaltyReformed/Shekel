@@ -2,18 +2,19 @@
 
 The half of :mod:`app.services.loan_loaders` that answers *which payments*,
 against :mod:`._terms`' *what are this loan's contractual facts*.  It owns the
-two producers -- :func:`settled_income_shadows` and
+two producers -- :func:`settled_income_legs` and
 :func:`projected_income_legs` -- the settled half's membership clause
 (:func:`settled_half_clause`), and the partition value that composes them
-(:func:`income_shadows`).
+(:func:`income_legs`).
 
 A payment INTO an account is the to-side LEG of a transfer into it
 (:class:`~app.services.transfer_legs.TransferLeg`): a payment received by a
 loan, or a contribution into an investment account.  **Both halves are legs
 read off ``budget.transfers`` since plan step balance:X-bi-6-4b**; the settled
-half was the loan-side income SHADOW row until then, and the producers keep
-their shadow-era names until ``X-bi-6-4d`` deletes the shadows and rewrites
-their readers (a coordinator ruling on sequencing, 2026-09-24).
+half was the loan-side income SHADOW row until then.  The module and its
+names kept the shadow era's spelling -- ``_shadows``, ``ShadowSets``,
+``income_shadows``, ``settled_income_shadows`` -- until plan step
+balance:X-bi-6-4d-3 renamed them for what they return.
 
 **Its two jobs are both rule-14 answers, and plan step balance:X-bl-2a is where
 they became one each.**  Settled-ness had two derivations -- this module's
@@ -64,13 +65,13 @@ from app.utils.balance_predicates import (
 
 
 @dataclass(frozen=True)
-class ShadowSets:
+class IncomeLegs:
     """A loan's income payments, PARTITIONED by whether their cash has moved.
 
     The project's single answer to "which of this loan's payments have
     happened?", and the reason it is one value rather than two functions is
     :class:`CLAUDE.md` rule 14: settled-ness is one fact, so it is decided in
-    one place (:func:`income_shadows`) and read from here.
+    one place (:func:`income_legs`) and read from here.
 
     **Both halves are legs of transfers since plan step balance:X-bi-6-4b**,
     each the other's complement (ruling **R-BAL140**; see
@@ -78,8 +79,7 @@ class ShadowSets:
     Until then the settled half was the shadow rows -- one table partitioned
     by ``status_id``, which is ``docs/design/from_scratch_architecture.md``'s
     named root cause: a PLAN and a RECORD OF WHAT HAPPENED in one row, with a
-    status column pretending the first turns into the second.  The name is
-    the shadow era's and stays until ``X-bi-6-4d`` rewrites its readers.
+    status column pretending the first turns into the second.
 
     Attributes:
         settled: The payments that have happened -- one
@@ -100,9 +100,9 @@ class ShadowSets:
     projected: list[TransferLeg]
 
 
-def income_shadows(
+def income_legs(
     account_id: int, scenario_id: int, *, options: tuple, leg_options: tuple,
-) -> ShadowSets:
+) -> IncomeLegs:
     """Return an account's income payments split into SETTLED and PROJECTED.
 
     **The single derivation of "which payments are settled, and in what
@@ -118,7 +118,7 @@ def income_shadows(
 
     **Two producers over ONE relation, each the other's complement** (plan
     step balance:X-bi-6-4b, ruling **R-BAL140**).  The settled half is
-    :func:`settled_income_shadows`, the projected half
+    :func:`settled_income_legs`, the projected half
     :func:`projected_income_legs`; both select transfers INTO the account,
     and :func:`settled_half_clause` is the settled half's membership: the
     plan half's test negated by hand over the SAME two builders, the
@@ -136,7 +136,7 @@ def income_shadows(
     claim about the ``ref.statuses`` seed, not about this code, and a set
     defined by everything-except is exactly the shape that claims members
     nobody censused -- so a sixth status RAISES in
-    :func:`settled_income_shadows` rather than falling silently out of every
+    :func:`settled_income_legs` rather than falling silently out of every
     loan's schedule and balance.
 
     Args:
@@ -154,7 +154,7 @@ def income_shadows(
             ``Transfer.pay_period`` is added regardless, for the same reason.
 
     Returns:
-        The :class:`ShadowSets` for the account; both halves ``[]`` when it has
+        The :class:`IncomeLegs` for the account; both halves ``[]`` when it has
         no income payments.
 
     Raises:
@@ -163,8 +163,8 @@ def income_shadows(
             because a silently dropped payment is a balance that is quietly
             wrong.
     """
-    return ShadowSets(
-        settled=settled_income_shadows(
+    return IncomeLegs(
+        settled=settled_income_legs(
             account_id, scenario_id, options=options,
         ),
         projected=projected_income_legs(
@@ -173,17 +173,14 @@ def income_shadows(
     )
 
 
-def settled_income_shadows(
+def settled_income_legs(
     account_id: int, scenario_id: int, *, options: tuple,
 ) -> list[TransferLeg]:
     """Return a loan's SETTLED payments as legs of their transfers, in payment order.
 
-    The SETTLED half of :func:`income_shadows`, which is where the derivation
+    The SETTLED half of :func:`income_legs`, which is where the derivation
     itself lives since plan step **balance:X-bl-2a**.  **It returns LEGS since
-    plan step balance:X-bi-6-4b and keeps its shadow-era name until
-    ``X-bi-6-4d``**, where the shadows are deleted and the dozen docstrings
-    citing it as the one settled-payment producer are rewritten with their
-    readers.  What follows describes the set: one
+    plan step balance:X-bi-6-4b.**  What follows describes the set: one
     :class:`~app.services.transfer_legs.TransferLeg` per live, non-excluded
     transfer INTO the account in the scenario that :func:`settled_half_clause`
     admits -- not Projected, or its to-side money has moved (ruling
@@ -360,7 +357,7 @@ def projected_income_legs(
 ) -> list[TransferLeg]:
     """Return a loan's PROJECTED payments as legs of their parents, in payment order.
 
-    The forward analogue of :func:`settled_income_shadows`: one
+    The forward analogue of :func:`settled_income_legs`: one
     :class:`~app.services.transfer_legs.TransferLeg` per live
     still-projected transfer INTO the account whose to-side money has not
     moved, derived from the parent row in ``budget.transfers`` (ruling

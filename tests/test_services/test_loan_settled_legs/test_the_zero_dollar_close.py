@@ -58,7 +58,7 @@ class TestAZeroDollarCloseIsDatedByTheInstallmentItSkips:
             db.session.commit()
             scenario_id = seed_user["scenario"].id
 
-            legs = loan_loaders.settled_income_shadows(
+            legs = loan_loaders.settled_income_legs(
                 loan.id, scenario_id, options=(),
             )
             assert len(legs) == 1
@@ -179,7 +179,7 @@ class TestAnOffDayZeroDollarCloseIsDatedByItsIntervalsInstallment:
             db.session.commit()
             scenario_id = seed_user["scenario"].id
 
-            [leg] = loan_loaders.settled_income_shadows(
+            [leg] = loan_loaders.settled_income_legs(
                 loan.id, scenario_id, options=(),
             )
             assert leg.record is None, "a $0.00 close carries no movement"
@@ -261,7 +261,7 @@ class TestAnOffDayZeroDollarCloseIsDatedByItsIntervalsInstallment:
             db.session.commit()
             scenario_id = seed_user["scenario"].id
 
-            [leg] = loan_loaders.settled_income_shadows(
+            [leg] = loan_loaders.settled_income_legs(
                 loan.id, scenario_id, options=(),
             )
             assert payment_visible_on(
@@ -304,7 +304,7 @@ class TestTheReadPassBoundReadsTheLoansCalendar:
             )
             db.session.commit()
             scenario_id = seed_user["scenario"].id
-            [leg] = loan_loaders.settled_income_shadows(
+            [leg] = loan_loaders.settled_income_legs(
                 loan.id, scenario_id, options=(),
             )
             assert leg.due_date is None, "the close must store no due date"

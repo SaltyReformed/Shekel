@@ -240,7 +240,7 @@ def _reconcile_lineage_transfer_entries(
     # value and by the zero filter, and the comprehension form read it twice per
     # split -- two valuations of one payment, which is the shape that lets a
     # filter and the figure it admits come to disagree.  Every source here is
-    # a leg from ``loan_loaders.settled_income_shadows`` (the walk's own
+    # a leg from ``loan_loaders.settled_income_legs`` (the walk's own
     # loader, plan step balance:X-bi-6-4b), so it RECORDED what moved and
     # ``leg_settled_contribution`` answers from that record -- and REFUSES a
     # leg outside the settled half rather than pricing its plan, so this

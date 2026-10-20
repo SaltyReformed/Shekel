@@ -14,5 +14,5 @@ from ._helpers import FROZEN_TODAY
 
 @pytest.fixture(autouse=True)
 def _freeze(monkeypatch):
-    """Pin ``date.today()`` to FROZEN_TODAY for every test in this module."""
+    """Pin ``date.today()`` to FROZEN_TODAY for every test in this package."""
     freeze_today(monkeypatch, FROZEN_TODAY)

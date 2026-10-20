@@ -3,7 +3,7 @@
 The loan family and the contribution readers stopped reading the transfer's
 loan-side income SHADOW row at this step and read the to-side LEG of the
 transfer instead, through the one join that attaches its covering movement as
-its record.  Each case below is a state the byte-identical grade on the
+its record.  Each case in this package is a state the byte-identical grade on the
 2026-09-23 21:17 production dump could not reach, because production holds
 none of them:
 
@@ -34,7 +34,7 @@ none of them:
 Every figure is made up (ruling R-BAL132).  The loan is ``$100,000.00`` at 6%
 from 2026-02-01, due on the 1st: one month's charge is
 ``round(100000.00 * 0.06 / 12) = 500.00``.  It originates the month before
-the 03-01 installment every payment below satisfies, so no earlier
+the 03-01 installment every payment in this package satisfies, so no earlier
 installment stands unpaid: the walk charges every contractual installment
 from origination (plan step recurrence:R16-c-2), and a loan from 2026-01-01
 would owe 02-01's charge too.  The origination was 2026-01-01 until that

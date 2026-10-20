@@ -10,7 +10,7 @@ anchor, and a loan payment's own due date in contract time
 and every other question about a loan's installment grid, is
 :mod:`app.services.installment_calendar`'s.
 
-Sits above :mod:`._shadows`, which owns *which rows are this account's payments*:
+Sits above :mod:`._legs`, which owns *which rows are this account's payments*:
 :func:`_settled_payment_due_dates` reads that partition and nothing there reads
 back.  The two were one 1,054-line module until plan step **balance:X-bl-2a**
 pushed it past pylint's 1,000-line ceiling, and the cut is the seam that step
@@ -45,7 +45,7 @@ from app.services.rate_period_engine import due_after_anchor
 from app.services.transfer_legs import TransferLeg
 from app.utils.dates import anchor_chronology_key
 
-from ._shadows import settled_income_shadows
+from ._legs import settled_income_legs
 
 # the ``(anchor_date, created_at, event_id)`` chronology's second term --
 # exactly as the stored origination row (created at loan setup, before any
@@ -726,7 +726,7 @@ def loan_payment_due_date(
     Its ``pay_period`` is read on EVERY call since the derivation moved into the
     shared :func:`installment_for` (previously only the no-``due_date`` branch
     touched it), so a caller must hand it a payment whose ``pay_period`` is
-    loaded.  **:func:`._shadows.income_shadows`' two producers are what
+    loaded.  **:func:`._legs.income_legs`' two producers are what
     guarantee that**: each adds the parent's period to its load because it
     sorts on it, so every production caller comes through the partition; a
     transfer fetched by a bare ``session.get`` costs a lazy load here rather
@@ -735,8 +735,8 @@ def loan_payment_due_date(
     Args:
         shadow: The payment's leg -- settled or projected -- or, until
             ``X-bi-6-4d``, a shadow row.  Its ``pay_period`` must be loaded:
-            :func:`._shadows.settled_income_shadows` and
-            :func:`._shadows.projected_income_legs` each eager-load it (see
+            :func:`._legs.settled_income_legs` and
+            :func:`._legs.projected_income_legs` each eager-load it (see
             the note above).  The name is the shadow era's.
         payment_day: The loan's contractual day-of-month due day
             (:attr:`app.models.loan_params.LoanParams.payment_day`), used only
@@ -757,7 +757,7 @@ def _settled_payment_due_dates(
 
     The settled-payment-due-date derivation behind
     :func:`latest_settled_payment_due_date` (the escrow effective-date guard),
-    built on the same :func:`settled_income_shadows` set and the same
+    built on the same :func:`settled_income_legs` set and the same
     :func:`loan_payment_due_date` per-payment rule the fold's event stream walks --
     so the guard, the walk, and the Schedule A interest merge
     (:func:`app.services.balance_at.loan_interest_in_year`, which derives its
@@ -787,7 +787,7 @@ def _settled_payment_due_dates(
         # its pay period, and the producer loads the period itself.  It paid
         # for the amount model's five-chain eager set until plan step
         # balance:X-bl-2a made the load the caller's statement.
-        for leg in settled_income_shadows(
+        for leg in settled_income_legs(
             account_id, scenario_id, options=(),
         )
     ]

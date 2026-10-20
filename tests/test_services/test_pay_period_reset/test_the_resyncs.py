@@ -159,7 +159,7 @@ class TestResetResyncsLoanGenesis:
         ``budget.transfers`` is keyed on ids taken from the POSTED ledger --
         the linked ledger's nonzero per-row nets on the account side, the stale
         lineage transfers and stale payment shadows on the loan side, and the
-        loan walk's own ``settled_income_shadows`` -- and a ``Projected`` row
+        loan walk's own ``settled_income_legs`` -- and a ``Projected`` row
         posts nothing, so it is in none of them.  **A first draft of this
         docstring said the account side reads no transaction or transfer at
         all, and an adversarial review MEASURED that false**; the conclusion

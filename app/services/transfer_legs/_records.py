@@ -366,7 +366,7 @@ def dated_leg_exists_clause(*filters):
     :func:`planned_transfer_legs` and :func:`offerable_transfer_legs`)
     narrows it to ONE account and negates it (that side's money moved, so
     its leg is no longer planned, ruling **R-BAL79**); the loan settled
-    half (``loan_loaders._shadows.settled_half_clause``) narrows it to the
+    half (``loan_loaders._legs.settled_half_clause``) narrows it to the
     transfer's to-account and ORs it with "not Projected" (the payment into
     the loan has happened, ruling **R-BAL140**); and the posting writer's
     deploy resync asks it bare, ORed with "settled" (the transfer may hold

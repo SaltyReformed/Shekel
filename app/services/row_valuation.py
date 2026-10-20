@@ -529,7 +529,7 @@ def leg_settled_contribution(leg) -> Decimal:
     **A leg has SETTLED when its parent has, OR when its own money has moved**
     (plan step balance:X-bi-6-4b, ruling **R-BAL140**).  The loan and
     contribution readers read the settled half of
-    :func:`app.services.loan_loaders.income_shadows`, whose membership is the
+    :func:`app.services.loan_loaders.income_legs`, whose membership is the
     plan half's exact complement: a still-Projected transfer whose side
     carries a DATED covering movement -- a status drift no door writes -- is a
     payment that happened, and it is worth what that movement moved, as the

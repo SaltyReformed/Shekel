@@ -93,7 +93,7 @@ class TestTheSettledHalfComplementsThePlanHalf:
         one".  A soft delete through the door takes a Paid payment's records
         off and returns it as a plan (ruling **R-BAL246**), so the PLAN
         half's filter is what drops a deleted Projected or Paid payment,
-        graded by ``test_loan_payment_service.py``'s
+        graded by ``test_loan_payment_service/test_the_payment_history.py``'s
         ``test_excludes_deleted_transactions`` (both its cases); a ``$0.00``
         close held nothing and stays Paid (measured 2026-10-15), so the
         SETTLED half's filter is what drops that one, graded by
@@ -226,7 +226,7 @@ class TestTheSettledHalfComplementsThePlanHalf:
                 db.session.commit()
             db.session.rollback()
 
-            halves = loan_loaders.income_shadows(
+            halves = loan_loaders.income_legs(
                 loan.id, seed_user["scenario"].id, options=(), leg_options=(),
             )
             settled = sorted(leg.transfer.id for leg in halves.settled)
@@ -248,14 +248,14 @@ class TestTheSettledHalfComplementsThePlanHalf:
         The door's soft delete takes a Paid payment's records off and returns
         it as a plan (ruling **R-BAL246**), so a deleted payment that held
         records is the PLAN half's filter's to drop
-        (``test_loan_payment_service.py``'s
+        (``test_loan_payment_service/test_the_payment_history.py``'s
         ``test_excludes_deleted_transactions``).  A ``$0.00`` close holds no
         record (ruling **R-BAL141**: ``$0.00`` is the absence of one), so the
         delete takes nothing off and keeps it Paid
         (:func:`~app.utils.balance_predicates.delete_returns_to_plan`), and
         only the SETTLED half's own ``Transfer.is_deleted`` filter drops it.
         That half is the view the loan walk, the posting reader and the
-        escrow guard read (:func:`~app.services.loan_loaders.income_shadows`
+        escrow guard read (:func:`~app.services.loan_loaders.income_legs`
         names them), so a deleted close it kept would still book the 03-01
         installment's whole charge as unpaid -- the split
         :class:`TestAZeroDollarCloseIsDatedByTheInstallmentItSkips` reads on
@@ -283,10 +283,10 @@ class TestTheSettledHalfComplementsThePlanHalf:
         clauses drops it alone: it survived each dropped by itself, and
         failed first with both dropped at once (measured 2026-10-15).  Each
         clause is graded where it fails first -- ``Transfer.is_deleted`` by
-        ``test_loan_payment_service.py``'s ``test_excludes_deleted_transactions``,
-        the Projected test by
+        ``test_loan_payment_service/test_the_payment_history.py``'s
+        ``test_excludes_deleted_transactions``, the Projected test by
         :meth:`test_every_transfer_state_lands_in_exactly_one_half` and by the
-        two ``$0.00``-close dating cases above,
+        two ``$0.00``-close dating cases in ``test_the_zero_dollar_close.py``,
         ``test_the_close_is_visible_from_its_installment_not_its_settle_day``
         and ``test_a_close_due_mar_10_is_dated_by_the_feb_22_installment`` --
         and the status guard here holds the Paid that keeps the second true.
@@ -312,7 +312,7 @@ class TestTheSettledHalfComplementsThePlanHalf:
                 transfer_side_record(db.session, transfer_id, account.id)
                 for account in (checking, loan)
             ] == [None, None], "the guard: a $0.00 close holds no side record"
-            before = loan_loaders.income_shadows(
+            before = loan_loaders.income_legs(
                 loan.id, scenario_id, options=(), leg_options=(),
             )
             assert [leg.transfer.id for leg in before.settled] == [transfer_id]
@@ -333,7 +333,7 @@ class TestTheSettledHalfComplementsThePlanHalf:
                 "the settled half's filter can drop it"
             )
 
-            after = loan_loaders.income_shadows(
+            after = loan_loaders.income_legs(
                 loan.id, scenario_id, options=(), leg_options=(),
             )
             assert [leg.transfer.id for leg in after.settled] == []

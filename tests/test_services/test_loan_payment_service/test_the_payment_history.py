@@ -119,7 +119,7 @@ class TestGetPaymentHistory:
         the feed reads it: one filter, graded on two paths into it.
         Measured 2026-10-15: with the plan half's filter dropped both cases
         fail at the last assertion, and with the settled half's dropped
-        (``loan_loaders/_shadows.py``) both pass.  The one payment the
+        (``loan_loaders/_legs.py``) both pass.  The one payment the
         delete leaves settled is a ``$0.00`` close, which held nothing, and
         the settled half's filter is graded on it by
         ``test_loan_settled_legs/test_the_two_halves.py``'s

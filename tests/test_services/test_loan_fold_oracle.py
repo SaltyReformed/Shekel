@@ -374,7 +374,7 @@ class TestFoldMatchesPostingsAcrossTheShapeMatrix:
             # Prove the payment is genuinely PRE-anchor -- its installment
             # precedes the 2026-03-15 true-up, the boundary this shape names.
             params = loan_loaders.load_loan_params(loan.id)
-            shadows = loan_loaders.settled_income_shadows(
+            shadows = loan_loaders.settled_income_legs(
                 loan.id, seed_user["scenario"].id, options=(),
             )
             assert loan_loaders.loan_payment_due_date(
@@ -406,7 +406,7 @@ class TestFoldMatchesPostingsAcrossTheShapeMatrix:
             _settle(seed_user, db, loan, seed_periods[1])
             db.session.commit()
             params = loan_loaders.load_loan_params(loan.id)
-            shadows = loan_loaders.settled_income_shadows(
+            shadows = loan_loaders.settled_income_legs(
                 loan.id, seed_user["scenario"].id, options=(),
             )
             due = loan_loaders.loan_payment_due_date(

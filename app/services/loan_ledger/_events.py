@@ -13,7 +13,7 @@ stream.  THREE kinds of fact enter it, and nothing else:
   **R-R117**, :func:`.._replay.replay_loan_events`);
 * a **PAYMENT** -- the to-side leg of a settled transfer into the loan, its
   covering movement the record that cash actually moved
-  (:func:`~app.services.loan_loaders.settled_income_shadows`);
+  (:func:`~app.services.loan_loaders.settled_income_legs`);
 * a **CHARGE** -- what an accrual period cost the loan
   (:func:`.._charges.contract_charges`), one per CONTRACTUAL installment from
   origination (plan step recurrence:R16-c-2, ruling **R-R100**).  It joined the
@@ -71,7 +71,7 @@ def confirmed_shadows_through(
     """Return the settled payments whose CASH had moved by ``as_of``.
 
     The DISPLAY subset of
-    :func:`~app.services.loan_loaders.settled_income_shadows`: the payments the
+    :func:`~app.services.loan_loaders.settled_income_legs`: the payments the
     balance readers count as confirmed history at ``as_of`` (their shared
     visible-on bound).  It returns LEGS since plan step balance:X-bi-6-4b and
     keeps its shadow-era name until ``X-bi-6-4d``.  The posted ledger's
@@ -82,7 +82,7 @@ def confirmed_shadows_through(
     step recurrence:R16-c-1 it is the payment half of a read pass's visibility
     bound (:func:`.._walk.load_loan_stream`'s ``visible_by``, ruling R-R91);
     the LEDGER's walk deliberately does NOT take it (it splits every settled
-    payment -- see :func:`~app.services.loan_loaders.settled_income_shadows`
+    payment -- see :func:`~app.services.loan_loaders.settled_income_legs`
     for why).
 
     A payment's visible-on date is its SETTLED date (step C2, ruling R-A) --
@@ -118,7 +118,7 @@ def confirmed_shadows_through(
         # the parent's due date and period -- while its callers read the same
         # legs.  The shadow's ENTRIES were loaded here while the shadow was the
         # payment (plan step balance:X-bl-2a to X-bi-6-4b).
-        for leg in loan_loaders.settled_income_shadows(
+        for leg in loan_loaders.settled_income_legs(
             loan_account_id, scenario_id, options=(),
         )
         if payment_visible_on(leg, origination_date, payment_day) <= as_of
@@ -171,7 +171,7 @@ def loan_event_stream(
     sort in the replay preserves each loader's key within a shared date -- anchors
     keep :func:`~app.services.loan_loaders.load_loan_anchor_facts`'
     ``(anchor_date, created_at, event_id)``, payments keep
-    :func:`~app.services.loan_loaders.settled_income_shadows`'
+    :func:`~app.services.loan_loaders.settled_income_legs`'
     ``(pay_period.start_date, transfer id)``.  The stream was re-sorted on ``(anchor_date,
     created_at)`` until X-an-b, which was a SECOND statement of a rule the loader
     is now the one home of, and an incomplete one: ``created_at`` is evaluated at
@@ -186,8 +186,8 @@ def loan_event_stream(
             where that order is decided).
         shadows: The settled payments' legs, PRE-SORTED by
             ``(pay_period.start_date, transfer id)``
-            (:func:`~app.services.loan_loaders.settled_income_shadows`; the
-            name is the shadow era's and goes at ``X-bi-6-4d``).  Each leg's
+            (:func:`~app.services.loan_loaders.settled_income_legs`; this
+            parameter's name is the shadow era's).  Each leg's
             cash is read through
             :func:`~app.services.row_valuation.leg_settled_contribution` -- the
             accessor whose NAME asserts the payment has SETTLED -- rather than
