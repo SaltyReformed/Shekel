@@ -4,7 +4,7 @@ every time (``design.md`` s.3 items 2, 3, 5, 8 and 10).
 
 THE DEPLOY IS PRODUCTION'S.  Each state's clone runs that state's ``scripts/init_database.py``
 from its worktree and under its venv, as entrypoint step 3 runs it, in an environment BUILT
-WHOLE (:func:`deploy_environment`): nothing of the shell that runs the kit reaches it, so an
+WHOLE (:func:`side_environment`): nothing of the shell that runs the kit reaches it, so an
 operator's ``DATABASE_URL_APP``, ``RATELIMIT_STORAGE_URI`` or ``SHEKEL_FAKE_TODAY`` cannot.
 What production's image and compose file give the app is read from the side's own tree, so a
 cut that changes it is measured with it.  The step runs through the side probe's
@@ -31,6 +31,14 @@ touched (triggers and foreign-key checks are off for the plant): a cent added to
 column, a byte changed in a text column, and a row removed.  The comparison must find each
 exactly, or the run measured nothing (exit 2).
 
+THE ROLLBACK runs exactly when production's would: when base's tree carries a migration script
+for every revision cut's deployed copy is stamped at (:func:`base_resolves`, which mirrors
+``deploy/shekel-deploy.sh``'s ``image_resolves_revisions``).  Then, in entrypoint order, base's
+deploy step runs again on a clone of cut's deployed copy and must exit 0 and move no row, and
+base's app must boot there (``side/boot.py``).  When base's tree does not know the revision,
+that script would refuse the rollback and name the dump to restore, and the run says so: the
+copy's migration version is already a row that differs.
+
 What it does NOT compare is printed on every run (:data:`NOT_COMPARED`), the stamps and the
 audit log's dropped columns among it, so an exit 0 is never read as a claim about them.
 
@@ -39,8 +47,9 @@ Usage, which brings a bench up (:mod:`.bench`), deploys, compares and tears it d
     python -m tools.rehearsal.rows --dump <pg_dump -Fc file> --base <revision> \\
         --cut <revision> --report <file>
 
-Exit status: 0 no row differs; 1 rows differ (each one in the report, summed per table and
-column on stdout), or cut's deploy refused the copy base's deployed; 2 nothing was measured:
+Exit status: 0 no row differs and the rollback holds; 1 rows differ (each one in the report,
+summed per table and column on stdout), cut's deploy refused the copy base's deployed, or the
+rollback to base on cut's deployed copy fails (named); 2 nothing was measured:
 the bench, base's deploy, the noise gate, a control, or the run itself (a file it could not
 write, a database error) failed, each named.  A failure of the run is never exit 1, which
 says rows differ.
@@ -100,8 +109,15 @@ WHERE data_type = ANY(%s) AND is_generated = 'NEVER'
   AND (numeric_scale IS NULL OR numeric_scale >= 2)
 ORDER BY table_schema, table_name, ordinal_position
 """
+_SIDE = Path(__file__).resolve().parent / "side"
 #: The side probe that runs a side's deploy step under the pinned instant, run by path.
-_DEPLOY_PROBE = Path(__file__).resolve().parent / "side" / "deploy.py"
+_DEPLOY_PROBE = _SIDE / "deploy.py"
+#: The side probe that boots a side's app under the pinned instant, run by path.
+_BOOT_PROBE = _SIDE / "boot.py"
+#: Where a side's tree holds its migration scripts, as its image does: ``shekel-deploy.sh``'s
+#: ``IMAGE_MIGRATIONS_DIR`` default, relative to the image's working directory, which holds
+#: the tree (the ``Dockerfile``'s ``COPY . .``).
+_MIGRATIONS = Path("migrations") / "versions"
 #: A rate-limit store ProdConfig accepts (it refuses ``memory:``) that names no server that
 #: could answer (``.invalid`` never resolves, RFC 6761): the deploy serves no request, and a
 #: deploy that reached for the store would fail by name rather than pass on a live one.
@@ -358,8 +374,9 @@ def image_environment(worktree: Path) -> dict[str, str]:
     return environment
 
 
-def deploy_environment(state: bench.State, url: str, secret_key: str) -> dict[str, str]:
-    """The whole environment a side's deploy step runs in, inheriting nothing: production's
+def side_environment(state: bench.State, url: str, secret_key: str) -> dict[str, str]:
+    """The whole environment a side probe runs in, its deploy and its boot, inheriting
+    nothing: production's
     (:func:`image_environment`), its configuration, the copy's URL, a secret key of the run's,
     a rate-limit store no deploy could reach, the fixed hash seed, and the side's venv first
     on ``PATH``.
@@ -390,20 +407,110 @@ def pinned_instant(made: bench.Bench) -> datetime:
     return made.listing.noon(image_environment(base.worktree)["TZ"])
 
 
-def deploy(state: bench.State, url: str, secret_key: str, moment: datetime) -> str | None:
-    """Run ``state``'s deploy step on the copy at ``url`` with its clock pinned at ``moment``
-    (``side/deploy.py``); None when it exits 0, else what it said last.
+def _probe(probe: Path, state: bench.State, url: str, secret_key: str, moment: datetime
+           ) -> str | None:
+    """Run the side probe ``probe`` for ``state`` on the copy at ``url``, its clock pinned at
+    ``moment``, from the side's worktree under its venv in :func:`side_environment`; None when
+    it exits 0, else what it said last.
 
     Raises:
         bench.BenchError: when the side's interpreter cannot be run, or its tree cannot give
             production's environment.
     """
-    done = bench.run([str(state.python), str(_DEPLOY_PROBE), moment.isoformat()],
-                     deploy_environment(state, url, secret_key), cwd=state.worktree)
+    done = bench.run([str(state.python), str(probe), moment.isoformat()],
+                     side_environment(state, url, secret_key), cwd=state.worktree)
     if not done.returncode:
         return None
     said = (done.stderr or done.stdout).strip().splitlines()[-_QUOTED_LINES:]
     return f"exit {done.returncode}:\n" + "\n".join(said)
+
+
+def deploy(state: bench.State, url: str, secret_key: str, moment: datetime) -> str | None:
+    """Run ``state``'s deploy step on the copy at ``url`` with its clock pinned at ``moment``
+    (``side/deploy.py``, by :func:`_probe`); None when it exits 0, else what it said last.
+
+    Raises:
+        bench.BenchError: as :func:`_probe`.
+    """
+    return _probe(_DEPLOY_PROBE, state, url, secret_key, moment)
+
+
+def boot(state: bench.State, url: str, secret_key: str, moment: datetime) -> str | None:
+    """Boot ``state``'s app on the copy at ``url`` with its clock pinned at ``moment`` and
+    answer one query (``side/boot.py``, by :func:`_probe`); None when it exits 0, else what it
+    said last.
+
+    Raises:
+        bench.BenchError: as :func:`_probe`.
+    """
+    return _probe(_BOOT_PROBE, state, url, secret_key, moment)
+
+
+def stamped_revisions(url: str) -> list[str]:
+    """The migration versions the copy at ``url`` is stamped at (``public.alembic_version``),
+    sorted."""
+    with psycopg.connect(url) as connection:
+        return sorted(revision for (revision,) in connection.execute(
+            "SELECT version_num FROM public.alembic_version").fetchall())
+
+
+def base_resolves(worktree: Path, revisions: list[str]) -> bool:
+    """Whether the tree carries a migration script for every one of ``revisions``: a file of
+    its :data:`_MIGRATIONS` named ``<revision>_*.py``.
+
+    It MIRRORS ``deploy/shekel-deploy.sh``'s ``image_resolves_revisions`` over
+    ``image_migration_revisions``' listing (the basenames of the image's
+    ``migrations/versions/*.py``), the predicate that script's rollback is taken by (its
+    ``repin_is_safe``): Alembic resolves a revision by finding the script whose id it is.  As
+    there, a revision matches a name only up to its ``_``, and an empty list resolves.
+    """
+    listing = [path.name for path in (worktree / _MIGRATIONS).glob("*.py")]
+    return all(any(name.startswith(f"{revision}_") for name in listing)
+               for revision in revisions)
+
+
+def rollback(made: bench.Bench, secret_key: str, moment: datetime) -> bool:
+    """Roll back to base on cut's deployed copy exactly when production's rollback would
+    (:func:`base_resolves`), printing the verdict; False when the rollback fails.
+
+    In entrypoint order: base's deploy step runs again on a clone of cut's deployed copy and
+    must exit 0 (a refusal is production's container dying at step 3, so nothing boots) and
+    move no row, compared with cut's deployed copy; then base's app must boot on the clone.
+
+    Raises:
+        bench.BenchError: when a side probe cannot be run.
+        psycopg.Error: when a copy cannot be read or cloned.
+    """
+    base, cut = made.made["base"], made.made["cut"]
+    revisions = stamped_revisions(cut.url)
+    stamped = ", ".join(revisions)
+    if not base_resolves(base.worktree, revisions):
+        print(f"rollback: base's image does not know the migration version cut's copy is "
+              f"stamped at ({stamped}), so shekel-deploy.sh would refuse the rollback and name "
+              "the dump to restore: rolling back past this release is a restore")
+        return True
+    back = bench.State(base.name, base.commit, base.worktree, "rehearsal_rollback",
+                       made.clone(cut.database, "rehearsal_rollback"), base.python)
+    again = "base's deploy step, run again on cut's deployed copy,"
+    refused = deploy(back, back.url, secret_key, moment)
+    if refused is not None:
+        print(f"ROLLBACK FAILS: {again} refused: {refused}")
+        return False
+    failures: list[str] = []
+    moved = compare(cut.url, back.url)
+    if moved:
+        failures.append(f"ROLLBACK FAILS: {again} moved {len(moved)} rows:\n"
+                        + "\n".join(summary(moved, "cut", "rolled back")))
+    unbooted = boot(back, back.url, secret_key, moment)
+    if unbooted is not None:
+        failures.append(f"ROLLBACK FAILS: base cannot boot on cut's deployed copy: {unbooted}")
+    for line in failures:
+        print(line)
+    if not failures:
+        print(f"rollback: base's image knows the migration version cut's copy is stamped at "
+              f"({stamped}); base boots on cut's deployed copy, and base's deploy step, run "
+              "again on it, exits 0 and moves no row")
+    return not failures
 
 
 #: Builds a control's statement from its table, its column (None for a removal) and the
@@ -514,9 +621,32 @@ def controls(made: bench.Bench, base: bench.State) -> list[str]:
     return wrong
 
 
+def gates(made: bench.Bench, again: bench.State) -> bool:
+    """The noise gate (base's deployed copy against ``again``, base deployed a second time)
+    and the planted controls, each printed; False when either fails, which is the kit's
+    failure, named on stderr, never the release's."""
+    base = made.made["base"]
+    began = time.monotonic()
+    noise = compare(base.url, again.url)
+    print(f"noise gate: {time.monotonic() - began:.2f} s, {len(noise)} rows differ")
+    if noise:
+        print("[rehearsal] base deployed twice did not read the same, so the comparison "
+              "measures nothing:\n" + "\n".join(summary(noise, "base", "base again")),
+              file=sys.stderr)
+        return False
+    wrong = controls(made, base)
+    if wrong:
+        print("[rehearsal] a planted control was not found, so the comparison measures "
+              "nothing:\n" + "\n".join(wrong), file=sys.stderr)
+        return False
+    print(f"controls: {', '.join(label for label, *_ in _CONTROLS)}, each found exactly")
+    return True
+
+
 def rehearse(made: bench.Bench, out: Path) -> int:
-    """Deploy base twice and cut once on the bench, gate on noise and the controls, and
-    compare base with cut, writing every differing row to ``out``; the exit status."""
+    """Deploy base twice and cut once on the bench, gate on noise and the controls, compare
+    base with cut, writing every differing row to ``out``, and roll back to base on cut's
+    deployed copy (:func:`rollback`); the exit status."""
     base, cut = made.made["base"], made.made["cut"]
     secret_key = secrets.token_hex(32)
     moment = pinned_instant(made)
@@ -534,20 +664,8 @@ def rehearse(made: bench.Bench, out: Path) -> int:
             print(f"[rehearsal] {label}'s deploy refused the dump, so nothing is compared "
                   f"(an app defect): {refused[label]}", file=sys.stderr)
             return 2
-    began = time.monotonic()
-    noise = compare(base.url, again.url)
-    print(f"noise gate: {time.monotonic() - began:.2f} s, {len(noise)} rows differ")
-    if noise:
-        print("[rehearsal] base deployed twice did not read the same, so the comparison "
-              "measures nothing:\n" + "\n".join(summary(noise, "base", "base again")),
-              file=sys.stderr)
+    if not gates(made, again):
         return 2
-    wrong = controls(made, base)
-    if wrong:
-        print("[rehearsal] a planted control was not found, so the comparison measures "
-              "nothing:\n" + "\n".join(wrong), file=sys.stderr)
-        return 2
-    print(f"controls: {', '.join(label for label, *_ in _CONTROLS)}, each found exactly")
     print(NOT_COMPARED)
     print("compared as multisets: " + ", ".join(multisets(base.url, cut.url)))
     if refused["cut"] is not None:
@@ -561,7 +679,8 @@ def rehearse(made: bench.Bench, out: Path) -> int:
           f"(each in {out})")
     for line in summary(moved, "base", "cut"):
         print(line)
-    return 1 if moved else 0
+    held = rollback(made, secret_key, moment)
+    return 1 if moved or not held else 0
 
 
 def main(argv: list[str] | None = None) -> int:

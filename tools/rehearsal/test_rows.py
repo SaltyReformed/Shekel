@@ -115,14 +115,14 @@ _MOMENT = datetime(2026, 10, 20, 12, tzinfo=ZoneInfo("America/New_York"))
 _PROBE = Path(rows.__file__).resolve().parent / "side" / "deploy.py"
 
 
-def test_the_deploy_environment_is_built_whole_from_the_side_s_tree(tmp_path, monkeypatch):
+def test_the_side_environment_is_built_whole_from_the_side_s_tree(tmp_path, monkeypatch):
     """Production's variables from the side's own Dockerfile (not PATH) and compose file, the
     configuration, URL, key, store and seed, and the side's venv first: nothing else, so a
     variable of the shell that runs the kit never reaches the side."""
     monkeypatch.setenv("DATABASE_URL_APP", "postgresql:///operator")
     monkeypatch.setenv("SHEKEL_FAKE_TODAY", "2026-01-01")
     tree = _side(tmp_path / "tree", _DOCKERFILE, _PROD_COMPOSE)
-    built = rows.deploy_environment(_state(tree, tmp_path / "venv" / "bin" / "python"),
+    built = rows.side_environment(_state(tree, tmp_path / "venv" / "bin" / "python"),
                                     "postgresql:///copy", "k" * 64)
     assert built == {
         "PSYCOPG_IMPL": "c", "LC_ALL": "C.UTF-8", "TZ": "America/New_York",
@@ -154,7 +154,7 @@ sys.exit({status})
 def test_a_deploy_runs_the_side_s_step_from_its_tree_in_that_environment_alone(tmp_path,
                                                                             status):
     """The side's interpreter runs the side probe ``side/deploy.py`` with the pinned instant,
-    from the side's worktree in exactly :func:`rows.deploy_environment`; exit 0 is None, else
+    from the side's worktree in exactly :func:`rows.side_environment`; exit 0 is None, else
     its status and stderr."""
     tree = _side(tmp_path / "tree", _DOCKERFILE, _PROD_COMPOSE)
     python = tmp_path / "venv" / "bin" / "python"
@@ -167,7 +167,7 @@ def test_a_deploy_runs_the_side_s_step_from_its_tree_in_that_environment_alone(t
     seen = json.loads((tree / "seen.json").read_text(encoding="utf-8"))
     assert seen["argv"] == [str(_PROBE), "2026-10-20T12:00:00-04:00"]
     assert seen["cwd"] == str(tree)
-    assert seen["env"] == rows.deploy_environment(state, "postgresql:///copy", "k" * 64)
+    assert seen["env"] == rows.side_environment(state, "postgresql:///copy", "k" * 64)
 
 
 _PLANTED_STEP = """import datetime, json, sys, time
@@ -203,6 +203,88 @@ def test_the_pinned_instant_is_noon_of_the_dump_s_day_in_base_s_zone(tmp_path):
         made={"base": _state(tree, tmp_path / "python")},
         listing=bench.Listing(18, datetime(2026, 10, 20, 3, 30, tzinfo=ZoneInfo("UTC"))))
     assert rows.pinned_instant(made).isoformat() == "2026-10-19T12:00:00-04:00"
+
+
+#: A planted ``app`` package: what ``side/boot.py`` imports, recording what it was given and
+#: read, and when, into ``seen.json`` once the query is answered.
+_PLANTED_APP = {
+    "__init__.py": """import contextlib, datetime, sys
+seen = {"imported": datetime.datetime.now().isoformat()}
+
+
+class _App:
+    @contextlib.contextmanager
+    def app_context(self):
+        seen["context"] = True
+        yield
+        seen["context"] = False
+
+
+def create_app(**given):
+    seen.update(given=given, now=datetime.datetime.now().isoformat(), path=sys.path[0])
+    return _App()
+""",
+    "extensions.py": """import json
+from app import seen
+
+
+class _Answer:
+    def scalar_one(self):
+        with open("seen.json", "w", encoding="utf-8") as out:
+            json.dump(seen, out)
+        return 0
+
+
+class _Session:
+    def execute(self, statement):
+        seen.update(query=statement, in_context=seen.get("context", False))
+        return _Answer()
+
+
+class _Db:
+    session = _Session()
+
+    def text(self, query):
+        return "text: " + query
+
+
+db = _Db()
+""",
+}
+
+
+def test_the_boot_imports_the_side_s_app_and_boots_it_as_gunicorn_does_under_the_pin(tmp_path):
+    """``side/boot.py`` imports the tree's own ``app`` (``sys.path[0]`` the tree, never the
+    kit's ``side/``) with the clock already pinned, calls ``create_app()`` with nothing (the
+    reference cache loaded eagerly, as ``run.py`` has it), and answers its one query inside
+    the app's context."""
+    tree = _side(tmp_path / "tree", _DOCKERFILE, _PROD_COMPOSE)
+    (tree / "app").mkdir()
+    for name, source in _PLANTED_APP.items():
+        (tree / "app" / name).write_text(source, encoding="utf-8")
+    assert rows.boot(_state(tree, Path(sys.executable)), "postgresql:///copy", "k" * 64,
+                     _MOMENT) is None
+    assert json.loads((tree / "seen.json").read_text(encoding="utf-8")) == {
+        "imported": "2026-10-20T12:00:00", "given": {}, "now": "2026-10-20T12:00:00",
+        "path": str(tree), "context": True,
+        "query": "text: SELECT count(*) FROM salary.pay_stubs", "in_context": True}
+
+
+def test_a_revision_resolves_only_by_a_migration_script_named_for_it(tmp_path):
+    """As ``shekel-deploy.sh``'s ``image_resolves_revisions`` reads the image's listing: a
+    ``<revision>_*.py`` file for every revision, matched up to its ``_`` (a revision that is
+    another's prefix does not resolve), a file not ``.py`` is not a script, and none to
+    resolve resolves."""
+    versions = tmp_path / "migrations" / "versions"
+    versions.mkdir(parents=True)
+    for name in ("abc123_add_x.py", "def456_y.py", "fed789_z.txt"):
+        (versions / name).write_text("", encoding="utf-8")
+    assert rows.base_resolves(tmp_path, ["abc123"]) is True
+    assert rows.base_resolves(tmp_path, ["abc123", "def456"]) is True
+    assert rows.base_resolves(tmp_path, []) is True
+    assert rows.base_resolves(tmp_path, ["abc12"]) is False
+    assert rows.base_resolves(tmp_path, ["fed789"]) is False
+    assert rows.base_resolves(tmp_path, ["abc123", "0ff0ff"]) is False
 
 
 class _Failing:
@@ -354,6 +436,15 @@ def _planting(database: str, plant: Callable[[str], object]) -> Callable[..., st
     return deployed
 
 
+def _executing(statement: str) -> Callable[[str], None]:
+    """A plant that runs ``statement`` on the copy, triggers and foreign-key checks off."""
+    def run(url: str) -> None:
+        with psycopg.connect(url, autocommit=True) as connection:
+            connection.execute("SET session_replication_role = replica")
+            connection.execute(statement)
+    return run
+
+
 def _refusing(database: str) -> Callable[..., str | None]:
     """The deploy step, except for ``database``'s, which refuses having written nothing, as
     the step's one transaction leaves a refused copy."""
@@ -381,6 +472,9 @@ def test_two_sides_that_store_the_same_rows_exit_0_saying_what_was_not_compared(
     assert rows.NOT_COMPARED + "\n" in out
     assert "compared as multisets: system.audit_log\n" in out
     assert "base against cut: " in out and "teardown: " in out
+    assert re.search(r"^rollback: base's image knows the migration version cut's copy is "
+                     r"stamped at \([0-9a-z]+\); base boots on cut's deployed copy, and base's "
+                     r"deploy step, run again on it, exits 0 and moves no row$", out, re.MULTILINE)
 
 
 @pytest.mark.cluster
@@ -432,3 +526,65 @@ def test_cut_s_deploy_refusing_what_base_s_took_is_a_difference(dump, tmp_path, 
     assert (status, report) == (1, "")
     assert "controls: a cent, a byte, a removed row, each found exactly\n" in out
     assert "cut's deploy refused the copy base's deployed: exit 1:\nplanted\n" in out
+
+
+_AGAIN = "ROLLBACK FAILS: base's deploy step, run again on cut's deployed copy,"
+
+
+@pytest.mark.cluster
+def test_a_copy_stamped_where_base_s_tree_has_no_script_is_a_restore(dump, tmp_path, capsys,
+                                                                     monkeypatch):
+    """Cut's copy stamped at a revision base's tree carries no script for: shekel-deploy.sh
+    would refuse the rollback, so the run says rolling back is a restore and runs neither the
+    step nor the boot; the stamp is a row that differs, so exit 1."""
+    monkeypatch.setattr(rows, "deploy", _planting("rehearsal_cut", _executing(
+        "UPDATE public.alembic_version SET version_num = 'feedface0000'")))
+    status, out, _, report = _rehearsal(dump, tmp_path, capsys)
+    assert status == 1 and "public.alembic_version" in report
+    assert ("rollback: base's image does not know the migration version cut's copy is stamped "
+            "at (feedface0000), so shekel-deploy.sh would refuse the rollback and name the dump "
+            "to restore: rolling back past this release is a restore\n") in out
+    assert "ROLLBACK FAILS" not in out
+
+
+@pytest.mark.cluster
+def test_base_s_step_refusing_cut_s_copy_fails_the_rollback_and_nothing_boots(
+        dump, tmp_path, capsys, monkeypatch):
+    """Base's deploy step, run again on cut's deployed copy, refusing it: production's
+    container dies at step 3, so the rollback fails, quoted, exit 1, though no row differs."""
+    monkeypatch.setattr(rows, "deploy", _refusing("rehearsal_rollback"))
+    monkeypatch.setattr(rows, "boot", lambda *_given: pytest.fail("the boot ran"))
+    status, out, _, report = _rehearsal(dump, tmp_path, capsys)
+    assert (status, report) == (1, "")
+    assert f"{_AGAIN} refused: exit 1:\nplanted\n" in out
+    assert "\nrollback: " not in out
+
+
+@pytest.mark.cluster
+def test_base_s_step_moving_a_row_of_cut_s_copy_fails_the_rollback(dump, tmp_path, capsys,
+                                                                   monkeypatch):
+    """A cent base's step, run again on cut's deployed copy, moves: the rollback fails, the
+    row summed, exit 1, though base and cut store the same rows; base still boots."""
+    planted: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(rows, "deploy", _planting(
+        "rehearsal_rollback", lambda url: planted.append(rows.plant_cent(url))))
+    status, out, _, report = _rehearsal(dump, tmp_path, capsys)
+    table, _, column = planted[0]
+    assert (status, report) == (1, "")
+    assert (f"{_AGAIN} moved 1 rows:\n{table}: 1 rows differ (0 only on cut, 0 only on rolled "
+            f"back, 1 changed)\n  {column}: 1 rows, total change +0.01\n") in out
+    assert "cannot boot" not in out and "\nrollback: " not in out
+
+
+@pytest.mark.cluster
+def test_base_that_cannot_boot_on_cut_s_copy_fails_the_rollback(dump, tmp_path, capsys,
+                                                                 monkeypatch):
+    """Cut's deployed copy without the table base's boot queries (empty, so no row differs):
+    base's step runs again and moves nothing, but base cannot boot, quoted, exit 1."""
+    monkeypatch.setattr(rows, "deploy", _planting("rehearsal_rollback", _executing(
+        "DROP TABLE salary.pay_stubs CASCADE")))
+    status, out, _, report = _rehearsal(dump, tmp_path, capsys)
+    assert (status, report) == (1, "")
+    assert "ROLLBACK FAILS: base cannot boot on cut's deployed copy: exit 1:\n" in out
+    assert 'relation "salary.pay_stubs" does not exist' in out
+    assert _AGAIN not in out and "\nrollback: " not in out
