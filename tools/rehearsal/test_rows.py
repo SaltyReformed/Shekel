@@ -23,20 +23,40 @@ import psycopg
 import pytest
 
 from tools.rehearsal import bench, rows
-from tools.rehearsal.rows import Moved
+from tools.rehearsal.rows import Held, Moved
 
 
 def test_a_table_is_compared_by_its_key_only_when_both_sides_agree_on_one():
     """The key both sides hold; a multiset where they differ, where there is none, and for
     the audit log always; a table on one side by that side's key."""
-    before = {("budget", "a"): ("id",), ("budget", "b"): ("id",), ("budget", "c"): (),
-              ("system", "audit_log"): ("id",), ("budget", "d"): ("id", "part")}
-    after = {("budget", "a"): ("id",), ("budget", "b"): ("id", "kind"), ("budget", "c"): (),
-             ("system", "audit_log"): ("id",), ("budget", "e"): ("code",)}
+    before = {("budget", "a"): Held(("id",)), ("budget", "b"): Held(("id",)),
+              ("budget", "c"): Held(()), ("system", "audit_log"): Held(("id",)),
+              ("budget", "d"): Held(("id", "part"))}
+    after = {("budget", "a"): Held(("id",)), ("budget", "b"): Held(("id", "kind")),
+             ("budget", "c"): Held(()), ("system", "audit_log"): Held(("id",)),
+             ("budget", "e"): Held(("code",))}
     assert rows.keys(before, after) == {
         ("budget", "a"): ("id",), ("budget", "b"): (), ("budget", "c"): (),
         ("budget", "d"): ("id", "part"), ("budget", "e"): ("code",),
         ("system", "audit_log"): ()}
+
+
+def test_a_column_is_a_stamp_only_where_every_side_holding_its_table_says_so():
+    """Both sides' stamps; a column one side's catalog calls a stamp and the other's does
+    not (a cut adding or dropping a clock default) is none, so it is compared exactly; a
+    table on one side by that side's stamps.  Every day of either side is named."""
+    before = {("budget", "a"): Held(("id",), ("created_at", "updated_at")),
+              ("budget", "b"): Held(("id",), ("created_at",), ("on_day",)),
+              ("budget", "d"): Held(("id",), ("created_at",))}
+    after = {("budget", "a"): Held(("id",), ("created_at", "updated_at")),
+             ("budget", "b"): Held(("id",), ("created_at", "posted_at")),
+             ("budget", "e"): Held(("id",), ("seen_at",), ("due_on",))}
+    assert rows.stamps(before, after) == {
+        ("budget", "a"): ("created_at", "updated_at"), ("budget", "b"): ("created_at",),
+        ("budget", "d"): ("created_at",), ("budget", "e"): ("seen_at",)}
+    one, other = after, before
+    assert rows.stamps(one, other)[("budget", "b")] == ("created_at",)
+    assert rows.days(before, after) == ["budget.b.on_day", "budget.e.due_on"]
 
 
 _CHANGED = Moved("budget.accounts", "[3]", {"id": 3, "balance": Decimal("10.00"), "name": "A",
@@ -349,10 +369,14 @@ CREATE TABLE system.audit_log (
 CREATE TABLE note (id integer, part integer, body varchar(4) NOT NULL,
                    created_at timestamptz DEFAULT clock_timestamp(), PRIMARY KEY (id, part));
 CREATE TABLE tally (word text);
+CREATE TABLE timing (id integer PRIMARY KEY, due timestamptz DEFAULT now() + interval '1 day',
+                     at_local timestamp DEFAULT LOCALTIMESTAMP(3),
+                     at_now timestamptz DEFAULT CURRENT_TIMESTAMP,
+                     on_day date DEFAULT CURRENT_DATE);
 INSERT INTO note (id, part, body) VALUES (1, 1, 'abc'), (1, 2, 'de'), (2, 1, 'f');
 INSERT INTO tally VALUES ('x'), ('x'), ('y');
 INSERT INTO system.audit_log (table_schema, table_name, operation, row_id, new_data)
-    VALUES ('public', 'ledger', 'INSERT', 1, '{"id": 1, "created_at": "a"}');
+    VALUES ('public', 'note', 'INSERT', 1, '{"id": 1, "created_at": "2000-01-01T00:00:00+00:00"}');
 CREATE FUNCTION audit() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     INSERT INTO system.audit_log (table_schema, table_name, operation, row_id)
@@ -368,8 +392,9 @@ CREATE TRIGGER audit AFTER INSERT OR UPDATE OR DELETE ON note
 
 @pytest.fixture(name="planted")
 def _planted(dump: Path) -> Iterator[bench.Bench]:
-    """A bench whose base copy holds the dump (its schemas, its ledger) and the planted
-    tables: a composite key with a stamp, a multiset, and an audit log a trigger writes."""
+    """A bench whose base copy holds the dump (its schemas, its ledger, its stamped row) and
+    the planted tables: a composite key with a stamp, a multiset, a table of clock defaults,
+    and an audit log a trigger writes."""
     made = bench.Bench(dump, {"base": "HEAD"})
     with made:
         with psycopg.connect(made.made["base"].url, autocommit=True) as connection:
@@ -377,50 +402,149 @@ def _planted(dump: Path) -> Iterator[bench.Bench]:
         yield made
 
 
+def _clock(url: str) -> datetime:
+    """The cluster's clock, read on the copy at ``url``."""
+    with psycopg.connect(url) as connection:
+        (now,) = connection.execute("SELECT clock_timestamp()").fetchone()
+    return now
+
+
+#: A line before every stamp the tests write, so each reads as written by a deploy.
+_LONG_AGO = datetime(2000, 1, 1, tzinfo=ZoneInfo("UTC"))
+#: A line after every stamp the tests write, so each reads exactly.
+_FAR_AHEAD = datetime(2100, 1, 1, tzinfo=ZoneInfo("UTC"))
+
+
 @pytest.mark.cluster
-def test_stamps_and_audit_clocks_are_left_out_and_every_other_value_is_compared(planted):
-    """Two copies whose stamps, audit ids and audit clocks differ (moved with the audit
-    trigger off) read the same; a changed value, a row more in a multiset and the audit event
-    the change's trigger wrote are each found, by key or whole."""
+def test_a_stamp_is_a_timestamp_whose_default_is_a_clock_read_and_nothing_else(planted):
+    """From the catalog: ``clock_timestamp()``, ``CURRENT_TIMESTAMP``, ``LOCALTIMESTAMP(3)``
+    and the audit log's ``now()`` make stamps, ``now()`` plus an interval does not, and a
+    date the server's day fills is a day."""
+    with psycopg.connect(planted.made["base"].url) as connection:
+        held = rows.catalog(connection)
+    assert held[("public", "note")] == Held(("id", "part"), ("created_at",))
+    assert held[("public", "timing")] == Held(("id",), ("at_local", "at_now"), ("on_day",))
+    assert held[("system", "audit_log")] == Held(("id",), ("executed_at",))
+    assert held[("public", "tally")] == Held(())
+
+
+@pytest.mark.cluster
+def test_a_stamp_later_than_the_line_reads_as_deploy_and_every_other_is_compared(planted):
+    """R-BAL331: two copies whose stamps the clock re-wrote after the line, one after the
+    other (the audit log's own clock and the stamps of the rows its events wrote with them),
+    read the same, the audit log's id and database user still left out; read through a line
+    later than both, the same stamps differ.  A stamp moved earlier, a changed value, a row
+    more in a multiset and the audit event the change's trigger wrote are each found."""
     base = planted.made["base"]
+    line = _clock(base.url)
     one = planted.clone(base.database, "one")
     other = planted.clone(base.database, "other")
-    with psycopg.connect(other, autocommit=True) as connection:
-        connection.execute("SET session_replication_role = replica")
-        connection.execute("UPDATE note SET created_at = now() - interval '1 day'")
-        connection.execute("UPDATE system.audit_log SET id = id + 100, executed_at = "
-                           "now() - interval '1 day', db_user = 'someone', new_data = "
-                           "new_data || '{\"created_at\": \"b\"}'")
-    assert not rows.compare(one, other)
+    for url, also in ((one, ""), (other, ", id = id + 100, db_user = 'someone'")):
+        with psycopg.connect(url, autocommit=True) as connection:
+            connection.execute("SET session_replication_role = replica")
+            connection.execute("UPDATE note SET created_at = now()")
+            connection.execute("UPDATE system.audit_log SET executed_at = now(), new_data = "
+                               "new_data || jsonb_build_object('created_at', now())" + also)
+    assert not rows.compare(one, other, line)
+    assert {row.table for row in rows.compare(one, other, _clock(base.url))} == {
+        "public.note", "system.audit_log"}
     with psycopg.connect(other, autocommit=True) as connection:
         connection.execute("UPDATE note SET body = 'dx' WHERE id = 1 AND part = 2")
         connection.execute("INSERT INTO tally VALUES ('x')")
-    assert rows.compare(one, other) == [
-        Moved("public.note", "[1, 2]", {"id": 1, "part": 2, "body": "de"},
-              {"id": 1, "part": 2, "body": "dx"}),
+        connection.execute("SET session_replication_role = replica")
+        connection.execute("UPDATE note SET created_at = '2000-01-01T00:00:00+00:00' "
+                           "WHERE id = 2")
+    deployed = rows.DEPLOY
+    assert rows.compare(one, other, line) == [
+        Moved("public.note", "[1, 2]", {"id": 1, "part": 2, "body": "de", "created_at": deployed},
+              {"id": 1, "part": 2, "body": "dx", "created_at": deployed}),
+        Moved("public.note", "[2, 1]", {"id": 2, "part": 1, "body": "f", "created_at": deployed},
+              {"id": 2, "part": 1, "body": "f", "created_at": "2000-01-01T00:00:00+00:00"}),
         Moved("public.tally", "", None, {"word": "x"}),
         Moved("system.audit_log", "", None, ["public", "note", "UPDATE", 0, None, None, None,
-                                              None]),
+                                              None, {"executed_at": deployed}]),
     ]
     assert rows.multisets(one, other) == ["public.tally", "system.audit_log"]
 
 
 @pytest.mark.cluster
+def test_a_dump_holding_a_stamp_later_than_the_line_measures_nothing(planted):
+    """The line is read on a copy every stamp of which is earlier; a row's stamp, the audit
+    log's own clock and a stamp of a row an event wrote, each dated ahead of it, refuse the
+    run, each named."""
+    url = planted.made["base"].url
+    assert rows.read_line(url) < _clock(url)
+    with psycopg.connect(url, autocommit=True) as connection:
+        connection.execute("SET session_replication_role = replica")
+        connection.execute("UPDATE note SET created_at = now() + interval '1 day' WHERE id = 2")
+        connection.execute("UPDATE system.audit_log SET executed_at = now() + interval '1 day', "
+                           "new_data = new_data || "
+                           "jsonb_build_object('created_at', now() + interval '1 day')")
+    with pytest.raises(bench.BenchError) as refused:
+        rows.read_line(url)
+    assert str(refused.value).startswith("the dump holds stamps later than the cluster's clock")
+    assert str(refused.value).endswith(
+        "cannot be told from them: public.note.created_at, system.audit_log.executed_at, "
+        "system.audit_log.new_data.created_at")
+
+
+@pytest.mark.cluster
 def test_each_control_is_planted_in_one_row_and_found_exactly(planted):
     """The cent in the first money column, the byte in the first text column (its length
-    kept under a length limit), the removal of the first keyed row: each moves its one row,
-    no trigger writing an audit event, and the comparison finds it and nothing else."""
+    kept under a length limit), the removal of the first keyed row, and the first stamp moved
+    a microsecond before both itself and the line, whether the line is after it or before it
+    (a stamp a deploy wrote): each moves its one row, no trigger writing an audit event, and
+    the comparison finds it and nothing else."""
     base = planted.made["base"]
+    line = _clock(base.url)
     for name, plant, removed, expected in (
             ("cent", rows.plant_cent, False, ("public.ledger", "[1]", "amount")),
             ("byte", rows.plant_byte, False, ("public.note", "[1, 1]", "body")),
             ("removal", rows.plant_removal, True, ("public.ledger", "[1]", ""))):
         url = planted.clone(base.database, name)
         assert plant(url) == expected
-        moved = rows.compare(base.url, url)
+        moved = rows.compare(base.url, url, line)
         assert rows.found(moved, expected, removed), moved
     assert moved[0].before == {"id": 1, "amount": Decimal("12.34")}
-    assert not rows.compare(base.url, planted.clone(base.database, "untouched"))
+    assert not rows.compare(base.url, planted.clone(base.database, "untouched"), line)
+    for name, at in (("earlier", line), ("earlier_than_a_deploy_s", _LONG_AGO)):
+        url = planted.clone(base.database, name)
+        planted_at = rows.plant_earlier(url, at)
+        assert planted_at == ("public.note", "[1, 1]", "created_at")
+        moved = rows.compare(base.url, url, at)
+        assert rows.found(moved, planted_at), (name, moved)
+
+
+@pytest.mark.cluster
+@pytest.mark.parametrize("case", ["read alike", "not later than the line", "the same value"])
+def test_a_stamp_the_clock_wrote_on_two_clones_in_turn_is_not_found(planted, monkeypatch,
+                                                                     case):
+    """The fifth control: two values the clock wrote, each later than the line, read alike.
+    Two values no later than the line, or one value on both, refuse, since the control would
+    then measure nothing."""
+    base = planted.made["base"]
+    line = {"read alike": _clock(base.url), "not later than the line": _FAR_AHEAD,
+            "the same value": _LONG_AGO}[case]
+    if case == "the same value":
+        monkeypatch.setattr(rows, "plant_now", lambda url: rows.plant_earlier(url, _FAR_AHEAD))
+    wrong = rows.rewritten_twice(planted, base, line)
+    if case == "read alike":
+        assert wrong is None
+    else:
+        assert wrong is not None and wrong.startswith(
+            "a stamp the clock wrote on two clones in turn planted at public.note [1, 1] "
+            "created_at and public.note [1, 1] created_at wrote ")
+        assert wrong.endswith(f"not two moments each later than the line {line.isoformat()}, "
+                              "so it measures nothing")
+
+
+@pytest.mark.cluster
+def test_every_control_runs_and_a_wrong_one_is_named(planted, monkeypatch):
+    """The four found exactly pass on the planted copy, and what the fifth says is wrong is
+    named among what is wrong."""
+    base = planted.made["base"]
+    monkeypatch.setattr(rows, "rewritten_twice", lambda *_given: "the fifth, planted")
+    assert rows.controls(planted, base, _clock(base.url)) == ["the fifth, planted"]
 
 
 @pytest.mark.cluster
@@ -481,6 +605,11 @@ def _refusing(database: str) -> Callable[..., str | None]:
     return deployed
 
 
+#: What a run whose every control read as planted prints of them.
+_CONTROLS_LINE = ("controls: a cent, a byte, a removed row, a stamp moved earlier, each found "
+                  "exactly; a stamp the clock wrote on two clones in turn, not found\n")
+
+
 @pytest.mark.cluster
 def test_two_sides_that_store_the_same_rows_exit_0_saying_what_was_not_compared(
         dump, tmp_path, capsys):
@@ -489,10 +618,17 @@ def test_two_sides_that_store_the_same_rows_exit_0_saying_what_was_not_compared(
     status, out, err, report = _rehearsal(dump, tmp_path, capsys)
     assert (status, err, report) == (0, "", "")
     assert re.search(r"^clock pinned at \d{4}-\d{2}-\d{2}T12:00:00-0[45]:00$", out, re.MULTILINE)
+    assert re.search(r"^line: \d{4}-\d{2}-\d{2}T[0-9:.]+\+00:00, the cluster's clock just before "
+                     r"the first deploy; a stamp later than it reads as 'deploy'$", out,
+                     re.MULTILINE)
     assert "deploy base: " in out and "deploy base, again: " in out and "deploy cut: " in out
     assert "noise gate: " in out and ", 0 rows differ\n" in out
-    assert "controls: a cent, a byte, a removed row, each found exactly\n" in out
+    assert _CONTROLS_LINE in out
     assert rows.NOT_COMPARED + "\n" in out
+    assert ("compared, though the server's clock fills them: the days "
+            "budget.transaction_entries.purchased_on, each the server's real day where a "
+            "deploy inserts a row without one, so deploys either side of midnight in the "
+            "server's zone differ by it (a false difference, never a false pass)\n") in out
     assert "compared as multisets: system.audit_log\n" in out
     assert "base against cut: " in out and "teardown: " in out
     assert re.search(r"^rollback: base's image knows the migration version cut's copy is "
@@ -514,6 +650,43 @@ def test_a_row_cut_s_deploy_stores_differently_exits_1_naming_it(dump, tmp_path,
     assert report.startswith(f"{table} {key}: {column} ") and report.count("\n") == 1
     assert f"{table}: 1 rows differ (0 only on base, 0 only on cut, 1 changed)\n" \
         f"  {column}: 1 rows, total change +0.01\n" in out
+
+
+@pytest.mark.cluster
+def test_a_stamp_of_the_dump_cut_s_deploy_moves_earlier_exits_1_naming_it(dump, tmp_path,
+                                                                          capsys, monkeypatch):
+    """R-BAL331's own case: cut's deploy moves a stamp the dump holds a second earlier (a tie
+    it breaks would flip); stamps are compared, so it is the one row differing, named in the
+    report, summed on stdout, exit 1."""
+    monkeypatch.setattr(rows, "deploy", _planting("rehearsal_cut", _executing(
+        "UPDATE stamped SET created_at = created_at - interval '1 second'")))
+    status, out, _, report = _rehearsal(dump, tmp_path, capsys)
+    assert status == 1
+    assert report.startswith("public.stamped [1]: created_at ") and report.count("\n") == 1
+    assert ("public.stamped: 1 rows differ (0 only on base, 0 only on cut, 1 changed)\n"
+            "  created_at: 1 rows\n") in out
+
+
+@pytest.mark.cluster
+def test_stamps_each_deploy_writes_at_its_own_moment_read_alike(dump, tmp_path, capsys,
+                                                                monkeypatch):
+    """Every deploy, base's twice, cut's and the rollback's, writing the server's clock into
+    the dump's stamp at its own moment: each stamp reads as a deploy's, so base deployed
+    twice reads the same, nothing differs and the rollback moves no row, exit 0."""
+    deploy = rows.deploy
+    stamp = _executing("UPDATE stamped SET created_at = now()")
+
+    def deployed(state: bench.State, url: str, secret_key: str, moment: datetime
+                 ) -> str | None:
+        said = deploy(state, url, secret_key, moment)
+        if said is None:
+            stamp(url)
+        return said
+    monkeypatch.setattr(rows, "deploy", deployed)
+    status, out, err, report = _rehearsal(dump, tmp_path, capsys)
+    assert (status, err, report) == (0, "", "")
+    assert "noise gate: " in out and ", 0 rows differ\n" in out
+    assert "base against cut: " in out and ", 0 rows differ (each in " in out
 
 
 @pytest.mark.cluster
@@ -547,7 +720,7 @@ def test_cut_s_deploy_refusing_what_base_s_took_is_a_difference(dump, tmp_path, 
     monkeypatch.setattr(rows, "deploy", _refusing("rehearsal_cut"))
     status, out, _, report = _rehearsal(dump, tmp_path, capsys)
     assert (status, report) == (1, "")
-    assert "controls: a cent, a byte, a removed row, each found exactly\n" in out
+    assert _CONTROLS_LINE in out
     assert "cut's deploy refused the copy base's deployed: exit 1:\nplanted\n" in out
 
 

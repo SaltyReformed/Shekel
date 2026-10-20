@@ -32,7 +32,9 @@ def pytest_configure(config: pytest.Config) -> None:
 def _dump(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     """A ``pg_dump -Fc`` archive of a planted database, begun as production's volume begins
     (``scripts/init_db.sql``: the app's schemas and an empty ``alembic_version``, which the
-    deploy step's first build needs) and holding one table, two rows of money."""
+    deploy step's first build needs) and holding two tables: two rows of money, and one row
+    whose stamp the server's clock wrote before any run reads its line (a dump's stamp, which
+    the rows compare exactly)."""
     path = tmp_path_factory.mktemp("dump") / "planted.dump"
     token = bench.cluster("token").strip()
     try:
@@ -49,6 +51,9 @@ def _dump(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
             connection.execute(
                 "CREATE TABLE ledger (id integer PRIMARY KEY, amount numeric(12, 2))")
             connection.execute("INSERT INTO ledger VALUES (1, 12.34), (2, 0.01)")
+            connection.execute("CREATE TABLE stamped (id integer PRIMARY KEY, "
+                               "created_at timestamptz NOT NULL DEFAULT now())")
+            connection.execute("INSERT INTO stamped (id) VALUES (1)")
         with path.open("wb") as archive:
             dumped = bench.in_cluster(container, ["pg_dump", "--format=custom", "--dbname",
                                                   "planted"], stdout=archive)
