@@ -67,9 +67,11 @@ import time
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from types import TracebackType
 from typing import IO
+from zoneinfo import ZoneInfo
 
 import psycopg
 from psycopg import sql
@@ -84,6 +86,16 @@ PRISTINE = "rehearsal_pristine"
 _STATE_NAME = re.compile(r"[a-z][a-z0-9_]{0,29}")
 #: The line of ``pg_restore -l`` naming the server a custom-format archive was made by.
 _DUMPED_FROM = re.compile(r"^;\s+Dumped from database version: (\d+)", re.MULTILINE)
+#: The line of ``pg_restore -l`` naming when the archive was made, as the dumper's wall clock
+#: read in the reader's zone (:class:`Listing` says why that zone is UTC).
+_ARCHIVE_CREATED = re.compile(
+    r"^; Archive created at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (\S+)$", re.MULTILINE)
+#: The zone the cluster's own ``pg_restore`` prints the archive's time in: its container sets
+#: no ``TZ``, as production's database container does not.
+_LISTING_ZONE = "UTC"
+#: The hour of the dump's civil day the rehearsal's clock is pinned at (``design.md`` s.3
+#: item 4).
+_PINNED_HOUR = 12
 #: ``server_version_num`` is the major times 10,000 plus the minor (180006 is 18.6).
 _VERSION_NUM_PER_MAJOR = 10_000
 #: The one line of a side's ``requirements-dev.txt`` its venv takes beside ``requirements.txt``.
@@ -109,6 +121,32 @@ class State:
     database: str
     url: str
     python: Path
+
+
+@dataclass(frozen=True)
+class Listing:
+    """What the dump says of itself in its ``pg_restore -l`` listing: the PostgreSQL major of
+    the server it was dumped from, and the instant it was made.
+
+    THE INSTANT IS READ AS UTC.  A custom-format archive stores the dumper's local wall clock
+    and no zone, and ``pg_restore`` prints it in its own local zone, so the printed time is
+    the true instant only when both zones agree.  Production's dump runs in its database
+    container, which sets no ``TZ`` (``postgres:18-alpine``: UTC), and so does the cluster's
+    ``pg_restore``; a listing printed in another zone is refused (:func:`read_listing`).
+    Measured 2026-10-20: the nightly dump named ``...-020720`` (02:07 New York) lists
+    ``Archive created at 2026-10-20 06:07:21 UTC``, and production's database container's
+    environment names no ``TZ``.  That the DUMPER runs in UTC is the one thing the archive
+    cannot say; a dumper moved to another zone would shift the instant by its offset."""
+
+    major: int
+    created: datetime
+
+    def noon(self, zone: str) -> datetime:
+        """Noon in ``zone`` on the civil day the dump was made there: the instant the
+        rehearsal pins every side's clock at (``design.md`` s.3 item 4)."""
+        here = ZoneInfo(zone)
+        day = self.created.astimezone(here).date()
+        return datetime(day.year, day.month, day.day, _PINNED_HOUR, tzinfo=here)
 
 
 class _Teardown:
@@ -217,17 +255,25 @@ def image_tag() -> str:
     return tag.group(1)
 
 
-def dump_major(listing: str) -> int:
-    """The PostgreSQL major that made a dump, from its ``pg_restore -l`` listing.
+def read_listing(listing: str) -> Listing:
+    """What a dump says of itself, from its ``pg_restore -l`` listing.
 
     Raises:
-        BenchError: when the listing names no server, so it is no custom-format archive.
+        BenchError: when the listing names no server (so it is no custom-format archive), no
+            time it was made, or a time in another zone than the one :class:`Listing` reads.
     """
-    found = _DUMPED_FROM.search(listing)
-    if found is None:
+    major = _DUMPED_FROM.search(listing)
+    if major is None:
         raise BenchError("the dump's listing names no server it was dumped from, so it is not "
                          "a pg_dump -Fc archive")
-    return int(found.group(1))
+    created = _ARCHIVE_CREATED.search(listing)
+    if created is None:
+        raise BenchError("the dump's listing names no time it was created at")
+    if created.group(2) != _LISTING_ZONE:
+        raise BenchError(f"the dump's listing prints its creation time in {created.group(2)}, "
+                         f"not {_LISTING_ZONE}, so the instant it was made is not known")
+    return Listing(int(major.group(1)), datetime.fromisoformat(created.group(1)).replace(
+        tzinfo=ZoneInfo(_LISTING_ZONE)))
 
 
 def refuse_another_major(dump: int, server_version_num: int) -> None:
@@ -327,6 +373,8 @@ class Bench:
     #: Each state, once made.
     made: dict[str, State] = field(default_factory=dict)
     socket_dir: Path | None = None
+    #: What the dump says of itself, once its listing is read.
+    listing: Listing | None = None
     _teardown: _Teardown = field(default_factory=_Teardown)
 
     def _timed(self, part: str, began: float) -> None:
@@ -403,9 +451,10 @@ class Bench:
         listed = self._on_the_dump(container, ["pg_restore", "--list"])
         if listed.returncode:
             raise BenchError(f"pg_restore cannot read {self.dump}: {listed.stderr.strip()}")
+        self.listing = read_listing(listed.stdout)
         admin = self._url("postgres")
         with psycopg.connect(admin, autocommit=True) as connection:
-            refuse_another_major(dump_major(listed.stdout), connection.info.server_version)
+            refuse_another_major(self.listing.major, connection.info.server_version)
             connection.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(PRISTINE)))
         began = time.monotonic()
         restored = self._on_the_dump(container, ["pg_restore", "--exit-on-error", "--no-owner",

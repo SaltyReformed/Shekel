@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -22,13 +23,45 @@ from tools.rehearsal import bench
 from tools.rehearsal.bench import Bench, BenchError
 
 
+_CREATED = "; Archive created at 2026-10-20 06:07:21 UTC\n"
+
+
 def test_the_major_a_dump_was_made_by_is_read_from_its_listing():
     """``pg_restore -l`` names the server a custom-format archive came from; its major is the
     first number, a distribution's suffix or not."""
-    assert bench.dump_major(";\n;     Dumped from database version: 18.6\n") == 18
-    assert bench.dump_major(";     Dumped from database version: 16.4 (Ubuntu 16.4-1)\n") == 16
+    assert bench.read_listing(
+        f";\n{_CREATED};     Dumped from database version: 18.6\n").major == 18
+    assert bench.read_listing(
+        f"{_CREATED};     Dumped from database version: 16.4 (Ubuntu 16.4-1)\n").major == 16
     with pytest.raises(BenchError, match="not a pg_dump -Fc archive"):
-        bench.dump_major("; Archive created at 2026-10-19\n")
+        bench.read_listing(_CREATED)
+
+
+_MAJOR = ";     Dumped from database version: 18.6\n"
+
+
+def test_the_instant_a_dump_was_made_is_read_as_utc_and_another_zone_is_refused():
+    """The listing's creation time, as the cluster's ``pg_restore`` prints it, is an aware
+    UTC instant; no time, or one printed in another zone, is refused by name."""
+    assert bench.read_listing(_CREATED + _MAJOR).created == datetime(
+        2026, 10, 20, 6, 7, 21, tzinfo=timezone.utc)
+    with pytest.raises(BenchError, match="names no time it was created at"):
+        bench.read_listing(_MAJOR)
+    with pytest.raises(BenchError, match="prints its creation time in EDT, not UTC"):
+        bench.read_listing(_CREATED.replace("UTC", "EDT") + _MAJOR)
+
+
+@pytest.mark.parametrize("created, noon", [
+    (datetime(2026, 10, 20, 6, 7, 21, tzinfo=timezone.utc), "2026-10-20T12:00:00-04:00"),
+    (datetime(2026, 10, 21, 2, 30, tzinfo=timezone.utc), "2026-10-20T12:00:00-04:00"),
+    (datetime(2026, 1, 15, 4, 59, tzinfo=timezone.utc), "2026-01-14T12:00:00-05:00"),
+    (datetime(2026, 1, 15, 5, 0, tzinfo=timezone.utc), "2026-01-15T12:00:00-05:00"),
+])
+def test_the_pinned_instant_is_noon_on_the_civil_day_the_dump_was_made_in_the_zone(created,
+                                                                                    noon):
+    """Noon in the zone on the dump's civil day THERE, never the UTC day: a dump made at
+    02:30 UTC is still the evening before in New York, in summer time and in winter."""
+    assert bench.Listing(18, created).noon("America/New_York").isoformat() == noon
 
 
 def test_a_dump_from_another_major_than_the_cluster_s_is_refused_naming_both():
@@ -182,6 +215,8 @@ def test_a_bench_restores_the_dump_clones_it_per_state_and_leaves_nothing(dump):
     parent = gitcmd.git(arcs.REPO, "rev-parse", "HEAD~1").strip()
     made = Bench(dump, {"base": parent, "cut": head})
     with made:
+        assert made.listing is not None
+        assert abs(datetime.now(timezone.utc) - made.listing.created) < timedelta(hours=1)
         assert {name: state.commit for name, state in made.made.items()} == {
             "base": parent, "cut": head}
         for state in made.made.values():
