@@ -343,7 +343,7 @@ def update_template(template_id):
     # the ORDER in which this route invokes those helpers; folding that call
     # sequence into a further helper would couple two separate template
     # domains (transaction-template envelope tracking + name propagation vs
-    # transfer-template name-uniqueness + shadow invariants) behind awkward
+    # transfer-template name-uniqueness + loan-destination rules) behind awkward
     # multi-value returns for no real gain (coding-standards rule 13).
     # Pylint: ``duplicate-code`` -- one-sided disable; only the call sequence
     # is shared with ``transfers.update_transfer_template`` per the R0801
