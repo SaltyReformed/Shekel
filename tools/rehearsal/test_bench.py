@@ -3,15 +3,14 @@ teardown whose census names anything left (step X-cx's K1a-2).
 
 The cases marked ``cluster`` start a real private cluster (``scripts/private_cluster.py``) on
 the daemon that module chooses (the rootless one, unless CI sanctions its own), and restore a
-dump planted by the module's fixture, so they need docker and the test-db image, whose own
-``pg_dump`` and ``pg_restore`` run inside the cluster (``balance:R-BAL327``); the conftest
-says where they run.  The rest grade the bench's pure parts on planted inputs.
+dump planted by the conftest's ``dump`` fixture, so they need docker and the test-db image,
+whose own ``pg_dump`` and ``pg_restore`` run inside the cluster (``balance:R-BAL327``); the
+conftest says where they run.  The rest grade the bench's pure parts on planted inputs.
 """
 from __future__ import annotations
 
 import os
 import subprocess
-from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
 
@@ -74,7 +73,7 @@ def test_a_side_s_pins_are_its_requirements_and_its_time_machine_pin(tmp_path):
 
 
 class _Builds:
-    """A stand-in for :func:`bench._run` that records each command and makes a venv's
+    """A stand-in for :func:`bench.run` that records each command and makes a venv's
     directory as ``python -m venv`` would; pip exits ``pip_status``."""
 
     def __init__(self, pip_status: int = 0) -> None:
@@ -96,7 +95,7 @@ def _builds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Builds:
     """A throwaway ``XDG_CACHE_HOME`` and the stand-in builder."""
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     stand_in = _Builds()
-    monkeypatch.setattr(bench, "_run", stand_in)
+    monkeypatch.setattr(bench, "run", stand_in)
     return stand_in
 
 
@@ -145,39 +144,13 @@ def test_a_dump_that_cannot_be_opened_is_refused_by_name_before_any_tool_runs(tm
         return subprocess.CompletedProcess(argv, 0, said.get(argv[2], ""), "")
 
     monkeypatch.setattr(bench, "image_tag", lambda: "stub-image:test")
-    monkeypatch.setattr(bench, "_run", cluster_module)
+    monkeypatch.setattr(bench, "run", cluster_module)
     absent = tmp_path / "absent.dump"
     with pytest.raises(BenchError) as refused:
         with Bench(absent, {"cut": "HEAD"}):
             pass
     assert str(refused.value).startswith(f"the dump {absent} cannot be read: [Errno 2] No such")
     assert commands == ["token", "start", "stop"]
-
-
-@pytest.fixture(name="dump", scope="module")
-def _dump(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
-    """A ``pg_dump -Fc`` archive of a planted database: one table, two rows of money."""
-    path = tmp_path_factory.mktemp("dump") / "planted.dump"
-    token = bench.cluster("token").strip()
-    try:
-        socket_dir, container = bench.cluster(
-            "start", "--", f"shekel-rehearsal-test-{os.getpid()}-{token[:8]}", token,
-            bench.image_tag()).splitlines()
-        with psycopg.connect(bench.cluster("url", socket_dir, "postgres").strip(),
-                             autocommit=True) as connection:
-            connection.execute("CREATE DATABASE planted")
-        planted = bench.cluster("url", socket_dir, "planted").strip()
-        with psycopg.connect(planted, autocommit=True) as connection:
-            connection.execute(
-                "CREATE TABLE ledger (id integer PRIMARY KEY, amount numeric(12, 2))")
-            connection.execute("INSERT INTO ledger VALUES (1, 12.34), (2, 0.01)")
-        with path.open("wb") as archive:
-            dumped = bench.in_cluster(container, ["pg_dump", "--format=custom", "--dbname",
-                                                  "planted"], stdout=archive)
-        assert dumped.returncode == 0, dumped.stderr
-    finally:
-        bench.cluster("stop", token)
-    yield path
 
 
 def _containers() -> str:

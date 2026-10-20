@@ -1,0 +1,565 @@
+"""The rows (step X-cx's K1b-1): every stored row of the dump, once base's deploy step and
+once cut's has run on it, compared row by row, the noise gate and the planted controls run
+every time (``design.md`` s.3 items 2, 3, 5, 8 and 10).
+
+THE DEPLOY IS PRODUCTION'S.  Each state's clone runs ``scripts/init_database.py`` BY PATH,
+from that state's worktree and under that state's venv, as entrypoint step 3 runs it, in an
+environment BUILT WHOLE (:func:`deploy_environment`): nothing of the shell that runs the kit
+reaches it, so an operator's ``DATABASE_URL_APP``, ``RATELIMIT_STORAGE_URI`` or
+``SHEKEL_FAKE_TODAY`` cannot.  What production's image and compose file give the app is read
+from the side's own tree, so a cut that changes it is measured with it.
+
+EVERY TABLE IN THE CATALOG, every row, every column but the row stamps (:data:`STAMPS`).  A
+table with a primary key is compared row by row by that key; one without, or one whose key is
+not the same on both sides, as a multiset of its rows, and the report names it.
+``system.audit_log`` is a multiset of what each event wrote (:data:`_AUDIT_IMAGE`, the hand
+kit's stable digest): never its id, clock or database user, since its ids come from a
+sequence every deploy advances.  Each row is hashed in SQL; only a row that differs is
+fetched whole.
+
+THE NOISE GATE: base is deployed on two clones, and both must read identical.  A difference
+there is the kit's failure, never the release's (exit 2).  It is also what measures the stamp
+list: a clock column the list does not name differs between base's two deploys.
+
+THE PLANTED CONTROLS, every run, each on a clone of base's deployed copy, nothing else
+touched (triggers and foreign-key checks are off for the plant): a cent added to a money
+column, a byte changed in a text column, and a row removed.  The comparison must find each
+exactly, or the run measured nothing (exit 2).
+
+What it does NOT compare is printed on every run (:data:`NOT_COMPARED`), so an exit 0 is
+never read as a claim about them.
+
+Usage, which brings a bench up (:mod:`.bench`), deploys, compares and tears it down::
+
+    python -m tools.rehearsal.rows --dump <pg_dump -Fc file> --base <revision> \\
+        --cut <revision> --report <file>
+
+Exit status: 0 no row differs; 1 rows differ (each one in the report, summed per table and
+column on stdout), or cut's deploy refused the copy base's deployed; 2 nothing was measured:
+the bench, base's deploy, the noise gate or a control failed, each named.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import secrets
+import sys
+import time
+from collections import Counter
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from decimal import Decimal
+from pathlib import Path
+
+import psycopg
+from psycopg import sql
+
+from tools.rehearsal import bench
+
+#: A table's ``(schema, name)``.
+Table = tuple[str, str]
+#: A row as compared: a table's JSON object, or the audit log's array (:data:`_AUDIT_IMAGE`).
+Image = dict[str, object] | list[object]
+#: The row stamps, left out of every row as clocks (the hand kit's stable digest).
+STAMPS = ("created_at", "updated_at")
+AUDIT_LOG: Table = ("system", "audit_log")
+_STAMPS = sql.Literal(list(STAMPS))
+#: An audit event as compared: what it wrote, without its id, ``executed_at`` or ``db_user``.
+_AUDIT_IMAGE = sql.SQL(
+    "jsonb_build_array(x.table_schema, x.table_name, x.operation, x.row_id, x.changed_fields, "
+    "x.old_data - {stamps}::text[], x.new_data - {stamps}::text[], x.user_id)").format(
+        stamps=_STAMPS)
+#: Every table and the columns of its primary key, in order (none for a table without one).
+_CATALOG = """
+SELECT n.nspname, c.relname,
+       ARRAY(SELECT a.attname::text
+             FROM pg_index i
+             CROSS JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, position)
+             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+             WHERE i.indrelid = c.oid AND i.indisprimary
+             ORDER BY k.position)
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'
+ORDER BY 1, 2
+"""
+#: Columns a control may be planted in, in catalog order, none that a generation computes.
+_PLANTABLE = """
+SELECT table_schema, table_name, column_name FROM information_schema.columns
+WHERE data_type = ANY(%s) AND is_generated = 'NEVER'
+  AND (numeric_scale IS NULL OR numeric_scale >= 2)
+ORDER BY table_schema, table_name, ordinal_position
+"""
+#: The deploy step, run from the side's worktree as entrypoint step 3 runs it.
+_DEPLOY_STEP = Path("scripts") / "init_database.py"
+#: A rate-limit store ProdConfig accepts (it refuses ``memory:``) that names no server that
+#: could answer (``.invalid`` never resolves, RFC 6761): the deploy serves no request, and a
+#: deploy that reached for the store would fail by name rather than pass on a live one.
+_UNREACHABLE_LIMITER = "redis://rehearsal.invalid:6379/0"
+#: The side's ``Dockerfile`` lines that set its image's environment.
+_IMAGE_ENV = re.compile(r"^ENV ([A-Z_][A-Z0-9_]*)=(\S+)$", re.MULTILINE)
+#: The production compose file's pin of the app's civil timezone.
+_COMPOSE_TZ = re.compile(r"^\s+TZ: (\S+)$", re.MULTILINE)
+_COMPOSE = Path("deploy") / "docker-compose.prod.yml"
+#: ``PYTHONHASHSEED``, fixed on every side (design s.3 item 5).
+_HASH_SEED = "0"
+#: The cent the money control adds.
+CENT = Decimal("0.01")
+#: How much of a refused deploy's stderr the report quotes.
+_QUOTED_LINES = 20
+#: Printed on every run: what the comparison does not see (the coordinator's D3 ruling).
+NOT_COMPARED = (
+    "not compared: the schema (tables, columns, constraints, indexes), privileges (the dump is "
+    "restored without them and no shekel_app role exists, so the deploy's grants do nothing), "
+    "sequences, entrypoint step 2 (the role), and the rows after a first page load (K1c)")
+
+
+class _NoPlant(bench.BenchError):
+    """No row of the copy could take a planted control."""
+
+
+@dataclass(frozen=True)
+class Moved:
+    """One row that differs: its table, its key (the primary key as JSON; empty for a
+    multiset table's row), and its image on each side, None where it is absent."""
+
+    table: str
+    key: str
+    before: Image | None
+    after: Image | None
+
+
+def _name(table: Table) -> str:
+    """``schema.name``."""
+    return ".".join(table)
+
+
+def _identifier(table: Table) -> sql.Identifier:
+    """The table as SQL."""
+    return sql.Identifier(*table)
+
+
+def _image(table: Table) -> sql.Composable:
+    """A row of ``table`` (aliased ``x``) as compared: the audit log's event, or every column
+    but the stamps."""
+    if table == AUDIT_LOG:
+        return _AUDIT_IMAGE
+    return sql.SQL("to_jsonb(x) - {}::text[]").format(_STAMPS)
+
+
+def _key(columns: tuple[str, ...]) -> sql.Composable:
+    """A row's primary key as the text of a JSON array, of ``columns`` of the row ``x``."""
+    return sql.SQL("jsonb_build_array({})::text").format(
+        sql.SQL(", ").join(sql.Identifier("x", column) for column in columns))
+
+
+def catalog(connection: psycopg.Connection) -> dict[Table, tuple[str, ...]]:
+    """Every table of the database and its primary key's columns (empty when it has none)."""
+    return {(schema, name): tuple(key)
+            for schema, name, key in connection.execute(_CATALOG).fetchall()}
+
+
+def keys(before: dict[Table, tuple[str, ...]], after: dict[Table, tuple[str, ...]]
+         ) -> dict[Table, tuple[str, ...]]:
+    """The key each table of either side is compared by: its primary key when both sides that
+    hold it agree on one, else none (a multiset), the audit log always a multiset."""
+    compared: dict[Table, tuple[str, ...]] = {}
+    for table in sorted(before.keys() | after.keys()):
+        held = {side[table] for side in (before, after) if table in side}
+        compared[table] = (held.pop() if len(held) == 1 and table != AUDIT_LOG else ())
+    return compared
+
+
+def read(connection: psycopg.Connection, present: dict[Table, tuple[str, ...]],
+         compared: dict[Table, tuple[str, ...]]) -> dict[Table, Counter[tuple[str, str]]]:
+    """Each ``present`` table's rows as ``(key, hash)`` pairs, counted: the key is empty where
+    the table is compared as a multiset (``compared`` says), and the hash is the MD5 of the
+    row's image (:func:`_image`)."""
+    rows: dict[Table, Counter[tuple[str, str]]] = {}
+    for table in present:
+        columns = compared[table]
+        if columns:
+            query = sql.SQL("SELECT {}, md5(({})::text), 1 FROM {} x").format(
+                _key(columns), _image(table), _identifier(table))
+        else:
+            query = sql.SQL("SELECT '', md5(({})::text), count(*) FROM {} x GROUP BY 2").format(
+                _image(table), _identifier(table))
+        rows[table] = Counter({(key, digest): count
+                               for key, digest, count in connection.execute(query).fetchall()})
+    return rows
+
+
+def _images(connection: psycopg.Connection, table: Table, columns: tuple[str, ...],
+            wanted: list[str]) -> dict[str, Image]:
+    """The images of ``table``'s rows, by key (``columns``) or, for a multiset, by hash, of
+    those ``wanted``."""
+    if not wanted:
+        return {}
+    by = _key(columns) if columns else sql.SQL("md5(({})::text)").format(_image(table))
+    query = sql.SQL("SELECT DISTINCT ON (1) {by}, ({image})::text FROM {table} x "
+                    "WHERE {by} = ANY(%s)").format(by=by, image=_image(table),
+                                                   table=_identifier(table))
+    return {found: json.loads(text, parse_float=Decimal)
+            for found, text in connection.execute(query, [wanted]).fetchall()}
+
+
+def compare(before_url: str, after_url: str) -> list[Moved]:
+    """Every row that differs between two databases, table by table in catalog order."""
+    moved: list[Moved] = []
+    with psycopg.connect(before_url) as before, psycopg.connect(after_url) as after:
+        held = catalog(before), catalog(after)
+        compared = keys(*held)
+        rows = read(before, held[0], compared), read(after, held[1], compared)
+        for table, columns in compared.items():
+            counted = rows[0].get(table, Counter()), rows[1].get(table, Counter())
+            if counted[0] != counted[1]:
+                moved.extend(_parted((before, after), table, columns, counted))
+    return moved
+
+
+def _parted(sides: tuple[psycopg.Connection, psycopg.Connection], table: Table,
+            columns: tuple[str, ...],
+            counted: tuple[Counter[tuple[str, str]], Counter[tuple[str, str]]]) -> list[Moved]:
+    """The rows of ``table`` that the two sides' reads (``counted``, before then after) do
+    not share, fetched whole from their side: a keyed row on both sides once, with both
+    images; a multiset's row once for each time its count differs."""
+    gone, came = counted[0] - counted[1], counted[1] - counted[0]
+    index = 0 if columns else 1
+    was = _images(sides[0], table, columns, sorted({pair[index] for pair in gone}))
+    now = _images(sides[1], table, columns, sorted({pair[index] for pair in came}))
+    if columns:
+        return [Moved(_name(table), key, was.get(key), now.get(key))
+                for key in sorted({key for key, _ in gone + came})]
+    return ([Moved(_name(table), "", was[digest], None)
+             for (_, digest), times in sorted(gone.items()) for _ in range(times)]
+            + [Moved(_name(table), "", None, now[digest])
+               for (_, digest), times in sorted(came.items()) for _ in range(times)])
+
+
+def multisets(before_url: str, after_url: str) -> list[str]:
+    """The tables either database holds that are compared as multisets, named for the report."""
+    with psycopg.connect(before_url) as before, psycopg.connect(after_url) as after:
+        compared = keys(catalog(before), catalog(after))
+    return [_name(table) for table, columns in compared.items() if not columns]
+
+
+def _sides(row: Moved) -> tuple[dict[str, object], dict[str, object]] | None:
+    """A row's two images when it is on both sides as a table's row (never an audit event,
+    which is an array), else None."""
+    if isinstance(row.before, dict) and isinstance(row.after, dict):
+        return row.before, row.after
+    return None
+
+
+def changed_columns(row: Moved) -> list[str]:
+    """The columns whose value differs in a row on both sides (none for an audit event or a
+    row on one side only); a column one side lacks differs."""
+    sides = _sides(row)
+    if sides is None:
+        return []
+    was, now = sides
+    return sorted(column for column in was.keys() | now.keys()
+                  if column not in was or column not in now or was[column] != now[column])
+
+
+def _number(value: object) -> Decimal | None:
+    """``value`` as a Decimal when it is a JSON number (never a boolean), else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, Decimal)):
+        return None
+    return Decimal(value)
+
+
+def _change(row: Moved, column: str) -> Decimal | None:
+    """How far ``column`` moved in a row on both sides, when it is a number on both."""
+    sides = _sides(row)
+    if sides is None:
+        return None
+    was, now = (_number(image.get(column)) for image in sides)
+    return None if was is None or now is None else now - was
+
+
+def summary(moved: list[Moved], before: str, after: str) -> list[str]:
+    """The differing rows summed per table and per column: how many rows, and the total
+    change of a column whose every changed value is a number on both sides."""
+    lines: list[str] = []
+    for table in dict.fromkeys(row.table for row in moved):
+        rows = [row for row in moved if row.table == table]
+        only_before = sum(1 for row in rows if row.after is None)
+        only_after = sum(1 for row in rows if row.before is None)
+        lines.append(f"{table}: {len(rows)} rows differ ({only_before} only on {before}, "
+                     f"{only_after} only on {after}, {len(rows) - only_before - only_after} "
+                     "changed)")
+        changes: dict[str, list[Decimal | None]] = {}
+        for row in rows:
+            for column in changed_columns(row):
+                changes.setdefault(column, []).append(_change(row, column))
+        for column, deltas in changes.items():
+            numbers = [delta for delta in deltas if delta is not None]
+            total = (f", total change {sum(numbers, Decimal(0)):+}"
+                     if len(numbers) == len(deltas) else "")
+            lines.append(f"  {column}: {len(deltas)} rows{total}")
+    return lines
+
+
+def _shown(value: object) -> str:
+    """A value as the report writes it: JSON, its Decimals as written."""
+    return json.dumps(value, default=str, sort_keys=True)
+
+
+def report(moved: list[Moved], before: str, after: str) -> Iterator[str]:
+    """One line per differing row: its table and key, and the row where it is on one side
+    only or is an audit event, else each changed column's value before and after."""
+    for row in moved:
+        where = f"{row.table} {row.key or '(no key)'}"
+        sides = _sides(row)
+        if row.after is None:
+            yield f"{where}: only on {before}: {_shown(row.before)}"
+        elif row.before is None or sides is None:
+            yield f"{where}: only on {after}: {_shown(row.after)}"
+        else:
+            yield f"{where}: " + "; ".join(
+                f"{column} {_shown(sides[0].get(column))} -> {_shown(sides[1].get(column))}"
+                for column in changed_columns(row))
+
+
+def image_environment(worktree: Path) -> dict[str, str]:
+    """What production gives the app beside its secrets and URLs, read from the side's own
+    tree: every ``ENV`` of its ``Dockerfile`` but ``PATH`` (which names the image's venv),
+    and the app's ``TZ`` from its production compose file.
+
+    Raises:
+        bench.BenchError: when either file cannot be read, or the compose file pins no
+            single ``TZ``.
+    """
+    try:
+        dockerfile = (worktree / "Dockerfile").read_text(encoding="utf-8")
+        compose = (worktree / _COMPOSE).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise bench.BenchError(f"{worktree} cannot give production's environment: {exc}") \
+            from exc
+    zones = _COMPOSE_TZ.findall(compose)
+    if len(zones) != 1:
+        raise bench.BenchError(f"{worktree / _COMPOSE} pins {len(zones)} TZ lines, not one")
+    environment = {name: value for name, value in _IMAGE_ENV.findall(dockerfile)
+                   if name != "PATH"}
+    environment["TZ"] = zones[0]
+    return environment
+
+
+def deploy_environment(state: bench.State, url: str, secret_key: str) -> dict[str, str]:
+    """The whole environment a side's deploy step runs in, inheriting nothing: production's
+    (:func:`image_environment`), its configuration, the copy's URL, a secret key of the run's,
+    a rate-limit store no deploy could reach, the fixed hash seed, and the side's venv first
+    on ``PATH``.
+
+    Raises:
+        bench.BenchError: when the side's tree cannot give production's environment.
+    """
+    return {
+        **image_environment(state.worktree),
+        "FLASK_ENV": "production",
+        "SECRET_KEY": secret_key,
+        "DATABASE_URL": url,
+        "RATELIMIT_STORAGE_URI": _UNREACHABLE_LIMITER,
+        "PYTHONHASHSEED": _HASH_SEED,
+        "PATH": os.pathsep.join((str(state.python.parent), "/usr/bin", "/bin")),
+    }
+
+
+def deploy(state: bench.State, url: str, secret_key: str) -> str | None:
+    """Run ``state``'s deploy step on the copy at ``url``; None when it exits 0, else what
+    it said last.
+
+    Raises:
+        bench.BenchError: when the side's interpreter cannot be run, or its tree cannot give
+            production's environment.
+    """
+    done = bench.run([str(state.python), str(_DEPLOY_STEP)],
+                     deploy_environment(state, url, secret_key), cwd=state.worktree)
+    if not done.returncode:
+        return None
+    said = (done.stderr or done.stdout).strip().splitlines()[-_QUOTED_LINES:]
+    return f"exit {done.returncode}:\n" + "\n".join(said)
+
+
+#: Builds a control's statement from its table, its column (None for a removal) and the
+#: match of the row's key; the statement takes the key as ``%s``.
+_Change = Callable[[sql.Identifier, sql.Identifier | None, sql.Composable], sql.Composable]
+
+
+def _plant(url: str, types: list[str], change: _Change) -> tuple[str, str, str]:
+    """Plant a control in the first row that takes it, of the first keyed table in catalog
+    order with a column of ``types`` (any keyed table, when ``types`` is empty).  Triggers
+    and foreign-key checks are off for the session, so the planted row is the only one that
+    moves; a row a constraint refuses is passed over for the next.  Its table, key and
+    column (empty for a removal).
+
+    Raises:
+        _NoPlant: when no row can take it.
+    """
+    with psycopg.connect(url) as connection:
+        connection.execute("SET session_replication_role = replica")
+        held = catalog(connection)
+        if types:
+            places = [((schema, name), column) for schema, name, column
+                      in connection.execute(_PLANTABLE, [types]).fetchall()]
+        else:
+            places = [(table, "") for table in held]
+        for table, column in places:
+            columns = held.get(table, ())
+            if not columns or table == AUDIT_LOG or column in columns:
+                continue
+            target = sql.Identifier(column) if column else None
+            where = (sql.SQL("WHERE x.{c} IS NOT NULL AND x.{c}::text <> ''").format(c=target)
+                     if target else sql.SQL(""))
+            first = connection.execute(sql.SQL(
+                "SELECT {key} FROM {table} x {where} ORDER BY {key} LIMIT 1").format(
+                    key=_key(columns), table=_identifier(table), where=where)).fetchone()
+            if first is None:
+                continue
+            try:
+                with connection.transaction():
+                    connection.execute(change(_identifier(table), target, _key(columns)),
+                                       [first[0]])
+            except (psycopg.errors.IntegrityError, psycopg.errors.DataError):
+                continue
+            return _name(table), first[0], column
+    raise _NoPlant(f"no row of the copy could take a control in a column of {types or 'any'}")
+
+
+def plant_cent(url: str) -> tuple[str, str, str]:
+    """Add :data:`CENT` to the first money column that takes it (:func:`_plant`)."""
+    return _plant(url, ["numeric"], lambda table, column, key: sql.SQL(
+        "UPDATE {table} AS x SET {c} = x.{c} + {cent} WHERE {key} = %s").format(
+            table=table, c=column, cent=sql.Literal(CENT), key=key))
+
+
+def plant_byte(url: str) -> tuple[str, str, str]:
+    """Change the last character of the first text column that takes it (:func:`_plant`),
+    its length kept so a length limit cannot refuse it."""
+    return _plant(url, ["text", "character varying"], lambda table, column, key: sql.SQL(
+        "UPDATE {table} AS x SET {c} = left(x.{c}, -1) || CASE WHEN right(x.{c}, 1) = '#' "
+        "THEN '*' ELSE '#' END WHERE {key} = %s").format(table=table, c=column, key=key))
+
+
+def plant_removal(url: str) -> tuple[str, str, str]:
+    """Remove the first row of the first keyed table that has one (:func:`_plant`)."""
+    return _plant(url, [], lambda table, _column, key: sql.SQL(
+        "DELETE FROM {table} AS x WHERE {key} = %s").format(table=table, key=key))
+
+
+def found(moved: list[Moved], planted: tuple[str, str, str], removed: bool = False) -> bool:
+    """Whether a comparison found exactly one planted control: the one row, in its table at
+    its key, gone (``removed``) or changed in its column and no other."""
+    if len(moved) != 1:
+        return False
+    row, (table, key, column) = moved[0], planted
+    if (row.table, row.key) != (table, key):
+        return False
+    if removed:
+        return row.before is not None and row.after is None
+    return changed_columns(row) == [column]
+
+
+#: Each control: its name, its plant, whether it removes a row, and what else must hold of
+#: the one row found (the cent's amount).
+_CONTROLS: tuple[tuple[str, Callable[[str], tuple[str, str, str]], bool,
+                       Callable[[Moved, str], bool]], ...] = (
+    ("a cent", plant_cent, False, lambda row, column: _change(row, column) == CENT),
+    ("a byte", plant_byte, False, lambda _row, _column: True),
+    ("a removed row", plant_removal, True, lambda _row, _column: True),
+)
+
+
+def controls(made: bench.Bench, base: bench.State) -> list[str]:
+    """Plant each control on its own clone of base's deployed copy and compare it with that
+    copy; what is wrong with any, each named (none when each was found exactly)."""
+    wrong: list[str] = []
+    for index, (label, plant, removed, holds) in enumerate(_CONTROLS):
+        url = made.clone(base.database, f"rehearsal_control_{index}")
+        try:
+            planted = plant(url)
+        except _NoPlant as exc:
+            wrong.append(f"{label}: {exc}")
+            continue
+        moved = compare(base.url, url)
+        if not (found(moved, planted, removed) and holds(moved[0], planted[2])):
+            wrong.append(f"{label} planted at {planted[0]} {planted[1]} {planted[2]} was not "
+                         f"found exactly; the comparison found {len(moved)} rows: "
+                         + "; ".join(summary(moved, "base", "the control")))
+    return wrong
+
+
+def rehearse(made: bench.Bench, out: Path) -> int:
+    """Deploy base twice and cut once on the bench, gate on noise and the controls, and
+    compare base with cut, writing every differing row to ``out``; the exit status."""
+    base, cut = made.made["base"], made.made["cut"]
+    secret_key = secrets.token_hex(32)
+    again = bench.State(base.name, base.commit, base.worktree, "rehearsal_base_again",
+                        made.clone(bench.PRISTINE, "rehearsal_base_again"), base.python)
+    refused: dict[str, str | None] = {}
+    for label, state in (("base", base), ("base, again", again), ("cut", cut)):
+        began = time.monotonic()
+        refused[label] = deploy(state, state.url, secret_key)
+        print(f"deploy {label}: {time.monotonic() - began:.2f} s, "
+              + ("exit 0" if refused[label] is None else "REFUSED"))
+    for label in ("base", "base, again"):
+        if refused[label] is not None:
+            print(f"[rehearsal] {label}'s deploy refused the dump, so nothing is compared "
+                  f"(an app defect): {refused[label]}", file=sys.stderr)
+            return 2
+    began = time.monotonic()
+    noise = compare(base.url, again.url)
+    print(f"noise gate: {time.monotonic() - began:.2f} s, {len(noise)} rows differ")
+    if noise:
+        print("[rehearsal] base deployed twice did not read the same, so the comparison "
+              "measures nothing:\n" + "\n".join(summary(noise, "base", "base again")),
+              file=sys.stderr)
+        return 2
+    wrong = controls(made, base)
+    if wrong:
+        print("[rehearsal] a planted control was not found, so the comparison measures "
+              "nothing:\n" + "\n".join(wrong), file=sys.stderr)
+        return 2
+    print(f"controls: {', '.join(label for label, *_ in _CONTROLS)}, each found exactly")
+    print(NOT_COMPARED)
+    print("compared as multisets: " + ", ".join(multisets(base.url, cut.url)))
+    if refused["cut"] is not None:
+        print(f"cut's deploy refused the copy base's deployed: {refused['cut']}")
+        return 1
+    began = time.monotonic()
+    moved = compare(base.url, cut.url)
+    out.write_text("".join(f"{line}\n" for line in report(moved, "base", "cut")),
+                   encoding="utf-8")
+    print(f"base against cut: {time.monotonic() - began:.2f} s, {len(moved)} rows differ "
+          f"(each in {out})")
+    for line in summary(moved, "base", "cut"):
+        print(line)
+    return 1 if moved else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Bring a bench up on a dump with states ``base`` and ``cut``, rehearse, tear it down."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--dump", type=Path, required=True, help="a pg_dump -Fc archive")
+    parser.add_argument("--base", required=True, help="the revision production runs")
+    parser.add_argument("--cut", required=True, help="the revision to release")
+    parser.add_argument("--report", type=Path, required=True,
+                        help="where every differing row is written (never into git)")
+    args = parser.parse_args(argv)
+    try:
+        made = bench.Bench(args.dump, {"base": args.base, "cut": args.cut})
+        with made:
+            status = rehearse(made, args.report)
+    except bench.BenchError as exc:
+        print(f"[rehearsal] {exc}", file=sys.stderr)
+        return 2
+    for part, seconds in made.timings.items():
+        print(f"{part}: {seconds:.2f} s")
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,355 @@
+"""The rows (step X-cx's K1b-1): each side's deploy step in an environment built whole, every
+row of every table compared, the noise gate, the planted controls and the verdict.
+
+The cases marked ``cluster`` start a real private cluster through a :class:`bench.Bench` on the
+conftest's ``dump``; the last of them deploy both sides by production's own step, so they also
+need each side's venv (cached after its first build).  The rest grade the pure parts on planted
+inputs.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from collections.abc import Callable, Iterator
+from decimal import Decimal
+from pathlib import Path
+
+import psycopg
+import pytest
+
+from tools.rehearsal import bench, rows
+from tools.rehearsal.rows import Moved
+
+
+def test_a_table_is_compared_by_its_key_only_when_both_sides_agree_on_one():
+    """The key both sides hold; a multiset where they differ, where there is none, and for
+    the audit log always; a table on one side by that side's key."""
+    before = {("budget", "a"): ("id",), ("budget", "b"): ("id",), ("budget", "c"): (),
+              ("system", "audit_log"): ("id",), ("budget", "d"): ("id", "part")}
+    after = {("budget", "a"): ("id",), ("budget", "b"): ("id", "kind"), ("budget", "c"): (),
+             ("system", "audit_log"): ("id",), ("budget", "e"): ("code",)}
+    assert rows.keys(before, after) == {
+        ("budget", "a"): ("id",), ("budget", "b"): (), ("budget", "c"): (),
+        ("budget", "d"): ("id", "part"), ("budget", "e"): ("code",),
+        ("system", "audit_log"): ()}
+
+
+_CHANGED = Moved("budget.accounts", "[3]", {"id": 3, "balance": Decimal("10.00"), "name": "A",
+                                            "active": True},
+                 {"id": 3, "balance": Decimal("12.50"), "name": "B", "active": False})
+_MOVED = [
+    _CHANGED,
+    Moved("budget.accounts", "[4]", {"id": 4, "balance": Decimal("1.00"), "name": "C",
+                                     "active": True},
+          {"id": 4, "balance": Decimal("0.75"), "name": "C", "active": True}),
+    Moved("budget.accounts", "[5]", {"id": 5, "balance": None, "name": "D", "active": True},
+          {"id": 5, "balance": Decimal("2.00"), "name": "D", "active": True}),
+    Moved("budget.accounts", "[6]", {"id": 6}, None),
+    Moved("system.audit_log", "", None, ["budget", "accounts", "UPDATE", 3]),
+]
+
+
+def test_the_summary_sums_each_table_and_column_and_totals_only_numbers():
+    """Rows per table by side; per column the rows, and a total only where every changed
+    value is a number on both sides (a boolean is not one, nor a null)."""
+    assert rows.summary(_MOVED, "base", "cut") == [
+        "budget.accounts: 4 rows differ (1 only on base, 0 only on cut, 3 changed)",
+        "  active: 1 rows",
+        "  balance: 3 rows",
+        "  name: 1 rows",
+        "system.audit_log: 1 rows differ (0 only on base, 1 only on cut, 0 changed)",
+    ]
+    assert rows.summary(_MOVED[:2], "base", "cut")[2] == "  balance: 2 rows, total change +2.25"
+
+
+def test_the_report_names_each_row_and_each_changed_column():
+    """One line per row: a changed row's columns before and after, a row on one side whole."""
+    assert list(rows.report(_MOVED[:1] + _MOVED[3:], "base", "cut")) == [
+        'budget.accounts [3]: active true -> false; balance "10.00" -> "12.50"; '
+        'name "A" -> "B"',
+        'budget.accounts [6]: only on base: {"id": 6}',
+        'system.audit_log (no key): only on cut: ["budget", "accounts", "UPDATE", 3]',
+    ]
+
+
+def test_a_control_is_found_only_when_it_is_the_one_row_and_column_found():
+    """Exactly the planted row and column; a second row, another key or column, or a
+    removal read as a change, is not found."""
+    planted = ("budget.accounts", "[3]", "name")
+    assert rows.found([_CHANGED], planted) is False
+    one = Moved("budget.accounts", "[3]", {"id": 3, "name": "A"}, {"id": 3, "name": "B"})
+    assert rows.found([one], planted) is True
+    assert rows.found([one, _MOVED[3]], planted) is False
+    assert rows.found([one], ("budget.accounts", "[4]", "name")) is False
+    assert rows.found([one], planted, removed=True) is False
+    gone = Moved("budget.accounts", "[6]", {"id": 6}, None)
+    assert rows.found([gone], ("budget.accounts", "[6]", ""), removed=True) is True
+
+
+def _side(root: Path, dockerfile: str, compose: str) -> Path:
+    """A planted side's tree: its Dockerfile and production compose file."""
+    (root / "deploy").mkdir(parents=True)
+    (root / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+    (root / "deploy" / "docker-compose.prod.yml").write_text(compose, encoding="utf-8")
+    return root
+
+
+_DOCKERFILE = ('FROM python\nENV PATH="/opt/venv/bin:$PATH"\nRUN true\nENV PSYCOPG_IMPL=c\n'
+               "ENV LC_ALL=C.UTF-8\n")
+_PROD_COMPOSE = "services:\n  app:\n    environment:\n      TZ: America/New_York\n"
+
+
+def _state(worktree: Path, python: Path) -> bench.State:
+    """A state over a planted tree and interpreter."""
+    return bench.State("cut", "0" * 40, worktree, "rehearsal_cut", "postgresql:///x", python)
+
+
+def test_the_deploy_environment_is_built_whole_from_the_side_s_tree(tmp_path, monkeypatch):
+    """Production's variables from the side's own Dockerfile (not PATH) and compose file, the
+    configuration, URL, key, store and seed, and the side's venv first: nothing else, so a
+    variable of the shell that runs the kit never reaches the side."""
+    monkeypatch.setenv("DATABASE_URL_APP", "postgresql:///operator")
+    monkeypatch.setenv("SHEKEL_FAKE_TODAY", "2026-01-01")
+    tree = _side(tmp_path / "tree", _DOCKERFILE, _PROD_COMPOSE)
+    built = rows.deploy_environment(_state(tree, tmp_path / "venv" / "bin" / "python"),
+                                    "postgresql:///copy", "k" * 64)
+    assert built == {
+        "PSYCOPG_IMPL": "c", "LC_ALL": "C.UTF-8", "TZ": "America/New_York",
+        "FLASK_ENV": "production", "SECRET_KEY": "k" * 64,
+        "DATABASE_URL": "postgresql:///copy",
+        "RATELIMIT_STORAGE_URI": "redis://rehearsal.invalid:6379/0", "PYTHONHASHSEED": "0",
+        "PATH": f"{tmp_path / 'venv' / 'bin'}{os.pathsep}/usr/bin{os.pathsep}/bin"}
+
+
+@pytest.mark.parametrize("compose", ["services: {}\n", _PROD_COMPOSE + "      TZ: UTC\n"])
+def test_a_side_whose_compose_file_pins_no_single_timezone_is_refused(tmp_path, compose):
+    """No ``TZ``, or two, is refused by name rather than guessed."""
+    tree = _side(tmp_path, _DOCKERFILE, compose)
+    with pytest.raises(bench.BenchError, match=r"docker-compose\.prod\.yml pins [02] TZ lines"):
+        rows.image_environment(tree)
+
+
+_RECORDER = """#!{python}
+import json, os, sys
+with open("seen.json", "w", encoding="utf-8") as seen:
+    json.dump({{"argv": sys.argv[1:], "cwd": os.getcwd(), "env": dict(os.environ)}}, seen)
+print("Database initialised.")
+print("the planted refusal", file=sys.stderr)
+sys.exit({status})
+"""
+
+
+@pytest.mark.parametrize("status", [0, 3])
+def test_a_deploy_runs_the_side_s_step_from_its_tree_in_that_environment_alone(tmp_path,
+                                                                            status):
+    """The side's interpreter runs ``scripts/init_database.py`` from the side's worktree in
+    exactly :func:`rows.deploy_environment`; exit 0 is None, else its status and stderr."""
+    tree = _side(tmp_path / "tree", _DOCKERFILE, _PROD_COMPOSE)
+    python = tmp_path / "venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text(_RECORDER.format(python=sys.executable, status=status), encoding="utf-8")
+    python.chmod(0o755)
+    state = _state(tree, python)
+    said = rows.deploy(state, "postgresql:///copy", "k" * 64)
+    assert said == (None if status == 0 else "exit 3:\nthe planted refusal")
+    seen = json.loads((tree / "seen.json").read_text(encoding="utf-8"))
+    assert seen["argv"] == ["scripts/init_database.py"]
+    assert seen["cwd"] == str(tree)
+    assert seen["env"] == rows.deploy_environment(state, "postgresql:///copy", "k" * 64)
+
+
+_PLANTED_SCHEMA = """
+CREATE TABLE system.audit_log (
+    id bigserial PRIMARY KEY, table_schema varchar(50) NOT NULL, table_name varchar(100) NOT NULL,
+    operation varchar(10) NOT NULL, row_id integer, old_data jsonb, new_data jsonb,
+    changed_fields text[], user_id integer, db_user varchar(100) DEFAULT current_user,
+    executed_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE note (id integer, part integer, body varchar(4) NOT NULL,
+                   created_at timestamptz DEFAULT clock_timestamp(), PRIMARY KEY (id, part));
+CREATE TABLE tally (word text);
+INSERT INTO note (id, part, body) VALUES (1, 1, 'abc'), (1, 2, 'de'), (2, 1, 'f');
+INSERT INTO tally VALUES ('x'), ('x'), ('y');
+INSERT INTO system.audit_log (table_schema, table_name, operation, row_id, new_data)
+    VALUES ('public', 'ledger', 'INSERT', 1, '{"id": 1, "created_at": "a"}');
+CREATE FUNCTION audit() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO system.audit_log (table_schema, table_name, operation, row_id)
+        VALUES (TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP, 0);
+    RETURN NULL;
+END $$;
+CREATE TRIGGER audit AFTER INSERT OR UPDATE OR DELETE ON ledger
+    FOR EACH ROW EXECUTE FUNCTION audit();
+CREATE TRIGGER audit AFTER INSERT OR UPDATE OR DELETE ON note
+    FOR EACH ROW EXECUTE FUNCTION audit();
+"""
+
+
+@pytest.fixture(name="planted")
+def _planted(dump: Path) -> Iterator[bench.Bench]:
+    """A bench whose base copy holds the dump (its schemas, its ledger) and the planted
+    tables: a composite key with a stamp, a multiset, and an audit log a trigger writes."""
+    made = bench.Bench(dump, {"base": "HEAD"})
+    with made:
+        with psycopg.connect(made.made["base"].url, autocommit=True) as connection:
+            connection.execute(_PLANTED_SCHEMA)
+        yield made
+
+
+@pytest.mark.cluster
+def test_stamps_and_audit_clocks_are_left_out_and_every_other_value_is_compared(planted):
+    """Two copies whose stamps, audit ids and audit clocks differ (moved with the audit
+    trigger off) read the same; a changed value, a row more in a multiset and the audit event
+    the change's trigger wrote are each found, by key or whole."""
+    base = planted.made["base"]
+    one = planted.clone(base.database, "one")
+    other = planted.clone(base.database, "other")
+    with psycopg.connect(other, autocommit=True) as connection:
+        connection.execute("SET session_replication_role = replica")
+        connection.execute("UPDATE note SET created_at = now() - interval '1 day'")
+        connection.execute("UPDATE system.audit_log SET id = id + 100, executed_at = "
+                           "now() - interval '1 day', db_user = 'someone', new_data = "
+                           "new_data || '{\"created_at\": \"b\"}'")
+    assert not rows.compare(one, other)
+    with psycopg.connect(other, autocommit=True) as connection:
+        connection.execute("UPDATE note SET body = 'dx' WHERE id = 1 AND part = 2")
+        connection.execute("INSERT INTO tally VALUES ('x')")
+    assert rows.compare(one, other) == [
+        Moved("public.note", "[1, 2]", {"id": 1, "part": 2, "body": "de"},
+              {"id": 1, "part": 2, "body": "dx"}),
+        Moved("public.tally", "", None, {"word": "x"}),
+        Moved("system.audit_log", "", None, ["public", "note", "UPDATE", 0, None, None, None,
+                                              None]),
+    ]
+    assert rows.multisets(one, other) == ["public.tally", "system.audit_log"]
+
+
+@pytest.mark.cluster
+def test_each_control_is_planted_in_one_row_and_found_exactly(planted):
+    """The cent in the first money column, the byte in the first text column (its length
+    kept under a length limit), the removal of the first keyed row: each moves its one row,
+    no trigger writing an audit event, and the comparison finds it and nothing else."""
+    base = planted.made["base"]
+    for name, plant, removed, expected in (
+            ("cent", rows.plant_cent, False, ("public.ledger", "[1]", "amount")),
+            ("byte", rows.plant_byte, False, ("public.note", "[1, 1]", "body")),
+            ("removal", rows.plant_removal, True, ("public.ledger", "[1]", ""))):
+        url = planted.clone(base.database, name)
+        assert plant(url) == expected
+        moved = rows.compare(base.url, url)
+        assert rows.found(moved, expected, removed), moved
+    assert moved[0].before == {"id": 1, "amount": Decimal("12.34")}
+    assert not rows.compare(base.url, planted.clone(base.database, "untouched"))
+
+
+@pytest.mark.cluster
+def test_a_control_no_row_can_take_is_refused_by_name(planted):
+    """A copy with no text column outside a key refuses the byte by name."""
+    base = planted.made["base"]
+    url = planted.clone(base.database, "bare")
+    with psycopg.connect(url, autocommit=True) as connection:
+        connection.execute("DROP TABLE note; DROP TABLE tally; DROP SCHEMA system CASCADE")
+    with pytest.raises(bench.BenchError, match=r"no row of the copy could take a control in "
+                                               r"a column of \['text', 'character varying'\]"):
+        rows.plant_byte(url)
+
+
+def _rehearsal(dump: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+               ) -> tuple[int, str, str, str]:
+    """``python -m tools.rehearsal.rows`` on the dump, base and cut both HEAD: its status,
+    stdout, stderr and report."""
+    out = tmp_path / "report.txt"
+    status = rows.main(["--dump", str(dump), "--base", "HEAD", "--cut", "HEAD",
+                        "--report", str(out)])
+    said = capsys.readouterr()
+    return status, said.out, said.err, out.read_text(encoding="utf-8") if out.exists() else ""
+
+
+def _planting(database: str, plant: Callable[[str], object]) -> Callable[..., str | None]:
+    """The deploy step, then ``plant`` on the copy, for the one deploy of ``database``."""
+    deploy = rows.deploy
+
+    def deployed(state: bench.State, url: str, secret_key: str) -> str | None:
+        said = deploy(state, url, secret_key)
+        if state.database == database and said is None:
+            plant(url)
+        return said
+    return deployed
+
+
+def _refusing(database: str) -> Callable[..., str | None]:
+    """The deploy step, except for ``database``'s, which refuses having written nothing, as
+    the step's one transaction leaves a refused copy."""
+    deploy = rows.deploy
+
+    def deployed(state: bench.State, url: str, secret_key: str) -> str | None:
+        if state.database == database:
+            return "exit 1:\nplanted"
+        return deploy(state, url, secret_key)
+    return deployed
+
+
+@pytest.mark.cluster
+def test_two_sides_that_store_the_same_rows_exit_0_saying_what_was_not_compared(
+        dump, tmp_path, capsys):
+    """Each side deployed by production's step on the dump (a first deploy, here), base
+    twice the same, every control found: exit 0, and the stated limits printed."""
+    status, out, err, report = _rehearsal(dump, tmp_path, capsys)
+    assert (status, err, report) == (0, "", "")
+    assert "deploy base: " in out and "deploy base, again: " in out and "deploy cut: " in out
+    assert "noise gate: " in out and ", 0 rows differ\n" in out
+    assert "controls: a cent, a byte, a removed row, each found exactly\n" in out
+    assert rows.NOT_COMPARED + "\n" in out
+    assert "compared as multisets: system.audit_log\n" in out
+    assert "base against cut: " in out and "teardown: " in out
+
+
+@pytest.mark.cluster
+def test_a_row_cut_s_deploy_stores_differently_exits_1_naming_it(dump, tmp_path, capsys,
+                                                                 monkeypatch):
+    """A cent cut's copy holds that base's does not is the one row differing: named in the
+    report, summed on stdout, exit 1."""
+    planted: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(rows, "deploy", _planting(
+        "rehearsal_cut", lambda url: planted.append(rows.plant_cent(url))))
+    status, out, _, report = _rehearsal(dump, tmp_path, capsys)
+    table, key, column = planted[0]
+    assert status == 1
+    assert report.startswith(f"{table} {key}: {column} ") and report.count("\n") == 1
+    assert f"{table}: 1 rows differ (0 only on base, 0 only on cut, 1 changed)\n" \
+        f"  {column}: 1 rows, total change +0.01\n" in out
+
+
+@pytest.mark.cluster
+def test_base_deployed_twice_reading_differently_measures_nothing(dump, tmp_path, capsys,
+                                                                  monkeypatch):
+    """A byte planted in base's second copy turns the noise gate: exit 2, named, no verdict."""
+    monkeypatch.setattr(rows, "deploy", _planting("rehearsal_base_again", rows.plant_byte))
+    status, out, err, report = _rehearsal(dump, tmp_path, capsys)
+    assert (status, report) == (2, "")
+    assert "noise gate: " in out and ", 1 rows differ\n" in out
+    assert err.startswith("[rehearsal] base deployed twice did not read the same")
+    assert "1 rows differ (0 only on base, 0 only on base again, 1 changed)" in err
+
+
+@pytest.mark.cluster
+def test_base_s_deploy_refusing_the_dump_measures_nothing(dump, tmp_path, capsys, monkeypatch):
+    """Base's deploy refusing production's data leaves nothing to compare: exit 2, the
+    refusal quoted."""
+    monkeypatch.setattr(rows, "deploy", _refusing("rehearsal_base"))
+    status, _, err, report = _rehearsal(dump, tmp_path, capsys)
+    assert (status, report) == (2, "")
+    assert err.startswith("[rehearsal] base's deploy refused the dump, so nothing is compared "
+                          "(an app defect): exit 1:\nplanted")
+
+
+@pytest.mark.cluster
+def test_cut_s_deploy_refusing_what_base_s_took_is_a_difference(dump, tmp_path, capsys,
+                                                                monkeypatch):
+    """Cut's deploy refusing the copy base's deployed is a difference: exit 1, the refusal
+    quoted, after the gates ran."""
+    monkeypatch.setattr(rows, "deploy", _refusing("rehearsal_cut"))
+    status, out, _, report = _rehearsal(dump, tmp_path, capsys)
+    assert (status, report) == (1, "")
+    assert "controls: a cent, a byte, a removed row, each found exactly\n" in out
+    assert "cut's deploy refused the copy base's deployed: exit 1:\nplanted\n" in out

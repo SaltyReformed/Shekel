@@ -100,21 +100,23 @@ class BenchError(RuntimeError):
 @dataclass(frozen=True)
 class State:
     """One state of the rehearsal: its name, the commit its worktree holds, the worktree,
-    the URL of its own clone of the dump, and the interpreter of its venv."""
+    the name and URL of its own clone of the dump, and the interpreter of its venv."""
 
     name: str
     commit: str
     worktree: Path
+    database: str
     url: str
     python: Path
 
 
-def _run(argv: list[str], env: dict[str, str] | None = None, *,
-         stdin: IO[bytes] | int | None = None, stdout: IO[bytes] | int = subprocess.PIPE
-         ) -> subprocess.CompletedProcess[str]:
-    """Run ``argv`` to its end, in ``env`` (this process's when None), reading ``stdin`` (this
-    process's when None), its stderr captured, and its stdout too unless ``stdout`` names where
-    it goes; what is captured is decoded with ``errors="replace"``.
+def run(argv: list[str], env: dict[str, str] | None = None, *,
+        stdin: IO[bytes] | int | None = None, stdout: IO[bytes] | int = subprocess.PIPE,
+        cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    """Run ``argv`` to its end, in ``env`` (this process's when None) and ``cwd`` (this
+    process's when None), reading ``stdin`` (this process's when None), its stderr captured,
+    and its stdout too unless ``stdout`` names where it goes; what is captured is decoded with
+    ``errors="replace"``.
 
     A terminal's Ctrl-C reaches the child as it reaches this process (one process group), so
     the child is WAITED FOR and never killed: ``subprocess.run`` SIGKILLs a child 0.25 s after
@@ -128,7 +130,7 @@ def _run(argv: list[str], env: dict[str, str] | None = None, *,
     """
     try:
         process = subprocess.Popen(argv, stdin=stdin, stdout=stdout, stderr=subprocess.PIPE,
-                                   text=True, errors="replace", env=env)
+                                   text=True, errors="replace", env=env, cwd=cwd)
     except OSError as exc:
         raise BenchError(f"{argv[0]} cannot be run: {exc}") from exc
     with process:
@@ -146,7 +148,7 @@ def cluster(*args: str) -> str:
     Raises:
         BenchError: when it exits non-zero, with what it said.
     """
-    done = _run([sys.executable, str(_CLUSTER), *args])
+    done = run([sys.executable, str(_CLUSTER), *args])
     if done.returncode:
         raise BenchError(f"private_cluster.py {args[0]} exited {done.returncode}: "
                          f"{(done.stderr or done.stdout).strip()}")
@@ -163,7 +165,7 @@ def in_cluster(container: str, argv: list[str], *, stdin: IO[bytes] | None = Non
     Raises:
         BenchError: when the cluster module cannot be run.
     """
-    return _run([sys.executable, str(_CLUSTER), "client", "--", container, *argv],
+    return run([sys.executable, str(_CLUSTER), "client", "--", container, *argv],
                 stdin=subprocess.DEVNULL if stdin is None else stdin,
                 stdout=subprocess.PIPE if stdout is None else stdout)
 
@@ -177,7 +179,7 @@ def image_tag() -> str:
         BenchError: when the daemon is refused or the image cannot be prepared.
     """
     chosen = cluster("daemon").strip()
-    done = _run([sys.executable, str(_IMAGE_BUILDER), "--json"],
+    done = run([sys.executable, str(_IMAGE_BUILDER), "--json"],
                 env={**os.environ, "DOCKER_HOST": chosen} if chosen else None)
     if done.returncode:
         raise BenchError(f"build_test_db_image.py exited {done.returncode}: "
@@ -249,13 +251,13 @@ def venv_for(worktree: Path) -> Path:
         return python
     shutil.rmtree(venv, ignore_errors=True)
     venv.parent.mkdir(parents=True, exist_ok=True)
-    made = _run([sys.executable, "-m", "venv", str(venv)])
+    made = run([sys.executable, "-m", "venv", str(venv)])
     if made.returncode:
         raise BenchError(f"python -m venv {venv} exited {made.returncode}: "
                          f"{made.stderr.strip()}")
     pinned = venv / "rehearsal-requirements.txt"
     pinned.write_text(pins, encoding="utf-8")
-    installed = _run([str(python), "-m", "pip", "install", "--quiet",
+    installed = run([str(python), "-m", "pip", "install", "--quiet",
                       "--disable-pip-version-check", "-r", str(pinned)])
     if installed.returncode:
         quoted = "\n".join(installed.stderr.strip().splitlines()[-_QUOTED_LINES:])
@@ -353,6 +355,18 @@ class Bench:
         """The URL of ``database`` on this bench's cluster (``private_cluster.py url``)."""
         return cluster("url", str(self.socket_dir), database).strip()
 
+    def clone(self, source: str, database: str) -> str:
+        """Clone ``source``, a database on this bench nothing is connected to, as ``database``
+        (``CREATE DATABASE ... TEMPLATE``); the clone's URL.  It goes when the cluster does.
+
+        Raises:
+            psycopg.Error: when the clone cannot be made, ``source`` in use included.
+        """
+        with psycopg.connect(self._url("postgres"), autocommit=True) as connection:
+            connection.execute(sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(
+                sql.Identifier(database), sql.Identifier(source)))
+        return self._url(database)
+
     def _restore(self, container: str) -> None:
         """Restore the dump into :data:`PRISTINE`, once its major is known to be the cluster's,
         by the cluster's own ``pg_restore``, run in its ``container`` (:meth:`_on_the_dump`).
@@ -399,9 +413,7 @@ class Bench:
         """
         database = f"rehearsal_{name}"
         began = time.monotonic()
-        with psycopg.connect(self._url("postgres"), autocommit=True) as connection:
-            connection.execute(sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(
-                sql.Identifier(database), sql.Identifier(PRISTINE)))
+        url = self.clone(PRISTINE, database)
         self._timed(f"clone {name}", began)
         began = time.monotonic()
         self._stack.callback(self._remove_worktree, worktree)
@@ -414,7 +426,7 @@ class Bench:
         began = time.monotonic()
         python = venv_for(worktree)
         self._timed(f"venv {name}", began)
-        self.made[name] = State(name, commit, worktree, self._url(database), python)
+        self.made[name] = State(name, commit, worktree, database, url, python)
 
     def _remove_worktree(self, worktree: Path) -> None:
         """Remove one state's worktree; a refusal is noted for the census, which names it."""
@@ -427,7 +439,7 @@ class Bench:
 
     def _stop_cluster(self, token: str) -> None:
         """Stop what carries ``token``; what the stop names as surviving is noted."""
-        done = _run([sys.executable, str(_CLUSTER), "stop", token])
+        done = run([sys.executable, str(_CLUSTER), "stop", token])
         if done.returncode:
             self._left.append(f"private_cluster.py stop exited {done.returncode}: "
                               f"{done.stderr.strip()}")
