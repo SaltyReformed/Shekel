@@ -2,12 +2,15 @@
 once cut's has run on it, compared row by row, the noise gate and the planted controls run
 every time (``design.md`` s.3 items 2, 3, 5, 8 and 10).
 
-THE DEPLOY IS PRODUCTION'S.  Each state's clone runs ``scripts/init_database.py`` BY PATH,
-from that state's worktree and under that state's venv, as entrypoint step 3 runs it, in an
-environment BUILT WHOLE (:func:`deploy_environment`): nothing of the shell that runs the kit
-reaches it, so an operator's ``DATABASE_URL_APP``, ``RATELIMIT_STORAGE_URI`` or
-``SHEKEL_FAKE_TODAY`` cannot.  What production's image and compose file give the app is read
-from the side's own tree, so a cut that changes it is measured with it.
+THE DEPLOY IS PRODUCTION'S.  Each state's clone runs that state's ``scripts/init_database.py``
+from its worktree and under its venv, as entrypoint step 3 runs it, in an environment BUILT
+WHOLE (:func:`deploy_environment`): nothing of the shell that runs the kit reaches it, so an
+operator's ``DATABASE_URL_APP``, ``RATELIMIT_STORAGE_URI`` or ``SHEKEL_FAKE_TODAY`` cannot.
+What production's image and compose file give the app is read from the side's own tree, so a
+cut that changes it is measured with it.  The step runs through the side probe's
+``side/deploy.py``, under ONE instant every side's clock is pinned at: noon of the dump's civil
+day in base's zone, computed once a run (:func:`pinned_instant`), so a run that crosses
+midnight deploys every side on one day.
 
 EVERY TABLE IN THE CATALOG, every row, every column but the row stamps (:data:`STAMPS`).  A
 table with a primary key is compared row by row by that key; one without, or one whose key is
@@ -54,6 +57,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -96,8 +100,8 @@ WHERE data_type = ANY(%s) AND is_generated = 'NEVER'
   AND (numeric_scale IS NULL OR numeric_scale >= 2)
 ORDER BY table_schema, table_name, ordinal_position
 """
-#: The deploy step, run from the side's worktree as entrypoint step 3 runs it.
-_DEPLOY_STEP = Path("scripts") / "init_database.py"
+#: The side probe that runs a side's deploy step under the pinned instant, run by path.
+_DEPLOY_PROBE = Path(__file__).resolve().parent / "side" / "deploy.py"
 #: A rate-limit store ProdConfig accepts (it refuses ``memory:``) that names no server that
 #: could answer (``.invalid`` never resolves, RFC 6761): the deploy serves no request, and a
 #: deploy that reached for the store would fail by name rather than pass on a live one.
@@ -374,15 +378,27 @@ def deploy_environment(state: bench.State, url: str, secret_key: str) -> dict[st
     }
 
 
-def deploy(state: bench.State, url: str, secret_key: str) -> str | None:
-    """Run ``state``'s deploy step on the copy at ``url``; None when it exits 0, else what
-    it said last.
+def pinned_instant(made: bench.Bench) -> datetime:
+    """The one instant every side's clock is pinned at in a run: noon of the dump's civil day
+    (:meth:`bench.Listing.noon`) in the zone base's production compose file pins
+    (:func:`image_environment`).
+
+    Raises:
+        bench.BenchError: when base's tree cannot give production's environment.
+    """
+    base = made.made["base"]
+    return made.listing.noon(image_environment(base.worktree)["TZ"])
+
+
+def deploy(state: bench.State, url: str, secret_key: str, moment: datetime) -> str | None:
+    """Run ``state``'s deploy step on the copy at ``url`` with its clock pinned at ``moment``
+    (``side/deploy.py``); None when it exits 0, else what it said last.
 
     Raises:
         bench.BenchError: when the side's interpreter cannot be run, or its tree cannot give
             production's environment.
     """
-    done = bench.run([str(state.python), str(_DEPLOY_STEP)],
+    done = bench.run([str(state.python), str(_DEPLOY_PROBE), moment.isoformat()],
                      deploy_environment(state, url, secret_key), cwd=state.worktree)
     if not done.returncode:
         return None
@@ -503,12 +519,14 @@ def rehearse(made: bench.Bench, out: Path) -> int:
     compare base with cut, writing every differing row to ``out``; the exit status."""
     base, cut = made.made["base"], made.made["cut"]
     secret_key = secrets.token_hex(32)
+    moment = pinned_instant(made)
+    print(f"clock pinned at {moment.isoformat()}")
     again = bench.State(base.name, base.commit, base.worktree, "rehearsal_base_again",
                         made.clone(bench.PRISTINE, "rehearsal_base_again"), base.python)
     refused: dict[str, str | None] = {}
     for label, state in (("base", base), ("base, again", again), ("cut", cut)):
         began = time.monotonic()
-        refused[label] = deploy(state, state.url, secret_key)
+        refused[label] = deploy(state, state.url, secret_key, moment)
         print(f"deploy {label}: {time.monotonic() - began:.2f} s, "
               + ("exit 0" if refused[label] is None else "REFUSED"))
     for label in ("base", "base, again"):

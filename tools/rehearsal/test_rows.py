@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from collections.abc import Callable, Iterator
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import psycopg
 import pytest
@@ -105,6 +109,12 @@ def _state(worktree: Path, python: Path) -> bench.State:
     return bench.State("cut", "0" * 40, worktree, "rehearsal_cut", "postgresql:///x", python)
 
 
+#: The instant a planted deploy is pinned at: noon in New York, the planted compose file's zone.
+_MOMENT = datetime(2026, 10, 20, 12, tzinfo=ZoneInfo("America/New_York"))
+#: The side probe a deploy runs, by path.
+_PROBE = Path(rows.__file__).resolve().parent / "side" / "deploy.py"
+
+
 def test_the_deploy_environment_is_built_whole_from_the_side_s_tree(tmp_path, monkeypatch):
     """Production's variables from the side's own Dockerfile (not PATH) and compose file, the
     configuration, URL, key, store and seed, and the side's venv first: nothing else, so a
@@ -143,20 +153,56 @@ sys.exit({status})
 @pytest.mark.parametrize("status", [0, 3])
 def test_a_deploy_runs_the_side_s_step_from_its_tree_in_that_environment_alone(tmp_path,
                                                                             status):
-    """The side's interpreter runs ``scripts/init_database.py`` from the side's worktree in
-    exactly :func:`rows.deploy_environment`; exit 0 is None, else its status and stderr."""
+    """The side's interpreter runs the side probe ``side/deploy.py`` with the pinned instant,
+    from the side's worktree in exactly :func:`rows.deploy_environment`; exit 0 is None, else
+    its status and stderr."""
     tree = _side(tmp_path / "tree", _DOCKERFILE, _PROD_COMPOSE)
     python = tmp_path / "venv" / "bin" / "python"
     python.parent.mkdir(parents=True)
     python.write_text(_RECORDER.format(python=sys.executable, status=status), encoding="utf-8")
     python.chmod(0o755)
     state = _state(tree, python)
-    said = rows.deploy(state, "postgresql:///copy", "k" * 64)
+    said = rows.deploy(state, "postgresql:///copy", "k" * 64, _MOMENT)
     assert said == (None if status == 0 else "exit 3:\nthe planted refusal")
     seen = json.loads((tree / "seen.json").read_text(encoding="utf-8"))
-    assert seen["argv"] == ["scripts/init_database.py"]
+    assert seen["argv"] == [str(_PROBE), "2026-10-20T12:00:00-04:00"]
     assert seen["cwd"] == str(tree)
     assert seen["env"] == rows.deploy_environment(state, "postgresql:///copy", "k" * 64)
+
+
+_PLANTED_STEP = """import datetime, json, sys, time
+with open("seen.json", "w", encoding="utf-8") as seen:
+    json.dump({"now": datetime.datetime.now().isoformat(),
+               "today": datetime.date.today().isoformat(), "time": time.time(),
+               "argv": sys.argv, "path": sys.path[0], "name": __name__, "file": __file__}, seen)
+"""
+
+
+def test_the_side_s_step_runs_as_the_image_runs_it_with_its_clock_pinned(tmp_path):
+    """``side/deploy.py`` runs the tree's ``scripts/init_database.py`` as ``__main__``, its
+    ``__file__`` and only argument its absolute path, ``sys.path[0]`` the tree's ``scripts/``
+    (never the kit's ``side/``), and every wall clock frozen at the instant: local time noon
+    in the zone the side's compose file pins."""
+    tree = _side(tmp_path / "tree", _DOCKERFILE, _PROD_COMPOSE)
+    (tree / "scripts").mkdir()
+    step = tree / "scripts" / "init_database.py"
+    step.write_text(_PLANTED_STEP, encoding="utf-8")
+    assert rows.deploy(_state(tree, Path(sys.executable)), "postgresql:///copy", "k" * 64,
+                       _MOMENT) is None
+    assert json.loads((tree / "seen.json").read_text(encoding="utf-8")) == {
+        "now": "2026-10-20T12:00:00", "today": "2026-10-20", "time": _MOMENT.timestamp(),
+        "argv": [str(step)], "path": str(tree / "scripts"), "name": "__main__",
+        "file": str(step)}
+
+
+def test_the_pinned_instant_is_noon_of_the_dump_s_day_in_base_s_zone(tmp_path):
+    """A dump made at 03:30 UTC on the 20th was made on the 19th in New York, the zone base's
+    compose file pins: every side's clock is pinned at noon there on the 19th."""
+    tree = _side(tmp_path / "tree", _DOCKERFILE, _PROD_COMPOSE)
+    made = SimpleNamespace(
+        made={"base": _state(tree, tmp_path / "python")},
+        listing=bench.Listing(18, datetime(2026, 10, 20, 3, 30, tzinfo=ZoneInfo("UTC"))))
+    assert rows.pinned_instant(made).isoformat() == "2026-10-19T12:00:00-04:00"
 
 
 class _Failing:
@@ -299,8 +345,9 @@ def _planting(database: str, plant: Callable[[str], object]) -> Callable[..., st
     """The deploy step, then ``plant`` on the copy, for the one deploy of ``database``."""
     deploy = rows.deploy
 
-    def deployed(state: bench.State, url: str, secret_key: str) -> str | None:
-        said = deploy(state, url, secret_key)
+    def deployed(state: bench.State, url: str, secret_key: str, moment: datetime
+                 ) -> str | None:
+        said = deploy(state, url, secret_key, moment)
         if state.database == database and said is None:
             plant(url)
         return said
@@ -312,10 +359,11 @@ def _refusing(database: str) -> Callable[..., str | None]:
     the step's one transaction leaves a refused copy."""
     deploy = rows.deploy
 
-    def deployed(state: bench.State, url: str, secret_key: str) -> str | None:
+    def deployed(state: bench.State, url: str, secret_key: str, moment: datetime
+                 ) -> str | None:
         if state.database == database:
             return "exit 1:\nplanted"
-        return deploy(state, url, secret_key)
+        return deploy(state, url, secret_key, moment)
     return deployed
 
 
@@ -326,6 +374,7 @@ def test_two_sides_that_store_the_same_rows_exit_0_saying_what_was_not_compared(
     twice the same, every control found: exit 0, and the stated limits printed."""
     status, out, err, report = _rehearsal(dump, tmp_path, capsys)
     assert (status, err, report) == (0, "", "")
+    assert re.search(r"^clock pinned at \d{4}-\d{2}-\d{2}T12:00:00-0[45]:00$", out, re.MULTILINE)
     assert "deploy base: " in out and "deploy base, again: " in out and "deploy cut: " in out
     assert "noise gate: " in out and ", 0 rows differ\n" in out
     assert "controls: a cent, a byte, a removed row, each found exactly\n" in out
