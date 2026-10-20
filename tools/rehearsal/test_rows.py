@@ -159,6 +159,36 @@ def test_a_deploy_runs_the_side_s_step_from_its_tree_in_that_environment_alone(t
     assert seen["env"] == rows.deploy_environment(state, "postgresql:///copy", "k" * 64)
 
 
+class _Failing:
+    """A bench whose making fails as ``error`` does: a file or the database, not the kit."""
+
+    def __init__(self, error: Exception) -> None:
+        """Fail with ``error``."""
+        self.error = error
+
+    def __call__(self, *_given: object) -> _Failing:
+        """Stand in for :class:`bench.Bench`'s constructor."""
+        return self
+
+    def __enter__(self) -> bench.Bench:
+        """Fail as the making would."""
+        raise self.error
+
+    def __exit__(self, *_given: object) -> None:
+        """Nothing was made."""
+
+
+@pytest.mark.parametrize("error", [OSError(2, "No such file or directory"),
+                                   psycopg.OperationalError("the cluster went away")])
+def test_a_run_that_fails_itself_exits_2_never_the_1_that_says_rows_differ(monkeypatch,
+                                                                         capsys, error):
+    """A file the run cannot write or a database error ends it measuring nothing (exit 2),
+    named, where Python's own exit status for it would be 1, the verdict that rows differ."""
+    monkeypatch.setattr(bench, "Bench", _Failing(error))
+    assert rows.main(["--dump", "d", "--base", "b", "--cut", "c", "--report", "r"]) == 2
+    assert capsys.readouterr().err == f"[rehearsal] {error}\n"
+
+
 _PLANTED_SCHEMA = """
 CREATE TABLE system.audit_log (
     id bigserial PRIMARY KEY, table_schema varchar(50) NOT NULL, table_name varchar(100) NOT NULL,

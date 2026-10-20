@@ -18,16 +18,18 @@ sequence every deploy advances.  Each row is hashed in SQL; only a row that diff
 fetched whole.
 
 THE NOISE GATE: base is deployed on two clones, and both must read identical.  A difference
-there is the kit's failure, never the release's (exit 2).  It is also what measures the stamp
-list: a clock column the list does not name differs between base's two deploys.
+there is the kit's failure, never the release's (exit 2).  It catches a clock column the stamp
+list does not name only where base's deploy writes one; on a dump at base's own revision that
+deploy writes nothing, and a clock column only cut's deploy writes is a difference (exit 1),
+never an exit 0.
 
 THE PLANTED CONTROLS, every run, each on a clone of base's deployed copy, nothing else
-touched (triggers and foreign-key checks are off for the plant): a cent added to a money
+touched (triggers and foreign-key checks are off for the plant): a cent added to a numeric
 column, a byte changed in a text column, and a row removed.  The comparison must find each
 exactly, or the run measured nothing (exit 2).
 
-What it does NOT compare is printed on every run (:data:`NOT_COMPARED`), so an exit 0 is
-never read as a claim about them.
+What it does NOT compare is printed on every run (:data:`NOT_COMPARED`), the stamps and the
+audit log's dropped columns among it, so an exit 0 is never read as a claim about them.
 
 Usage, which brings a bench up (:mod:`.bench`), deploys, compares and tears it down::
 
@@ -36,7 +38,9 @@ Usage, which brings a bench up (:mod:`.bench`), deploys, compares and tears it d
 
 Exit status: 0 no row differs; 1 rows differ (each one in the report, summed per table and
 column on stdout), or cut's deploy refused the copy base's deployed; 2 nothing was measured:
-the bench, base's deploy, the noise gate or a control failed, each named.
+the bench, base's deploy, the noise gate, a control, or the run itself (a file it could not
+write, a database error) failed, each named.  A failure of the run is never exit 1, which
+says rows differ.
 """
 from __future__ import annotations
 
@@ -111,7 +115,9 @@ CENT = Decimal("0.01")
 _QUOTED_LINES = 20
 #: Printed on every run: what the comparison does not see (the coordinator's D3 ruling).
 NOT_COMPARED = (
-    "not compared: the schema (tables, columns, constraints, indexes), privileges (the dump is "
+    f"not compared: the row stamps {', '.join(STAMPS)} (some feed money, which only the pages "
+    "show), the audit log's id, executed_at and db_user, the schema (tables, columns, "
+    "constraints, indexes), privileges (the dump is "
     "restored without them and no shekel_app role exists, so the deploy's grants do nothing), "
     "sequences, entrypoint step 2 (the role), and the rows after a first page load (K1c)")
 
@@ -430,7 +436,7 @@ def _plant(url: str, types: list[str], change: _Change) -> tuple[str, str, str]:
 
 
 def plant_cent(url: str) -> tuple[str, str, str]:
-    """Add :data:`CENT` to the first money column that takes it (:func:`_plant`)."""
+    """Add :data:`CENT` to the first numeric column that takes it (:func:`_plant`)."""
     return _plant(url, ["numeric"], lambda table, column, key: sql.SQL(
         "UPDATE {table} AS x SET {c} = x.{c} + {cent} WHERE {key} = %s").format(
             table=table, c=column, cent=sql.Literal(CENT), key=key))
@@ -553,7 +559,7 @@ def main(argv: list[str] | None = None) -> int:
         made = bench.Bench(args.dump, {"base": args.base, "cut": args.cut})
         with made:
             status = rehearse(made, args.report)
-    except bench.BenchError as exc:
+    except (bench.BenchError, OSError, psycopg.Error) as exc:
         print(f"[rehearsal] {exc}", file=sys.stderr)
         return 2
     for part, seconds in made.timings.items():
