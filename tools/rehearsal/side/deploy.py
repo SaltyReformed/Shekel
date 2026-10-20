@@ -14,7 +14,10 @@ so the wall clocks the step and the app read -- ``datetime.now()``, ``date.today
 environment carries from the side's production compose file, so local time reads noon.
 ``time.monotonic()`` is not frozen, so a timeout still runs out.  What no pin here reaches is
 PostgreSQL's clock: every row stamp is the server's ``now()``, so a row a deploy writes carries
-the moment the deploy ran (``kit_design/design_corrections.md`` entry 1).
+the moment the deploy ran (``kit_design/design_corrections.md`` entry 1), and a column that
+defaults to ``CURRENT_DATE`` (``budget.transaction_entries.purchased_on``,
+``budget.escrow_components.effective_date``) takes the cluster's real day in UTC, not the pinned
+one, in a row a deploy inserts without setting it.
 
 THE STEP RUNS AS ``python scripts/init_database.py`` HAS IT: as ``__main__``, with ``__file__``
 its absolute path (the one name the step reads, through ``abspath``, to find its tree), the

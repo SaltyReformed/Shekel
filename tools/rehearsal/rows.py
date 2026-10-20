@@ -31,13 +31,15 @@ touched (triggers and foreign-key checks are off for the plant): a cent added to
 column, a byte changed in a text column, and a row removed.  The comparison must find each
 exactly, or the run measured nothing (exit 2).
 
-THE ROLLBACK runs exactly when production's would: when base's tree carries a migration script
-for every revision cut's deployed copy is stamped at (:func:`base_resolves`, which mirrors
-``deploy/shekel-deploy.sh``'s ``image_resolves_revisions``).  Then, in entrypoint order, base's
-deploy step runs again on a clone of cut's deployed copy and must exit 0 and move no row, and
-base's app must boot there (``side/boot.py``).  When base's tree does not know the revision,
-that script would refuse the rollback and name the dump to restore, and the run says so: the
-copy's migration version is already a row that differs.
+THE ROLLBACK runs exactly when production's would once cut's deploy has stored its copy: when
+base's tree carries a migration script for every revision that copy is stamped at
+(:func:`base_resolves`, which mirrors ``deploy/shekel-deploy.sh``'s ``image_resolves_revisions``).
+Then, in entrypoint order, base's deploy step runs again on a clone of cut's deployed copy and
+must exit 0 and move no row, and base's app must boot there (``side/boot.py``).  When base's
+tree does not know the revision, that script would refuse the rollback and name the dump to
+restore, and the run says so: the copy's migration version is already a row that differs.  When
+cut's deploy refused, its one transaction left the dump as it was, so production's rollback is
+base's own deploy on it, which the run has already measured (the boot aside), and none runs.
 
 What it does NOT compare is printed on every run (:data:`NOT_COMPARED`), the stamps and the
 audit log's dropped columns among it, so an exit 0 is never read as a claim about them.
@@ -145,7 +147,9 @@ NOT_COMPARED = (
     f"not compared: the row stamps {', '.join(STAMPS)} (some feed money, which only the pages "
     "show), the audit log's id, executed_at and db_user, the schema (tables, columns, "
     "constraints, indexes), privileges (the dump is "
-    "restored without them and no shekel_app role exists, so the deploy's grants do nothing), "
+    "restored without them and no shekel_app role exists, so the deploy's grants do nothing "
+    "and the rollback's boot connects as the owner, where production's app connects as "
+    "shekel_app), "
     "sequences, entrypoint step 2 (the role), and the rows after a first page load (K1c)")
 
 
@@ -469,7 +473,9 @@ def base_resolves(worktree: Path, revisions: list[str]) -> bool:
     ``image_migration_revisions``' listing (the basenames of the image's
     ``migrations/versions/*.py``), the predicate that script's rollback is taken by (its
     ``repin_is_safe``): Alembic resolves a revision by finding the script whose id it is.  As
-    there, a revision matches a name only up to its ``_``, and an empty list resolves.
+    there, a revision matches a name only up to its ``_``, and an empty list resolves; that
+    script's ``repin_is_safe`` refuses an empty ``alembic_version`` before it asks, which the
+    copy of a deploy that exited 0 never is (the step stamps it).
     """
     listing = [path.name for path in (worktree / _MIGRATIONS).glob("*.py")]
     return all(any(name.startswith(f"{revision}_") for name in listing)
