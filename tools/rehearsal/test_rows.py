@@ -129,6 +129,7 @@ def test_the_side_environment_is_built_whole_from_the_side_s_tree(tmp_path, monk
         "FLASK_ENV": "production", "SECRET_KEY": "k" * 64,
         "DATABASE_URL": "postgresql:///copy",
         "RATELIMIT_STORAGE_URI": "redis://rehearsal.invalid:6379/0", "PYTHONHASHSEED": "0",
+        "PYTHON_DOTENV_DISABLED": "1",
         "PATH": f"{tmp_path / 'venv' / 'bin'}{os.pathsep}/usr/bin{os.pathsep}/bin"}
 
 
@@ -193,6 +194,28 @@ def test_the_side_s_step_runs_as_the_image_runs_it_with_its_clock_pinned(tmp_pat
         "now": "2026-10-20T12:00:00", "today": "2026-10-20", "time": _MOMENT.timestamp(),
         "argv": [str(step)], "path": str(tree / "scripts"), "name": "__main__",
         "file": str(step)}
+
+
+_DOTENV_STEP = """import json, os
+from dotenv import load_dotenv
+loaded = load_dotenv()
+with open("seen.json", "w", encoding="utf-8") as seen:
+    json.dump({"loaded": loaded, "url": os.environ.get("DATABASE_URL_APP")}, seen)
+"""
+
+
+def test_no_dotenv_file_reaches_a_side(tmp_path):
+    """A ``.env`` in the side's tree, where ``load_dotenv()`` finds it from the step's own
+    directory, sets nothing: the side reads only the environment built whole, as production,
+    whose image holds no ``.env``."""
+    tree = _side(tmp_path / "tree", _DOCKERFILE, _PROD_COMPOSE)
+    (tree / ".env").write_text("DATABASE_URL_APP=postgresql:///elsewhere\n", encoding="utf-8")
+    (tree / "scripts").mkdir()
+    (tree / "scripts" / "init_database.py").write_text(_DOTENV_STEP, encoding="utf-8")
+    assert rows.deploy(_state(tree, Path(sys.executable)), "postgresql:///copy", "k" * 64,
+                       _MOMENT) is None
+    assert json.loads((tree / "seen.json").read_text(encoding="utf-8")) == {
+        "loaded": False, "url": None}
 
 
 def test_the_pinned_instant_is_noon_of_the_dump_s_day_in_base_s_zone(tmp_path):

@@ -129,6 +129,13 @@ _COMPOSE_TZ = re.compile(r"^\s+TZ: (\S+)$", re.MULTILINE)
 _COMPOSE = Path("deploy") / "docker-compose.prod.yml"
 #: ``PYTHONHASHSEED``, fixed on every side (design s.3 item 5).
 _HASH_SEED = "0"
+#: Switches python-dotenv off, so ``app/config.py``'s ``load_dotenv()`` reads no ``.env``, as
+#: in production, whose image holds none (``.dockerignore``).  Without it a ``.env`` in any
+#: directory above the side's worktree (the walk ``find_dotenv()`` makes up to ``/``) would
+#: set what this environment leaves unset: ``DATABASE_URL_APP`` first, which the app prefers
+#: to ``DATABASE_URL`` and only the deploy step blanks, so the boot would connect where it
+#: named.  Honoured by every python-dotenv pinned since 2026-03-21 (1.2.2 on).
+_NO_DOTENV = ("PYTHON_DOTENV_DISABLED", "1")
 #: The cent the money control adds.
 CENT = Decimal("0.01")
 #: How much of a refused deploy's stderr the report quotes.
@@ -376,10 +383,9 @@ def image_environment(worktree: Path) -> dict[str, str]:
 
 def side_environment(state: bench.State, url: str, secret_key: str) -> dict[str, str]:
     """The whole environment a side probe runs in, its deploy and its boot, inheriting
-    nothing: production's
-    (:func:`image_environment`), its configuration, the copy's URL, a secret key of the run's,
-    a rate-limit store no deploy could reach, the fixed hash seed, and the side's venv first
-    on ``PATH``.
+    nothing: production's (:func:`image_environment`), its configuration, the copy's URL, a
+    secret key of the run's, a rate-limit store no deploy could reach, the fixed hash seed,
+    python-dotenv switched off (:data:`_NO_DOTENV`), and the side's venv first on ``PATH``.
 
     Raises:
         bench.BenchError: when the side's tree cannot give production's environment.
@@ -391,6 +397,7 @@ def side_environment(state: bench.State, url: str, secret_key: str) -> dict[str,
         "DATABASE_URL": url,
         "RATELIMIT_STORAGE_URI": _UNREACHABLE_LIMITER,
         "PYTHONHASHSEED": _HASH_SEED,
+        _NO_DOTENV[0]: _NO_DOTENV[1],
         "PATH": os.pathsep.join((str(state.python.parent), "/usr/bin", "/bin")),
     }
 
