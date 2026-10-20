@@ -5,9 +5,8 @@ The input-validation and entity-loading guards for
 :mod:`app.services.transfer_service`: validate a submitted amount, refuse a
 transfer OUT of a source no engine models one from (the composed loan-or-card
 set both doors call), load the owned/active
-:class:`~app.models.transfer.Transfer` with the live twin
-:class:`~app.models.transaction.Transaction` rows its mirrors write, and
-refuse a restore onto an archived account.
+:class:`~app.models.transfer.Transfer` a mutation writes, and refuse a
+restore onto an archived account.
 Each is a precondition check the mutation entry points run before they touch
 any row, raising the project's domain exceptions
 (:class:`~app.exceptions.ValidationError` for a bad amount or a restore onto
@@ -23,7 +22,7 @@ the loan-posting glue into ``_loan_posting``.  :func:`assert_restorable`
 joined them at plan step X-aj1 (ruling **R-DR**), bringing ``restore_transfer``'s
 preconditions to the module whose single responsibility they already were.
 
-These helpers plus :class:`TransferRows` and its one loader are a cohesive,
+These helpers plus :class:`TransferRows` are a cohesive,
 transfer-service-private cluster (single responsibility: validate inputs and
 load the rows a mutation operates on).  They write no ``status_id``
 and construct no ``Transaction`` -- so they stay clear of the W9907 status fence
@@ -40,7 +39,6 @@ from functools import cached_property
 
 from app.extensions import db
 from app.models.account import Account
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.exceptions import NotFoundError, ValidationError
 from app.services.account_projection import is_revolving
@@ -59,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class TransferRows:
-    """A transfer and its live twin rows: what a mutation writes.
+    """The transfer one act writes, and its expense side read once for the act.
 
     Introduced at plan step X-f2-c3 as Transfer Invariant 1 as a TYPE -- a
     parent and exactly two shadow transactions, whose statuses and periods
@@ -69,31 +67,23 @@ class TransferRows:
     by typo.  The same reasoning
     :class:`app.services.reconcile_service._rows.Statement` is built on.
 
-    **Since plan step ``balance:X-bi-6-4d-2`` the twins are MIRRORS and
-    nothing more**: a transfer's status is one column on the transfer, each
-    side's day and figure are its payment record's (hung off the transfer by
-    a side link), and no reader asks a twin for either.  What a twin still
-    carries -- its pay period, category, due date, override flag, amount
-    ownership, account and name -- is written by the arms of
-    ``_update`` and ``_endpoints`` over :attr:`shadows`.  Plan step
-    ``X-bi-6-4d-3`` deleted the rows and made the database refuse a new one
-    (ruling **R-BAL258**), so :attr:`shadows` is empty on every transfer, and
-    that step's second leaf deletes the arms with this attribute.  So the
-    shape no longer insists on two:
-    a transfer whose twin was deleted behind the app's back (no door does
-    it) settles like any other, which the developer ruled (**R-BAL235**,
-    2026-10-08, "Offer and settle it": the state stops existing when the
-    twins are deleted in the same release), and the mirrors write the twins
-    there are.
+    **It holds ONE row since plan step ``balance:X-bi-6-4d-3``**, which
+    deleted the twin rows and made the database refuse a new one (rulings
+    **R-BAL166**, **R-BAL258**).  The twins had been mirrors and nothing more
+    since ``X-bi-6-4d-2``: a transfer's status is one column on the
+    transfer, and each side's day and figure are its payment record's, hung
+    off the transfer by a side link.  The step's leaf 3b deleted the
+    ``shadows`` attribute, the loader that queried the twins
+    (``load_transfer_rows``) and the arms of ``_update``, ``_amount`` and
+    ``_endpoints`` that wrote the mirrors over them.  What the value still
+    carries beside the transfer is :attr:`expense_leg`, the read an act's
+    settle and figure grade share.
 
     Attributes:
-        transfer: The parent :class:`~app.models.transfer.Transfer`.
-        shadows: Its live twin :class:`~app.models.transaction.Transaction`
-            rows, in id order -- two on every transfer a door built.
+        transfer: The :class:`~app.models.transfer.Transfer` the act writes.
     """
 
     transfer: Transfer
-    shadows: "tuple[Transaction, ...]"
 
     @cached_property
     def expense_leg(self) -> TransferLeg:
@@ -140,39 +130,6 @@ class TransferRows:
             ``None`` when it holds none.
         """
         return transfer_side_leg(self.transfer, is_income=False)
-
-
-def load_transfer_rows(transfer_id, user_id) -> TransferRows:
-    """Load an owned, live transfer and the live twin rows its mirrors write.
-
-    The ONE loader a mutation entry point calls.  It verified the twins as a
-    pair -- exactly one live expense and one live income -- and refused a
-    transfer whose pair was broken, until plan step ``balance:X-bi-6-4d-2``:
-    nothing reads a twin's status, day or figure any more, so a broken pair
-    is no reason to refuse a settle, and the developer ruled that it is not
-    (**R-BAL235**, :class:`TransferRows`).  A restore counted the twins
-    (:func:`assert_restorable`) until plan step ``balance:X-bi-6-4d-3``
-    deleted them.
-
-    Args:
-        transfer_id: The primary key of the transfer to load.
-        user_id: The expected owner (defense-in-depth).
-
-    Returns:
-        The :class:`TransferRows`.
-
-    Raises:
-        NotFoundError: If the transfer does not exist, belongs to another
-            user, or is soft-deleted (:func:`_get_transfer_or_raise`).
-    """
-    xfer = _get_transfer_or_raise(transfer_id, user_id)
-    shadows = (
-        db.session.query(Transaction)
-        .filter_by(transfer_id=transfer_id, is_deleted=False)
-        .order_by(Transaction.id)
-        .all()
-    )
-    return TransferRows(xfer, tuple(shadows))
 
 
 def _validate_positive_amount(amount):
@@ -314,8 +271,7 @@ def _get_transfer_or_raise(transfer_id, user_id, allow_deleted=False):
     if xfer is None or xfer.user_id != user_id:
         raise NotFoundError(f"Transfer {transfer_id} not found.")
     # Soft-deleted transfers are invisible to normal operations: a deleted
-    # transfer takes no money (ruling R-CC89), and an edit would write the
-    # mirrors of twins that are hidden with it.
+    # transfer takes no money (ruling R-CC89).
     if not allow_deleted and xfer.is_deleted:
         raise NotFoundError(f"Transfer {transfer_id} not found.")
     return xfer

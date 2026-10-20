@@ -10625,13 +10625,17 @@ def write_past_the_amount_seam(row, value):
     typo in application code and the wrong one for a control that means to
     write.
 
-    Three tests need this: the two that prove a derived row's answer is
-    invariant under a rival figure (``test_amount_source.py``), and the two
-    that prove the database still refuses the drift a transfer shadow could
-    once hold (``test_a_transfer_shadow_is_derived.py``,
-    ``test_transfer_service/``).  Each is constructing the shape
-    :class:`~app.models.amount_ownership.AmountOwnership` has no member for, so
-    none of them can go through the seam.
+    Its callers (read 2026-10-20): in ``test_amount_source.py``'s
+    ``TestTheRulesDoNotReadTheColumnTheyReplace``, the two cases that prove a
+    derived answer is invariant under a rival figure (a definition's row
+    under its own column, a generated transfer's leg under its parent's) and
+    the one that proves the database refuses a declared row carrying one; in
+    ``test_a_transfer_shadow_is_derived.py``,
+    ``test_a_leg_cannot_hold_a_figure_while_it_declares_a_parent``, which
+    proves the database refuses a transfer's twin holding a figure; and the
+    hand-run ``tests/manual/verify_amount_resolver.py``.  Each is constructing
+    the shape :class:`~app.models.amount_ownership.AmountOwnership` has no
+    member for, so none of them can go through the seam.
 
     Args:
         row: A :class:`~app.models.transaction.Transaction` or

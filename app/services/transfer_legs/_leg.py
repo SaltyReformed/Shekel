@@ -35,7 +35,9 @@ from app.utils.dates import days_paid_before_due
 #: one reader that PARSES a label back out (``grid_view_service
 #: ._short_display_name``, the grid's row label) strips exactly what was
 #: composed rather than a literal of its own -- the coupling
-#: ``transfer_service._create.shadow_names`` reported and left for this leaf.
+#: ``transfer_service._create.shadow_names`` reported and left for this leaf
+#: (that writer went with the twin rows' mirrors at plan step
+#: ``balance:X-bi-6-4d-3``'s leaf 3b).
 TRANSFER_TO_PREFIX = "Transfer to "
 TRANSFER_FROM_PREFIX = "Transfer from "
 
@@ -46,8 +48,10 @@ def leg_label(from_account: Account, to_account: Account) -> tuple[str, str]:
     ONE composition: "Transfer to <to-account>" is what the from-side shows
     (its money leaves for that account), "Transfer from <from-account>" what
     the to-side shows.  :attr:`TransferLeg.name` reads it off the parent's
-    endpoints at render time; ``transfer_service._create.shadow_names`` writes
-    the same pair onto the two shadow rows for as long as those rows exist.
+    endpoints at render time, and nothing stores it:
+    ``transfer_service._create.shadow_names`` wrote the same pair onto the two
+    shadow rows until plan step ``balance:X-bi-6-4d-3`` deleted them, and its
+    leaf 3b deleted that writer.
 
     Args:
         from_account: The source account, the expense leg's.

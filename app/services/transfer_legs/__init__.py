@@ -93,13 +93,15 @@ under a still-Projected transfer is refused at commit by the status-band rule
 
 **A leg's LABEL is composed here** (:func:`leg_label`), from the endpoints'
 CURRENT names: "Transfer to <to-account>" on the from-side, "Transfer from
-<from-account>" on the to-side.  It is the one composition the shadow
-constructor (``transfer_service._create.shadow_names``) and the grid's row
-label read, so a renamed account re-labels every leg it touches where a
-shadow's stored ``name`` went stale -- one of the two visible changes 6-1
-makes.  The other: a leg's ``notes`` are its PARENT's (a shadow was written
-with none and no writer mirrored them), so a transfer's notes show on its
-grid cell's title where the shadow's showed nothing.
+<from-account>" on the to-side.  It is the one composition the grid's row
+label reads, and the shadow rows' name writer
+(``transfer_service._create.shadow_names``) read it too until plan step
+``balance:X-bi-6-4d-3`` deleted the shadows and its leaf 3b that writer, so a
+renamed account re-labels every leg it touches where a shadow's stored
+``name`` went stale -- one of the two visible changes 6-1 makes.  The other:
+a leg's ``notes`` are its PARENT's (a shadow was written with none and no
+writer mirrored them), so a transfer's notes show on its grid cell's title
+where the shadow's showed nothing.
 
 **Why a leaf module, below both readers.**  The cash ledger needs every leg an
 account is on (both sides, for its cash fold); the loan loaders need the legs

@@ -32,13 +32,11 @@ from datetime import date
 from app.enums import MovementFigureSourceEnum
 from app.exceptions import ValidationError
 from app.extensions import db
-from app.models.account import Account
 from app.models.amount_ownership import AmountOwnership
 from app.models.ref import Status
 from app.models.transfer import Transfer
 from app.services import posting_service
 from app.services import status_seam
-from app.services.transfer_legs import leg_label
 from app.services.transfer_service._loan_posting import (
     _reject_payment_before_origination,
     _sync_loan_postings_if_loan,
@@ -66,56 +64,6 @@ from app.utils.log_events import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def shadow_names(
-    from_account: Account, to_account: Account
-) -> "tuple[str, str]":
-    """Return the ``(expense, income)`` shadow display names for two endpoints.
-
-    **A shadow's name is DERIVED from the pair's endpoints, and the
-    composition lives with the LEG** since leaf ``X-bi-6-1``
-    (:func:`app.services.transfer_legs.leg_label`): the grid draws a
-    transfer's leg from the parent and labels it from the endpoints' current
-    names, and the two shadow rows carried the same pair for as long as they
-    existed.  This was the one writer of that pair onto a row: the create door
-    applied it until plan step ``balance:X-bi-6-4d-3`` stopped building twins,
-    and :mod:`app.services.transfer_service._endpoints` still re-derives both
-    names when a transfer moves between accounts, over the twins that step
-    deleted, until its second leaf deletes that loop.  Until plan step R10-b there was no
-    second writer, because there was no way to move a transfer's endpoints at
-    all: the recurrence engine applied a definition's account change by DELETING
-    every generated row and building replacements, which re-ran this rule by
-    re-running the create.
-
-    The reader that PARSES the format back out
-    (``grid_view_service._short_display_name``) strips the prefixes the
-    composition publishes rather than literals of its own -- the coupling an
-    adversarial review of R10-b reported, closed where the label moved.
-
-    Leaving a moved pair's names alone would show "Transfer to Fidelity Money
-    Market" on a row whose money now arrives at Emergency Fund -- a label that
-    contradicts its own row, which is the class of defect the recurrence arc
-    keeps finding one table at a time.
-
-    The PARENT's name is deliberately not derived here.  A transfer's own
-    ``name`` is the caller's: :func:`create_transfer` defaults it from the
-    endpoints only when the caller states none, and every template-linked
-    transfer carries its definition's name instead -- so re-deriving it on a
-    move would overwrite a stated fact with a default.
-
-    Args:
-        from_account: The source account -- the expense leg's account, and the
-            account the INCOME shadow's name says the money came from.
-        to_account: The destination account -- the income leg's account, and
-            the account the EXPENSE shadow's name says the money went to.
-
-    Returns:
-        ``(expense_shadow_name, income_shadow_name)``, in the order
-        :class:`~app.services.transfer_service._validation.TransferRows`
-        declares its legs.
-    """
-    return leg_label(from_account, to_account)
 
 
 @dataclass(frozen=True)

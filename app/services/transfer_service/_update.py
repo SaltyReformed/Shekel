@@ -1,13 +1,13 @@
 """
 Shekel Budget App -- Transfer Service: the UPDATE verb
 
-The one path that changes an existing transfer, its two sides' payment
-records (through the one writer, ``_status.apply_status_to_all_three``) and
-the shadow :class:`~app.models.transaction.Transaction` rows' remaining
-mirrored fields -- period, category, due date and the override flag, mirrored
-in this module and nowhere else until plan step ``balance:X-bi-6-4d-3``
-deletes the rows.  A shadow's status and day are no longer kept since
-``X-bi-6-4d-2``: nothing reads them.
+The one path that changes an existing transfer and its two sides' payment
+records (through the one writer, ``_status.apply_status_to_all_three``).  It
+also mirrored the transfer's period, category, due date and override flag
+onto two shadow :class:`~app.models.transaction.Transaction` rows, in this
+module and nowhere else, until plan step ``balance:X-bi-6-4d-3`` deleted the
+rows; that step's leaf 3b deleted the mirrors.  A shadow's status and day
+were no longer kept from ``X-bi-6-4d-2``: nothing read them.
 
 Its tail is the posting reconcile (:func:`_reconcile_postings_after_update`),
 which brings the double-entry ledger back in step after the kwargs land -- once
@@ -65,7 +65,7 @@ from app.services.transfer_service._status import (
 )
 from app.services.transfer_service._validation import (
     TransferRows,
-    load_transfer_rows,
+    _get_transfer_or_raise,
 )
 from app.utils.balance_predicates import enters_settled_band
 from app.utils.log_events import (
@@ -116,7 +116,7 @@ def _grade_submitted_figure(
 
     **Asked before any field is written**, which is the whole reason it is a
     separate gate rather than an arm among the writes: a refused request must
-    leave the transfer and both shadows untouched, and ``is_override`` and
+    leave the transfer and both sides' records untouched, and ``is_override`` and
     ``amount`` are already staged by the time :func:`_apply_remaining_fields`
     runs.  It is the transfer twin of the ordering
     ``transaction_service._door._correction_for_status`` keeps.
@@ -141,7 +141,7 @@ def _grade_submitted_figure(
     from; the parent carries no record at all.
 
     Args:
-        rows: The transfer and both shadows, at their pre-update status.
+        rows: The transfer, at its pre-update status.
         updates: The update kwargs as submitted.  Mutated in place: an echoed
             ``figure`` has its key removed.
 
@@ -188,7 +188,7 @@ def _dispatch_settle(
     instead of a kwargs bag to assemble.
 
     Args:
-        rows: The transfer and both shadows, at their pre-update status.  The
+        rows: The transfer, at its pre-update status.  The
             caller-stated facts (``is_override``, ``amount``) are already
             applied, which is what lets the settle read the post-edit state.
         updates: The update kwargs as submitted.
@@ -218,16 +218,14 @@ def _apply_remaining_fields(
     rows: TransferRows, updates: "dict[str, object]", *,
     stated: PairDays, date_moves: bool, press: Press | None,
 ) -> None:
-    """Apply every field a SETTLE does not own, mirroring it across the rows.
+    """Apply every field a SETTLE does not own.
 
-    **What the twins still mirror is a property of this function**: a twin's
-    period, category and due date equal the parent's because every such field
-    a caller may move is mirrored HERE and nowhere else (its status no longer
-    is: a transfer's status is one column, and each side's record is the
-    status seam's Transfer arm's, plan step ``balance:X-bi-6-4d-2``).  That is why the arms
-    stay together rather than being cut into per-field helpers -- the invariant
-    is held by the list being in one place, and half a mirroring in a second
-    module is how a shadow drifts.
+    It also MIRRORED each field onto the twin rows, here and nowhere else,
+    until plan step ``balance:X-bi-6-4d-3`` deleted them (its leaf 3b deleted
+    the mirrors): a transfer is one row, each side's leg reads the transfer's
+    period, category and due date (``transfer_legs``), and each side's
+    record is the status seam's Transfer arm's (plan step
+    ``balance:X-bi-6-4d-2``).
 
     :data:`_SETTLE_OWNED_FIELDS` reach it only when this update did NOT settle,
     because a settle writes all three as one act and they are dropped before
@@ -237,7 +235,7 @@ def _apply_remaining_fields(
     means.
 
     Args:
-        rows: The transfer and both shadows.
+        rows: The transfer.
         updates: The kwargs left for this function to apply.
         stated: The days by side this change states, as its verb admitted
             them -- empty after a settle, which consumed them.
@@ -323,36 +321,26 @@ def _apply_remaining_fields(
     # Ownership was refused before the first write
     # (:func:`_reject_unowned_references`); this arm only assigns.
     if "pay_period_id" in updates:
-        new_period_id = updates["pay_period_id"]
-        rows.transfer.pay_period_id = new_period_id
-        for shadow in rows.shadows:
-            shadow.pay_period_id = new_period_id
+        rows.transfer.pay_period_id = updates["pay_period_id"]
 
     # ── category_id ────────────────────────────────────────────────
-    # Category updates apply to both shadows so the transaction
-    # appears under the user-selected category in both account grids.
+    # Both legs read the transfer's category, so the transfer appears under
+    # the user-selected category in both account grids.
     if "category_id" in updates:
-        new_cat_id = updates["category_id"]
-        rows.transfer.category_id = new_cat_id
-        for shadow in rows.shadows:
-            shadow.category_id = new_cat_id
+        rows.transfer.category_id = updates["category_id"]
 
     # ── name ───────────────────────────────────────────────────────
-    # Name is display metadata on the transfer only.  Shadow names
-    # are derived from account names and do not change here.
+    # Name is display metadata on the transfer.  A leg's label is composed
+    # from the endpoints' names (``transfer_legs.leg_label``), not from it.
     if "name" in updates:
         rows.transfer.name = updates["name"]
 
     # ── notes ──────────────────────────────────────────────────────
-    # Notes live on the transfer only; shadow transactions do not
-    # carry independent notes.
+    # Notes live on the transfer.
     if "notes" in updates:
         rows.transfer.notes = updates["notes"]
 
     # ── due_date ──────────────────────────────────────────────────
-    # The parent transfer is canonical; mirror to both shadows so the
-    # three rows stay equal (Transfer Invariant 3).
-    #
     # **A PLACED transfer's occurrence follows its date** (plan step
     # ``balance:X-ci-1``, ruling **R-BAL94**: a one-time transfer records its
     # own due date as the occurrence it answers, the twin of
@@ -371,14 +359,10 @@ def _apply_remaining_fields(
     # onto its due date, and a cadence re-added later that names the old
     # day no longer adopted it.  A GENERATED transfer's ``occurs_on`` is the
     # occurrence its cadence named and a re-dating by the maintain pass does
-    # not move it; an ad-hoc transfer answers no occurrence.  NOT mirrored
-    # to the shadows, for the reason the column states: a shadow is created
-    # from its parent, never from an occurrence.
+    # not move it; an ad-hoc transfer answers no occurrence.
     if "due_date" in updates:
         new_due = updates["due_date"]
         rows.transfer.due_date = new_due
-        for shadow in rows.shadows:
-            shadow.due_date = new_due
         if date_moves:
             rows.transfer.occurs_on = new_due
 
@@ -425,13 +409,13 @@ def _reject_unowned_references(
 
 
 def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False, press):
-    """Apply *kwargs* to a transfer and both shadows; report the settle's answer.
+    """Apply *kwargs* to a transfer and its sides' records; report the settle's answer.
 
     **The body both public doors share** -- :func:`update_transfer`, which takes
     an arbitrary field bag, and :func:`settle_transfer`, which takes a settle.
     Keeping one body is what stops the named verb from becoming a second
-    implementation of the mirroring, the reconcile tail and the telemetry: two
-    doors, one act.
+    implementation of the field application, the reconcile tail and the
+    telemetry: two doors, one act.
 
     See :func:`update_transfer` for the accepted kwargs and the failure modes;
     they are that function's contract, stated once there.
@@ -452,7 +436,7 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
             calling :func:`update_transfer`.
         press: The save's press, or ``None`` (:func:`update_transfer`).
     """
-    rows = load_transfer_rows(transfer_id, user_id)
+    rows = TransferRows(_get_transfer_or_raise(transfer_id, user_id))
     # The transfer's SHAPE, read before any write for the reason the
     # transaction PATCH reads ``recurs`` before its field loop: the accessor
     # lazy-loads the definition, and a load after the first ``setattr`` would
@@ -467,8 +451,8 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
     # (plan step R10-b).
     endpoints = _resolve_endpoints(rows, user_id, updates)
     # The days a door STATED, by side, against the endpoints this update leaves
-    # (a shadow's ``account_id`` reads the OLD account until the flush after a
-    # move).  Before any write, like every refusal here.
+    # (the transfer's own account columns name the OLD accounts until the
+    # flush after the move below).  Before any write, like every refusal here.
     stated = stated_by_side(
         updates.get("side_days", ()),
         endpoints.from_account.id, endpoints.to_account.id,
@@ -512,7 +496,7 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
     )
 
     # The FIGURE's own gate, in the same place and for the same reason: a
-    # refused request must leave all three rows untouched, and the first field
+    # refused request must leave the transfer untouched, and the first field
     # write is two statements below.  It also DROPS an echoed box here, so the
     # settle dispatch and the field arms below both see the payload the user
     # actually meant.
@@ -520,7 +504,8 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
 
     # The category's OWNERSHIP refusal, hoisted here for the same rule.  It ran
     # at the arm that assigns it, which is after the settle has already written
-    # both shadows.  (The period's is the resolution above.)
+    # the transfer and its sides' records.  (The period's is the resolution
+    # above.)
     _reject_unowned_references(user_id, updates)
 
     # A day beside a status that settles nothing states money that has not
@@ -552,8 +537,7 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
     # branch between here and the dispatch is a caller-stated FACT; the
     # derivation comes after all of them.
     if "is_override" in updates:
-        for row in (rows.transfer, *rows.shadows):
-            row.is_override = bool(updates["is_override"])
+        rows.transfer.is_override = bool(updates["is_override"])
 
     # ── from_account_id / to_account_id ────────────────────────────
     # A caller-stated fact like the flag above, and applied with it for the
@@ -570,7 +554,7 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
     # reconcile (the R10-b `-$4.17` that measured it).
     _apply_endpoint_move(rows, endpoints, press)
 
-    # ── WHO OWNS each of the three rows' figure ────────────────────
+    # ── WHO OWNS the transfer's figure ─────────────────────────────
     # Asked exactly when the caller STATED an ownership.  It used to fire on
     # ``"amount" in updates or "is_override" in updates`` -- two keys, because
     # clearing the flag was the conflict resolver's hand-back and neither key
@@ -582,9 +566,9 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
 
     # ── the SETTLE ─────────────────────────────────────────────────
     # When this update moves the transfer into the settled band, ONE act writes
-    # the amount, the status and each side's day for all three rows; the three
-    # kwargs it consumes are then dropped so the loop below cannot write any of
-    # them a second time.
+    # the amount, the status and each side's day for the transfer and both
+    # sides' records; the three kwargs it consumes are then dropped so the
+    # field application below cannot write any of them a second time.
     settled = _dispatch_settle(rows, updates, stated, press)
     if settled is not None:
         remaining = _fields_the_settle_left(updates)
@@ -718,12 +702,14 @@ def settle_transfer(
 
 
 def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
-    """Update a transfer, its sides' records, and its shadows' mirrored fields.
+    """Update a transfer and its sides' records.
 
-    Enforces invariants 3-5 as far as the shadows still carry them: a shadow's
-    period, category and due date always match the parent transfer, and its
-    amount is the parent's by the amount model; a side's record is written by
-    the one writer (``_status.apply_status_to_all_three``).
+    A side's record is written by the one writer
+    (``_status.apply_status_to_all_three``).  Each side's leg reads the
+    transfer's period, category, due date and price (``transfer_legs``), so
+    no copy of them is kept to hold equal: the twin rows that carried one
+    went at plan step ``balance:X-bi-6-4d-3``, and their mirrors at its leaf
+    3b.
 
     **A change that moves the transfer INTO the settled band is a SETTLE**, and
     this hands that act whole to
@@ -746,7 +732,7 @@ def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
     silently ignored like any other unlisted key):
         status_id      -- New status for the transfer; each side's record
                           follows it (dated, un-dated or taken off).
-        pay_period_id  -- New period for transfer and both shadows.  On a
+        pay_period_id  -- New period for the transfer.  On a
                           PLACED transfer (a rule-less definition's one-time
                           transfer) the move RE-PLACES its due date as well
                           (ruling **R-BAL93**, plan step X-ci-1): the target
@@ -754,17 +740,17 @@ def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
                           paycheck's start -- an owner-stated day, read by
                           position -- or a ``due_date`` arrives beside the
                           move, which is the owner's.  See :mod:`._placed`.
-        from_account_id -- New SOURCE account for the transfer and its expense
-                          shadow, whose display name is re-derived with it.
+        from_account_id -- New SOURCE account for the transfer: its expense
+                          side's account, and half of both legs' labels.
                           May not be an amortizing loan (a disbursement is not
                           modelled) and may not equal the destination.
-        to_account_id  -- New DESTINATION for the transfer and its income
-                          shadow, likewise re-named.  Re-grades the payment
+        to_account_id  -- New DESTINATION for the transfer: its income side's
+                          account, likewise.  Re-grades the payment
                           against the destination loan's origination (ruling
                           R-C) and re-reconciles the loan it left.
-        category_id    -- New category (expense shadow only).
-        name           -- New display name (transfer only, not shadows).
-        notes          -- New notes (transfer only, not shadows).
+        category_id    -- New category for the transfer.
+        name           -- New display name for the transfer.
+        notes          -- New notes for the transfer.
         figure         -- What MOVED and WHO WROTE the figure, as one
                           :class:`~app.services.stated_figure.StatedFigure`
                           (``typed`` from the transfer and shadow popovers,
@@ -782,7 +768,7 @@ def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
                           disagrees (developer ruling, 2026-08-17).  One
                           arriving on any other status is REFUSED: an amount
                           states what MOVED, and this pair's money has not.
-        due_date       -- Due date for the transfer and both shadows
+        due_date       -- Due date for the transfer
                           (Date or None).  On a PLACED transfer the parent's
                           ``occurs_on`` follows it (ruling **R-BAL94**), and a
                           day another transfer of the same definition already
@@ -795,7 +781,7 @@ def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
                           follows; beside a status that settles nothing it is
                           refused.  It replaced the pair's ``settle_day`` (plan
                           step ``balance:X-bi-6-4c-3``), now ignored.
-        is_override    -- Override flag (transfer and both shadows).  It no
+        is_override    -- Override flag on the transfer.  It no
                           longer says anything about who owns the amount; since
                           plan step X-au-h it means exactly *this row is the
                           OWNER's, not the rule's*.
@@ -803,8 +789,8 @@ def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
                           popover (a rule-less definition's one-time transfer;
                           plan step X-ci-1, rulings **R-BAL92** and **R-BAL96**
                           as amended): the definition's price is RESTATED in
-                          place at the transfer's final due date, all three
-                          rows are declared priced by the definition, and the
+                          place at the transfer's final due date, the
+                          transfer is declared priced by the definition, and the
                           flag comes off -- before the settle dispatch, so a
                           settling ``status_id`` in the same call books it.
                           Refused on any other transfer, and beside an
@@ -814,14 +800,13 @@ def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
         amount_ownership -- WHAT PRICES this pair, as ONE value (ruling
                           **R-BAL11**, plan step X-au-f): an
                           :class:`~app.models.amount_ownership.AmountOwnership`
-                          that either OWNS a figure a human authored -- both
-                          legs then store it too, until plan step X-au-m makes a
-                          leg read its parent -- or DECLARES
+                          that either OWNS a figure a human authored or
+                          DECLARES
                           :attr:`~app.enums.AmountSourceEnum.TEMPLATE`, its
-                          definition's price, which re-declares both legs
-                          derived.  OMITTING the key means this save says
-                          nothing about the amount and leaves all three rows as
-                          they stand; that is not the same as passing an empty
+                          definition's price; both legs read it off the
+                          transfer.  OMITTING the key means this save says
+                          nothing about the amount and leaves the transfer as
+                          it stands; that is not the same as passing an empty
                           ownership, and the difference is the one that cost
                           ``$174.10`` twice.  It REPLACES ``amount`` and
                           ``amount_authored``, which were two spellings of the

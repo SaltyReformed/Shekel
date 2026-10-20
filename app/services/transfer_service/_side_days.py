@@ -89,10 +89,10 @@ class SideDay:
 class PairDays(NamedTuple):
     """One transfer's two sides' days, expense side then income side.
 
-    The order :class:`~app.services.transfer_service._validation.TransferRows`
-    declares its legs in.  ``None`` on a side means "no day" -- for a stated
-    pair, that nothing was stated for that side; for a current pair, that the
-    side holds no day in the settled band.
+    The ``(expense, income)`` order every pair of sides in this package is
+    written in (``_status._side_legs``).  ``None`` on a side means "no day" --
+    for a stated pair, that nothing was stated for that side; for a current
+    pair, that the side holds no day in the settled band.
     """
 
     expense: SettleDay | None
@@ -164,7 +164,8 @@ def stated_by_side(
     Asked before the first write of the act, against the endpoints the act
     LEAVES the transfer with -- ``_update`` reads them off
     ``_resolve_endpoints``, because an endpoint move assigns relationships and
-    a shadow's ``account_id`` reads the old account until the flush.
+    the transfer's own account columns name the old accounts until the flush
+    after the move.
 
     Args:
         side_days: What the door stated; empty when it stated nothing.

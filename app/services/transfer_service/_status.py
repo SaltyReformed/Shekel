@@ -285,8 +285,7 @@ def apply_status_to_all_three(
     untouched (F-047 / commit C-21).
 
     Args:
-        rows: The transfer and its live twins; only the transfer and its
-            sides' records are written, never a twin.
+        rows: The transfer; only it and its sides' records are written.
         new_status_id: The ``ref.statuses.id`` the transfer moves to.  The
             pair's CURRENT status for a correction.
         stated: The days the act STATES, by side
@@ -358,8 +357,7 @@ def return_to_plan(transfer: Transfer, *, took_off: bool) -> None:
     **Through the transfer's one status writer** (:func:`apply_status_to_all_three`),
     never a status write in the door: the writer's transition check and
     revert refusal stand.  The sides hold no record by now, so the writer
-    writes the transfer's status alone; it is handed no twin, since it
-    writes none.
+    writes the transfer's status alone.
 
     **The books' revert refusal does not reach a HIDDEN row** (ruling
     **R-BAL248**, developer 2026-10-09, "Plan, kept deleted", narrowing
@@ -388,7 +386,7 @@ def return_to_plan(transfer: Transfer, *, took_off: bool) -> None:
     if not delete_returns_to_plan(transfer, took_off=took_off):
         return
     apply_status_to_all_three(
-        TransferRows(transfer, ()), ref_cache.status_id(StatusEnum.PROJECTED),
+        TransferRows(transfer), ref_cache.status_id(StatusEnum.PROJECTED),
     )
 
 

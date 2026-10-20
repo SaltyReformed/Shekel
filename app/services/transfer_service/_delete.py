@@ -1,9 +1,11 @@
 """
 Shekel Budget App -- Transfer Service: the DELETE verb
 
-Removing a transfer, soft or hard, and with it both shadow
-:class:`~app.models.transaction.Transaction` rows -- Transfer Invariant 2, that
-a shadow is never orphaned, applied in the one direction that could orphan one.
+Removing a transfer, soft or hard.  It removed both shadow
+:class:`~app.models.transaction.Transaction` rows with it -- Transfer Invariant
+2, that a shadow is never orphaned, applied in the one direction that could
+orphan one -- until plan step ``balance:X-bi-6-4d-3`` deleted the shadows; its
+leaf 3b deleted the delete's last query and flags over them.
 
 The ORDER inside is the whole of the module: the posted cash effect is
 reversed while the rows still exist to link against, because a hard delete
@@ -21,7 +23,6 @@ Flask-isolated like the rest of the package: plain data in, ORM rows out, no
 import logging
 
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import (
@@ -47,21 +48,18 @@ logger = logging.getLogger(__name__)
 
 
 def delete_transfer(transfer_id, user_id, soft=False, *, press=None):
-    """Delete a transfer and its shadow transactions.
+    """Delete a transfer.
 
     Args:
         transfer_id: The primary key of the transfer to delete.
         user_id:     The expected owner (defense-in-depth).
-        soft:        If True, set is_deleted=True on the transfer and
-                     both shadows -- a tombstone that keeps its place and
+        soft:        If True, set is_deleted=True on the transfer -- a
+                     tombstone that keeps its place and
                      none of its sides' payment records (ruling R-CC75);
                      a settled transfer that held one goes back to
                      Projected, so a restore brings back a plan, while a
                      ``$0.00`` close keeps its status (ruling R-BAL246).
-                     If False,
-                     physically remove the transfer; the ON DELETE
-                     CASCADE FK on transactions.transfer_id removes
-                     both shadows automatically.
+                     If False, physically remove the transfer.
         press:       The save's press over the bank lines the door's page
                      named before the delete, on either arm, or ``None``
                      (rulings R-CC127, R-CC135, R-BAL229).  Every caller
@@ -85,7 +83,7 @@ def delete_transfer(transfer_id, user_id, soft=False, *, press=None):
     # ── Posting ledger reconcile (Build-Order Step 2) ──────────────
     # Reverse any posted effect BEFORE the row is removed, so a settled
     # transfer's per-movement entries net to zero.  Runs first -- while
-    # xfer.id, the shadows and their covering movements still exist -- so each
+    # xfer.id and its sides' covering movements still exist -- so each
     # reversal entry can link its movement and read the posted legs back; a
     # hard delete then SET-NULLs the links, leaving the immutable net-zero
     # pairs as history.  The TEARDOWN door, not the pair's sync (plan step
@@ -147,11 +145,6 @@ def delete_transfer(transfer_id, user_id, soft=False, *, press=None):
     # under any shadow live or dead until ``X-bi-6-4d-2`` moved the join onto
     # the side links.  In movement-id order, so the act walks them
     # deterministically.
-    shadows = (
-        db.session.query(Transaction)
-        .filter_by(transfer_id=transfer_id)
-        .all()
-    )
     held = (
         transfer_legs.held_transfer_entries(Transfer.id == transfer_id)
         .order_by(TransactionEntry.id)
@@ -159,16 +152,11 @@ def delete_transfer(transfer_id, user_id, soft=False, *, press=None):
     )
     movement_removal.remove_movements(
         held, user_id, because=match_withdrawal.LEFT_THE_BOOKS, press=press,
-        rows_leaving=shadows,
     )
     db.session.flush()
 
     if soft:
         xfer.is_deleted = True
-        # Soft-delete must explicitly mark both shadows.  The database
-        # CASCADE only fires on physical deletes, not flag changes.
-        for shadow in shadows:
-            shadow.is_deleted = True
         # **A settled transfer whose payments just came off returns as a
         # PLAN** (ruling **R-BAL246**, "Back as a plan, now"); a ``$0.00``
         # close held nothing and keeps Paid.  After the hide, because the
@@ -179,10 +167,9 @@ def delete_transfer(transfer_id, user_id, soft=False, *, press=None):
         db.session.flush()
         log_event(
             logger, logging.INFO, EVT_TRANSFER_SOFT_DELETED, BUSINESS,
-            "Transfer and shadows soft-deleted",
+            "Transfer soft-deleted",
             user_id=user_id,
             transfer_id=transfer_id,
-            shadow_count=len(shadows),
         )
         result = xfer
     else:

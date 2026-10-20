@@ -44,7 +44,6 @@ from app.services import status_seam
 from app.services.match_press import Press
 from app.services.settle_day import recorded_settle_day
 from app.services.transfer_legs import TransferLeg, transfer_side_leg
-from app.services.transfer_service._create import shadow_names
 from app.services.transfer_service._side_days import (
     NO_DAYS,
     PairDays,
@@ -63,11 +62,11 @@ class _Endpoints(NamedTuple):
     """The two accounts an update LEAVES a transfer on, and the ones it vacates.
 
     **A transfer's endpoints move together or not at all**, because
-    ``ck_transfers_different_accounts`` is a rule about the PAIR and because a
-    move re-derives BOTH shadow names from BOTH accounts
-    (:func:`app.services.transfer_service._create.shadow_names`).  Passing them
-    as one value is what stops a call site pairing a resolved source with an
-    unresolved destination.
+    ``ck_transfers_different_accounts`` is a rule about the PAIR and because
+    each leg's label is composed from BOTH accounts
+    (:func:`app.services.transfer_legs.leg_label`).  Passing them as one value
+    is what stops a call site pairing a resolved source with an unresolved
+    destination.
 
     Attributes:
         from_account: The account the transfer's money leaves once this update
@@ -123,35 +122,39 @@ def _resolve_endpoints(
     one account to another purely as a side effect of the rebuild.
 
     Everything a MOVE must be refused for is asked here, and this function
-    WRITES NOTHING -- so a move refused for its own reason leaves all three rows
-    exactly as it found them.  **That is not the same as saying the whole update
-    is atomic, and an adversarial review of R10-b is why the difference is
-    spelled out**: :func:`._update.update_transfer` applies the caller-stated
-    facts (the override flag, the endpoints, the amount) and only then dispatches
-    the SETTLE, which can still raise -- on an illegal transition, an
-    unresolvable figure, or one of the seam's settle-day refusals.  So "no write
-    precedes a refusal" holds for every gate, and a raise from the settle still
-    leaves a partially-applied pair in the session for the caller's rollback to
-    discard.  The amount's own refusal was hoisted into that gate block at this
-    step for exactly this reason; the settle's cannot be, because they are
+    WRITES NOTHING -- so a move refused for its own reason leaves the transfer
+    and its sides' records exactly as it found them.  **That is not the same
+    as saying the whole update is atomic, and an adversarial review of R10-b
+    is why the difference is spelled out**: :func:`._update.update_transfer`
+    applies the caller-stated facts (the override flag, the endpoints, the
+    amount) and only then dispatches the SETTLE, which can still raise -- on
+    an illegal transition, an unresolvable figure, or one of the seam's
+    settle-day refusals.  So "no write precedes a refusal" holds for every
+    gate, and a raise from the settle still leaves a partially-applied
+    transfer in the session for the caller's rollback to discard.  The
+    amount's own refusal was hoisted into that gate block at this step for
+    exactly this reason; the settle's cannot be, because they are
     answers the settle computes.  Nothing is re-asked when neither
     endpoint moves, which is the same discipline
     :func:`_reject_installment_move_before_loan` states for the installment
     fields: a pre-existing arrangement stays editable in every OTHER respect
     rather than being re-graded by an unrelated edit.
 
-    The PARENT's name is not touched here; see
-    :func:`app.services.transfer_service._create.shadow_names` for why a
-    derived shadow name is re-derived and a stated transfer name is not.
+    The PARENT's name is not touched here: a transfer's own ``name`` is the
+    caller's, and every template-linked transfer carries its definition's, so
+    re-deriving it on a move would overwrite a stated fact with a default.
     **For an AD-HOC transfer created without a name that leaves a stale label**
     -- ``create_transfer`` defaults the parent's name from the endpoints, and
     nothing afterwards distinguishes that default from a name the owner typed.
     It is latent rather than live: an ad-hoc transfer reaches this arm from no
     route, and both callers that do reach it are template-linked and state the
-    definition's name alongside the accounts.
+    definition's name alongside the accounts.  A LEG's label is not stored at
+    all: it is composed from the endpoints' current names at render time
+    (:func:`app.services.transfer_legs.leg_label`), so a move re-labels both
+    legs with nothing written.
 
     Args:
-        rows: The transfer and both shadows, at their pre-update endpoints.
+        rows: The transfer, at its pre-update endpoints.
         user_id: The expected owner -- both resulting accounts are re-checked
             against it, so a caller that skips the route cannot re-point a
             transfer at an account across an ownership line.
@@ -217,12 +220,11 @@ def _apply_endpoint_move(
 
     The parent names the pair of accounts and each side's record LIVES on one
     of them (the side key), so the transfer and its records move in one act.
-    The twin rows, mirrors until plan step ``balance:X-bi-6-4d-3`` deletes
-    them, follow by their own TYPE: an expense twin takes the source and an
-    income twin the destination, the pairing
-    :func:`app.services.transfer_service._create.create_transfer` establishes
-    -- over every live twin there is (:class:`~app.services.transfer_service.
-    _validation.TransferRows`, ruling **R-BAL235**).
+    The twin rows followed by their own TYPE (an expense twin the source, an
+    income twin the destination), re-named from both accounts, until plan
+    step ``balance:X-bi-6-4d-3`` deleted them; its leaf 3b deleted that loop.
+    Each leg is derived from the transfer's endpoints now
+    (:mod:`app.services.transfer_legs`), so it moves with them.
 
     **Applied with the caller-stated facts, ahead of the settle dispatch**, for
     the reason the ``is_override`` arm states: everything between those two
@@ -274,7 +276,7 @@ def _apply_endpoint_move(
        statement link released, and both FLUSHED, because the cascade fires
        inside the transfer's ``UPDATE`` and the keys holding a member and a
        link to the old account would refuse it.
-    2. **The accounts are assigned**, the transfer's and its twins'.
+    2. **The transfer's accounts are assigned.**
     3. **Each record lands on its new endpoint** (``status_seam.
        land_moved_side_record``): assigned in the session too, because the ORM
        never learns what a cascade writes; and a DATED record's day becomes
@@ -284,7 +286,7 @@ def _apply_endpoint_move(
        flush (``record_settle_day``).
 
     Args:
-        rows: The transfer and its live twins.
+        rows: The transfer.
         endpoints: The resolved :class:`_Endpoints`; a no-op when its *vacated*
             is empty, which is every update that names no account.
         press: The save's :class:`~app.services.match_press.Press`, or ``None``
@@ -314,16 +316,8 @@ def _apply_endpoint_move(
             status_seam.free_moving_side_record(
                 leg.record, transfer.user_id, press,
             )
-    expense_name, income_name = shadow_names(
-        endpoints.from_account, endpoints.to_account,
-    )
     transfer.from_account = endpoints.from_account
     transfer.to_account = endpoints.to_account
-    for shadow in rows.shadows:
-        if shadow.is_income:
-            shadow.account, shadow.name = endpoints.to_account, income_name
-        else:
-            shadow.account, shadow.name = endpoints.from_account, expense_name
     for (leg, account), day in zip(moving, days):
         if leg.record is not None and leg.account_id != account.id:
             status_seam.land_moved_side_record(leg.record, account, day)
