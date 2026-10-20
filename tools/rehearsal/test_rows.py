@@ -1,6 +1,7 @@
 """The rows (step X-cx's K1b-1): the noise gate, the planted controls, the rollback and the
-verdict.  The side's environment and its probes are :mod:`.test_probes`'s, and the row
-grader is :mod:`.test_rowdiff`'s.
+verdict; and since K1c-2 the crawl the run ends with and the rows after it (:mod:`.pages`).
+The side's environment and its probes are :mod:`.test_probes`'s, and the row grader is
+:mod:`.test_rowdiff`'s.
 
 The cases marked ``cluster`` start a real private cluster through a :class:`bench.Bench` on the
 conftest's ``dump``; the last of them deploy both sides by production's own step, so they also
@@ -19,7 +20,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 import pytest
 
-from tools.rehearsal import bench, rows
+from tools.rehearsal import bench, pages, probes, rows
 from tools.rehearsal.rowdiff import Moved
 
 
@@ -387,3 +388,125 @@ def test_base_that_cannot_boot_on_cut_s_copy_fails_the_rollback(dump, tmp_path, 
     assert "ROLLBACK FAILS: base cannot boot on cut's deployed copy: exit 1:\n" in out
     assert 'relation "salary.pay_stubs" does not exist' in out
     assert _AGAIN not in out and "\nrollback: " not in out
+
+
+#: The user the crawl's cases seed after every deploy, through the side's own
+#: ``scripts/seed_user.py`` (the registration path ``/register`` takes).
+_SEEDED = {"SEED_USER_EMAIL": "crawled@rehearsal.invalid",
+           "SEED_USER_PASSWORD": "a-planted-password-of-length",
+           "SEED_USER_DISPLAY_NAME": "Crawled"}
+
+
+def _seeding(then: Callable[[str], object] | None = None) -> Callable[..., str | None]:
+    """The deploy step, then a user seeded on the copy, then ``then`` on it, for every deploy.
+
+    The seed runs as the side's own script, in the side's environment, on the pinned day, with
+    triggers off (``PGOPTIONS``), and its salted password hash is then set to one value: a hash
+    salted afresh on each copy, or an audit row carrying it, would make base deployed twice
+    read differently.  A copy that already holds the user (the rollback's clone of cut's) is
+    left as it is."""
+    deploy = rows.deploy
+
+    def deployed(state: bench.State, url: str, secret_key: str, moment: datetime
+                 ) -> str | None:
+        said = deploy(state, url, secret_key, moment)
+        if said is None:
+            seeded = bench.run(
+                [str(state.python), str(Path("scripts") / "seed_user.py")],
+                {**probes.side_environment(state, url, secret_key), **_SEEDED,
+                 "SEED_USER_LAST_PAYDAY": moment.date().isoformat(),
+                 "PGOPTIONS": "-c session_replication_role=replica"},
+                cwd=state.worktree)
+            assert seeded.returncode == 0, seeded.stderr
+            _executing("UPDATE auth.users SET password_hash = 'planted'")(url)
+            if then is not None:
+                then(url)
+        return said
+    return deployed
+
+
+@pytest.mark.cluster
+def test_each_copy_is_crawled_as_its_user_and_the_rows_after_the_crawl_read_alike(
+        dump, tmp_path, capsys, monkeypatch):
+    """A user seeded after every deploy passes the login control and is crawled from ``/``
+    on each copy; base crawled twice reads the same and base crawled reads as cut crawled:
+    exit 0, the crawl's limit printed."""
+    monkeypatch.setattr(rows, "deploy", _seeding())
+    status, out, err, report = _rehearsal(dump, tmp_path, capsys)
+    assert (status, err, report) == (0, "", ""), err
+    for label in ("base", "base, again", "cut"):
+        crawled = re.search(rf"^crawl {re.escape(label)}: user \d+: (\d+) requests, ", out,
+                            re.MULTILINE)
+        assert crawled is not None and int(crawled.group(1)) > 1, out
+    assert pages.LIMITER + "\n" in out
+    assert "noise gate after the crawl: 0 rows differ\n" in out
+    assert "base crawled against cut crawled: 0 rows differ beyond the deploys' " in out
+
+
+@pytest.mark.cluster
+def test_a_crawl_still_holding_requests_at_the_cap_measures_nothing(dump, tmp_path, capsys,
+                                                                     monkeypatch):
+    """The cap is a refusal naming the family that fetched the most, never a truncation."""
+    monkeypatch.setattr(rows, "deploy", _seeding())
+    monkeypatch.setattr(pages, "CAP", 2)
+    status, _, err, _ = _rehearsal(dump, tmp_path, capsys)
+    assert status == 2
+    assert re.search(r"the crawl of base refused: exit 2:\n(.*\n)*the crawl refused: the cap of "
+                     r"2 requests was reached with \d+ still queued; the family that fetched "
+                     r"the most is /\S* as a (page|htmx) \(1\)$", err, re.MULTILINE), err
+
+
+@pytest.mark.cluster
+def test_a_crawl_whose_login_is_lost_measures_nothing(dump, tmp_path, capsys, monkeypatch):
+    """A session the app no longer honours sends ``/`` to the login gate, which is an
+    authentication redirect: the crawl refuses, naming both URLs."""
+    monkeypatch.setattr(rows, "deploy", _seeding(_executing(
+        "UPDATE auth.users SET session_invalidated_at = '9999-01-01T00:00:00+00:00'")))
+    status, _, err, _ = _rehearsal(dump, tmp_path, capsys)
+    assert status == 2
+    assert re.search(r"the crawl of base refused: exit 2:\n(.*\n)*the crawl refused: / was "
+                     r"sent to authenticate at /\S*\?next=%2F: the crawl's session was lost "
+                     r"or is no longer fresh$", err, re.MULTILINE), err
+
+
+def _crawling(label: str, plant: Callable[[str], object]) -> Callable[..., bench.State]:
+    """The crawl of each copy, then ``plant`` on the crawled clone of ``label``'s."""
+    crawl = pages.crawl
+
+    def crawled(made: bench.Bench, given: str, state: bench.State, secret_key: str,
+                moment: datetime) -> bench.State:
+        done = crawl(made, given, state, secret_key, moment)
+        if given == label:
+            plant(done.url)
+        return done
+    return crawled
+
+
+@pytest.mark.cluster
+def test_base_crawled_twice_reading_differently_measures_nothing(dump, tmp_path, capsys,
+                                                                 monkeypatch):
+    """The rows after the crawl have a noise gate of their own: a byte only base again's
+    crawled clone holds is the kit's failure, exit 2."""
+    monkeypatch.setattr(pages, "crawl", _crawling("base, again", rows.plant_byte))
+    status, out, err, _ = _rehearsal(dump, tmp_path, capsys)
+    assert status == 2
+    assert "noise gate after the crawl: 1 rows differ\n" in out
+    assert err.endswith("[rehearsal] base crawled twice did not read the same, so the rows "
+                        "after the crawl measure nothing\n"), err
+
+
+@pytest.mark.cluster
+def test_a_row_only_the_crawl_of_cut_moves_exits_1_naming_it(dump, tmp_path, capsys,
+                                                             monkeypatch):
+    """A cent only cut's crawled clone holds is a difference the deploys did not make: named
+    in the report, counted beyond the deploys', exit 1."""
+    planted: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(pages, "crawl", _crawling(
+        "cut", lambda url: planted.append(rows.plant_cent(url))))
+    status, out, _, report = _rehearsal(dump, tmp_path, capsys)
+    table, key, column = planted[0]
+    assert status == 1
+    assert report.startswith(f"{table} {key}: {column} ") and report.count("\n") == 1
+    assert "base crawled against cut crawled: 1 rows differ beyond the deploys' " in out
+    assert f"{table}: 1 rows differ (0 only on base, crawled, 0 only on cut, crawled, " \
+        f"1 changed)\n  {column}: 1 rows, total change +0.01\n" in out

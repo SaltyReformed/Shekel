@@ -31,20 +31,26 @@ restore, and the run says so: the copy's migration version is already a row that
 cut's deploy refused, its one transaction left the dump as it was, so production's rollback is
 base's own deploy on it, which the run has already measured (the boot aside), and none runs.
 
-What it does NOT compare is printed on every run (:data:`NOT_COMPARED`), the audit log's
-dropped columns and the stamps' one hole among it, and with it the limit the days put on a run
-(:func:`.rowdiff.day_limit`), so an exit 0 is never read as a claim about them.
+THE PAGES, last (:mod:`.pages`, ruling W2): each deployed copy is cloned and crawled by its
+own side's app as each of its active users, and the rows after the crawl are compared, base
+crawled twice first, as the deploys' are, less what the deploys' comparison already reported.
+
+What it does NOT compare is printed on every run (:data:`NOT_COMPARED`, and the crawl's
+:data:`.pages.LIMITER`), the audit log's dropped columns and the stamps' one hole among it,
+and with it the limit the days put on a run (:func:`.rowdiff.day_limit`), so an exit 0 is never
+read as a claim about them.
 
 Usage, which brings a bench up (:mod:`.bench`), deploys, compares and tears it down::
 
     python -m tools.rehearsal.rows --dump <pg_dump -Fc file> --base <revision> \\
         --cut <revision> --report <file>
 
-Exit status: 0 no row differs and the rollback holds; 1 rows differ (each one in the report,
-summed per table and column on stdout), cut's deploy refused the copy base's deployed, or the
-rollback to base on cut's deployed copy fails (named); 2 nothing was measured:
-the bench, the dump's stamps against the line (:func:`.rowdiff.read_line`), base's deploy, the
-noise gate, a control, or the run itself (a file it could not write, a database error) failed, each
+Exit status: 0 no row differs, before or after the crawl, and the rollback holds; 1 rows
+differ (each one in the report, summed per table and column on stdout), cut's deploy refused
+the copy base's deployed, or the rollback to base on cut's deployed copy fails (named); 2
+nothing was measured: the bench, the dump's stamps against the line
+(:func:`.rowdiff.read_line`), base's deploy, the noise gate, a control, a crawl, the noise gate
+after the crawl, or the run itself (a file it could not write, a database error) failed, each
 named.  A failure of the run is never exit 1, which says rows differ.
 """
 from __future__ import annotations
@@ -62,7 +68,7 @@ from pathlib import Path
 import psycopg
 from psycopg import sql
 
-from tools.rehearsal import bench
+from tools.rehearsal import bench, pages
 from tools.rehearsal.probes import boot, deploy, pinned_instant
 from tools.rehearsal.rowdiff import (AUDIT_LOG, DEPLOY, Held, Moved, Table, catalog,
                                      changed_columns, column_change, compare, day_limit,
@@ -89,7 +95,7 @@ NOT_COMPARED = (
     "restored without them and no shekel_app role exists, so the deploy's grants do nothing "
     "and the rollback's boot connects as the owner, where production's app connects as "
     "shekel_app), "
-    "sequences, entrypoint step 2 (the role), and the rows after a first page load (K1c); "
+    "sequences and entrypoint step 2 (the role); "
     f"and a stamp later than the line reads as {DEPLOY!r} whatever wrote it, so two such "
     "values a deploy wrote by anything but its own clock (now() + interval) read alike")
 
@@ -384,12 +390,15 @@ def gates(made: bench.Bench, again: bench.State, line: datetime) -> bool:
 
 def rehearse(made: bench.Bench, out: Path) -> int:
     """Read the line, deploy base twice and cut once on the bench, gate on noise and the
-    controls, compare base with cut, writing every differing row to ``out``, and roll back
-    to base on cut's deployed copy (:func:`rollback`); the exit status.
+    controls, compare base with cut, writing every differing row to ``out``, roll back to
+    base on cut's deployed copy (:func:`rollback`), then crawl the three deployed copies and
+    compare the rows after the crawl (:mod:`.pages`), adding each new differing row to
+    ``out``; the exit status.
 
     Raises:
         bench.BenchError: when the dump holds a stamp later than the line (:func:`read_line`)
-            or a side probe cannot be run.
+            or a side probe cannot be run; :class:`.pages.Unmeasured` when a crawl refused or
+            base crawled twice did not read the same.
         psycopg.Error: when a copy cannot be read or cloned.
     """
     base, cut = made.made["base"], made.made["cut"]
@@ -415,6 +424,7 @@ def rehearse(made: bench.Bench, out: Path) -> int:
     if not gates(made, again, line):
         return 2
     print(NOT_COMPARED)
+    print(pages.LIMITER)
     print(day_limit(base.url, cut.url))
     print("compared as multisets: " + ", ".join(multisets(base.url, cut.url)))
     if refused["cut"] is not None:
@@ -422,14 +432,27 @@ def rehearse(made: bench.Bench, out: Path) -> int:
         return 1
     began = time.monotonic()
     moved = compare(base.url, cut.url, line)
-    out.write_text("".join(f"{entry}\n" for entry in report(moved, "base", "cut")),
-                   encoding="utf-8")
     print(f"base against cut: {time.monotonic() - began:.2f} s, {len(moved)} rows differ "
           f"(each in {out})")
-    for entry in summary(moved, "base", "cut"):
-        print(entry)
+    _reported(moved, ("base", "cut"), out, "w")
     held = rollback(made, secret_key, moment, line)
-    return 1 if moved or not held else 0
+    after = pages.after_the_crawl(
+        {label: pages.crawl(made, label, state, secret_key, moment)
+         for label, state in (("base", base), ("base, again", again), ("cut", cut))},
+        moved, line)
+    print(f"base crawled against cut crawled: {len(after)} rows differ beyond the deploys' "
+          f"(each in {out})")
+    _reported(after, ("base, crawled", "cut, crawled"), out, "a")
+    return 1 if moved or not held or after else 0
+
+
+def _reported(moved: list[Moved], sides: tuple[str, str], out: Path, mode: str) -> None:
+    """Write each differing row to ``out``, opened in ``mode``, and print them summed per
+    table and column (:func:`.rowdiff.report`, :func:`.rowdiff.summary`)."""
+    with out.open(mode, encoding="utf-8") as written:
+        written.writelines(f"{entry}\n" for entry in report(moved, *sides))
+    for entry in summary(moved, *sides):
+        print(entry)
 
 
 def main(argv: list[str] | None = None) -> int:
