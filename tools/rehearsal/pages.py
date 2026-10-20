@@ -2,7 +2,7 @@
 its active users, and the rows after the crawl compared (``design.md`` s.3 item 1; ``k1c/plan.md``
 s.3; ruling W2: the crawl runs inside the rows run, on its bench and its deploys).
 
-THE CRAWL.  Each deployed copy (base, base again, cut) is cloned, and the clone is crawled by
+THE CRAWL.  Each deployed copy (base, cut) is cloned, and the clone is crawled by
 the side probe ``side/crawl.py`` (:func:`.probes.crawl`), which says how a user is logged in,
 what is followed and what stops it, under the run's pinned instant and secret key.  The users
 are the clone's active ones (``auth.users.is_active``), in id order; each user's pay-period span
@@ -12,24 +12,22 @@ seconds and bytes, and the family that fetched the most.  A copy with no active 
 crawled by no one, which is printed, never refused: a dump of production always holds one.
 
 THE ROWS AFTER THE CRAWL.  A page load can write (a GET that records a view, a stamp it
-refreshes), so the crawled clones are compared as :mod:`.rowdiff` compares the deployed copies.
-Base crawled against base again, crawled, must read identical: a difference there is the kit's
-failure (exit 2).  Then base crawled against cut crawled, less every row the deploys' comparison
-already reported as it was, so a row is not counted twice.
+refreshes), so the crawled clones are compared as :mod:`.rowdiff` compares the deployed copies:
+base crawled against cut crawled, less every row the deploys' comparison already reported as it
+was, so a row is not counted twice.
 
 What the crawl cannot see is printed on every run (:data:`LIMITER`).
 """
 from __future__ import annotations
 
 import json
-import sys
 import time
 from datetime import datetime
 
 import psycopg
 
 from tools.rehearsal import bench, probes
-from tools.rehearsal.rowdiff import Moved, compare, summary
+from tools.rehearsal.rowdiff import Moved, compare
 
 #: The most requests one user's crawl of one copy may fetch; a crawl still holding requests
 #: there is refused (exit 2), naming the family that fetched the most.  PROVISIONAL (the
@@ -46,8 +44,7 @@ _ACTIVE_USERS = "SELECT id FROM auth.users WHERE is_active ORDER BY id"
 
 
 class Unmeasured(bench.BenchError):
-    """The crawl could not measure a copy, or the crawled copies of base read differently:
-    the kit's failure (exit 2), never the release's."""
+    """The crawl could not measure a copy: the kit's failure (exit 2), never the release's."""
 
 
 def active_users(url: str) -> list[int]:
@@ -105,24 +102,13 @@ def _shown(row: Moved) -> tuple[str, str, str, str]:
     return row.table, row.key, repr(row.before), repr(row.after)
 
 
-def after_the_crawl(crawled: dict[str, bench.State], reported: list[Moved],
+def after_the_crawl(base: bench.State, cut: bench.State, reported: list[Moved],
                     line: datetime) -> list[Moved]:
-    """The rows after the crawl: base crawled against base again, crawled, then base crawled
-    against cut crawled, through ``line``; every row the second reads that ``reported`` does
-    not already hold as it is.
+    """The rows after the crawl: ``base`` crawled against ``cut`` crawled, through ``line``;
+    every row it reads that ``reported`` does not already hold as it is.
 
     Raises:
-        Unmeasured: when base crawled twice did not read the same, its rows on stderr.
         psycopg.Error: when a copy cannot be read.
     """
-    base = crawled["base"]
-    noise = compare(base.url, crawled["base, again"].url, line)
-    print(f"noise gate after the crawl: {len(noise)} rows differ")
-    if noise:
-        print("\n".join(summary(noise, "base, crawled", "base again, crawled")),
-              file=sys.stderr)
-        raise Unmeasured("base crawled twice did not read the same, so the rows after the "
-                         "crawl measure nothing")
     known = {_shown(row) for row in reported}
-    return [row for row in compare(base.url, crawled["cut"].url, line)
-            if _shown(row) not in known]
+    return [row for row in compare(base.url, cut.url, line) if _shown(row) not in known]

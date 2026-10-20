@@ -1,25 +1,22 @@
 """The rows (step X-cx's K1b-1): every stored row of the dump, once base's deploy step and
-once cut's has run on it, compared row by row, the noise gate and the planted controls run
-every time (``design.md`` s.3 items 2, 3, 5, 8 and 10).
+once cut's has run on it, compared row by row, the planted controls run every time
+(``design.md`` s.3 items 2, 3, 8 and 10).
 
 THE DEPLOY AND THE BOOT run through :mod:`.probes`, which says how a side's step runs and in
 what environment; THE ROWS are read and compared by :mod:`.rowdiff`, which says how every
 table, row and stamp is read.
 
-THE NOISE GATE: base is deployed on two clones, and both must read identical.  A difference
-there is the kit's failure, never the release's (exit 2).  It catches a column the server's
-clock writes that the catalogs do not call a stamp (one an UPDATE alone sets to the clock,
-with no clock default: :func:`.rowdiff.stamps`) only where base's deploy writes one; on a dump
-at base's own revision that deploy writes nothing, and such a column only cut's deploy writes
-is a difference (exit 1), never an exit 0.
+BASE IS READ ONCE (``balance:R-BAL336``, which removed the second read, base deployed again,
+and its noise gate).  A column the server's clock writes that the catalogs do not call a stamp
+(one an UPDATE alone sets to the clock, with no clock default: :func:`.rowdiff.stamps`) is a
+difference wherever a deploy writes it (exit 1), never an exit 0.
 
 THE PLANTED CONTROLS, every run, each on a clone of base's deployed copy, nothing else
 touched (triggers and foreign-key checks are off for the plant): a cent added to a numeric
 column, a byte changed in a text column, a row removed, and a stamp moved to a moment earlier
 than both itself and the line.  The comparison must find each exactly.  Then the fifth: the
 clock written into the same stamp on two clones in turn, which the comparison of the two must
-NOT find, and which the noise gate cannot grade (on a dump at base's own revision its deploy
-writes nothing).  Any control that fails means the run measured nothing (exit 2).
+NOT find.  Any control that fails means the run measured nothing (exit 2).
 
 THE ROLLBACK runs exactly when production's would once cut's deploy has stored its copy: when
 base's tree carries a migration script for every revision that copy is stamped at
@@ -32,8 +29,8 @@ cut's deploy refused, its one transaction left the dump as it was, so production
 base's own deploy on it, which the run has already measured (the boot aside), and none runs.
 
 THE PAGES, last (:mod:`.pages`, ruling W2): each deployed copy is cloned and crawled by its
-own side's app as each of its active users, and the rows after the crawl are compared, base
-crawled twice first, as the deploys' are, less what the deploys' comparison already reported.
+own side's app as each of its active users, and the rows after the crawl are compared, as the
+deploys' are, less what the deploys' comparison already reported.
 
 What it does NOT compare is printed on every run (:data:`NOT_COMPARED`, and the crawl's
 :data:`.pages.LIMITER`), the audit log's dropped columns and the stamps' one hole among it,
@@ -49,9 +46,9 @@ Exit status: 0 no row differs, before or after the crawl, and the rollback holds
 differ (each one in the report, summed per table and column on stdout), cut's deploy refused
 the copy base's deployed, or the rollback to base on cut's deployed copy fails (named); 2
 nothing was measured: the bench, the dump's stamps against the line
-(:func:`.rowdiff.read_line`), base's deploy, the noise gate, a control, a crawl, the noise gate
-after the crawl, or the run itself (a file it could not write, a database error) failed, each
-named.  A failure of the run is never exit 1, which says rows differ.
+(:func:`.rowdiff.read_line`), base's deploy, a control, a crawl, or the run itself (a file it
+could not write, a database error) failed, each named.  A failure of the run is never exit 1,
+which says rows differ.
 """
 from __future__ import annotations
 
@@ -365,20 +362,10 @@ def controls(made: bench.Bench, base: bench.State, line: datetime) -> list[str]:
     return wrong
 
 
-def gates(made: bench.Bench, again: bench.State, line: datetime) -> bool:
-    """The noise gate (base's deployed copy against ``again``, base deployed a second time)
-    and the planted controls, each through ``line`` and printed; False when either fails,
-    which is the kit's failure, named on stderr, never the release's."""
-    base = made.made["base"]
-    began = time.monotonic()
-    noise = compare(base.url, again.url, line)
-    print(f"noise gate: {time.monotonic() - began:.2f} s, {len(noise)} rows differ")
-    if noise:
-        print("[rehearsal] base deployed twice did not read the same, so the comparison "
-              "measures nothing:\n" + "\n".join(summary(noise, "base", "base again")),
-              file=sys.stderr)
-        return False
-    wrong = controls(made, base, line)
+def gates(made: bench.Bench, line: datetime) -> bool:
+    """The planted controls, each through ``line`` and printed; False when any fails, which
+    is the kit's failure, named on stderr, never the release's."""
+    wrong = controls(made, made.made["base"], line)
     if wrong:
         print("[rehearsal] a planted control was not read as planted, so the comparison "
               "measures nothing:\n" + "\n".join(wrong), file=sys.stderr)
@@ -389,39 +376,34 @@ def gates(made: bench.Bench, again: bench.State, line: datetime) -> bool:
 
 
 def rehearse(made: bench.Bench, out: Path) -> int:
-    """Read the line, deploy base twice and cut once on the bench, gate on noise and the
-    controls, compare base with cut, writing every differing row to ``out``, roll back to
-    base on cut's deployed copy (:func:`rollback`), then crawl the three deployed copies and
-    compare the rows after the crawl (:mod:`.pages`), adding each new differing row to
-    ``out``; the exit status.
+    """Read the line, deploy base and cut on the bench, gate on the controls, compare base
+    with cut, writing every differing row to ``out``, roll back to base on cut's deployed copy
+    (:func:`rollback`), then crawl the two deployed copies and compare the rows after the crawl
+    (:mod:`.pages`), adding each new differing row to ``out``; the exit status.
 
     Raises:
         bench.BenchError: when the dump holds a stamp later than the line (:func:`read_line`)
-            or a side probe cannot be run; :class:`.pages.Unmeasured` when a crawl refused or
-            base crawled twice did not read the same.
+            or a side probe cannot be run; :class:`.pages.Unmeasured` when a crawl refused.
         psycopg.Error: when a copy cannot be read or cloned.
     """
     base, cut = made.made["base"], made.made["cut"]
     secret_key = secrets.token_hex(32)
     moment = pinned_instant(made)
     print(f"clock pinned at {moment.isoformat()}")
-    again = bench.State(base.name, base.commit, base.worktree, "rehearsal_base_again",
-                        made.clone(bench.PRISTINE, "rehearsal_base_again"), base.python)
     line = read_line(base.url)
     print(f"line: {line.isoformat()}, the cluster's clock just before the first deploy; a "
           f"stamp later than it reads as {DEPLOY!r}")
     refused: dict[str, str | None] = {}
-    for label, state in (("base", base), ("base, again", again), ("cut", cut)):
+    for label, state in (("base", base), ("cut", cut)):
         began = time.monotonic()
         refused[label] = deploy(state, state.url, secret_key, moment)
         print(f"deploy {label}: {time.monotonic() - began:.2f} s, "
               + ("exit 0" if refused[label] is None else "REFUSED"))
-    for label in ("base", "base, again"):
-        if refused[label] is not None:
-            print(f"[rehearsal] {label}'s deploy refused the dump, so nothing is compared "
-                  f"(an app defect): {refused[label]}", file=sys.stderr)
-            return 2
-    if not gates(made, again, line):
+    if refused["base"] is not None:
+        print(f"[rehearsal] base's deploy refused the dump, so nothing is compared "
+              f"(an app defect): {refused['base']}", file=sys.stderr)
+        return 2
+    if not gates(made, line):
         return 2
     print(NOT_COMPARED)
     print(pages.LIMITER)
@@ -436,10 +418,8 @@ def rehearse(made: bench.Bench, out: Path) -> int:
           f"(each in {out})")
     _reported(moved, ("base", "cut"), out, "w")
     held = rollback(made, secret_key, moment, line)
-    after = pages.after_the_crawl(
-        {label: pages.crawl(made, label, state, secret_key, moment)
-         for label, state in (("base", base), ("base, again", again), ("cut", cut))},
-        moved, line)
+    after = pages.after_the_crawl(pages.crawl(made, "base", base, secret_key, moment),
+                                  pages.crawl(made, "cut", cut, secret_key, moment), moved, line)
     print(f"base crawled against cut crawled: {len(after)} rows differ beyond the deploys' "
           f"(each in {out})")
     _reported(after, ("base, crawled", "cut, crawled"), out, "a")

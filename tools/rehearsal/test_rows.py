@@ -1,5 +1,5 @@
-"""The rows (step X-cx's K1b-1): the noise gate, the planted controls, the rollback and the
-verdict; and since K1c-2 the crawl the run ends with and the rows after it (:mod:`.pages`).
+"""The rows (step X-cx's K1b-1): the planted controls, the rollback and the verdict; and since
+K1c-2 the crawl the run ends with and the rows after it (:mod:`.pages`).
 The side's environment and its probes are :mod:`.test_probes`'s, and the row grader is
 :mod:`.test_rowdiff`'s.
 
@@ -217,16 +217,15 @@ _CONTROLS_LINE = ("controls: a cent, a byte, a removed row, a stamp moved earlie
 @pytest.mark.cluster
 def test_two_sides_that_store_the_same_rows_exit_0_saying_what_was_not_compared(
         dump, tmp_path, capsys):
-    """Each side deployed by production's step on the dump (a first deploy, here), base
-    twice the same, every control found: exit 0, and the stated limits printed."""
+    """Each side deployed by production's step on the dump (a first deploy, here), every
+    control found: exit 0, and the stated limits printed."""
     status, out, err, report = _rehearsal(dump, tmp_path, capsys)
     assert (status, err, report) == (0, "", "")
     assert re.search(r"^clock pinned at \d{4}-\d{2}-\d{2}T12:00:00-0[45]:00$", out, re.MULTILINE)
     assert re.search(r"^line: \d{4}-\d{2}-\d{2}T[0-9:.]+\+00:00, the cluster's clock just before "
                      r"the first deploy; a stamp later than it reads as 'deploy'$", out,
                      re.MULTILINE)
-    assert "deploy base: " in out and "deploy base, again: " in out and "deploy cut: " in out
-    assert "noise gate: " in out and ", 0 rows differ\n" in out
+    assert "deploy base: " in out and "deploy cut: " in out
     assert _CONTROLS_LINE in out
     assert rows.NOT_COMPARED + "\n" in out
     assert ("compared, though the server's clock fills them: the days "
@@ -274,9 +273,9 @@ def test_a_stamp_of_the_dump_cut_s_deploy_moves_earlier_exits_1_naming_it(dump, 
 @pytest.mark.cluster
 def test_stamps_each_deploy_writes_at_its_own_moment_read_alike(dump, tmp_path, capsys,
                                                                 monkeypatch):
-    """Every deploy, base's twice, cut's and the rollback's, writing the server's clock into
-    the dump's stamp at its own moment: each stamp reads as a deploy's, so base deployed
-    twice reads the same, nothing differs and the rollback moves no row, exit 0."""
+    """Every deploy, base's, cut's and the rollback's, writing the server's clock into the
+    dump's stamp at its own moment: each stamp reads as a deploy's, so nothing differs and the
+    rollback moves no row, exit 0."""
     deploy = rows.deploy
     stamp = _executing("UPDATE stamped SET created_at = now()")
 
@@ -289,20 +288,7 @@ def test_stamps_each_deploy_writes_at_its_own_moment_read_alike(dump, tmp_path, 
     monkeypatch.setattr(rows, "deploy", deployed)
     status, out, err, report = _rehearsal(dump, tmp_path, capsys)
     assert (status, err, report) == (0, "", "")
-    assert "noise gate: " in out and ", 0 rows differ\n" in out
     assert "base against cut: " in out and ", 0 rows differ (each in " in out
-
-
-@pytest.mark.cluster
-def test_base_deployed_twice_reading_differently_measures_nothing(dump, tmp_path, capsys,
-                                                                  monkeypatch):
-    """A byte planted in base's second copy turns the noise gate: exit 2, named, no verdict."""
-    monkeypatch.setattr(rows, "deploy", _planting("rehearsal_base_again", rows.plant_byte))
-    status, out, err, report = _rehearsal(dump, tmp_path, capsys)
-    assert (status, report) == (2, "")
-    assert "noise gate: " in out and ", 1 rows differ\n" in out
-    assert err.startswith("[rehearsal] base deployed twice did not read the same")
-    assert "1 rows differ (0 only on base, 0 only on base again, 1 changed)" in err
 
 
 @pytest.mark.cluster
@@ -402,8 +388,8 @@ def _seeding(then: Callable[[str], object] | None = None) -> Callable[..., str |
 
     The seed runs as the side's own script, in the side's environment, on the pinned day, with
     triggers off (``PGOPTIONS``), and its salted password hash is then set to one value: a hash
-    salted afresh on each copy, or an audit row carrying it, would make base deployed twice
-    read differently.  A copy that already holds the user (the rollback's clone of cut's) is
+    salted afresh on each copy, or an audit row carrying it, would make base and cut read
+    differently.  A copy that already holds the user (the rollback's clone of cut's) is
     left as it is."""
     deploy = rows.deploy
 
@@ -429,17 +415,15 @@ def _seeding(then: Callable[[str], object] | None = None) -> Callable[..., str |
 def test_each_copy_is_crawled_as_its_user_and_the_rows_after_the_crawl_read_alike(
         dump, tmp_path, capsys, monkeypatch):
     """A user seeded after every deploy passes the login control and is crawled from ``/``
-    on each copy; base crawled twice reads the same and base crawled reads as cut crawled:
-    exit 0, the crawl's limit printed."""
+    on each copy, and base crawled reads as cut crawled: exit 0, the crawl's limit printed."""
     monkeypatch.setattr(rows, "deploy", _seeding())
     status, out, err, report = _rehearsal(dump, tmp_path, capsys)
     assert (status, err, report) == (0, "", ""), err
-    for label in ("base", "base, again", "cut"):
+    for label in ("base", "cut"):
         crawled = re.search(rf"^crawl {re.escape(label)}: user \d+: (\d+) requests, ", out,
                             re.MULTILINE)
         assert crawled is not None and int(crawled.group(1)) > 1, out
     assert pages.LIMITER + "\n" in out
-    assert "noise gate after the crawl: 0 rows differ\n" in out
     assert "base crawled against cut crawled: 0 rows differ beyond the deploys' " in out
 
 
@@ -480,19 +464,6 @@ def _crawling(label: str, plant: Callable[[str], object]) -> Callable[..., bench
             plant(done.url)
         return done
     return crawled
-
-
-@pytest.mark.cluster
-def test_base_crawled_twice_reading_differently_measures_nothing(dump, tmp_path, capsys,
-                                                                 monkeypatch):
-    """The rows after the crawl have a noise gate of their own: a byte only base again's
-    crawled clone holds is the kit's failure, exit 2."""
-    monkeypatch.setattr(pages, "crawl", _crawling("base, again", rows.plant_byte))
-    status, out, err, _ = _rehearsal(dump, tmp_path, capsys)
-    assert status == 2
-    assert "noise gate after the crawl: 1 rows differ\n" in out
-    assert err.endswith("[rehearsal] base crawled twice did not read the same, so the rows "
-                        "after the crawl measure nothing\n"), err
 
 
 @pytest.mark.cluster
