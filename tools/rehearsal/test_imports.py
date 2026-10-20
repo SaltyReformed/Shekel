@@ -3,8 +3,9 @@ ruling, item 1).
 
 The orchestrator (every module but ``side/``) imports the standard library, ``psycopg``,
 ``tools.ci`` and this package, never ``side/``; the side probe (``side/``) imports the standard
-library, ``flask``, ``time_machine`` and ``app``'s two public names.  Why each is so is the
-package docstring.  A test module or ``conftest.py`` in either half may import ``pytest`` too.
+library, ``flask``, ``time_machine`` and the names :data:`SIDE_APP_NAMES` lists.  Why each is
+so is the package docstring.  A test module or ``conftest.py`` in either half may import
+``pytest`` too.
 Which of ``tools.ci``'s modules are public is ``shekel-private-module-import``'s to say (pylint,
 in the same CI step), not this test's.
 
@@ -24,8 +25,22 @@ import pytest
 PACKAGE = Path(__file__).resolve().parent
 SIDE = PACKAGE / "side"
 
-#: The whole of ``app`` the side probe may name: the factory and the database extension.
-SIDE_APP_NAMES = frozenset({"app.create_app", "app.extensions.db"})
+#: The whole of ``app`` (and of Flask-Login) the side probe may name: the factory and the
+#: database extension; and, for the crawl (``side/crawl.py``), the rate limiter it switches
+#: off, the user it logs in by ``/login``'s own two calls, and the pay calendar it bounds the
+#: walk by.
+SIDE_APP_NAMES = frozenset({
+    "app.create_app",
+    "app.extensions.db",
+    "app.extensions.limiter",
+    "app.models.user.User",
+    "app.services.pay_calendar.PayCalendarError",
+    "app.services.pay_calendar.calendar_for",
+    "app.services.pay_calendar.final_covered_day",
+    "app.services.pay_calendar.opening_payday",
+    "app.utils.session_helpers.stamp_login_session",
+    "flask_login.login_user",
+})
 
 
 def _imported(source: str) -> Iterator[tuple[int, str]]:
@@ -107,6 +122,11 @@ SIDE_TEST = SIDE / "test_planted.py"
     (SIDE_MODULE, "import app.extensions", "app.extensions"),
     (SIDE_MODULE, "from app import models", "app.models"),
     (SIDE_MODULE, "from app.models import Account", "app.models.Account"),
+    (SIDE_MODULE, "from app.models.user import UserSettings", "app.models.user.UserSettings"),
+    (SIDE_MODULE, "from app.services.pay_calendar import derive_periods",
+     "app.services.pay_calendar.derive_periods"),
+    (SIDE_MODULE, "import flask_login", "flask_login"),
+    (SIDE_MODULE, "from flask_login import logout_user", "flask_login.logout_user"),
     (SIDE_MODULE, "import psycopg", "psycopg"),
     (SIDE_MODULE, "import pytest", "pytest"),
     (SIDE_MODULE, "from . import crawl", ".crawl"),
@@ -134,6 +154,14 @@ def test_a_planted_import_outside_its_half_is_refused(path, source, name):
     (SIDE_MODULE, "import time_machine"),
     (SIDE_MODULE, "from app import create_app"),
     (SIDE_MODULE, "from app.extensions import db"),
+    (SIDE_MODULE, "from app.extensions import limiter"),
+    (SIDE_MODULE, "from app.models.user import User"),
+    (SIDE_MODULE, "from app.services.pay_calendar import PayCalendarError"),
+    (SIDE_MODULE, "from app.services.pay_calendar import calendar_for"),
+    (SIDE_MODULE, "from app.services.pay_calendar import final_covered_day"),
+    (SIDE_MODULE, "from app.services.pay_calendar import opening_payday"),
+    (SIDE_MODULE, "from app.utils.session_helpers import stamp_login_session"),
+    (SIDE_MODULE, "from flask_login import login_user"),
     (SIDE_TEST, "import pytest"),
 ])
 def test_a_planted_import_inside_its_half_is_allowed(path, source):

@@ -11,7 +11,9 @@ It has two halves, each with its own import rule, both held by :mod:`.test_impor
   cluster, the test-db image) it runs as a subprocess.
 * **The side probe** is ``side/``, a script run BY PATH under each side's own venv, with
   that side's worktree as its directory.  It imports the standard library, ``flask``,
-  ``time_machine`` and ``app``'s public surface (``create_app`` and the ``db`` extension),
-  and never ``tools``: the side's tree holds a ``tools/`` of its own, which would shadow
-  the kit's.  It runs on both base and cut, so it reads only that stable surface.
+  ``time_machine`` and the few names of ``app`` that :data:`.test_imports.SIDE_APP_NAMES`
+  lists, and never ``tools``: the side's tree holds a ``tools/`` of its own, which would
+  shadow the kit's.  It runs on both base and cut, so it reads only that small surface: the
+  factory and the ``db`` extension, and for the crawl the limiter, the login's own two calls
+  and the pay calendar.  A cut that renames one of them fails its own side's probe, by name.
 """

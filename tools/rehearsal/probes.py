@@ -1,6 +1,7 @@
 """Running a side probe (step X-cx's K1b; a module of its own since K1c-2): a script of
 ``side/``, run by path under a side's venv from its worktree, in an environment built whole,
-its clock pinned at the run's one instant; the deploy step and the boot are two of them.
+its clock pinned at the run's one instant; the deploy step, the boot and the crawl are
+three of them.
 
 THE DEPLOY IS PRODUCTION'S.  Each state's clone runs that state's ``scripts/init_database.py``
 from its worktree and under its venv, as entrypoint step 3 runs it, in an environment BUILT
@@ -26,6 +27,8 @@ _SIDE = Path(__file__).resolve().parent / "side"
 _DEPLOY_PROBE = _SIDE / "deploy.py"
 #: The side probe that boots a side's app under the pinned instant, run by path.
 _BOOT_PROBE = _SIDE / "boot.py"
+#: The side probe that crawls a side's app under the pinned instant, run by path.
+_CRAWL_PROBE = _SIDE / "crawl.py"
 #: A rate-limit store ProdConfig accepts (it refuses ``memory:``) that names no server that
 #: could answer (``.invalid`` never resolves, RFC 6761): the deploy serves no request, and a
 #: deploy that reached for the store would fail by name rather than pass on a live one.
@@ -105,17 +108,17 @@ def pinned_instant(made: bench.Bench) -> datetime:
     return made.listing.noon(image_environment(base.worktree)["TZ"])
 
 
-def run_probe(probe: Path, state: bench.State, url: str, secret_key: str, moment: datetime
-           ) -> str | None:
+def run_probe(probe: Path, state: bench.State, url: str, secret_key: str, moment: datetime,
+              *args: str) -> str | None:
     """Run the side probe ``probe`` for ``state`` on the copy at ``url``, its clock pinned at
-    ``moment``, from the side's worktree under its venv in :func:`side_environment`; None when
-    it exits 0, else what it said last.
+    ``moment`` and ``args`` after it, from the side's worktree under its venv in
+    :func:`side_environment`; None when it exits 0, else what it said last.
 
     Raises:
         bench.BenchError: when the side's interpreter cannot be run, or its tree cannot give
             production's environment.
     """
-    done = bench.run([str(state.python), str(probe), moment.isoformat()],
+    done = bench.run([str(state.python), str(probe), moment.isoformat(), *args],
                      side_environment(state, url, secret_key), cwd=state.worktree)
     if not done.returncode:
         return None
@@ -142,3 +145,15 @@ def boot(state: bench.State, url: str, secret_key: str, moment: datetime) -> str
         bench.BenchError: as :func:`run_probe`.
     """
     return run_probe(_BOOT_PROBE, state, url, secret_key, moment)
+
+
+def crawl(state: bench.State, url: str, secret_key: str, moment: datetime, directory: Path
+          ) -> str | None:
+    """Crawl ``state``'s app on the copy at ``url`` with its clock pinned at ``moment``, as the
+    ``plan.json`` in ``directory`` says, into ``directory`` (``side/crawl.py``, by
+    :func:`run_probe`); None when it exits 0, else what it said last.
+
+    Raises:
+        bench.BenchError: as :func:`run_probe`.
+    """
+    return run_probe(_CRAWL_PROBE, state, url, secret_key, moment, str(directory))

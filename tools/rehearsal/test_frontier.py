@@ -7,28 +7,13 @@ it by path, as the crawl probe does.
 """
 from __future__ import annotations
 
-import importlib.util
-import sys
 from datetime import date
-from pathlib import Path
-from types import ModuleType
 
 import pytest
 
-_SOURCE = Path(__file__).resolve().parent / "side" / "frontier.py"
+from tools.rehearsal import side_load
 
-
-def _load() -> ModuleType:
-    """``side/frontier.py``, loaded by path under a name no package holds."""
-    spec = importlib.util.spec_from_file_location("rehearsal_side_frontier", _SOURCE)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-frontier = _load()
+frontier = side_load.load("frontier")
 #: The pay periods every bounded case runs against.
 _SPAN = frontier.Span(date(2026, 1, 2), date(2027, 6, 30))
 

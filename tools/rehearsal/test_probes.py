@@ -97,6 +97,24 @@ def test_a_deploy_runs_the_side_s_step_from_its_tree_in_that_environment_alone(t
     assert seen["env"] == probes.side_environment(state, "postgresql:///copy", "k" * 64)
 
 
+def test_a_crawl_runs_the_side_s_crawl_probe_with_its_directory_after_the_instant(tmp_path):
+    """The crawl is a side probe like the deploy: ``side/crawl.py``, the pinned instant, then
+    the directory holding its plan, in exactly :func:`probes.side_environment`."""
+    tree = _side(tmp_path / "tree", _DOCKERFILE, _PROD_COMPOSE)
+    python = tmp_path / "venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text(_RECORDER.format(python=sys.executable, status=0), encoding="utf-8")
+    python.chmod(0o755)
+    state = _state(tree, python)
+    said = probes.crawl(state, "postgresql:///copy", "k" * 64, _MOMENT, tmp_path / "crawl")
+    assert said is None
+    seen = json.loads((tree / "seen.json").read_text(encoding="utf-8"))
+    assert seen["argv"] == [str(_PROBE.with_name("crawl.py")), "2026-10-20T12:00:00-04:00",
+                            str(tmp_path / "crawl")]
+    assert seen["cwd"] == str(tree)
+    assert seen["env"] == probes.side_environment(state, "postgresql:///copy", "k" * 64)
+
+
 _PLANTED_STEP = """import datetime, json, sys, time
 with open("seen.json", "w", encoding="utf-8") as seen:
     json.dump({"now": datetime.datetime.now().isoformat(),
