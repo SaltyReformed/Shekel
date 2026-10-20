@@ -90,7 +90,7 @@
 #
 # Shekel's prod image is pinned in /opt/docker/shekel/.env via
 # SHEKEL_IMAGE_DIGEST (the compose override consumes it as
-# `ghcr.io/saltyreformed/shekel@${SHEKEL_IMAGE_DIGEST:?...}`).
+# `ghcr.io/saltyreformed-labs/shekel@${SHEKEL_IMAGE_DIGEST:?...}`).
 # bump-digest.sh can't touch this because it rejects env-var-templated
 # images on purpose -- this script is the canonical path for shekel.
 
@@ -126,7 +126,7 @@ SHEKEL_DIR="${SHEKEL_DIR:-/opt/docker/shekel}"
 ENV_FILE="${SHEKEL_ENV_FILE:-${SHEKEL_DIR}/.env}"
 COMPOSE_SERVICE="${SHEKEL_COMPOSE_SERVICE:-app}"
 CONTAINER_NAME="${SHEKEL_CONTAINER_NAME:-shekel-prod-app}"
-IMAGE_REPO="${SHEKEL_IMAGE_REPO:-ghcr.io/saltyreformed/shekel}"
+IMAGE_REPO="${SHEKEL_IMAGE_REPO:-ghcr.io/saltyreformed-labs/shekel}"
 MOVING_TAG="${SHEKEL_MOVING_TAG:-latest}"
 
 # Pre-deploy dump target.  The directory and naming match the predeploy dumps
@@ -145,7 +145,14 @@ BACKUP_DIR="${SHEKEL_BACKUP_DIR:-${HOME}/shekel-backups}"
 IMAGE_MIGRATIONS_DIR="${SHEKEL_IMAGE_MIGRATIONS_DIR:-migrations/versions}"
 
 # cosign keyless verification -- must match the workflow that signed the image.
-COSIGN_IDENTITY_REGEXP="https://github.com/SaltyReformed/Shekel/.github/workflows/docker-publish.yml@.*"
+# ONE identity: the image-build workflow of saltyreformed-labs/Shekel, on main.
+# Anchored at both ends and case exact, because cosign matches the regexp
+# anywhere in the certificate's SAN: the unanchored form this replaced accepted
+# a build of ANY ref.  No alternation, so a build signed before the move to
+# saltyreformed-labs (ruling R-BAL173) is refused too, as is an explicit
+# `shekel-deploy sha256:<pre-move digest>`.  The automatic rollback re-pins
+# without verifying, so this check never refuses it.
+COSIGN_IDENTITY_REGEXP='^https://github\.com/saltyreformed-labs/Shekel/\.github/workflows/docker-publish\.yml@refs/heads/main$'
 COSIGN_OIDC_ISSUER="https://token.actions.githubusercontent.com"
 
 # ntfy.  Overridable for the same reason as the block above -- a rehearsal

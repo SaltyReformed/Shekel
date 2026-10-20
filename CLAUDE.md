@@ -8,14 +8,14 @@ Bootstrap 5
 
 **YOU ARE THE ONLY SAFEGUARD.** This project has no QA team and no human code reviewer. CI
 (`.github/workflows/ci.yml`: pylint + the full pytest suite) runs on every pull request and on
-pushes to `main`, and a branch protection rule on `main` blocks the merge until that `lint-and-test`
-check is green. (A pull request touching ONLY the planning documents and the plan gate runs the plan
-gate in place of the suite -- `tools/ci/ci_scope.py` decides, and fails closed.) CI is therefore an
-enforced pre-merge gate -- but it is only as good as the tests, and no human will catch a bad
-assertion or a missing case for you. The developer is a solo operator. If you miss a bug, skip an
-edge case, or take a shortcut, that defect ships to production. In a budgeting app, that means real
-money is mismanaged. Treat every line of code as if someone's rent payment depends on it being
-correct.
+pushes to `main`, and the merge queue on `dev` and on `main` lands nothing until that
+`lint-and-test` check is green on the exact merge commit it lands. (A pull request touching ONLY the
+planning documents and the plan gate runs the plan gate in place of the suite --
+`tools/ci/ci_scope.py` decides, and fails closed.) CI is therefore an enforced pre-merge gate -- but
+it is only as good as the tests, and no human will catch a bad assertion or a missing case for you.
+The developer is a solo operator. If you miss a bug, skip an edge case, or take a shortcut, that
+defect ships to production. In a budgeting app, that means real money is mismanaged. Treat every
+line of code as if someone's rent payment depends on it being correct.
 
 ## Rules
 
@@ -350,13 +350,15 @@ No Unicode dashes. Use periods, commas, semicolons, or colons for sentence break
 
 ## Git Workflow
 
-Develop on `dev` or a short-lived feature branch off it. `main` is branch-protected: direct pushes
-are rejected, and a merge requires an open pull request whose `lint-and-test` (CI) check is green.
-CI runs on pull requests and on pushes to `main` -- NOT on pushes to `dev`, so `dev` work is
-validated when you open its PR. To ship `dev` to `main`: open a PR `dev` -> `main`, wait for the
-green check, then merge via the PR. Do NOT
-`git checkout main && git merge dev && git push origin main` -- branch protection rejects it. After
-a PR merges, resync `dev` so the next PR is not flagged out of date:
-`git fetch origin && git checkout dev && git merge origin/main && git push origin dev`. When several
-sessions are active, PR and merge timing is the coordinator session's call -- see Multi-session
-operation.
+Develop on a short-lived feature branch off `dev`; pushing it is always allowed. `dev` and `main`
+each take a change only through a pull request and the merge queue (rulesets `dev-queue` and
+`main-queue`, **R-BAL322**). Their bypass lists are empty, so a direct push to either is rejected
+for everyone, and so is `gh pr merge --admin`. A merge is `gh pr merge N --merge`, which puts the PR
+in the queue; the queue lands it only once `lint-and-test` and `polyglot-lint` pass on the exact
+merge commit it lands. CI runs on pull requests, on each queue group and on pushes to `main` -- NOT
+on pushes to `dev`, so `dev` work is validated when you open its PR. To ship `dev` to `main`: open a
+PR `dev` -> `main`, wait for the green check, then queue it. Do NOT
+`git checkout main && git merge dev && git push origin main` -- the `main-queue` ruleset rejects it.
+After a PR merges into `main`, resync `dev` so it holds every commit `main` does: a PR `main` ->
+`dev`, queued through `dev`'s queue (`git push origin dev` is rejected). When several sessions are
+active, PR and merge timing is the coordinator session's call -- see Multi-session operation.

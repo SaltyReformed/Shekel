@@ -690,7 +690,7 @@ class TestMergedComposeHardeningSurvivesOverride:
             "APP_ROLE_PASSWORD": "test-app-role-password",
             # Synthetic image digest satisfies the Commit C-36 / F-060
             # required-form interpolation in deploy/docker-compose.prod.yml
-            # (``image: ghcr.io/saltyreformed/shekel@${SHEKEL_IMAGE_DIGEST:?...}``).
+            # (``image: ghcr.io/saltyreformed-labs/shekel@${SHEKEL_IMAGE_DIGEST:?...}``).
             # 64 hex chars is the canonical OCI digest shape; the
             # value never reaches a real pull because ``compose config``
             # only renders the merged YAML.

@@ -363,7 +363,7 @@ class _Stack:
         new_listing.write_text(new_migrations, encoding="utf-8")
         digests = self.root / "repo_digests.txt"
         digests.write_text(
-            f"ghcr.io/saltyreformed/shekel@{target}\n" if repo_digests is None
+            f"ghcr.io/saltyreformed-labs/shekel@{target}\n" if repo_digests is None
             else repo_digests,
             encoding="utf-8",
         )
@@ -1334,7 +1334,7 @@ class TestTheLatestTagResolvesToItsFirstDigest:
         calls = stack.invocations
         assert result.returncode == 0, _said(result, calls)
         assert stack.pin == _NEW, _said(result, calls)
-        assert "pull -q ghcr.io/saltyreformed/shekel:latest" in calls, (
+        assert "pull -q ghcr.io/saltyreformed-labs/shekel:latest" in calls, (
             _said(result, calls)
         )
 
@@ -1351,7 +1351,7 @@ class TestTheLatestTagResolvesToItsFirstDigest:
         )
         result = stack.run(
             pull_latest=True, health="healthy",
-            repo_digests=f"ghcr.io/saltyreformed/shekel@{_NEW}\n" + mirrors,
+            repo_digests=f"ghcr.io/saltyreformed-labs/shekel@{_NEW}\n" + mirrors,
             **_NO_MIGRATIONS,
         )
         calls = stack.invocations
@@ -1366,7 +1366,7 @@ class TestTheLatestTagResolvesToItsFirstDigest:
         calls = stack.invocations
         assert result.returncode == 1, _said(result, calls)
         assert (
-            "docker image inspect ghcr.io/saltyreformed/shekel:latest failed"
+            "docker image inspect ghcr.io/saltyreformed-labs/shekel:latest failed"
             in result.stdout + result.stderr
         ), _said(result, calls)
         assert stack.pin == _OLD, _said(result, calls)
@@ -1380,11 +1380,75 @@ class TestTheLatestTagResolvesToItsFirstDigest:
         calls = stack.invocations
         assert result.returncode == 1, _said(result, calls)
         assert (
-            "could not resolve digest for ghcr.io/saltyreformed/shekel:latest"
+            "could not resolve digest for ghcr.io/saltyreformed-labs/shekel:latest"
             in result.stdout + result.stderr
         ), _said(result, calls)
         assert stack.pin == _OLD, _said(result, calls)
         assert stack.dumps == [], _said(result, calls)
+
+
+#: The image-build workflow of the repository's home since the move to
+#: saltyreformed-labs (ruling R-BAL173); a SAN is this, ``@``, and the ref built.
+_BUILT_BY = (
+    "https://github.com/saltyreformed-labs/Shekel/.github/workflows/"
+    "docker-publish.yml"
+)
+
+
+class TestOnlyMainsBuildInTheNewHomeVerifies:
+    """The one signing identity ``cosign verify`` is handed (card L5).
+
+    Every other test here passes ``--no-verify`` or stops before the verify,
+    so no test drove the verify call, and the identity regexp it hands cosign
+    was a literal nothing read.  cosign matches that regexp ANYWHERE in the
+    certificate's SAN, so the unanchored form it replaced accepted a build of
+    any ref.  A stub ``cosign`` records what it was handed, and the regexp is
+    graded with ``re.search``, the search cosign makes; Go's engine and
+    Python's agree on every SAN below (none ends in a newline, the one place
+    their ``$`` differ).
+    """
+
+    def test_the_regexp_admits_main_s_build_and_refuses_every_other(
+        self, stack,
+    ):
+        """One verify, of the target, accepting only the new home's main."""
+        cosign_log = stack.root / "cosign.log"
+        cosign = stack.bin_dir / "cosign"
+        cosign.write_text(
+            "#!/usr/bin/env bash\n"
+            f"(IFS=$'\\t'; printf '%s\\n' \"$*\") >>'{cosign_log}'\n",
+            encoding="utf-8",
+        )
+        cosign.chmod(0o755)
+        result = stack.run(args=["--dry-run", _NEW], **_NO_MIGRATIONS)
+        calls = stack.invocations
+        assert result.returncode == 0, _said(result, calls)
+        verifies = [
+            line.split("\t")
+            for line in cosign_log.read_text(encoding="utf-8").splitlines()
+        ]
+        assert len(verifies) == 1, (verifies, _said(result, calls))
+        verify = verifies[0]
+        assert verify[0] == "verify" and verify[-1] == (
+            f"ghcr.io/saltyreformed-labs/shekel@{_NEW}"
+        ), verify
+        regexp = verify[verify.index("--certificate-identity-regexp") + 1]
+        cases = {
+            f"{_BUILT_BY}@refs/heads/main": True,
+            # Signed before the move: no second identity is accepted.
+            "https://github.com/SaltyReformed/Shekel/.github/workflows/"
+            "docker-publish.yml@refs/heads/main": False,
+            f"{_BUILT_BY}@refs/heads/dev": False,
+            f"{_BUILT_BY}@refs/tags/v1": False,
+            # Case exact.
+            f"{_BUILT_BY}@refs/heads/main".replace("/Shekel/", "/shekel/"): False,
+            # Anchored at the start, then at the end.
+            f"https://example.com/?{_BUILT_BY}@refs/heads/main": False,
+            f"{_BUILT_BY}@refs/heads/main-x": False,
+        }
+        assert {
+            san: re.search(regexp, san) is not None for san in cases
+        } == cases, regexp
 
 
 class TestTheRunningCheckIsReadFromTheScriptsCheckout:
