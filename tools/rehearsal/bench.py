@@ -64,6 +64,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -108,6 +109,32 @@ class State:
     database: str
     url: str
     python: Path
+
+
+class _Teardown:
+    """What the bench undoes on the way out and what those undoings report as left: each
+    undoing is handed over as its part is made (:meth:`callback`), they run in reverse of
+    the making (:meth:`close`), and one that could not finish its work says so (:meth:`note`)
+    rather than raising, so every later undoing still runs."""
+
+    def __init__(self) -> None:
+        """Nothing to undo, nothing left."""
+        self._undoings = ExitStack()
+        self._left: list[str] = []
+
+    def callback(self, undo: Callable[..., object], *args: object, **kwargs: object) -> None:
+        """Hand over ``undo(*args, **kwargs)``, to run before every undoing handed over
+        earlier."""
+        self._undoings.callback(undo, *args, **kwargs)
+
+    def note(self, *left: str) -> None:
+        """Record what an undoing could not undo, each thing named."""
+        self._left.extend(left)
+
+    def close(self) -> list[str]:
+        """Run every undoing, the last handed over first; everything noted as left."""
+        self._undoings.close()
+        return list(self._left)
 
 
 def run(argv: list[str], env: dict[str, str] | None = None, *,
@@ -300,8 +327,7 @@ class Bench:
     #: Each state, once made.
     made: dict[str, State] = field(default_factory=dict)
     socket_dir: Path | None = None
-    _stack: ExitStack = field(default_factory=ExitStack)
-    _left: list[str] = field(default_factory=list)
+    _teardown: _Teardown = field(default_factory=_Teardown)
 
     def _timed(self, part: str, began: float) -> None:
         """Record that ``part`` took the time since ``began``."""
@@ -337,10 +363,10 @@ class Bench:
         image = image_tag()
         self._timed("image", began)
         scratch = Path(tempfile.mkdtemp(prefix="shekel-rehearsal-"))
-        self._stack.callback(self._census, scratch)
-        self._stack.callback(shutil.rmtree, scratch, ignore_errors=True)
+        self._teardown.callback(self._census, scratch)
+        self._teardown.callback(shutil.rmtree, scratch, ignore_errors=True)
         token = cluster("token").strip()
-        self._stack.callback(self._stop_cluster, token)
+        self._teardown.callback(self._stop_cluster, token)
         began = time.monotonic()
         socket_dir, container = cluster(
             "start", "--", f"shekel-rehearsal-{os.getpid()}-{token[:8]}", token,
@@ -416,7 +442,7 @@ class Bench:
         url = self.clone(PRISTINE, database)
         self._timed(f"clone {name}", began)
         began = time.monotonic()
-        self._stack.callback(self._remove_worktree, worktree)
+        self._teardown.callback(self._remove_worktree, worktree)
         try:
             gitcmd.git(arcs.REPO, "worktree", "add", "--detach", str(worktree), revision)
             commit = gitcmd.git(worktree, "rev-parse", "HEAD").strip()
@@ -435,25 +461,25 @@ class Bench:
         try:
             gitcmd.git(arcs.REPO, "worktree", "remove", "--force", str(worktree))
         except gitcmd.GitError as exc:
-            self._left.append(f"worktree {worktree} could not be removed: {exc}")
+            self._teardown.note(f"worktree {worktree} could not be removed: {exc}")
 
     def _stop_cluster(self, token: str) -> None:
         """Stop what carries ``token``; what the stop names as surviving is noted."""
         done = run([sys.executable, str(_CLUSTER), "stop", token])
         if done.returncode:
-            self._left.append(f"private_cluster.py stop exited {done.returncode}: "
-                              f"{done.stderr.strip()}")
+            self._teardown.note(f"private_cluster.py stop exited {done.returncode}: "
+                                f"{done.stderr.strip()}")
 
     def _census(self, scratch: Path) -> None:
         """The teardown's last step: the scratch directory, and with it every worktree path,
         is gone, and git lists no worktree under it; anything left is noted."""
         listed = gitcmd.run(arcs.REPO, "worktree", "list", "--porcelain")
         under = str(scratch) + os.sep
-        self._left.extend(f"git still lists worktree {path}" for path in (
+        self._teardown.note(*(f"git still lists worktree {path}" for path in (
             line.removeprefix("worktree ") for line in listed.stdout.splitlines()
-            if line.startswith("worktree ")) if path.startswith(under))
+            if line.startswith("worktree ")) if path.startswith(under)))
         if scratch.exists():
-            self._left.append(f"{scratch} survived teardown")
+            self._teardown.note(f"{scratch} survived teardown")
 
     def _tear_down(self) -> None:
         """Undo every part made, in reverse, the census last.
@@ -462,10 +488,10 @@ class Bench:
             BenchError: naming everything left.
         """
         began = time.monotonic()
-        self._stack.close()
+        left = self._teardown.close()
         self._timed("teardown", began)
-        if self._left:
-            raise BenchError("the teardown left something: " + "; ".join(self._left))
+        if left:
+            raise BenchError("the teardown left something: " + "; ".join(left))
 
 
 def main(argv: list[str] | None = None) -> int:
