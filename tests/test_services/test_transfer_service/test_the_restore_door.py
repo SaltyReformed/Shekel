@@ -85,7 +85,7 @@ class TestRestoreTransfer:
     ``TestTheLegContributionTwins`` cases
     ``test_a_settled_leg_with_no_movement_is_the_zero_record`` and
     ``test_routes/test_a_zero_close_has_no_day.py``.  On the INCOME side no
-    case reads it: the mutant fails only ``test_loan_settled_legs.py``'s
+    case reads it: the mutant fails only ``test_loan_settled_legs/``'s
     loan payments, each while building its data rather than at a read of
     the side, and limited to a destination that is not a loan it fails
     none (measured by the review of that checkpoint).  The close's own

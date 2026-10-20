@@ -232,7 +232,8 @@ def payment_visible_on(
 #: its owner makes through the app: ``payment_visible_on``'s cause sentence
 #: for :func:`~app.utils.balance_predicates.require_settled_day`.  Each claim
 #: about the transfer's door is pinned through that door
-#: (``test_loan_settled_legs.TestTheRefusalsRepairWorksThroughTheApp``): a day
+#: (``test_loan_settled_legs.test_the_undated_refusal
+#: .TestTheRefusalsRepairWorksThroughTheApp``): a day
 #: typed into a side's box dates that side, and a revert then Mark Paid dates
 #: the payment to the day of the click.  It asks for EACH account's day
 #: because, today, a side whose day is only a guess follows the other side's

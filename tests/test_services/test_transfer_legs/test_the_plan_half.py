@@ -407,7 +407,7 @@ class TestAStatusDriftIsCountedOnce:
     status-band rule admits for a transfer closed at zero
     (``side_band_infrastructure``).  The class's name is its history.  The
     loan walk counts the same state once, as a ``$0.00`` payment (ruling
-    **R-BAL140**), in ``test_loan_settled_legs.py``.
+    **R-BAL140**), in ``test_loan_settled_legs/test_the_two_halves.py``.
     """
 
     def test_a_projected_shadow_under_a_settled_parent_is_counted_by_neither(
@@ -431,7 +431,7 @@ class TestAStatusDriftIsCountedOnce:
         leg of such a transfer, at the transfer's amount, changed no balance
         any passing test read (measured over the whole suite at that step).
         The loan walk reads the same state's to-side by its own producer, in
-        ``test_loan_settled_legs.py``.  Until that step its
+        ``test_loan_settled_legs/``.  Until that step its
         shadows stayed Projected under the settled parent, a status drift no
         door wrote; a transfer is one row since (ruling **R-BAL258**), and
         the state is the status-band rule's zero close.  The name is the

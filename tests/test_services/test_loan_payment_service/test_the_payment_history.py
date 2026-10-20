@@ -122,7 +122,7 @@ class TestGetPaymentHistory:
         (``loan_loaders/_shadows.py``) both pass.  The one payment the
         delete leaves settled is a ``$0.00`` close, which held nothing, and
         the settled half's filter is graded on it by
-        ``test_loan_settled_legs.py``'s
+        ``test_loan_settled_legs/test_the_two_halves.py``'s
         ``TestTheSettledHalfComplementsThePlanHalf`` case
         ``test_a_soft_deleted_zero_dollar_close_is_in_neither_half``.
         """

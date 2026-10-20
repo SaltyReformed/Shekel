@@ -332,7 +332,8 @@ def settled_half_clause():
     The two share their builders (``is_projected_clause`` and
     ``dated_leg_exists_clause``) but each composes its own filter, so an edit
     to one composition that is not made to the other would let the halves
-    drift apart silently; ``tests/test_services/test_loan_settled_legs.py``
+    drift apart silently;
+    ``tests/test_services/test_loan_settled_legs/test_the_two_halves.py``
     (``TestTheSettledHalfComplementsThePlanHalf``) is what holds the
     complement until ONE clause serves both, which belongs in
     ``transfer_legs._records`` beside ``dated_leg_exists_clause``, now that
