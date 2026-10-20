@@ -250,19 +250,54 @@ gh pr checks "$PR" --watch > /dev/null 2>&1; gh pr checks "$PR" > "$R/checks_$PR
 
 Read every check. A shard that fails with nothing in the diff near it (trap l): read the failed
 job's log BEFORE any rerun, rerun only the failed jobs (`gh run rerun <run> --failed`), and record
-the first attempt. A failure near the diff is a STOP. Then merge with a MERGE COMMIT, never a squash
-or rebase (commits are cited by sha), and append the merge sha as `M`:
+the first attempt. A failure near the diff is a STOP. Then put the pull request in `main`'s merge
+queue, the only way into `main`: ruleset `main-queue`, whose bypass list is empty, so it binds
+everyone (R-BAL322); `--admin` is refused. The queue runs the checks again on the exact merge
+commit it will land, and lands it as a MERGE COMMIT, never a squash or rebase (commits are cited by
+sha), one pull request at a time. `--match-head-commit "$H"` asks gh to refuse any head but `$H`,
+the cut Josh approved; whether gh holds to that on an enqueue, not only on a merge, is unmeasured:
 
 ```bash
 . ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
 : "${PR:?}" "${B:?}"
 H=$(git rev-parse --verify "origin/${B}^{commit}") || exit 1
-gh pr merge "$PR" --merge --match-head-commit "$H"; rc=$?; echo "exit=$rc"
-[ "$rc" = 0 ] && echo "M=\"$(gh pr view "$PR" --json mergeCommit -q .mergeCommit.oid)\"" \
-    >> ~/projects/shekel-handoffs/releases/current.sh
+gh pr merge "$PR" --merge --match-head-commit "$H"; echo "exit=$?"
 ```
 
-A non-zero merge is a STOP: nothing is appended, and nothing reached `main`.
+Exit 0 means queued, not merged; a non-zero exit is a STOP, and nothing reached `main`. The queue's
+run is a `merge_group` run of `ci.yml` on the branch `gh-readonly-queue/main/pr-<PR>-<sha>`. List
+it (it is listed a few seconds after the enqueue: run again until it prints; a pull request queued
+a second time lists its earlier run too, so take the newest):
+
+```bash
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${PR:?}"
+gh run list --workflow ci.yml --event merge_group --limit 10 --json databaseId,headBranch,createdAt \
+    --jq ".[] | select(.headBranch | startswith(\"gh-readonly-queue/main/pr-${PR}-\")) | \"\(.databaseId) \(.createdAt)\""; echo "exit=$?"
+```
+
+Then, `<run>` being that id, in the background (a long wait):
+
+```bash
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${R:?}"
+gh run watch <run> --exit-status > "$R/queue_<run>.txt" 2>&1; echo "exit=$?"
+```
+
+A failed queue run takes the pull request out of the queue, and nothing reached `main`: read it as
+trap l says above, and queue the pull request again by the merge block (a new run) only when
+nothing in the diff is near the failure; otherwise STOP. A green run lands the merge; append its
+sha as `M`:
+
+```bash
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+: "${PR:?}"
+[ "$(gh pr view "$PR" --json state -q .state)" = MERGED ] \
+    && echo "M=\"$(gh pr view "$PR" --json mergeCommit -q .mergeCommit.oid)\"" \
+    >> ~/projects/shekel-handoffs/releases/current.sh; echo "appended=$?"
+```
+
+`appended=1` means the pull request is not merged yet: nothing is appended; read again.
 
 ## 7. The image build
 
@@ -292,23 +327,39 @@ STOP. A failed build is a STOP: production is untouched, but a build that failed
 already pushed an unsigned `:latest`, which only `shekel-deploy`'s cosign check keeps out of
 production; say so in the report.
 
-## 8. Bring dev and production's checkout to main
+## 8. Bring production's checkout and dev to main
+
+Production's checkout first: the dry run reads it, and nothing waits on `dev`.
 
 ```bash
 . ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
-git fetch origin && git merge --ff-only origin/dev && git merge origin/main && git push origin dev; echo "exit=$?"
 [ -z "$(git -C ~/projects/Shekel status --porcelain)" ] \
     && [ "$(git -C ~/projects/Shekel symbolic-ref --short HEAD)" = main ] \
     || { echo "~/projects/Shekel is not clean on main"; exit 1; }
 git -C ~/projects/Shekel fetch origin && git -C ~/projects/Shekel merge --ff-only origin/main; echo "exit=$?"
 ```
 
-Each `exit=` line judges its line. The push into `dev` may print `Bypassed rule violations for
-refs/heads/dev` and `Cannot update this protected ref` and still exit 0 (10-14): that is the admin
-bypass of `dev`'s protection, not a failure. `dev` fast-forwards to `main` unless a pull request merged into it after the cut; then the merge is
-a merge commit, as CLAUDE.md's Git Workflow resyncs `dev`. `~/projects/Shekel` must be clean on
-`main` before its fast-forward. A `deploy/` change is live from this moment: `shekel-deploy` runs
-that checkout's copy (trap u).
+`~/projects/Shekel` must be clean on `main` before its fast-forward. A `deploy/` change is live from
+this moment: `shekel-deploy` runs that checkout's copy (trap u).
+
+Then `dev`. No one can push to `dev` (ruleset `dev-queue`, whose bypass list is empty, R-BAL322),
+so `main` reaches it as a pull request from `main` through `dev`'s merge queue, as CLAUDE.md's Git
+Workflow resyncs `dev` (measured on a throwaway repository 10-18: it lands, and `main` is not
+deleted):
+
+```bash
+. ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
+gh pr create --base dev --head main --title "Merge main into dev after the $(date +%F) release" \
+    --body "The resync of dev after the release (/release step 8)."
+echo "RS=\"<the number it printed>\"" >> ~/projects/shekel-handoffs/releases/current.sh
+```
+
+Then as step 6 does for `$PR`: watch its checks in the background into `$R/checks_$RS.txt`, queue it
+with `gh pr merge "$RS" --merge` (no `--match-head-commit`: whatever `main` holds when it lands is
+what `dev` should get), find its queue run on the branch `gh-readonly-queue/dev/pr-<RS>-<sha>` and watch it into
+`$R/queue_<run>.txt`. A failed run is read as step 6 reads one: nothing reached `dev`; queue it
+again or STOP. Once it is merged, append `RM="<its merge sha>"` as step 6 appends `M`. Neither
+wait holds the deploy: go on to step 9, and read both before step 13.
 
 ## 9. The dry run
 
@@ -387,10 +438,11 @@ With kits, the guard names `"${KITS:?}"` too, and each directory gets a `--kit` 
 ## 13. The record
 
 `$R/README.md`: the base (production's commit), the cut, the release branch, the PR, the merge
-sha, the image digest old -> new, the dry run's stamp, the dump's path, and each verdict with its
-exit (plan, each kit, the checks, the build, the dry run, the deploy, verify, main's CI, the
-census); a run that ended early says where and why, and names what it left open. Beside it:
-`plan.txt`, `dump.txt`, `dump_err.txt` and `rehearsal.txt` (when rehearsed), `checks_<PR>.txt`,
+sha, the resync PR and its merge sha (`RS`, `RM`), the image digest old -> new, the dry run's
+stamp, the dump's path, and each verdict with its exit (plan, each kit, the checks, each queue run,
+the build, the dry run, the deploy, verify, main's CI, the census); a run that ended early says
+where and why, and names what it left open. Beside it: `plan.txt`, `dump.txt`, `dump_err.txt` and
+`rehearsal.txt` (when rehearsed), `checks_<PR>.txt`, `checks_<RS>.txt`, each `queue_<run>.txt`,
 `build_<run>.txt`, `build_log_<run>.txt`, `dryrun.txt`, `deploy_since.txt`, `deploy.txt`,
 `verify.txt`, `main_ci_<run>.txt`, `cleanup.txt`.
 

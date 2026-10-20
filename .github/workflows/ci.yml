@@ -20,7 +20,7 @@
 #                  ``scripts/test.sh`` (steps 5d-7b), and the rehearsal kit's
 #                  cluster tests on one of them (step 7c), skipped likewise.
 #   polyglot-lint  the non-Python linters, in every scope (its own check).
-#   lint-and-test  the check branch protection on ``main`` requires.  It
+#   lint-and-test  the check the ``dev`` and ``main`` rulesets require.  It
 #                  NEEDS the first seven and runs ``if: always()``, because a
 #                  SKIPPED required check counts as passing and a job that
 #                  merely depended on a failed shard would be skipped --
@@ -47,16 +47,17 @@ name: CI
 # ── Triggers ──────────────────────────────────────────────────────
 # Run on pushes to main and on all pull requests.  An open PR (open it
 # as a draft early for pre-merge feedback) runs this check on every
-# push to its branch, and the branch protection rule on main requires
-# that check green before merge.  ``push`` is intentionally NOT
+# push to its branch, and the rulesets on dev and main require that
+# check green before merge.  ``push`` is intentionally NOT
 # extended to dev: dev work is already covered by the pull_request
 # trigger, and listing dev here double-runs CI (push + pull_request)
 # on every PR'd dev push for zero added coverage.
 #
-# ``merge_group`` is what GitHub's merge queue runs the required checks on
-# (step X-cx's L5 turns the queue on for dev): each queued group is a
-# change set of its own, classified and checked like a pull request.  Until
-# the queue is required, no merge group exists and the trigger fires nothing.
+# ``merge_group`` is what GitHub's merge queue runs the required checks on:
+# since 2026-10-19 dev and main each take a change only through a queue
+# (rulesets ``dev-queue`` and ``main-queue``, ruling R-BAL322), and each
+# queued group is a change set of its own, classified and checked like a
+# pull request.
 on:
   push:
     branches: [main]
@@ -774,9 +775,8 @@ jobs:
   # Binary tools are pinned by version and downloaded (no extra
   # third-party actions to SHA-pin); the pip tools (yamllint, zizmor,
   # djlint) come from requirements-dev.txt. Each tool reads its own
-  # in-repo config file. NOTE: add this job to the branch-protection
-  # required checks to make the floor block merges (it runs on every PR
-  # regardless).
+  # in-repo config file. The dev and main rulesets require it beside
+  # lint-and-test, so the floor blocks merges.
   polyglot-lint:
     runs-on: ubuntu-24.04
     steps:

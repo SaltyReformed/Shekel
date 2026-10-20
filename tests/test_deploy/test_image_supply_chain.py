@@ -65,7 +65,7 @@ DIGEST_PIN_PATTERN = re.compile(
 # digest case a hard parse failure instead of a silent fallback to
 # ``:latest``.
 REQUIRED_DIGEST_INTERPOLATION_PATTERN = re.compile(
-    r"image:\s+ghcr\.io/saltyreformed/shekel@\$\{SHEKEL_IMAGE_DIGEST:\?[^}]+\}",
+    r"image:\s+ghcr\.io/saltyreformed-labs/shekel@\$\{SHEKEL_IMAGE_DIGEST:\?[^}]+\}",
 )
 
 DOCKER_SUBPROCESS_TIMEOUT_S = 60
@@ -419,7 +419,7 @@ class TestProdComposeOverridePinsByDigest:
         """The app service in the override declares an ``image:`` key.
 
         Without an override on this key, the merged compose would
-        inherit the base file's ``ghcr.io/saltyreformed/shekel:latest``
+        inherit the base file's ``ghcr.io/saltyreformed-labs/shekel:latest``
         and the digest pin never takes effect.
         """
         app = parsed["services"]["app"]
@@ -441,7 +441,7 @@ class TestProdComposeOverridePinsByDigest:
             "deploy/docker-compose.prod.yml does not interpolate "
             "SHEKEL_IMAGE_DIGEST with the ``:?`` required-form syntax.  "
             "Use the literal pattern: "
-            "``ghcr.io/saltyreformed/shekel@${SHEKEL_IMAGE_DIGEST:?...}`` "
+            "``ghcr.io/saltyreformed-labs/shekel@${SHEKEL_IMAGE_DIGEST:?...}`` "
             "so a missing digest fails ``docker compose up`` rather "
             "than silently pulling whatever ``:latest`` resolves to "
             "(audit finding F-060)."
@@ -454,9 +454,9 @@ class TestProdComposeOverridePinsByDigest:
         (best case: 404 at pull time) or pull a publicly-accessible
         image with a matching name (worst case).
         """
-        assert "ghcr.io/saltyreformed/shekel@" in text, (
+        assert "ghcr.io/saltyreformed-labs/shekel@" in text, (
             "deploy/docker-compose.prod.yml does not pin "
-            "ghcr.io/saltyreformed/shekel; check the namespace."
+            "ghcr.io/saltyreformed-labs/shekel; check the namespace."
         )
 
 
@@ -488,13 +488,13 @@ class TestBaseComposeDocumentsOverride:
         assert app_match is not None, "no ``app:`` service in base compose"
         # Find the image line after the app service marker.
         image_match = re.search(
-            r"^    image:\s*ghcr\.io/saltyreformed/shekel:latest\b",
+            r"^    image:\s*ghcr\.io/saltyreformed-labs/shekel:latest\b",
             text[app_match.start():],
             re.MULTILINE,
         )
         assert image_match is not None, (
             "base docker-compose.yml's app service lost the "
-            "``image: ghcr.io/saltyreformed/shekel:latest`` line.  If "
+            "``image: ghcr.io/saltyreformed-labs/shekel:latest`` line.  If "
             "the image was moved entirely to the prod override, this "
             "test must be updated to assert on the override instead."
         )
@@ -673,7 +673,7 @@ class TestComposeOverrideRequiresDigest:
         )
         merged = result.stdout
         expected_image = (
-            f"ghcr.io/saltyreformed/shekel@{synthetic_digest}"
+            f"ghcr.io/saltyreformed-labs/shekel@{synthetic_digest}"
         )
         assert expected_image in merged, (
             f"merged compose does not carry the pinned image "

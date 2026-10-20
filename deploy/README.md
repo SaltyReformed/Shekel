@@ -151,10 +151,10 @@ immutable `@sha256:<digest>` reference and verifying the signature before deploy
 ### Where the pin lives
 
 `deploy/docker-compose.prod.yml` overrides the base file's
-`image: ghcr.io/saltyreformed/shekel:latest` with:
+`image: ghcr.io/saltyreformed-labs/shekel:latest` with:
 
 ```yaml
-image: ghcr.io/saltyreformed/shekel@${SHEKEL_IMAGE_DIGEST:?...}
+image: ghcr.io/saltyreformed-labs/shekel@${SHEKEL_IMAGE_DIGEST:?...}
 ```
 
 The `:?` syntax FAILS the compose parse loudly when `SHEKEL_IMAGE_DIGEST` is unset, so a deployment
@@ -175,9 +175,9 @@ the maintainer's homelab layout) supplies the value.
      ```bash
      cosign verify \
          --certificate-identity-regexp \
-         "https://github.com/SaltyReformed/Shekel/.github/workflows/docker-publish.yml@.*" \
+         '^https://github\.com/saltyreformed-labs/Shekel/\.github/workflows/docker-publish\.yml@refs/heads/main$' \
          --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-         ghcr.io/saltyreformed/shekel@sha256:<digest>
+         ghcr.io/saltyreformed-labs/shekel@sha256:<digest>
      ```
 
    - Local maintainer key (`deploy/cosign.pub`):
@@ -185,7 +185,7 @@ the maintainer's homelab layout) supplies the value.
      ```bash
      cosign verify \
          --key deploy/cosign.pub \
-         ghcr.io/saltyreformed/shekel@sha256:<digest>
+         ghcr.io/saltyreformed-labs/shekel@sha256:<digest>
      ```
 
 3. Once the verify succeeds, edit the host `.env`:

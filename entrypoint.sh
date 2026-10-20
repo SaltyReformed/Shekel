@@ -24,7 +24,7 @@ entrypoint_failed() {
     echo "  - Audit triggers absent or short of the expected count"
     echo ""
     echo "To view full logs:  docker logs shekel-prod-app"
-    echo "Troubleshooting:    https://github.com/SaltyReformed/Shekel#troubleshooting"
+    echo "Troubleshooting:    https://github.com/saltyreformed-labs/Shekel#troubleshooting"
     echo ""
 }
 trap entrypoint_failed ERR

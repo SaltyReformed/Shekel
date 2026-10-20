@@ -56,11 +56,11 @@ COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.build.yml)
 
 # Image reference used by Cosign sign + verify steps.  Matches the
 # tag the local build produces (the COMPOSE_FILES merge tags the
-# image as ghcr.io/saltyreformed/shekel:latest).  Cosign signs the
+# image as ghcr.io/saltyreformed-labs/shekel:latest).  Cosign signs the
 # image at the digest the local build produced; the digest itself
 # is captured at sign time and printed for the operator to paste
 # into /opt/docker/shekel/.env (SHEKEL_IMAGE_DIGEST).
-IMAGE_REF="${IMAGE_REF:-ghcr.io/saltyreformed/shekel:latest}"
+IMAGE_REF="${IMAGE_REF:-ghcr.io/saltyreformed-labs/shekel:latest}"
 
 # Cosign integration (audit findings F-060, F-155 / Commit C-36).
 # COSIGN_PUBLIC_KEY: path to the verifier key (committed to repo at
@@ -129,7 +129,7 @@ Environment Variables:
     HEALTH_INTERVAL     Health check retry interval in seconds (default: 5)
     NGINX_PORT          Nginx host port for health check URL (default: 80)
     IMAGE_REF           Image reference passed to cosign sign/verify
-                        (default: ghcr.io/saltyreformed/shekel:latest)
+                        (default: ghcr.io/saltyreformed-labs/shekel:latest)
     COSIGN_PUBLIC_KEY   Verifier key path (default: deploy/cosign.pub)
     COSIGN_PRIVATE_KEY  Signing key path (default: /etc/shekel/cosign.key)
     COSIGN_REQUIRED     When 'true', missing cosign/key fails the deploy
