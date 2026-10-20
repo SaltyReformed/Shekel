@@ -35,7 +35,8 @@ ONE USER AT A TIME, in the plan's order:
   calendar refuses, or who holds no pay period, has no span: no dated request is followed, and
   why is written down.
 * THE WALK, breadth first from ``/``, over :func:`frontier.issued` and :func:`frontier.followed`,
-  each request fetched once (:meth:`frontier.Request.key`):
+  a request fetched only when it names something new on its screen (``frontier.py``'s THE RULE,
+  :class:`frontier.Asked`), its screen read from the side's own URL map (:func:`screen_of`):
 
   - a 3xx's ``Location`` is followed as the same kind of request: htmx keeps its headers, as
     the browser's XHR does, and its response is swapped into the same page;
@@ -71,7 +72,7 @@ import os
 import sys
 import time
 from collections import Counter, deque
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -257,9 +258,11 @@ def _onward(asked: frontier.Request, host: frontier.Page | None, response: Respo
 
 
 def walk(client: FlaskClient, span: frontier.Span | None, cap: int,
-         write: Callable[[dict], None]) -> Walked:
+         write: Callable[[dict], None], screen: Callable[[frontier.Request], Hashable]
+         ) -> Walked:
     """Fetch every request a user's browser reaches from ``/`` through ``client``, breadth
-    first, each once, a dated one only inside ``span``; ``write`` takes each response's line.
+    first, each only when it names something new on its ``screen`` (:class:`frontier.Asked`),
+    a dated one only inside ``span``; ``write`` takes each response's line.
 
     Raises:
         Refused: on an authentication redirect, or when the walk still holds requests once it
@@ -267,21 +270,43 @@ def walk(client: FlaskClient, span: frontier.Span | None, cap: int,
     """
     start = frontier.Request(_START, False, (), _START)
     queue: deque[Queued] = deque([(start, None)])
-    seen = {start.key()}
+    asked = frontier.Asked()
+    asked.new(screen(start), start)
     walked = Walked()
     while queue:
         if walked.fetched >= cap:
             raise walked.capped(cap, len(queue))
-        asked, host = queue.popleft()
-        response = client.get(asked.url, base_url=_ORIGIN, headers=list(asked.headers))
+        fetching, host = queue.popleft()
+        response = client.get(fetching.url, base_url=_ORIGIN, headers=list(fetching.headers))
         body = response.get_data()
-        walked.took(asked, body)
-        write(line(asked, response, body))
-        for onward, its_host in _onward(asked, host, response, body, walked):
-            if onward.key() not in seen and frontier.followed(onward, span):
-                seen.add(onward.key())
+        walked.took(fetching, body)
+        write(line(fetching, response, body))
+        for onward, its_host in _onward(fetching, host, response, body, walked):
+            if frontier.followed(onward, span) and asked.new(screen(onward), onward):
                 queue.append((onward, its_host))
     return walked
+
+
+def _matched(app: Flask, url: str) -> tuple[Flask.url_rule_class | None, dict[str, object]]:
+    """The app's GET rule ``url`` matches and the values its path names; None and nothing
+    when it matches none (a 404, or a path no rule answers on GET).  The rule's type is named
+    through Flask (``url_rule_class`` is werkzeug's ``Rule``): the side imports no werkzeug
+    (``test_imports.py``)."""
+    with app.test_request_context(url, base_url=_ORIGIN):
+        return request.url_rule, dict(request.view_args or {})
+
+
+def screen_of(app: Flask) -> Callable[[frontier.Request], Hashable]:
+    """The SCREEN of a request (``frontier.py``'s THE RULE): the app's GET rule its path
+    matches, named as the census names it (:func:`_named`: its pattern and its endpoint, so two
+    rules of one view are two screens), with the values that path names, and whether htmx
+    issues it; a path no rule matches is a screen of its own."""
+    def screen(asked: frontier.Request) -> Hashable:
+        rule, values = _matched(app, asked.url)
+        if rule is None:
+            return urlsplit(asked.url).path, asked.htmx
+        return _named(rule), tuple(sorted(values.items())), asked.htmx
+    return screen
 
 
 def _import_side() -> Side:
@@ -358,7 +383,8 @@ def _crawl_user(side: Side, user_id: int, cap: int, out: Path) -> tuple[dict, li
     span, no_span = _span(side, user_id)
     started = time.monotonic()
     with (out / f"{user_id}.jsonl").open("w", encoding="utf-8") as log:
-        walked = walk(client, span, cap, lambda written: log.write(json.dumps(written) + "\n"))
+        walked = walk(client, span, cap, lambda written: log.write(json.dumps(written) + "\n"),
+                      screen_of(side.app))
     return {
         "requests": walked.fetched, "seconds": round(time.monotonic() - started, 3),
         "bytes": walked.bytes,
@@ -375,9 +401,9 @@ def census(app: Flask, urls: set[str]) -> dict:
     named by its pattern and endpoint (a rule compares by value, so it cannot be hashed)."""
     reached: set[str] = set()
     for url in urls:
-        with app.test_request_context(url, base_url=_ORIGIN):
-            if request.url_rule is not None:
-                reached.add(_named(request.url_rule))
+        rule, _ = _matched(app, url)
+        if rule is not None:
+            reached.add(_named(rule))
     rules = [_named(rule) for rule in app.url_map.iter_rules() if "GET" in (rule.methods or ())]
     return {"get": len(rules), "reached": sum(rule in reached for rule in rules),
             "unreached": sorted(rule for rule in rules if rule not in reached)}

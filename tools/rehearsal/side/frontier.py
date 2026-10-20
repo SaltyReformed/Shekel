@@ -56,9 +56,18 @@ on the seeded pages that review read, only the ``required`` one met a template
   (measured 2026-10-20 at Python's default limit: 950 reads);
 * ``hx-vals``: see :func:`_vals` and :func:`_js_string`.
 
-THE KEY (:meth:`Request.key`): a request is fetched once, keyed by its path and its query,
-keys sorted (:func:`canonical`), and by whether htmx issues it, since a view answers htmx
-with a fragment and a link with a page; its headers ride with its first finding.
+THE RULE (:class:`Asked`; ``balance:R-BAL334``, "Every figure once", and ``balance:R-BAL340``,
+no list kept by hand): a request is followed only when it NAMES SOMETHING NEW, a value under a
+key of its query (:func:`canonical`) that no request followed before it on the same SCREEN
+carried; a request with no query is followed once per screen.  A screen is the app's own URL
+rule (two rules of one view, ``/`` and ``/dashboard``, are two), the ids its path names (an
+account, a loan, a transaction) and whether htmx issues it,
+since a view answers htmx with a fragment and a link with a page; the crawl probe reads it
+from the side's URL map.  So each scroll position, column count, pay period, transaction and
+statement day is fetched once per screen and per object its path names, never their product,
+and a form like any page.  WHAT IT DOES NOT SEE: a figure shown only where two values meet on
+one screen (the grid at 26 columns from 14 months out) and a display variant (a column swap
+only in one column count).  A request's headers ride with the first of its kind followed.
 
 THE BOUND (:func:`followed`): a request whose query names a date outside the user's
 pay-period span is not followed: an ISO day or month value under any key, and a ``year``
@@ -68,7 +77,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Hashable, Iterator
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from functools import cached_property
@@ -199,10 +208,6 @@ class Request:
     htmx: bool
     headers: tuple[Pair, ...]
     document: str
-
-    def key(self) -> tuple[str, bool]:
-        """What makes two requests one: the URL, and whether htmx issues it."""
-        return self.url, self.htmx
 
 
 @dataclass
@@ -587,3 +592,24 @@ def followed(request: Request, span: Span | None) -> bool:
     user's pay periods (``span``; None when the user has none, so no dated request is)."""
     named = list(_dates(parse_qsl(urlsplit(request.url).query, keep_blank_values=True)))
     return not named or (span is not None and all(span.holds(*days) for days in named))
+
+
+class Asked:
+    """What one walk has followed, by screen (THE RULE): each value it carried under each key
+    of its query, and each screen followed with no query."""
+
+    def __init__(self) -> None:
+        """Nothing followed yet."""
+        self._named: set[tuple[Hashable, str | None, str | None]] = set()
+
+    def new(self, screen: Hashable, request: Request) -> bool:
+        """Whether ``request``, of ``screen``, names something no request followed before it
+        did, recording what it names when it does: a value under a key of its query, or, with
+        no query, the screen itself."""
+        named = {(screen, key, value) for key, value
+                 in parse_qsl(urlsplit(request.url).query, keep_blank_values=True)}
+        named = named or {(screen, None, None)}
+        if named <= self._named:
+            return False
+        self._named |= named
+        return True

@@ -1,5 +1,5 @@
 """The crawl's rules (step X-cx's K1c-1): from planted pages, exactly the GET requests a
-browser and htmx 2.0 issue, what cannot be assembled named, the key and the date bound.
+browser and htmx 2.0 issue, what cannot be assembled named, the rule and the date bound.
 
 ``side/frontier.py`` is side code, run by path and never imported by name
 (``tools/rehearsal/__init__.py``; ``test_imports.py`` holds the rule), so these tests load
@@ -30,7 +30,7 @@ def _found(body: str, url: str = "/page", within: str | None = None):
 def _requests(body: str, url: str = "/page", within: str | None = None
               ) -> list[tuple[str, bool]]:
     """Each request a planted page issues as ``(url, htmx)``, in order."""
-    return [request.key() for request in _found(body, url, within).requests]
+    return [(request.url, request.htmx) for request in _found(body, url, within).requests]
 
 
 def _one(body: str, url: str = "/page", within: str | None = None):
@@ -56,7 +56,7 @@ def test_a_fragments_link_resolves_against_the_page_it_was_swapped_into():
         ("/page?offset=2", False)]
 
 
-def test_the_key_orders_the_query_by_key_and_keeps_a_repeated_keys_values_in_order():
+def test_canonical_orders_the_query_by_key_and_keeps_a_repeated_keys_values_in_order():
     """Keys sorted, a repeated key's values kept in their order, encoding made one."""
     assert frontier.canonical("/p?b=2&a=1&b=1&c=%7E") == "/p?a=1&b=2&b=1&c=~"
     assert frontier.canonical("") == "/"
@@ -64,7 +64,7 @@ def test_the_key_orders_the_query_by_key_and_keeps_a_repeated_keys_values_in_ord
 
 
 def test_the_same_url_by_link_and_by_htmx_is_two_requests():
-    """A view answers htmx with a fragment and a link with a page, so the key holds both."""
+    """A view answers htmx with a fragment and a link with a page, so each is issued."""
     found = _requests('<a href="/t">t</a><button hx-get="/t">t</button>')
     assert found == [("/t", False), ("/t", True)]
 
@@ -316,3 +316,33 @@ def test_a_user_with_no_pay_period_follows_no_dated_request():
     plain = frontier.Request("/grid", False, (), "/grid")
     assert not frontier.followed(dated, None)
     assert frontier.followed(plain, None)
+
+
+def _request(url: str) -> object:
+    """A link to ``url``."""
+    return frontier.Request(url, False, (), url)
+
+
+def test_a_request_is_new_while_any_value_it_names_is_new_on_its_screen():
+    """The first of a screen is new, the same again is not; a value new under a key already
+    carried is new; a request whose every value earlier ones carried, split between them, is
+    not (an offset and a column count already each fetched)."""
+    asked = frontier.Asked()
+    assert asked.new("grid", _request("/grid?offset=1&periods=6")) is True
+    assert asked.new("grid", _request("/grid?offset=1&periods=6")) is False
+    assert asked.new("grid", _request("/grid?offset=2&periods=6")) is True
+    assert asked.new("grid", _request("/grid?offset=1&periods=13")) is True
+    assert asked.new("grid", _request("/grid?offset=2&periods=13")) is False
+    assert asked.new("grid", _request("/grid?offset=2&periods=13&show_all=1")) is True
+
+
+def test_a_request_with_no_query_is_new_once_per_screen_and_screens_are_apart():
+    """No query names the screen itself, once; the same values on another screen (another
+    rule, another object its path names, or the other of page and htmx) are new there."""
+    asked = frontier.Asked()
+    assert asked.new(("a", (("id", 1),), False), _request("/a/1")) is True
+    assert asked.new(("a", (("id", 1),), False), _request("/a/1")) is False
+    assert asked.new(("a", (("id", 1),), False), _request("/a/1?day=2026-01-02")) is True
+    assert asked.new(("a", (("id", 2),), False), _request("/a/2?day=2026-01-02")) is True
+    assert asked.new(("a", (("id", 2),), True), _request("/a/2?day=2026-01-02")) is True
+    assert asked.new(("a", (("id", 2),), True), _request("/a/2?day=2026-01-02")) is False

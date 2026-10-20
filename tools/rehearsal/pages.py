@@ -30,9 +30,10 @@ from tools.rehearsal import bench, probes
 from tools.rehearsal.rowdiff import Moved, compare
 
 #: The most requests one user's crawl of one copy may fetch; a crawl still holding requests
-#: there is refused (exit 2), naming the family that fetched the most.  PROVISIONAL (the
-#: coordinator, 2026-10-20): 4 times the largest count the first nightly measurement reads.
-CAP = 20_000
+#: there is refused (exit 2), naming the family that fetched the most.  4 times the largest
+#: count measured (2026-10-20, the narrowed crawl of ``balance:R-BAL334`` on that day's
+#: production dump: user 1, 1,267 requests on each copy).
+CAP = 5_068
 #: Printed on every run: what the crawl does not see (K1c's plan s.2, option A).
 LIMITER = ("the rate limiter is off in the crawl; a cut that breaks its store or changes a "
            "limit is not seen")

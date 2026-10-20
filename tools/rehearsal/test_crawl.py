@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from datetime import date
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -63,11 +64,16 @@ class _Client:
         return _Response(self.site.get((url, htmx), Answer(404)))
 
 
-def _walk(site: dict[tuple[str, bool], Answer], cap: int = 100, span=None):
+def _by_path(asked) -> tuple[str, bool]:
+    """A planted site's screen: each path, as a page or as htmx, is one."""
+    return urlsplit(asked.url).path, asked.htmx
+
+
+def _walk(site: dict[tuple[str, bool], Answer], cap: int = 100, span=None, screen=_by_path):
     """Walk the planted site; the client, the JSONL lines and the walk's counts."""
     client = _Client(site)
     lines: list[dict] = []
-    walked = crawl.walk(client, span, cap, lines.append)
+    walked = crawl.walk(client, span, cap, lines.append, screen)
     return client, lines, walked
 
 
@@ -198,3 +204,61 @@ def test_a_dated_request_outside_the_span_is_not_fetched():
     span = crawl.frontier.Span(date(2026, 1, 2), date(2026, 12, 31))
     client, _, _ = _walk(site, span=span)
     assert _keys(client) == [("/", False), ("/cal?year=2026", False)]
+
+
+def test_a_request_naming_nothing_new_on_its_screen_is_not_fetched():
+    """The grid's scroll positions times its column counts are fetched once per value, never
+    their product, and a link found twice is fetched once (:class:`frontier.Asked`)."""
+    links = [f"/g?offset={offset}&periods={periods}" for periods in (6, 13) for offset in (1, 2)]
+    site = {("/", False): Answer(body="".join(f'<a href="{url}"></a>' for url in links + links))}
+    client, _, _ = _walk(site)
+    assert _keys(client) == [("/", False), ("/g?offset=1&periods=6", False),
+                             ("/g?offset=2&periods=6", False), ("/g?offset=1&periods=13", False)]
+
+
+def _app():
+    """An app of GET rules, one naming an account in its path and two on one view, and one POST
+    rule, built by the side's own Flask (this half of the kit imports none:
+    ``test_imports.py``)."""
+    app = crawl.Flask(__name__)
+
+    def home() -> str:
+        """The one view both rules name."""
+        return ""
+    app.add_url_rule("/", "home", home)
+    app.add_url_rule("/home", "home", home)
+    app.add_url_rule("/accounts/<int:account_id>/day", "day", lambda account_id: "")
+    app.add_url_rule("/grid", "grid", lambda: "")
+    app.add_url_rule("/save", "save", lambda: "", methods=["POST"])
+    return app
+
+
+def test_a_screen_is_the_apps_own_rule_with_the_ids_its_path_names():
+    """The rule's endpoint, the values its path names and htmx or not; a path no GET rule
+    answers is a screen of its own."""
+    screen = crawl.screen_of(_app())
+    request = crawl.frontier.Request
+    assert screen(request("/accounts/2/day?day=2026-01-02", False, (), "/")) == (
+        "/accounts/<int:account_id>/day (day)", (("account_id", 2),), False)
+    assert screen(request("/grid?offset=3", True, (), "/")) == ("/grid (grid)", (), True)
+    assert screen(request("/save", False, (), "/")) == ("/save", False)
+    assert screen(request("/nowhere", False, (), "/")) == ("/nowhere", False)
+
+
+def test_two_accounts_on_one_screen_are_two_objects_each_read_on_every_day():
+    """The ids a path names keep each account's days its own: a day fetched for one account is
+    fetched for the other, and only once for each."""
+    days = [f"/accounts/{account}/day?day={day}" for account in (1, 2)
+            for day in ("2026-01-02", "2026-01-03")]
+    site = {("/", False): Answer(body="".join(f'<a href="{url}"></a>' for url in days + days))}
+    span = crawl.frontier.Span(date(2026, 1, 2), date(2026, 12, 31))
+    client, _, _ = _walk(site, span=span, screen=crawl.screen_of(_app()))
+    assert _keys(client) == [("/", False)] + [(url, False) for url in days]
+
+
+def test_two_rules_of_one_view_are_two_screens():
+    """``/`` and ``/dashboard`` are one view under two rules: each is fetched, as the census
+    counts each rule reached."""
+    site = {("/", False): Answer(body='<a href="/home"></a><a href="/"></a>')}
+    client, _, _ = _walk(site, screen=crawl.screen_of(_app()))
+    assert _keys(client) == [("/", False), ("/home", False)]
