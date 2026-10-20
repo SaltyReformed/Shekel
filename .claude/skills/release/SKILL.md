@@ -24,6 +24,12 @@ everything with a person or a judgment in it is here.
   `gh pr merge` is a permission prompt Josh cannot see from the web: STOP and say so. Work in that
   session's own worktree with `dev` checked out, never in `~/projects/Shekel`, which stays clean on
   `main` because production's deploy script is a symlink into it (trap u).
+- **The auto-mode classifier can refuse an act outright, even one Josh's word already covers**
+  (10-20: inside the approved release, a copy into `/opt/docker/shekel` as 'Production Deploy';
+  after it, a repository settings change as 'Permission Grant'; and under his standing merge
+  grant, an enqueue into `dev`'s queue as 'Merge Without Review', where the release's own enqueue
+  passed). Each refusal is a question to Josh for that one act, its alert first; never route
+  around it.
 - **Each Bash call is a fresh shell**: no variable or `source` carries to the next call, and the
   working directory may not. So the run keeps its values in ONE file,
   `~/projects/shekel-handoffs/releases/current.sh`; every block below starts by sourcing it and
@@ -254,8 +260,9 @@ the first attempt. A failure near the diff is a STOP. Then put the pull request 
 queue, the only way into `main`: ruleset `main-queue`, whose bypass list is empty, so it binds
 everyone (R-BAL322); `--admin` is refused. The queue runs the checks again on the exact merge
 commit it will land, and lands it as a MERGE COMMIT, never a squash or rebase (commits are cited by
-sha), one pull request at a time. `--match-head-commit "$H"` asks gh to refuse any head but `$H`,
-the cut Josh approved; whether gh holds to that on an enqueue, not only on a merge, is unmeasured:
+sha), one pull request at a time. `--match-head-commit "$H"` makes gh refuse any head but `$H`,
+the cut Josh approved, on an enqueue as on a merge (measured 10-20 on a pull request into `dev`: a
+wrong head exits 1, `expected head oid does not match the current head oid`, and queues nothing):
 
 ```bash
 . ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
