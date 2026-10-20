@@ -12,13 +12,20 @@ cut that changes it is measured with it.  The step runs through the side probe's
 day in base's zone, computed once a run (:func:`pinned_instant`), so a run that crosses
 midnight deploys every side on one day.
 
-EVERY TABLE IN THE CATALOG, every row, every column but the row stamps (:data:`STAMPS`).  A
-table with a primary key is compared row by row by that key; one without, or one whose key is
-not the same on both sides, as a multiset of its rows, and the report names it.
-``system.audit_log`` is a multiset of what each event wrote (:data:`_AUDIT_IMAGE`, the hand
-kit's stable digest): never its id, clock or database user, since its ids come from a
-sequence every deploy advances.  Each row is hashed in SQL; only a row that differs is
-fetched whole.
+EVERY TABLE IN THE CATALOG, every row, every column.  A table with a primary key is compared
+row by row by that key; one without, or one whose key is not the same on both sides, as a
+multiset of its rows, and the report names it.  ``system.audit_log`` is a multiset of what each
+event wrote and when: never its id or database user, since its ids come from a sequence every
+deploy advances.  Each row is hashed in SQL; only a row that differs is fetched whole.
+
+THE STAMPS ARE COMPARED, BUT FOR THE ONES A DEPLOY WROTE (``balance:R-BAL331``).  A stamp is a
+timestamp whose default is a read of the server's clock and nothing else, as both sides'
+catalogs say (:func:`stamps`); PostgreSQL's clock writes it, which no pin reaches, so two
+deploys run at two moments write two values.  The cluster's clock is read once just before the
+first deploy: THE LINE (:func:`read_line`).  A stamp later than the line reads as ``deploy``
+(:class:`Reading`); every other stamp is compared exactly, the audit log's own clock and the
+stamps in the rows its events wrote included.  The line is checked every run: a stamp of the
+restored dump later than it stops the run, named.
 
 THE NOISE GATE: base is deployed on two clones, and both must read identical.  A difference
 there is the kit's failure, never the release's (exit 2).  It catches a clock column the stamp
@@ -28,8 +35,11 @@ never an exit 0.
 
 THE PLANTED CONTROLS, every run, each on a clone of base's deployed copy, nothing else
 touched (triggers and foreign-key checks are off for the plant): a cent added to a numeric
-column, a byte changed in a text column, and a row removed.  The comparison must find each
-exactly, or the run measured nothing (exit 2).
+column, a byte changed in a text column, a row removed, and a stamp moved to a moment earlier
+than both itself and the line.  The comparison must find each exactly.  Then the fifth: the
+clock written into the same stamp on two clones in turn, which the comparison of the two must
+NOT find, and which the noise gate cannot grade (on a dump at base's own revision its deploy
+writes nothing).  Any control that fails means the run measured nothing (exit 2).
 
 THE ROLLBACK runs exactly when production's would once cut's deploy has stored its copy: when
 base's tree carries a migration script for every revision that copy is stamped at
@@ -41,8 +51,9 @@ restore, and the run says so: the copy's migration version is already a row that
 cut's deploy refused, its one transaction left the dump as it was, so production's rollback is
 base's own deploy on it, which the run has already measured (the boot aside), and none runs.
 
-What it does NOT compare is printed on every run (:data:`NOT_COMPARED`), the stamps and the
-audit log's dropped columns among it, so an exit 0 is never read as a claim about them.
+What it does NOT compare is printed on every run (:data:`NOT_COMPARED`), the audit log's
+dropped columns and the stamps' one hole among it, and with it the limit the days put on a run
+(:func:`day_limit`), so an exit 0 is never read as a claim about them.
 
 Usage, which brings a bench up (:mod:`.bench`), deploys, compares and tears it down::
 
@@ -79,31 +90,50 @@ from tools.rehearsal import bench
 
 #: A table's ``(schema, name)``.
 Table = tuple[str, str]
-#: A row as compared: a table's JSON object, or the audit log's array (:data:`_AUDIT_IMAGE`).
+#: A row as compared: a table's JSON object, or the audit log's array (:meth:`Reading.image`).
 Image = dict[str, object] | list[object]
-#: The row stamps, left out of every row as clocks (the hand kit's stable digest).
-STAMPS = ("created_at", "updated_at")
 AUDIT_LOG: Table = ("system", "audit_log")
-_STAMPS = sql.Literal(list(STAMPS))
-#: An audit event as compared: what it wrote, without its id, ``executed_at`` or ``db_user``.
-_AUDIT_IMAGE = sql.SQL(
-    "jsonb_build_array(x.table_schema, x.table_name, x.operation, x.row_id, x.changed_fields, "
-    "x.old_data - {stamps}::text[], x.new_data - {stamps}::text[], x.user_id)").format(
-        stamps=_STAMPS)
-#: Every table and the columns of its primary key, in order (none for a table without one).
-_CATALOG = """
+#: What a stamp later than the line reads as (:class:`Reading`).
+DEPLOY = "deploy"
+#: The reads of the server's clock a timestamp's default can be, as ``pg_get_expr`` prints
+#: them.
+_CLOCK = (r"now\(\)|clock_timestamp\(\)|statement_timestamp\(\)|transaction_timestamp\(\)"
+          r"|(CURRENT_TIMESTAMP|LOCALTIMESTAMP)(\(\d+\))?")
+#: A stamp's default: a clock read and nothing else, so ``now() + interval`` is not one.
+_STAMP_DEFAULT = f"^({_CLOCK})$"
+#: A day's default: the server's day, or a clock read a date column keeps the day of.
+_DAY_DEFAULT = f"^(CURRENT_DATE|{_CLOCK})$"
+
+
+def _filled(types: str, default: str) -> sql.Composable:
+    """The columns of the catalog's table ``c`` of one of ``types`` (SQL ``regtype`` values)
+    whose default as ``pg_get_expr`` prints it matches ``default``, in column order."""
+    return sql.SQL(
+        "ARRAY(SELECT a.attname::text FROM pg_attribute a "
+        "JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum "
+        "WHERE a.attrelid = c.oid AND NOT a.attisdropped AND a.atttypid IN ({types}) "
+        "AND pg_get_expr(d.adbin, d.adrelid) ~ {default} ORDER BY a.attnum)").format(
+            types=sql.SQL(types), default=sql.Literal(default))
+
+
+#: Every table: the columns of its primary key in order (none for a table without one), its
+#: stamps (a timestamp whose default is :data:`_STAMP_DEFAULT`) and its days (a date whose
+#: default is :data:`_DAY_DEFAULT`).
+_CATALOG = sql.SQL("""
 SELECT n.nspname, c.relname,
        ARRAY(SELECT a.attname::text
              FROM pg_index i
              CROSS JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, position)
              JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
              WHERE i.indrelid = c.oid AND i.indisprimary
-             ORDER BY k.position)
+             ORDER BY k.position),
+       {stamps}, {days}
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition
   AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'
 ORDER BY 1, 2
-"""
+""").format(stamps=_filled("'timestamptz'::regtype, 'timestamp'::regtype", _STAMP_DEFAULT),
+            days=_filled("'date'::regtype", _DAY_DEFAULT))
 #: Columns a control may be planted in, in catalog order, none that a generation computes.
 _PLANTABLE = """
 SELECT table_schema, table_name, column_name FROM information_schema.columns
@@ -144,13 +174,14 @@ CENT = Decimal("0.01")
 _QUOTED_LINES = 20
 #: Printed on every run: what the comparison does not see (the coordinator's D3 ruling).
 NOT_COMPARED = (
-    f"not compared: the row stamps {', '.join(STAMPS)} (some feed money, which only the pages "
-    "show), the audit log's id, executed_at and db_user, the schema (tables, columns, "
+    "not compared: the audit log's id and db_user, the schema (tables, columns, "
     "constraints, indexes), privileges (the dump is "
     "restored without them and no shekel_app role exists, so the deploy's grants do nothing "
     "and the rollback's boot connects as the owner, where production's app connects as "
     "shekel_app), "
-    "sequences, entrypoint step 2 (the role), and the rows after a first page load (K1c)")
+    "sequences, entrypoint step 2 (the role), and the rows after a first page load (K1c); "
+    f"and a stamp later than the line reads as {DEPLOY!r} whatever wrote it, so two such "
+    "values a deploy wrote by anything but its own clock (now() + interval) read alike")
 
 
 class _NoPlant(bench.BenchError):
@@ -168,6 +199,65 @@ class Moved:
     after: Image | None
 
 
+@dataclass(frozen=True)
+class Held:
+    """What one side's catalog says of a table (:data:`_CATALOG`): the columns of its primary
+    key in order (none without one), its stamps and its days."""
+
+    key: tuple[str, ...]
+    stamps: tuple[str, ...] = ()
+    days: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Reading:
+    """How a comparison reads the rows: each table's stamps (:func:`stamps`) and the line
+    (:func:`read_line`).  A stamp later than the line reads as :data:`DEPLOY`; every other
+    stamp, and every other column, is read exactly."""
+
+    stamps: dict[Table, tuple[str, ...]]
+    line: datetime
+
+    def later(self, document: sql.Composable) -> sql.Composable:
+        """Whether the stamp named ``k`` of the JSON object ``document`` is later than the
+        line: THE one spelling of the rule, which the image and the dump's check both read."""
+        return sql.SQL("({} ->> k)::timestamptz > {}").format(document, sql.Literal(self.line))
+
+    def parts(self, table: Table) -> list[tuple[str, sql.Composable, sql.Composable]]:
+        """What of a row of ``table`` (aliased ``x``) holds stamps, each as the prefix its
+        stamps are named by, a JSON object, and its stamps' names (a ``text[]``): the row
+        itself, when it has stamps; for the audit log, its own clock and the two images of
+        the row each event wrote, whose stamps are those of the table the event names."""
+        own = sql.SQL("{}::text[]").format(sql.Literal(list(self.stamps.get(table, ()))))
+        if table != AUDIT_LOG:
+            return [("", sql.SQL("to_jsonb(x)"), own)] if self.stamps.get(table) else []
+        audited = sql.SQL(
+            "ARRAY(SELECT jsonb_array_elements_text({}::jsonb -> "
+            "(x.table_schema || '.' || x.table_name)))").format(sql.Literal(json.dumps(
+                {_name(stamped): list(names) for stamped, names in self.stamps.items()
+                 if names})))
+        return [("", sql.SQL("jsonb_build_object('executed_at', x.executed_at)"), own),
+                ("old_data.", sql.SQL("x.old_data"), audited),
+                ("new_data.", sql.SQL("x.new_data"), audited)]
+
+    def image(self, table: Table) -> sql.Composable:
+        """A row of ``table`` (aliased ``x``) as compared, each stamp later than the line read
+        as :data:`DEPLOY`: the audit log's event (what it wrote and when, never its id or
+        database user, as an array), or the row whole."""
+        stamped = [sql.SQL(
+            "({document} || coalesce((SELECT jsonb_object_agg(k, {deploy}::text) "
+            "FROM unnest({names}) AS k WHERE {later}), '{{}}'::jsonb))").format(
+                document=document, deploy=sql.Literal(DEPLOY), names=names,
+                later=self.later(document))
+            for _, document, names in self.parts(table)]
+        if table == AUDIT_LOG:
+            return sql.SQL(
+                "jsonb_build_array(x.table_schema, x.table_name, x.operation, x.row_id, "
+                "x.changed_fields, {}, {}, x.user_id, {})").format(
+                    stamped[1], stamped[2], stamped[0])
+        return stamped[0] if stamped else sql.SQL("to_jsonb(x)")
+
+
 def _name(table: Table) -> str:
     """``schema.name``."""
     return ".".join(table)
@@ -178,94 +268,115 @@ def _identifier(table: Table) -> sql.Identifier:
     return sql.Identifier(*table)
 
 
-def _image(table: Table) -> sql.Composable:
-    """A row of ``table`` (aliased ``x``) as compared: the audit log's event, or every column
-    but the stamps."""
-    if table == AUDIT_LOG:
-        return _AUDIT_IMAGE
-    return sql.SQL("to_jsonb(x) - {}::text[]").format(_STAMPS)
-
-
 def _key(columns: tuple[str, ...]) -> sql.Composable:
     """A row's primary key as the text of a JSON array, of ``columns`` of the row ``x``."""
     return sql.SQL("jsonb_build_array({})::text").format(
         sql.SQL(", ").join(sql.Identifier("x", column) for column in columns))
 
 
-def catalog(connection: psycopg.Connection) -> dict[Table, tuple[str, ...]]:
-    """Every table of the database and its primary key's columns (empty when it has none)."""
-    return {(schema, name): tuple(key)
-            for schema, name, key in connection.execute(_CATALOG).fetchall()}
+def catalog(connection: psycopg.Connection) -> dict[Table, Held]:
+    """Every table of the database and what its catalog says of it (:class:`Held`)."""
+    return {(schema, name): Held(tuple(key), tuple(stamped), tuple(dated))
+            for schema, name, key, stamped, dated
+            in connection.execute(_CATALOG).fetchall()}
 
 
-def keys(before: dict[Table, tuple[str, ...]], after: dict[Table, tuple[str, ...]]
-         ) -> dict[Table, tuple[str, ...]]:
+def keys(before: dict[Table, Held], after: dict[Table, Held]) -> dict[Table, tuple[str, ...]]:
     """The key each table of either side is compared by: its primary key when both sides that
     hold it agree on one, else none (a multiset), the audit log always a multiset."""
     compared: dict[Table, tuple[str, ...]] = {}
     for table in sorted(before.keys() | after.keys()):
-        held = {side[table] for side in (before, after) if table in side}
+        held = {side[table].key for side in (before, after) if table in side}
         compared[table] = (held.pop() if len(held) == 1 and table != AUDIT_LOG else ())
     return compared
 
 
-def read(connection: psycopg.Connection, present: dict[Table, tuple[str, ...]],
-         compared: dict[Table, tuple[str, ...]]) -> dict[Table, Counter[tuple[str, str]]]:
+def stamps(before: dict[Table, Held], after: dict[Table, Held]
+           ) -> dict[Table, tuple[str, ...]]:
+    """The stamps each table of either side is read through: the columns every side that
+    holds the table calls a stamp.  Where the two catalogs disagree on a column (a cut that
+    adds or drops a clock default), it is compared exactly, since reading it as a stamp on
+    both sides could hide a value one side wrote by other means, and comparing it exactly
+    can only show one."""
+    compared: dict[Table, tuple[str, ...]] = {}
+    for table in sorted(before.keys() | after.keys()):
+        held = [side[table].stamps for side in (before, after) if table in side]
+        compared[table] = tuple(column for column in held[0]
+                                if all(column in other for other in held[1:]))
+    return compared
+
+
+def days(before: dict[Table, Held], after: dict[Table, Held]) -> list[str]:
+    """Every day either side holds, as ``schema.table.column``: a date the server's clock
+    fills, which no pin reaches and no line can tell, so it is compared exactly
+    (:func:`day_limit`)."""
+    return sorted({f"{_name(table)}.{column}" for side in (before, after)
+                   for table, held in side.items() for column in held.days})
+
+
+def read(connection: psycopg.Connection, present: dict[Table, Held],
+         compared: dict[Table, tuple[str, ...]], reading: Reading
+         ) -> dict[Table, Counter[tuple[str, str]]]:
     """Each ``present`` table's rows as ``(key, hash)`` pairs, counted: the key is empty where
     the table is compared as a multiset (``compared`` says), and the hash is the MD5 of the
-    row's image (:func:`_image`)."""
+    row's image (:meth:`Reading.image`)."""
     rows: dict[Table, Counter[tuple[str, str]]] = {}
     for table in present:
         columns = compared[table]
         if columns:
             query = sql.SQL("SELECT {}, md5(({})::text), 1 FROM {} x").format(
-                _key(columns), _image(table), _identifier(table))
+                _key(columns), reading.image(table), _identifier(table))
         else:
             query = sql.SQL("SELECT '', md5(({})::text), count(*) FROM {} x GROUP BY 2").format(
-                _image(table), _identifier(table))
+                reading.image(table), _identifier(table))
         rows[table] = Counter({(key, digest): count
                                for key, digest, count in connection.execute(query).fetchall()})
     return rows
 
 
 def _images(connection: psycopg.Connection, table: Table, columns: tuple[str, ...],
-            wanted: list[str]) -> dict[str, Image]:
+            wanted: list[str], reading: Reading) -> dict[str, Image]:
     """The images of ``table``'s rows, by key (``columns``) or, for a multiset, by hash, of
-    those ``wanted``."""
+    those ``wanted``, read as :func:`read` hashed them."""
     if not wanted:
         return {}
-    by = _key(columns) if columns else sql.SQL("md5(({})::text)").format(_image(table))
+    image = reading.image(table)
+    by = _key(columns) if columns else sql.SQL("md5(({})::text)").format(image)
     query = sql.SQL("SELECT DISTINCT ON (1) {by}, ({image})::text FROM {table} x "
-                    "WHERE {by} = ANY(%s)").format(by=by, image=_image(table),
+                    "WHERE {by} = ANY(%s)").format(by=by, image=image,
                                                    table=_identifier(table))
     return {found: json.loads(text, parse_float=Decimal)
             for found, text in connection.execute(query, [wanted]).fetchall()}
 
 
-def compare(before_url: str, after_url: str) -> list[Moved]:
-    """Every row that differs between two databases, table by table in catalog order."""
+def compare(before_url: str, after_url: str, line: datetime) -> list[Moved]:
+    """Every row that differs between two databases, table by table in catalog order, a
+    stamp later than ``line`` read as :data:`DEPLOY` (:class:`Reading`)."""
     moved: list[Moved] = []
     with psycopg.connect(before_url) as before, psycopg.connect(after_url) as after:
         held = catalog(before), catalog(after)
         compared = keys(*held)
-        rows = read(before, held[0], compared), read(after, held[1], compared)
+        reading = Reading(stamps(*held), line)
+        rows = (read(before, held[0], compared, reading),
+                read(after, held[1], compared, reading))
         for table, columns in compared.items():
             counted = rows[0].get(table, Counter()), rows[1].get(table, Counter())
             if counted[0] != counted[1]:
-                moved.extend(_parted((before, after), table, columns, counted))
+                moved.extend(_parted((before, after), table, columns, counted, reading))
     return moved
 
 
 def _parted(sides: tuple[psycopg.Connection, psycopg.Connection], table: Table,
             columns: tuple[str, ...],
-            counted: tuple[Counter[tuple[str, str]], Counter[tuple[str, str]]]) -> list[Moved]:
+            counted: tuple[Counter[tuple[str, str]], Counter[tuple[str, str]]],
+            reading: Reading) -> list[Moved]:
     """The rows of ``table`` that the two sides' reads (``counted``, before then after) do
     not share, fetched whole from their side: a keyed row on both sides once, with both
     images; a multiset's row once for each time its count differs."""
     gone, came = counted[0] - counted[1], counted[1] - counted[0]
     index = 0 if columns else 1
-    was = _images(sides[0], table, columns, sorted({pair[index] for pair in gone}))
-    now = _images(sides[1], table, columns, sorted({pair[index] for pair in came}))
+    was = _images(sides[0], table, columns, sorted({pair[index] for pair in gone}), reading)
+    now = _images(sides[1], table, columns, sorted({pair[index] for pair in came}), reading)
     if columns:
         return [Moved(_name(table), key, was.get(key), now.get(key))
                 for key in sorted({key for key, _ in gone + came})]
@@ -275,11 +386,65 @@ def _parted(sides: tuple[psycopg.Connection, psycopg.Connection], table: Table,
                for (_, digest), times in sorted(came.items()) for _ in range(times)])
 
 
+def _held(before_url: str, after_url: str) -> tuple[dict[Table, Held], dict[Table, Held]]:
+    """Each database's catalog (:func:`catalog`)."""
+    with psycopg.connect(before_url) as before, psycopg.connect(after_url) as after:
+        return catalog(before), catalog(after)
+
+
 def multisets(before_url: str, after_url: str) -> list[str]:
     """The tables either database holds that are compared as multisets, named for the report."""
-    with psycopg.connect(before_url) as before, psycopg.connect(after_url) as after:
-        compared = keys(catalog(before), catalog(after))
-    return [_name(table) for table, columns in compared.items() if not columns]
+    return [_name(table) for table, columns in keys(*_held(before_url, after_url)).items()
+            if not columns]
+
+
+def day_limit(before_url: str, after_url: str) -> str:
+    """The limit the days either database holds (:func:`days`) put on a run, printed with
+    :data:`NOT_COMPARED`."""
+    named = ", ".join(days(*_held(before_url, after_url))) or "none"
+    return (f"compared, though the server's clock fills them: the days {named}, each the "
+            "server's real day where a deploy inserts a row without one, so deploys either "
+            "side of midnight in the server's zone differ by it (a false difference, never a "
+            "false pass)")
+
+
+def after_line(connection: psycopg.Connection, reading: Reading) -> list[str]:
+    """Each stamp of the database on ``connection`` holding a value later than the line, as
+    ``schema.table.column`` (``system.audit_log.new_data.created_at`` for a stamp of the rows
+    its events wrote), by the rule the image reads (:meth:`Reading.later`)."""
+    late: list[str] = []
+    for table in reading.stamps:
+        for prefix, document, names in reading.parts(table):
+            query = sql.SQL("SELECT DISTINCT k FROM {table} x CROSS JOIN LATERAL unnest({names}) "
+                            "AS k WHERE {later} ORDER BY 1").format(
+                                table=_identifier(table), names=names,
+                                later=reading.later(document))
+            late.extend(f"{_name(table)}.{prefix}{stamp}"
+                        for (stamp,) in connection.execute(query).fetchall())
+    return late
+
+
+def read_line(url: str) -> datetime:
+    """The line: the cluster's clock, read once on the copy at ``url``, base's before its
+    deploy and so the restored dump, just before the first deploy; then no stamp of that copy
+    may be later than it.
+
+    Raises:
+        bench.BenchError: when one is (a clock skewed between production and the bench, or
+            data dated ahead), each named, since a stamp a deploy wrote could not be told
+            from it.
+        psycopg.Error: when the copy cannot be read.
+    """
+    with psycopg.connect(url) as connection:
+        (line,) = connection.execute("SELECT clock_timestamp()").fetchone()
+        held = catalog(connection)
+        late = after_line(connection, Reading(stamps(held, held), line))
+    if late:
+        raise bench.BenchError(
+            f"the dump holds stamps later than the cluster's clock ({line.isoformat()}) just "
+            "before the first deploy, so a stamp a deploy wrote cannot be told from them: "
+            + ", ".join(late))
+    return line
 
 
 def _sides(row: Moved) -> tuple[dict[str, object], dict[str, object]] | None:
@@ -482,13 +647,14 @@ def base_resolves(worktree: Path, revisions: list[str]) -> bool:
                for revision in revisions)
 
 
-def rollback(made: bench.Bench, secret_key: str, moment: datetime) -> bool:
+def rollback(made: bench.Bench, secret_key: str, moment: datetime, line: datetime) -> bool:
     """Roll back to base on cut's deployed copy exactly when production's rollback would
     (:func:`base_resolves`), printing the verdict; False when the rollback fails.
 
     In entrypoint order: base's deploy step runs again on a clone of cut's deployed copy and
     must exit 0 (a refusal is production's container dying at step 3, so nothing boots) and
-    move no row, compared with cut's deployed copy; then base's app must boot on the clone.
+    move no row, compared with cut's deployed copy through ``line`` (:func:`compare`); then
+    base's app must boot on the clone.
 
     Raises:
         bench.BenchError: when a side probe cannot be run.
@@ -510,15 +676,15 @@ def rollback(made: bench.Bench, secret_key: str, moment: datetime) -> bool:
         print(f"ROLLBACK FAILS: {again} refused: {refused}")
         return False
     failures: list[str] = []
-    moved = compare(cut.url, back.url)
+    moved = compare(cut.url, back.url, line)
     if moved:
         failures.append(f"ROLLBACK FAILS: {again} moved {len(moved)} rows:\n"
                         + "\n".join(summary(moved, "cut", "rolled back")))
     unbooted = boot(back, back.url, secret_key, moment)
     if unbooted is not None:
         failures.append(f"ROLLBACK FAILS: base cannot boot on cut's deployed copy: {unbooted}")
-    for line in failures:
-        print(line)
+    for failure in failures:
+        print(failure)
     if not failures:
         print(f"rollback: base's image knows the migration version cut's copy is stamped at "
               f"({stamped}); base boots on cut's deployed copy, and base's deploy step, run "
@@ -531,12 +697,36 @@ def rollback(made: bench.Bench, secret_key: str, moment: datetime) -> bool:
 _Change = Callable[[sql.Identifier, sql.Identifier | None, sql.Composable], sql.Composable]
 
 
-def _plant(url: str, types: list[str], change: _Change) -> tuple[str, str, str]:
+@dataclass(frozen=True)
+class _Where:
+    """Where a control may be planted: ``places`` gives each ``(table, column)`` of a copy in
+    catalog order, from a connection to it and its catalog (the column empty for a removal),
+    and ``what`` names them when no row can take it."""
+
+    places: Callable[[psycopg.Connection, dict[Table, Held]], list[tuple[Table, str]]]
+    what: str
+
+
+def _typed(types: list[str]) -> _Where:
+    """Every column of one of ``types`` (:data:`_PLANTABLE`)."""
+    return _Where(lambda connection, _held: [
+        ((schema, name), column)
+        for schema, name, column in connection.execute(_PLANTABLE, [types]).fetchall()],
+        f"a column of {types}")
+
+
+#: Every table, for a removal.
+_ANY_ROW = _Where(lambda _connection, held: [(table, "") for table in held], "a column of any")
+#: Every stamp (:class:`Held`).
+_A_STAMP = _Where(lambda _connection, held: [
+    (table, stamp) for table, shape in held.items() for stamp in shape.stamps], "a stamp")
+
+
+def _plant(url: str, where: _Where, change: _Change) -> tuple[str, str, str]:
     """Plant a control in the first row that takes it, of the first keyed table in catalog
-    order with a column of ``types`` (any keyed table, when ``types`` is empty).  Triggers
-    and foreign-key checks are off for the session, so the planted row is the only one that
-    moves; a row a constraint refuses is passed over for the next.  Its table, key and
-    column (empty for a removal).
+    order with a column ``where`` names.  Triggers and foreign-key checks are off for the
+    session, so the planted row is the only one that moves; a row a constraint refuses is
+    passed over for the next.  Its table, key and column (empty for a removal).
 
     Raises:
         _NoPlant: when no row can take it.
@@ -544,13 +734,8 @@ def _plant(url: str, types: list[str], change: _Change) -> tuple[str, str, str]:
     with psycopg.connect(url) as connection:
         connection.execute("SET session_replication_role = replica")
         held = catalog(connection)
-        if types:
-            places = [((schema, name), column) for schema, name, column
-                      in connection.execute(_PLANTABLE, [types]).fetchall()]
-        else:
-            places = [(table, "") for table in held]
-        for table, column in places:
-            columns = held.get(table, ())
+        for table, column in where.places(connection, held):
+            columns = held[table].key if table in held else ()
             if not columns or table == AUDIT_LOG or column in columns:
                 continue
             target = sql.Identifier(column) if column else None
@@ -568,12 +753,12 @@ def _plant(url: str, types: list[str], change: _Change) -> tuple[str, str, str]:
             except (psycopg.errors.IntegrityError, psycopg.errors.DataError):
                 continue
             return _name(table), first[0], column
-    raise _NoPlant(f"no row of the copy could take a control in a column of {types or 'any'}")
+    raise _NoPlant(f"no row of the copy could take a control in {where.what}")
 
 
 def plant_cent(url: str) -> tuple[str, str, str]:
     """Add :data:`CENT` to the first numeric column that takes it (:func:`_plant`)."""
-    return _plant(url, ["numeric"], lambda table, column, key: sql.SQL(
+    return _plant(url, _typed(["numeric"]), lambda table, column, key: sql.SQL(
         "UPDATE {table} AS x SET {c} = x.{c} + {cent} WHERE {key} = %s").format(
             table=table, c=column, cent=sql.Literal(CENT), key=key))
 
@@ -581,15 +766,44 @@ def plant_cent(url: str) -> tuple[str, str, str]:
 def plant_byte(url: str) -> tuple[str, str, str]:
     """Change the last character of the first text column that takes it (:func:`_plant`),
     its length kept so a length limit cannot refuse it."""
-    return _plant(url, ["text", "character varying"], lambda table, column, key: sql.SQL(
+    return _plant(url, _typed(["text", "character varying"]), lambda table, column, key: sql.SQL(
         "UPDATE {table} AS x SET {c} = left(x.{c}, -1) || CASE WHEN right(x.{c}, 1) = '#' "
         "THEN '*' ELSE '#' END WHERE {key} = %s").format(table=table, c=column, key=key))
 
 
 def plant_removal(url: str) -> tuple[str, str, str]:
     """Remove the first row of the first keyed table that has one (:func:`_plant`)."""
-    return _plant(url, [], lambda table, _column, key: sql.SQL(
+    return _plant(url, _ANY_ROW, lambda table, _column, key: sql.SQL(
         "DELETE FROM {table} AS x WHERE {key} = %s").format(table=table, key=key))
+
+
+def plant_earlier(url: str, line: datetime) -> tuple[str, str, str]:
+    """Move the first stamp that takes it to a microsecond before both itself and ``line``
+    (:func:`_plant`): a stamp a deploy wrote after the line is moved back across it, so the
+    moved stamp is read exactly whoever wrote it."""
+    return _plant(url, _A_STAMP, lambda table, column, key: sql.SQL(
+        "UPDATE {table} AS x SET {c} = least(x.{c}, {line}) - interval '1 microsecond' "
+        "WHERE {key} = %s").format(table=table, c=column, line=sql.Literal(line), key=key))
+
+
+def plant_now(url: str) -> tuple[str, str, str]:
+    """Write the server's clock into the first stamp that takes it (:func:`_plant`), as a
+    deploy's own transaction would."""
+    return _plant(url, _A_STAMP, lambda table, column, key: sql.SQL(
+        "UPDATE {table} AS x SET {c} = now() WHERE {key} = %s").format(
+            table=table, c=column, key=key))
+
+
+def _stored(url: str, planted: tuple[str, str, str]) -> object:
+    """The planted stamp's value as the copy at ``url`` stores it, read raw."""
+    name, key, column = planted
+    schema, relation = name.split(".", 1)
+    with psycopg.connect(url) as connection:
+        columns = catalog(connection)[(schema, relation)].key
+        row = connection.execute(sql.SQL("SELECT x.{c} FROM {table} x WHERE {key} = %s").format(
+            c=sql.Identifier(column), table=_identifier((schema, relation)),
+            key=_key(columns)), [key]).fetchone()
+    return None if row is None else row[0]
 
 
 def found(moved: list[Moved], planted: tuple[str, str, str], removed: bool = False) -> bool:
@@ -605,67 +819,112 @@ def found(moved: list[Moved], planted: tuple[str, str, str], removed: bool = Fal
     return changed_columns(row) == [column]
 
 
-#: Each control: its name, its plant, whether it removes a row, and what else must hold of
-#: the one row found (the cent's amount).
-_CONTROLS: tuple[tuple[str, Callable[[str], tuple[str, str, str]], bool,
+#: Each control found exactly: its name, its plant (given the line), whether it removes a
+#: row, and what else must hold of the one row found (the cent's amount).
+_CONTROLS: tuple[tuple[str, Callable[[str, datetime], tuple[str, str, str]], bool,
                        Callable[[Moved, str], bool]], ...] = (
-    ("a cent", plant_cent, False, lambda row, column: _change(row, column) == CENT),
-    ("a byte", plant_byte, False, lambda _row, _column: True),
-    ("a removed row", plant_removal, True, lambda _row, _column: True),
+    ("a cent", lambda url, _line: plant_cent(url), False,
+     lambda row, column: _change(row, column) == CENT),
+    ("a byte", lambda url, _line: plant_byte(url), False, lambda _row, _column: True),
+    ("a removed row", lambda url, _line: plant_removal(url), True, lambda _row, _column: True),
+    ("a stamp moved earlier", plant_earlier, False, lambda _row, _column: True),
 )
+#: The control that must NOT be found (:func:`rewritten_twice`).
+_TWICE = "a stamp the clock wrote on two clones in turn"
 
 
-def controls(made: bench.Bench, base: bench.State) -> list[str]:
+def rewritten_twice(made: bench.Bench, base: bench.State, line: datetime) -> str | None:
+    """The fifth control: on each of two clones of base's deployed copy in turn, the server's
+    clock written into the same stamp (:func:`plant_now`).  What is wrong with it; None when
+    the two values differ, each later than ``line``, and the comparison of the two clones
+    finds nothing, both stamps read as :data:`DEPLOY`.
+
+    Raises:
+        psycopg.Error: when a clone cannot be made or read.
+    """
+    urls = [made.clone(base.database, f"rehearsal_control_twice_{index}") for index in (0, 1)]
+    try:
+        planted = [plant_now(url) for url in urls]
+    except _NoPlant as exc:
+        return f"{_TWICE}: {exc}"
+    written = [_stored(url, planted[0]) for url in urls]
+    if (planted[0] != planted[1] or written[0] == written[1]
+            or not all(isinstance(value, datetime) and value > line for value in written)):
+        return (f"{_TWICE} planted at {' and '.join(' '.join(place) for place in planted)} "
+                f"wrote {written[0]} and {written[1]}, not two moments each later than the "
+                f"line {line.isoformat()}, so it measures nothing")
+    moved = compare(urls[0], urls[1], line)
+    if moved:
+        return (f"{_TWICE} planted at {' '.join(planted[0])} was found; the comparison found "
+                f"{len(moved)} rows: " + "; ".join(summary(moved, "one", "the other")))
+    return None
+
+
+def controls(made: bench.Bench, base: bench.State, line: datetime) -> list[str]:
     """Plant each control on its own clone of base's deployed copy and compare it with that
-    copy; what is wrong with any, each named (none when each was found exactly)."""
+    copy through ``line``, then the fifth (:func:`rewritten_twice`); what is wrong with any,
+    each named (none when each was found exactly and the fifth was not found)."""
     wrong: list[str] = []
     for index, (label, plant, removed, holds) in enumerate(_CONTROLS):
         url = made.clone(base.database, f"rehearsal_control_{index}")
         try:
-            planted = plant(url)
+            planted = plant(url, line)
         except _NoPlant as exc:
             wrong.append(f"{label}: {exc}")
             continue
-        moved = compare(base.url, url)
+        moved = compare(base.url, url, line)
         if not (found(moved, planted, removed) and holds(moved[0], planted[2])):
             wrong.append(f"{label} planted at {planted[0]} {planted[1]} {planted[2]} was not "
                          f"found exactly; the comparison found {len(moved)} rows: "
                          + "; ".join(summary(moved, "base", "the control")))
+    twice = rewritten_twice(made, base, line)
+    if twice is not None:
+        wrong.append(twice)
     return wrong
 
 
-def gates(made: bench.Bench, again: bench.State) -> bool:
+def gates(made: bench.Bench, again: bench.State, line: datetime) -> bool:
     """The noise gate (base's deployed copy against ``again``, base deployed a second time)
-    and the planted controls, each printed; False when either fails, which is the kit's
-    failure, named on stderr, never the release's."""
+    and the planted controls, each through ``line`` and printed; False when either fails,
+    which is the kit's failure, named on stderr, never the release's."""
     base = made.made["base"]
     began = time.monotonic()
-    noise = compare(base.url, again.url)
+    noise = compare(base.url, again.url, line)
     print(f"noise gate: {time.monotonic() - began:.2f} s, {len(noise)} rows differ")
     if noise:
         print("[rehearsal] base deployed twice did not read the same, so the comparison "
               "measures nothing:\n" + "\n".join(summary(noise, "base", "base again")),
               file=sys.stderr)
         return False
-    wrong = controls(made, base)
+    wrong = controls(made, base, line)
     if wrong:
-        print("[rehearsal] a planted control was not found, so the comparison measures "
-              "nothing:\n" + "\n".join(wrong), file=sys.stderr)
+        print("[rehearsal] a planted control was not read as planted, so the comparison "
+              "measures nothing:\n" + "\n".join(wrong), file=sys.stderr)
         return False
-    print(f"controls: {', '.join(label for label, *_ in _CONTROLS)}, each found exactly")
+    print(f"controls: {', '.join(label for label, *_ in _CONTROLS)}, each found exactly; "
+          f"{_TWICE}, not found")
     return True
 
 
 def rehearse(made: bench.Bench, out: Path) -> int:
-    """Deploy base twice and cut once on the bench, gate on noise and the controls, compare
-    base with cut, writing every differing row to ``out``, and roll back to base on cut's
-    deployed copy (:func:`rollback`); the exit status."""
+    """Read the line, deploy base twice and cut once on the bench, gate on noise and the
+    controls, compare base with cut, writing every differing row to ``out``, and roll back
+    to base on cut's deployed copy (:func:`rollback`); the exit status.
+
+    Raises:
+        bench.BenchError: when the dump holds a stamp later than the line (:func:`read_line`)
+            or a side probe cannot be run.
+        psycopg.Error: when a copy cannot be read or cloned.
+    """
     base, cut = made.made["base"], made.made["cut"]
     secret_key = secrets.token_hex(32)
     moment = pinned_instant(made)
     print(f"clock pinned at {moment.isoformat()}")
     again = bench.State(base.name, base.commit, base.worktree, "rehearsal_base_again",
                         made.clone(bench.PRISTINE, "rehearsal_base_again"), base.python)
+    line = read_line(base.url)
+    print(f"line: {line.isoformat()}, the cluster's clock just before the first deploy; a "
+          f"stamp later than it reads as {DEPLOY!r}")
     refused: dict[str, str | None] = {}
     for label, state in (("base", base), ("base, again", again), ("cut", cut)):
         began = time.monotonic()
@@ -677,22 +936,23 @@ def rehearse(made: bench.Bench, out: Path) -> int:
             print(f"[rehearsal] {label}'s deploy refused the dump, so nothing is compared "
                   f"(an app defect): {refused[label]}", file=sys.stderr)
             return 2
-    if not gates(made, again):
+    if not gates(made, again, line):
         return 2
     print(NOT_COMPARED)
+    print(day_limit(base.url, cut.url))
     print("compared as multisets: " + ", ".join(multisets(base.url, cut.url)))
     if refused["cut"] is not None:
         print(f"cut's deploy refused the copy base's deployed: {refused['cut']}")
         return 1
     began = time.monotonic()
-    moved = compare(base.url, cut.url)
-    out.write_text("".join(f"{line}\n" for line in report(moved, "base", "cut")),
+    moved = compare(base.url, cut.url, line)
+    out.write_text("".join(f"{entry}\n" for entry in report(moved, "base", "cut")),
                    encoding="utf-8")
     print(f"base against cut: {time.monotonic() - began:.2f} s, {len(moved)} rows differ "
           f"(each in {out})")
-    for line in summary(moved, "base", "cut"):
-        print(line)
-    held = rollback(made, secret_key, moment)
+    for entry in summary(moved, "base", "cut"):
+        print(entry)
+    held = rollback(made, secret_key, moment, line)
     return 1 if moved or not held else 0
 
 
