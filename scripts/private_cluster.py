@@ -6,8 +6,8 @@ starts and stops it here; the release rehearsal kit's bench
 (``tools/rehearsal/bench.py``, step X-cx's K1) starts its own here too, so there is one
 ``docker run``, one readiness rule and one teardown (the coordinator's K1 leaf-plan ruling,
 2026-10-18, point 1).  It is a container on
-this run's daemon, reached over a UNIX SOCKET in a directory under ``XDG_RUNTIME_DIR``, with
-no network and no port.
+a rootless daemon this module chooses, and refuses any other (:func:`daemon`), reached over a
+UNIX SOCKET in a directory under ``XDG_RUNTIME_DIR``, with no network and no port.
 
 A cluster is OWNED BY A TOKEN its caller makes before starting it (the coordinator's ruling on
 K1a commit B, 2026-10-19).  The start labels the container with the token as ``docker run``
@@ -22,12 +22,16 @@ correctness never reads the name.
 Usage::
 
     python scripts/private_cluster.py token
+    python scripts/private_cluster.py daemon
     python scripts/private_cluster.py start <name> <token> <image>
     python scripts/private_cluster.py stop <token>
     python scripts/private_cluster.py url <socket-dir> <database>
 
-``token`` prints a new token.  ``url`` prints the URL a caller connects to a database of a
-started cluster by, from the socket directory ``start`` handed over (:func:`url`).
+``token`` prints a new token.  ``daemon`` prints the daemon a cluster goes to, as the
+``DOCKER_HOST`` docker is handed (an empty line for docker's own default), once it is known to
+be one a cluster may go to (:func:`daemon`); a caller that runs docker itself before the start
+-- the image builder -- hands it on.  ``url`` prints the URL a caller connects to a database of
+a started cluster by, from the socket directory ``start`` handed over (:func:`url`).
 ``start`` prints the socket directory, then the container's id, one per line, once the
 cluster accepts connections there.  A start that fails stops
 what it made, naming anything that stop left behind, and writing those two lines is the
@@ -57,20 +61,26 @@ looked (the delta review of 668b53c99 + bb2f1492a, MEDIUM-A).
 
 Exit status: 0 done; 1 ``stop`` left something behind, each named; 2 ``start`` could not give
 a cluster that accepts connections, or could not hand one over, or refused before making
-anything (each reason printed, and anything its own stop left behind), or the command line
-was wrong.  A start that cannot write on stderr either, to say why, has run its stop all
-the same, and exits 120, CPython's status for an output it cannot flush as it exits.  A
-start ended by a
-held signal ends BY that signal, as Python ends on an unhandled Ctrl-C; ``main`` ends the
-process it runs in that way, so a caller in process wants :func:`start`, which raises
-:class:`Interrupted` instead.
+anything (each reason printed, and anything its own stop left behind), or ``daemon`` refused
+the daemon, or the command line was wrong.  A start that cannot write on stderr either, to say
+why, has run its stop all the same, and exits 120, CPython's status for an output it cannot
+flush as it exits.  A start ended by a held signal ends BY that signal, as Python ends on an
+unhandled Ctrl-C; ``main`` ends the process it runs in that way, so a caller in process wants
+:func:`start`, which raises :class:`Interrupted` instead.
 
 Environment variables read:
-    XDG_RUNTIME_DIR    Where the socket directory is made.  Default ``/run/user/<uid>``.
+    XDG_RUNTIME_DIR    Where the socket directory is made, and where the rootless daemon's
+                       socket is looked for.  Default ``/run/user/<uid>``.
     READINESS_TIMEOUT_SECONDS  Cap on the wait for the cluster to accept connections.
                        Default 15.
-    DOCKER_HOST        The daemon, as docker itself reads it.  Which daemon may take a
-                       container per run is decided before this runs (``test.sh``).
+    DOCKER_HOST        The daemon.  When unset, the rootless daemon's socket in
+                       ``XDG_RUNTIME_DIR`` is chosen if one is there, and handed to every
+                       docker command this runs (:func:`daemon`).
+    SHEKEL_ALLOW_HOST_DOCKER  ``1`` accepts a daemon that is not rootless.  Shares its
+                       spelling with ``tests/test_deploy/conftest.py`` on purpose.
+    CI                 Sanctions a daemon that is not rootless, since a CI daemon is a
+                       throwaway nothing observes.  Read through a vocabulary, NOT by
+                       presence: ``CI=false`` must not sanction anything.
 
 Standard library only: ``test.sh`` runs it before any environment is known to hold more.
 """
@@ -219,6 +229,13 @@ _DOCKER_TIMEOUT_SECONDS = 60
 # closing terminal send.  KILL cannot be held, which is why the caller holds the token.
 _CALLERS_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
+# The rootless daemon's socket, in ``XDG_RUNTIME_DIR``, where ``dockerd-rootless.sh`` makes it.
+_ROOTLESS_SOCKET = "docker.sock"
+# The values of ``CI`` that sanction a daemon that is not rootless (:func:`_sanctioned`).
+_CI_SANCTIONS = frozenset({"1", "true", "TRUE", "True", "yes", "on"})
+# The operator's own sanction, spelled as ``tests/test_deploy/conftest.py`` spells it.
+_HOST_DOCKER_OVERRIDE = "SHEKEL_ALLOW_HOST_DOCKER"
+
 
 class ClusterError(RuntimeError):
     """The cluster could not be started, or is not usable; the message says which and why."""
@@ -320,8 +337,90 @@ def socket_dir(token: str) -> Path:
     if not _TOKEN_SHAPE.fullmatch(token):
         raise ClusterError(f"{token!r} is not a cluster token: one is {2 * _TOKEN_BYTES} "
                            "lowercase hex digits ('private_cluster.py token' makes one)")
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    return Path(runtime) / f"{_SOCKET_DIR_PREFIX}{token}"
+    return _runtime_dir() / f"{_SOCKET_DIR_PREFIX}{token}"
+
+
+def _runtime_dir() -> Path:
+    """``XDG_RUNTIME_DIR``, or ``/run/user/<uid>`` when it is unset or empty: where the socket
+    directory is made and the rootless daemon's socket is looked for."""
+    return Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+
+
+def _endpoint() -> str:
+    """The daemon every docker command here is handed, as ``DOCKER_HOST``: that variable when
+    it is set and not empty, else the rootless daemon's socket in :func:`_runtime_dir` when
+    one is there, else ``""``, docker's own default.  An absent rootless socket is no fallback
+    to anything: :func:`daemon` then refuses what docker's default turns out to be."""
+    given = os.environ.get("DOCKER_HOST", "")
+    if given:
+        return given
+    rootless = _runtime_dir() / _ROOTLESS_SOCKET
+    return f"unix://{rootless}" if rootless.is_socket() else ""
+
+
+def _sanctioned() -> bool:
+    """Whether a container per run may go to a daemon that is not rootless: on CI, whose daemon
+    is a throwaway nothing observes, or when the operator sets ``SHEKEL_ALLOW_HOST_DOCKER=1``
+    to accept the churn.
+
+    ``CI`` is read through a VOCABULARY, not by presence.  It sanctions a container per run on
+    the daemon that runs PRODUCTION, the heaviest consequence here, and a presence test made
+    ``CI=false`` and ``CI=0`` sanction it.  An unrecognised value sanctions nothing: it cannot
+    be refused as an operator's typo would be, because CI sets it, not the operator.
+    """
+    return (os.environ.get("CI", "") in _CI_SANCTIONS
+            or os.environ.get(_HOST_DOCKER_OVERRIDE) == "1")
+
+
+def daemon() -> str:
+    """The daemon a cluster goes to (:func:`_endpoint`, ``""`` for docker's own default), once
+    it is known to be rootless or a container per run on it is sanctioned (:func:`_sanctioned`).
+
+    THE DAEMON IS NOT THE SYSTEM ONE.  The system daemon on this host runs the production
+    database, and the homelab wud/cadvisor/alloy stack watches every container on it: exactly
+    the churn ``docs/test-harness-isolation.md`` exists to stop.  So a daemon that is not
+    rootless is REFUSED rather than quietly used, and fail-closed: an absent rootless daemon
+    stops the start with instructions, it never falls back.
+
+    The daemon is asked WHAT IT IS rather than judged by its address.  "Rootless" is a property
+    of a daemon; a path is a guess about one, and the guess has a hole: a ``tcp://`` endpoint
+    aimed at a socket-proxy container reads as isolated while being the production daemon at
+    another address.  Whether it could be asked is kept apart from its answer, so a stopped
+    daemon is never called one that is not rootless: its socket outlives it, and may well be
+    the rootless one's.
+
+    THE RULE LIVES IN THE ACT THAT STARTS A CLUSTER, so no caller can start one without it (the
+    coordinator's ruling on K1a-2's review, B1, 2026-10-19).  ``test.sh`` held it alone until
+    then, and the rehearsal kit's bench, which chose no daemon, put a cluster holding a
+    production dump on the system daemon whenever ``DOCKER_HOST`` was unset.  :func:`start`
+    asks it before it makes anything.  A caller that runs docker itself before the start --
+    the image builder, which both callers run first -- asks it first too (``private_cluster.py
+    daemon``) and hands its answer on, so a refused daemon gets no image either, and the image
+    is baked on the daemon the cluster runs on.
+
+    Raises:
+        ClusterError: when the daemon cannot be asked what it is, or is not rootless, and no
+            sanction applies.
+    """
+    endpoint = _endpoint()
+    try:
+        asked = _docker("info", "--format", "{{.SecurityOptions}}")
+        answer = None if asked.returncode else asked.stdout
+    except ClusterError:
+        answer = None
+    if (answer is not None and "rootless" in answer) or _sanctioned():
+        return endpoint
+    where = endpoint or "the default socket"
+    if answer is None:
+        raise ClusterError(f"could not ask {where} what it is, so whether a cluster would land "
+                           "on the production daemon is UNKNOWN, and none is started.  Start "
+                           "the rootless daemon with 'systemctl --user start docker.service' "
+                           "(see docs/test-harness-isolation.md).")
+    raise ClusterError(f"refuses this daemon: {where} is not rootless, so a cluster would land "
+                       "on the daemon that runs production.  Start the rootless daemon with "
+                       "'systemctl --user start docker.service' (see "
+                       f"docs/test-harness-isolation.md), or set {_HOST_DOCKER_OVERRIDE}=1 to "
+                       "accept the churn.")
 
 
 def url(directory: Path | str, database: str) -> str:
@@ -353,13 +452,18 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
     ended in a traceback.  Nothing else reads the text for more than that: a container's id
     is hex.
 
+    It is handed the daemon :func:`_endpoint` names, so every command of a start and of its
+    stop goes to the daemon :func:`daemon` judged, whether or not its caller exported one.
+
     Raises:
         ClusterError: when docker cannot be run or does not answer in time.
     """
+    endpoint = _endpoint()
     try:
         return subprocess.run(["docker", *args], capture_output=True, text=True,
                               errors="replace", check=False, start_new_session=True,
-                              timeout=_DOCKER_TIMEOUT_SECONDS)
+                              timeout=_DOCKER_TIMEOUT_SECONDS,
+                              env={**os.environ, "DOCKER_HOST": endpoint} if endpoint else None)
     except subprocess.TimeoutExpired as exc:
         raise ClusterError(f"docker {args[0]} did not answer within "
                            f"{_DOCKER_TIMEOUT_SECONDS}s; the daemon may be wedged") from exc
@@ -535,7 +639,8 @@ def start(name: str, token: str, image: str, *,
 
     ``image`` ships a populated PGDATA at :data:`_PGDATA`, as the baked test image does
     (:func:`_wait_ready` says why readiness depends on it).  Nothing is made until the
-    readiness cap, the token and the socket path's bytes are known good.  From just before
+    readiness cap, the token and the socket path's bytes are known good and the daemon is one
+    a cluster may go to (:func:`daemon`).  From just before
     the socket directory is made -- the first thing a start makes, the ``docker run`` the
     second -- until the cluster is handed over or stopped, the caller's signals are HELD
     (:class:`_HeldSignals`).  A start that fails after that stops what carries its token,
@@ -565,6 +670,7 @@ def start(name: str, token: str, image: str, *,
     seconds = _readiness_seconds()
     directory = socket_dir(token)
     _refuse_a_socket_dir_docker_cannot_bind(directory)
+    daemon()
     with _HeldSignals() as held:
         try:
             _make_socket_dir(directory)
@@ -719,6 +825,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("token", help="print a new token, to own a cluster by")
+    commands.add_parser("daemon", help="print the daemon a cluster goes to, refusing one "
+                        "that is not rootless")
     starting = commands.add_parser("start", help="start a cluster owned by a token; print "
                                    "its socket directory, then its container id")
     starting.add_argument("name")
@@ -737,6 +845,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "url":
         print(url(args.socket_dir, args.database))
+        return 0
+    if args.command == "daemon":
+        try:
+            print(daemon())
+        except ClusterError as exc:
+            print(f"[private_cluster] {exc}", file=sys.stderr)
+            return 2
         return 0
     return _start(args) if args.command == "start" else _stop(args)
 

@@ -140,8 +140,8 @@ class TestThePrivateClusterIsCleanedUp:
         assert re.fullmatch(rf"shekel-testrun-[0-9]+-{token[:8]}", name), (name, token)
 
     @pytest.mark.parametrize(("kills", "other", "calls"), [
-        ("after making", False, ["info", "run", "ps", "rm", "ps"]),
-        ("before making", True, ["info", "run", "ps"]),
+        ("after making", False, ["info", "info", "run", "ps", "rm", "ps"]),
+        ("before making", True, ["info", "info", "run", "ps"]),
     ], ids=["after its run made the container",
             "before it made anything, another run's container holding the name"])
     def test_a_start_killed_outright_is_stopped_by_the_trap_s_token(
@@ -160,7 +160,9 @@ class TestThePrivateClusterIsCleanedUp:
             tmp_path: scratch directory.
             kills: when the stub ``run`` kills the start.
             other: whether another run's container holds the name.
-            calls: the docker commands the run gives, in order.
+            calls: the docker commands the run gives, in order: the daemon is asked
+                what it is twice, by the wrapper before it prepares the image and by
+                the start, the act that refuses (K1a-3).
         """
         runtime = Path(tempfile.mkdtemp(prefix="skrt", dir="/tmp"))
         binaries = _stub_tree(tmp_path)
@@ -205,7 +207,7 @@ class TestThePrivateClusterIsCleanedUp:
         assert "left no socket" in result.stderr, result.stderr
         assert "Stopping it left something behind" in result.stderr, result.stderr
         assert [line.split()[0] for line in seen] == [
-            "info", "run", "exec", "ps", "rm", "ps", "ps", "rm", "ps"], seen
+            "info", "info", "run", "exec", "ps", "rm", "ps", "ps", "rm", "ps"], seen
         assert not held.exists(), f"the container the start left was left; docker saw: {seen}"
 
     def test_the_container_is_removed_with_its_volume(

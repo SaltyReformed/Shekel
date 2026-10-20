@@ -2,9 +2,9 @@
 teardown whose census names anything left (step X-cx's K1a-2).
 
 The cases marked ``cluster`` start a real private cluster (``scripts/private_cluster.py``) on
-the daemon docker picks (``DOCKER_HOST``, which the conftest says to point at the rootless
-one), and restore a dump planted by the module's fixture, so they need docker, the test-db
-image and the host's ``pg_dump`` and ``pg_restore``; the conftest says where they run.  The
+the daemon that module chooses (the rootless one, unless CI sanctions its own), and restore a
+dump planted by the module's fixture, so they need docker, the test-db image and the host's
+``pg_dump`` and ``pg_restore``; the conftest says where they run.  The
 rest grade the bench's pure parts on planted inputs.
 """
 from __future__ import annotations
@@ -155,10 +155,14 @@ def _dump(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
 
 
 def _containers() -> str:
-    """The ids of every container a bench of this process started, running or not."""
+    """The ids of every container a bench of this process started, running or not, asked of
+    the daemon the cluster module chose: asked of docker's default, a plain run would ask
+    the system daemon about a cluster on the rootless one, and find nothing."""
+    chosen = bench.cluster("daemon").strip()
     return subprocess.run(["docker", "ps", "--all", "--quiet", "--filter",
                            f"name=shekel-rehearsal-{os.getpid()}-"],
-                          check=True, capture_output=True, text=True).stdout
+                          check=True, capture_output=True, text=True,
+                          env={**os.environ, "DOCKER_HOST": chosen} if chosen else None).stdout
 
 
 def _left_nothing(made: Bench) -> None:

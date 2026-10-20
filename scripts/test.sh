@@ -50,25 +50,21 @@
 #     daemon is exactly the churn ``docs/test-harness-isolation.md`` was
 #     written to stop: that daemon runs the production database and the
 #     homelab wud/cadvisor/alloy stack watches every container on it.  So
-#     this refuses a non-rootless daemon rather than quietly spamming it.
+#     ``scripts/private_cluster.py`` refuses a non-rootless daemon rather
+#     than quietly spamming it, and this wrapper inherits the refusal.
 #
 # Environment variables read:
-#     DOCKER_HOST        The daemon this run talks to.  Auto-selected from
-#                        ``XDG_RUNTIME_DIR`` when unset and a rootless socket
-#                        is there, then EXPORTED so pytest and
-#                        ``tests/test_deploy``'s conftest see the same
-#                        endpoint this script chose.
-#     XDG_RUNTIME_DIR    Holds the rootless socket that is auto-selected, and
-#                        the per-run socket directory
-#                        (``scripts/private_cluster.py`` makes it).  Default:
-#                        ``/run/user/$(id -u)``.
-#     SHEKEL_ALLOW_HOST_DOCKER  ``1`` accepts a non-rootless daemon.  Shares
-#                        its spelling with ``tests/test_deploy/conftest.py``
-#                        on purpose.
-#     CI                 Sanctions a non-rootless daemon, since a CI daemon
-#                        is a throwaway nothing observes.  Read through a
-#                        truthy vocabulary, NOT by presence: ``CI=false``
-#                        must not sanction anything.
+#     DOCKER_HOST        The daemon this run talks to.  Chosen by
+#                        ``scripts/private_cluster.py daemon``, which takes
+#                        the rootless socket in ``XDG_RUNTIME_DIR`` when this
+#                        is unset and one is there; then EXPORTED so pytest
+#                        and ``tests/test_deploy``'s conftest see the same
+#                        endpoint the run uses.
+#     XDG_RUNTIME_DIR, SHEKEL_ALLOW_HOST_DOCKER, CI  Read by
+#                        ``scripts/private_cluster.py``: where the rootless
+#                        socket and the per-run socket directory are, and the
+#                        two sanctions for a non-rootless daemon (its
+#                        docstring says how each is read).
 #     READINESS_TIMEOUT_SECONDS  Cap on the readiness wait, read by
 #                        ``scripts/private_cluster.py``.  Default: 15.
 #     TEST_DB_IMAGE      An image to use INSTEAD of building and verifying
@@ -147,86 +143,32 @@ if ! command -v docker >/dev/null 2>&1; then
     exit 2
 fi
 
-# THE DAEMON THIS RUN TALKS TO.
+# THE DAEMON THIS RUN TALKS TO is ``scripts/private_cluster.py``'s to choose,
+# and to REFUSE when it is not rootless: the system daemon on this host runs the
+# production database, and the homelab wud/cadvisor/alloy stack watches every
+# container on it -- exactly the churn ``docs/test-harness-isolation.md``
+# exists to stop.  The rule lives in the act that starts a cluster, so no
+# caller can start one without it (the coordinator's ruling on K1a-2's review,
+# 2026-10-19); this wrapper held its only copy until then.  It is asked HERE,
+# before the image is prepared, so a refused daemon gets no image either and
+# the image is baked on the daemon the cluster will run on; the start asks it
+# again, as the act.  A refusal names itself and the way past it, and this
+# exits 2.
 #
-# The SYSTEM daemon on this host runs the production database, and the
-# homelab wud/cadvisor/alloy stack watches every container on it -- exactly
-# the churn ``docs/test-harness-isolation.md`` exists to stop.  So the
-# harness picks a rootless daemon of its own, and REFUSES rather than
-# quietly spamming the system one.  Fail-closed: an absent rootless daemon
-# stops the run with instructions, it does not fall back.
-#
-# The test asks the daemon WHAT IT IS instead of pattern-matching the socket
-# path.  "Rootless" is a property of a daemon; a path is a guess about one,
-# and the guess has a hole -- a tcp:// endpoint pointed at a socket-proxy
-# container reads as isolated while being the production daemon wearing a
-# different address.
-#
-# Exporting DOCKER_HOST also lets ``tests/test_deploy`` run: its conftest
-# reads this variable and treats any non-default endpoint as isolated.  That
-# only takes effect for a caller who ALSO asks for those tests with
-# ``PYTEST_MARKER_EXPR=docker``, because this wrapper defaults to
-# ``not docker`` further down and the marker deselects them before the
-# conftest is consulted.  An earlier draft of this comment claimed the
-# export alone un-skipped them; a review measured otherwise.
-if [ -z "${DOCKER_HOST:-}" ]; then
-    _rootless_sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/docker.sock"
-    if [ -S "$_rootless_sock" ]; then
-        DOCKER_HOST="unix://${_rootless_sock}"
-        export DOCKER_HOST
-    fi
-    unset _rootless_sock
+# Its answer is EXPORTED when it names an endpoint -- ``DOCKER_HOST`` as given,
+# or the rootless socket it found -- so pytest and ``tests/test_deploy``'s
+# conftest see the daemon this run uses.  That conftest treats any non-default
+# endpoint as isolated, which only takes effect for a caller who ALSO asks for
+# those tests with ``PYTEST_MARKER_EXPR=docker``, because this wrapper defaults
+# to ``not docker`` further down and the marker deselects them before the
+# conftest is consulted.  An earlier draft of this comment claimed the export
+# alone un-skipped them; a review measured otherwise.
+_daemon="$("$_PYTHON" "${_REPO_ROOT}/scripts/private_cluster.py" daemon)" || exit 2
+if [ -n "$_daemon" ]; then
+    DOCKER_HOST="$_daemon"
+    export DOCKER_HOST
 fi
-# Capture REACHABILITY separately from the answer.  Folding them together
-# made a stopped daemon report "is not rootless" -- a diagnosis the script
-# never established, about a socket that may well be the rootless one, still
-# on disk after the daemon behind it died.
-#
-# ``timeout`` because a wedged daemon otherwise blocks here forever, at a
-# point where nothing has been started and there is nothing to clean up.
-if _daemon_kind="$(timeout 15 docker info \
-    --format '{{.SecurityOptions}}' 2>/dev/null)"; then
-    _daemon_answered=yes
-else
-    _daemon_answered=""
-    _daemon_kind=""
-fi
-case "$_daemon_kind" in
-    *rootless*) _daemon_private=yes ;;
-    *) _daemon_private="" ;;
-esac
-# ``CI`` goes through a vocabulary rather than a presence test.  It sanctions
-# a container per run on the daemon that runs PRODUCTION, which is the
-# heaviest consequence in this file, and a bare ``[ -n "$CI" ]`` made
-# ``CI=false`` and ``CI=0`` sanction it.  An unrecognised value is NOT
-# sanctioned -- this one cannot exit 2 the way a typo'd operator flag would,
-# because CI sets it, not the operator.
-case "${CI:-}" in
-    1 | true | TRUE | True | yes | on) _ci_sanctioned=yes ;;
-    *) _ci_sanctioned="" ;;
-esac
-if [ -z "$_daemon_private" ] \
-    && [ -z "$_ci_sanctioned" ] \
-    && [ "${SHEKEL_ALLOW_HOST_DOCKER:-}" != "1" ]; then
-    if [ -z "$_daemon_answered" ]; then
-        echo "[test.sh] could not ask" \
-            "${DOCKER_HOST:-the default socket} what it is, so whether a" \
-            "container per run would land on the production daemon is" \
-            "UNKNOWN and this run stops.  Start the rootless daemon with" \
-            "'systemctl --user start docker.service' (see" \
-            "docs/test-harness-isolation.md)." >&2
-    else
-        echo "[test.sh] refuses this daemon:" \
-            "${DOCKER_HOST:-the default socket} is not rootless, so a" \
-            "container per run would land on the daemon that runs" \
-            "production.  Start the rootless daemon with 'systemctl" \
-            "--user start docker.service' (see" \
-            "docs/test-harness-isolation.md), or set" \
-            "SHEKEL_ALLOW_HOST_DOCKER=1 to accept the churn." >&2
-    fi
-    exit 2
-fi
-unset _daemon_private _daemon_answered _daemon_kind _ci_sanctioned
+unset _daemon
 
 # TEST_DB_IMAGE lets a caller supply an image this run should use and skip
 # the build-and-verify entirely.  It exists for a caller that knows more than

@@ -20,12 +20,13 @@ the teardown before the start runs, so a failure or a Ctrl-C at any later point 
 start made.  One window outlives that stop, the cluster module's own: a start KILLed while its
 ``docker run`` is in flight leaves its socket directory, empty.
 
-THE BENCH CHOOSES NO DAEMON.  The cluster goes to the daemon docker itself picks: the one
-``DOCKER_HOST`` names, or else docker's default context, which on this host is the SYSTEM
-daemon that runs production.  ``test.sh`` refuses that daemon and the bench does not (K1a-2's
-review, B1: nothing it does can name or stop another container, so it is churn beside
-production, not a risk to its data), so run it with ``DOCKER_HOST`` at the rootless daemon:
-``export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock``.
+THE DAEMON IS THE CLUSTER MODULE'S.  ``private_cluster.py`` chooses it (``DOCKER_HOST``, else
+the rootless socket in ``XDG_RUNTIME_DIR``) and refuses one that is not rootless unless CI or
+``SHEKEL_ALLOW_HOST_DOCKER=1`` sanctions it, in the start itself (the coordinator's ruling on
+K1a-2's review, B1: a bench that chose none put a cluster holding a production dump on the
+SYSTEM daemon whenever ``DOCKER_HOST`` was unset).  The bench asks it first, before the image is
+prepared, and hands its answer to the image builder (:func:`image_tag`), so a refused daemon
+gets no image and the image is baked where the cluster runs.
 
 A DUMP FROM ANOTHER POSTGRESQL MAJOR IS REFUSED before it is restored.  Every custom-format
 archive records the server that made it (``Dumped from database version``), so production's
@@ -106,8 +107,10 @@ class State:
     python: Path
 
 
-def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run ``argv`` to its end, its output captured and decoded with ``errors="replace"``.
+def _run(argv: list[str], env: dict[str, str] | None = None
+         ) -> subprocess.CompletedProcess[str]:
+    """Run ``argv`` to its end, in ``env`` (this process's when None), its output captured and
+    decoded with ``errors="replace"``.
 
     A terminal's Ctrl-C reaches the child as it reaches this process (one process group), so
     the child is WAITED FOR and never killed: ``subprocess.run`` SIGKILLs a child 0.25 s after
@@ -121,7 +124,7 @@ def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
     """
     try:
         process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   text=True, errors="replace")
+                                   text=True, errors="replace", env=env)
     except OSError as exc:
         raise BenchError(f"{argv[0]} cannot be run: {exc}") from exc
     with process:
@@ -147,12 +150,16 @@ def cluster(*args: str) -> str:
 
 
 def image_tag() -> str:
-    """The test-db image's tag, built or verified first, as ``test.sh`` has it done.
+    """The test-db image's tag, built or verified first, as ``test.sh`` has it done: on the
+    daemon the cluster will run on, which ``private_cluster.py daemon`` names once it has
+    judged it (the module says why the bench asks it first).
 
     Raises:
-        BenchError: when the image cannot be prepared.
+        BenchError: when the daemon is refused or the image cannot be prepared.
     """
-    done = _run([sys.executable, str(_IMAGE_BUILDER), "--json"])
+    chosen = cluster("daemon").strip()
+    done = _run([sys.executable, str(_IMAGE_BUILDER), "--json"],
+                env={**os.environ, "DOCKER_HOST": chosen} if chosen else None)
     if done.returncode:
         raise BenchError(f"build_test_db_image.py exited {done.returncode}: "
                          f"{(done.stderr or done.stdout).strip()}")
