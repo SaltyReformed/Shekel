@@ -69,7 +69,8 @@ class Transaction(
     clone.  *Unconstructible by every writer that reaches the table as the
     application*: ``SET session_replication_role = 'replica'`` suppresses
     referential triggers and a superuser can still force the row, which
-    ``tests/test_scripts/test_integrity_check.py`` does on purpose.
+    ``tests/test_scripts/test_integrity_check/test_the_referential_checks.py``
+    does on purpose.
 
     **It is the OWNER, never the AUTHOR**, and the child table next door uses
     the same column name for the other fact:
