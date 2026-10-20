@@ -6,9 +6,11 @@ starts and stops it here; the release rehearsal kit's bench
 (``tools/rehearsal/bench.py``, step X-cx's K1) starts its own here too, so there is one
 ``docker run``, one readiness rule and one teardown (the coordinator's K1 leaf-plan ruling,
 2026-10-18, point 1), and one way a client tool reaches the cluster from inside its
-container (``balance:R-BAL327``).  It is a container on
-a rootless daemon this module chooses, and refuses any other (:func:`daemon`), reached over a
-UNIX SOCKET in a directory under ``XDG_RUNTIME_DIR``, with no network and no port.
+container (``balance:R-BAL327``).  It is a container on a rootless daemon this module
+chooses, and a start refuses any other (:func:`daemon`), reached over a UNIX SOCKET in a
+directory under ``XDG_RUNTIME_DIR``, with no network and no port.  ``client`` judges no
+daemon: it runs its tool in the container it is named, on the daemon :func:`_endpoint` names,
+and the rehearsal kit names only the id its own start handed over (the K1a-3 review's B-2).
 
 A cluster is OWNED BY A TOKEN its caller makes before starting it (the coordinator's ruling on
 K1a commit B, 2026-10-19).  The start labels the container with the token as ``docker run``
@@ -486,8 +488,11 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
     ended in a traceback.  Nothing else reads the text for more than that: a container's id
     is hex.
 
-    It is handed the daemon :func:`_endpoint` names, so every command of a start and of its
-    stop goes to the daemon :func:`daemon` judged, whether or not its caller exported one.
+    It is handed the daemon :func:`_endpoint` names as it runs, whether or not its caller
+    exported one.  The daemon is not judged again mid-start: :func:`daemon` judged the one
+    :func:`_endpoint` named at the start's door, so a rootless socket that vanishes between
+    the start's ``docker info`` and its ``docker run`` sends the run to docker's default (the
+    K1a-3 review's B-1, a noted follow-up).
 
     Raises:
         ClusterError: when docker cannot be run or does not answer in time.
