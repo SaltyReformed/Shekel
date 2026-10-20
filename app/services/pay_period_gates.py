@@ -300,10 +300,12 @@ def gate_removable_head(
        and set back to Projected is refused too** (ruling **R-PC115**): the
        revert keeps its payment, undated, which is history no bulk door
        deletes (**R-CC54**, **R-CC65**), and the database refuses to delete it
-       with its row.  A transfer set back this way cannot be cleared by
-       deleting it until plan step ``balance:X-bi-6-4`` ends finding
-       **BAL-532** (its delete hides the legs and keeps their payments); the
-       ruling accepted that cost.
+       with its row.  A transfer set back this way can be cleared by
+       deleting it since plan step ``balance:X-bi-6-4d-2``, whose delete
+       takes its sides' payments off on either arm (finding **BAL-532**),
+       unless that frees a bank line, which no page captions (ruling
+       **R-BAL229**); until then its delete hid the legs and kept their
+       payments, a cost the ruling accepted.
     2. A pay stub dated on the paycheck's payday: a stub sits on a paycheck
        the app holds (**R-SAL49**), and this would leave it on none.
     3. Money DATED inside the removed paychecks anywhere in the budget -- a

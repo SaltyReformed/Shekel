@@ -376,7 +376,7 @@ def _reject_unowned_references(
     answers, checked with the other pre-write gates rather than at the arm
     that assigns it.  It ran inside :func:`_apply_remaining_fields`, which is
     AFTER :func:`_dispatch_settle` has written the status, the pair's day and
-    the settlement record to both shadows -- so an unowned id raised with the
+    the settlement record to both sides -- so an unowned id raised with the
     settlement already staged, and the route's ``NotFoundError`` exit returns
     404 without rolling back (unlike ``_error_transfer_response``, which does).
     Nothing persists today, because Flask-SQLAlchemy's teardown removes the
@@ -752,7 +752,7 @@ def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
         notes          -- New notes for the transfer.
         figure         -- What MOVED and WHO WROTE the figure, as one
                           :class:`~app.services.stated_figure.StatedFigure`
-                          (``typed`` from the transfer and shadow popovers,
+                          (``typed`` from the transfer popover's Actual box,
                           plan step X-bi-3e-1), recorded on both sides'
                           payment records: a transfer's money moves on its
                           two sides and the parent carries no such column.

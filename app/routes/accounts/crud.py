@@ -700,8 +700,8 @@ def hard_delete_account(account_id):
       After all guards pass, remaining RESTRICT-FK rows must be
       explicitly removed before the account row can be deleted:
         - Transfer rows (soft-deleted or ghost ad-hoc) referencing this
-          account, deleted through transfer_service to maintain shadow
-          invariants.
+          account, deleted through transfer_service, which every write of
+          a transfer goes through (CLAUDE.md, Architecture).
         - Transaction rows (soft-deleted ghosts) referencing this
           account.
         - The rule-less TransactionTemplates on this account (the only
@@ -788,7 +788,8 @@ def hard_delete_account(account_id):
 
     # All guards passed -- permanently delete.
     # Step 1: delete remaining Transfer rows (soft-deleted or ghost
-    # ad-hoc) through the transfer service to maintain shadow invariants.
+    # ad-hoc) through the transfer service, which every write of a transfer
+    # goes through (CLAUDE.md, Architecture).
     remaining_transfers = (
         db.session.query(Transfer)
         .filter(db.or_(

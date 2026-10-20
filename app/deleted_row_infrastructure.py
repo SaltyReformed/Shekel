@@ -23,26 +23,26 @@ so either can move without the other.
   ``INSERT``, or by an ``UPDATE`` that points it at another row.  An
   ``UPDATE`` that leaves ``transaction_id`` where it was is not an arrival, so
   it passes, and so do the ``SET NULL`` updates other tables' keys make to a
-  movement's other columns.  Every deleted row counts, a transfer's leg
-  included.
+  movement's other columns.  Every deleted row counts, and under
+  :data:`TRANSFER_ARM` every deleted transfer.
 * **A row may not be HIDDEN while it holds one** (ruling **R-CC92**, which
   extends R-CC89, developer 2026-09-23, "Refuse both ways": *"The database
   also refuses hiding a row that still holds a payment or purchase, except a
   transfer's half (BAL-532's, until X-bi-6-4). The check runs when the change
   is saved, so a door that takes the money off and hides the row in the same
-  save still works."*).  **A transfer's leg is excepted, and the exception is
-  a FENCE with an owner**: the transfer's soft delete still hides a leg
-  holding its kept payment -- finding **balance:BAL-532**, owned by plan step
-  ``balance:X-bi-6-4`` -- and refusing it would turn that door into an error
-  until then.  **Deleting the ``transfer_id IS NULL`` clause alone would not
-  retire the fence**, because plan step ``balance:X-bi-6-4d-2`` re-parents a
+  save still works."*).  **A transfer's leg was excepted, and the exception
+  was a FENCE with an owner**: the transfer's soft delete hid a leg holding
+  its kept payment -- finding **balance:BAL-532**, owned by plan step
+  ``balance:X-bi-6-4`` -- and refusing it would have turned that door into an
+  error.  **Deleting the ``transfer_id IS NULL`` clause alone could not
+  retire the fence**, because plan step ``balance:X-bi-6-4d-2`` re-parented a
   transfer's movements onto ``budget.transfers`` (ruling **R-BAL88**: two
   side links, ``transaction_id`` NULL under an exactly-one-parent check):
-  after it the legs hold nothing, a movement arriving under a deleted
+  after it the legs held nothing, a movement arriving under a deleted
   TRANSFER names no row the row arm reads, and a transfer's soft delete hides
   a ``budget.transfers`` row the row arm does not watch -- so R-CC92's "until
-  X-bi-6-4" would become permanent without anyone deciding it.  What the
-  re-parent owes the rule is :data:`TRANSFER_ARM`, three changes together:
+  X-bi-6-4" would have become permanent without anyone deciding it.  What the
+  re-parent owed the rule is :data:`TRANSFER_ARM`, three changes together:
   the arrival arm also refuses a movement whose TRANSFER parent is deleted,
   reading that parent's ``is_deleted`` under the same :data:`ROW_WRITE_LOCK`
   on ``budget.transfers`` (a read without it reopens, for transfers, the race
@@ -51,9 +51,11 @@ so either can move without the other.
   clause goes from the row arm's ``WHEN`` and its function.  **The third
   landed with the transfer delete that takes a side's records off first**
   (design D7, finding BAL-532), at the leaf's second checkpoint, so under
-  :data:`TRANSFER_ARM` the row arm excepts nothing either -- a leg holds no
-  record, and one that did could not be hidden.  The row-only text a revision
-  without :data:`TRANSFER_ARM` installs keeps the clause, and with it
+  :data:`TRANSFER_ARM` the row arm excepts nothing either, and since plan
+  step ``balance:X-bi-6-4d-3`` no row is a transfer's leg at all
+  (``ck_transactions_names_no_transfer``, ruling **R-BAL258**).  The
+  row-only text a revision without :data:`TRANSFER_ARM` installs keeps the
+  clause, and with it
   ``transfer_id`` watched as well as ``is_deleted``, so a raw ``UPDATE``
   re-pointing a hidden leg away from its transfer cannot walk out of the
   exception there.
@@ -173,7 +175,8 @@ from typing import Callable
 #: The ROW arm (plan step ``credit_card:CC-5-4a-4``, migration
 #: ``c4a4e7d1b9f2``): a movement may not arrive under a deleted
 #: ``budget.transactions`` row, and a row may not be hidden while it holds one,
-#: a transfer's leg excepted (finding BAL-532).
+#: a transfer's leg excepted in the row-only text (finding BAL-532) and
+#: nothing excepted beside :data:`TRANSFER_ARM`.
 ROW_ARM = "row"
 
 #: The TRANSFER arm (plan step ``balance:X-bi-6-4d-2``, ruling **R-BAL88**): a
@@ -454,7 +457,9 @@ def apply_deleted_row_infrastructure(
     stored, so neither refuses what the database holds when it is first
     applied.  The revision that installs each arm refuses to run while a
     hidden parent holds one (ruling **R-CC82**), which is what makes the
-    hiding rule true of the stored rows too; a hidden leg's is **BAL-532**'s.
+    hiding rule true of the stored rows too: the re-parent's revision
+    (``e616adf7fe22``) refuses while a movement sits under a deleted twin
+    or a deleted transfer.
 
     Args:
         executor: Single-argument callable that accepts a SQL string and runs

@@ -98,7 +98,7 @@ def delete_transfer(transfer_id, user_id, soft=False, *, press=None):
     # ── Loan coordinates, captured while the row exists ────────────
     # The loan this payment leaves is re-reconciled AFTER the delete (below):
     # its split correction links no row (ruling **R-BAL102**, plan step
-    # ``balance:X-bi-6-3``), so nothing about it needs the shadow to still
+    # ``balance:X-bi-6-3``), so nothing about it needs a row to still
     # exist, and the departed payment's key reverses as a posted key with no
     # target.  Through that step the split was reversed HERE, first, by the
     # income shadow's ``transaction_id`` the CASCADE was about to SET NULL.
