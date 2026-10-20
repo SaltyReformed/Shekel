@@ -952,25 +952,26 @@ which needs a token proposal ratified on real-page mockups before their dependen
   - Riders, all approved 2026-07-10: categories with prior-month spend but none in the viewed month
     appear as `$0.00` rows under By change (Mortgage, Savings Transfer, Birthday in the June data);
     singleton groups collapse to one row ("Credit Card - Payback"; the grid D3 singleton rule ported
-    - today two identical `$784.01` rows render); Estimate Surprises keeps its rail unchanged.
-  Data findings that shaped the ruling: the per-period-trend change basis misleads on a
-  month-anchored page (real June data: Car Payment listed as a +100.00% Top Mover while June exactly
-  equals May at `$531.94`; Mortgage/Rent, the single largest change at `-$1,910.95` to zero - it
-  never settled inside June - appeared NOWHERE in Top Movers); settled history is 4 months deep
-  (Mar-Jun 2026), so the chart must degrade gracefully; a 5-series stacked-by-group chart was
-  rejected before presentation (a one-hue steel ramp fails the dataviz palette validator - adjacent
-  steps read as one gray, darkest steps 1.4-2.1:1 on the dark surface - and a multi-hue ramp would
-  break Steel Ink's one-chroma commitment); small multiples was the compliant sibling and lost to A
-  on taste. Loop B build order: (1) OPUS data slice - expose the monthly-totals series (the hero
-  already computes these windows) and prior-month per-category totals for the MoM deltas including
-  zero-current rows; with sparklines and Top Movers gone the per-period trend engine has no
-  remaining consumer on this tab (ItemTrend display, movers, and the sparkline serializer retire;
-  evaluate for dead code). (2) FABLE page slice - template + analytics.css rebuild per the ruled
-  form, chart in the app chart grammar with click-to-navigate bars; mobile reflows the ledger to
-  name / delta / amount and compresses the chart. Scratch viewer (real data, all four candidates) at
-  ~/Documents/spending_directions_mockup.html until Loop B ships. **BUILT 2026-07-10 (S14 Loop B,
-  both slices in one Fable 5 session per the S3 precedent; commits 5bbcf9e7 rebuild + 0f57cdaf
-  dead-code deletion).** As ruled, with these as-built notes:
+    - today two identical `$784.01` rows render); Estimate Surprises keeps its rail unchanged. Data
+      findings that shaped the ruling: the per-period-trend change basis misleads on a
+      month-anchored page (real June data: Car Payment listed as a +100.00% Top Mover while June
+      exactly equals May at `$531.94`; Mortgage/Rent, the single largest change at `-$1,910.95` to
+      zero - it never settled inside June - appeared NOWHERE in Top Movers); settled history is 4
+      months deep (Mar-Jun 2026), so the chart must degrade gracefully; a 5-series stacked-by-group
+      chart was rejected before presentation (a one-hue steel ramp fails the dataviz palette
+      validator - adjacent steps read as one gray, darkest steps 1.4-2.1:1 on the dark surface - and
+      a multi-hue ramp would break Steel Ink's one-chroma commitment); small multiples was the
+      compliant sibling and lost to A on taste. Loop B build order: (1) OPUS data slice - expose the
+      monthly-totals series (the hero already computes these windows) and prior-month per-category
+      totals for the MoM deltas including zero-current rows; with sparklines and Top Movers gone the
+      per-period trend engine has no remaining consumer on this tab (ItemTrend display, movers, and
+      the sparkline serializer retire; evaluate for dead code). (2) FABLE page slice - template +
+      analytics.css rebuild per the ruled form, chart in the app chart grammar with
+      click-to-navigate bars; mobile reflows the ledger to name / delta / amount and compresses the
+      chart. Scratch viewer (real data, all four candidates) at
+      ~/Documents/spending_directions_mockup.html until Loop B ships. **BUILT 2026-07-10 (S14 Loop
+      B, both slices in one Fable 5 session per the S3 precedent; commits 5bbcf9e7 rebuild +
+      0f57cdaf dead-code deletion).** As ruled, with these as-built notes:
   - The producer's trailing-12 series is the ONE source for the chart bars AND the hero's vs-prior /
     vs-average baselines (agreement by construction); a pre-history month is a None point (excluded
     from the average, drawn as a baseline tick) while a tracked zero-spend month counts as a real

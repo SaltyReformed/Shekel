@@ -517,13 +517,12 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
    the dashboard's `.pulse-*` chip, hero, and chart vocabulary; consumes `net_worth`,
    `grouped_accounts`, `group_subtotals`, `property_equity`, and the already-serialized
    `net_worth_chart_json`. Read-only this slice: no balance edit yet, so the header keeps a
-   temporary "Manage Accounts" link until slice
-   2. The card balance is the resolver `current_balance` (SSOT with the headline and the subtotals),
-   and account icons are monochrome so the accent stays the only non-money chroma. Six
-   redesign-driven, developer-approved test updates: the `Accounts Dashboard` -> `Accounts` rename;
-   the three investment milestone-count tests reworked to assert `max(projection)` (robust to the
-   net-worth band's aggregate figures); and the paid-off card's face prompt -> the `Paid Off` badge.
-   No `app/` Python touched; full suite 6294.
+   temporary "Manage Accounts" link until slice 2. The card balance is the resolver
+   `current_balance` (SSOT with the headline and the subtotals), and account icons are monochrome so
+   the accent stays the only non-money chroma. Six redesign-driven, developer-approved test updates:
+   the `Accounts Dashboard` -> `Accounts` rename; the three investment milestone-count tests
+   reworked to assert `max(projection)` (robust to the net-worth band's aggregate figures); and the
+   paid-off card's face prompt -> the `Paid Off` badge. No `app/` Python touched; full suite 6294.
 
    **P2 slice 2, click-to-edit balance and `balanceChanged` refresh: DONE 2026-06-25 on dev.** The
    cockpit's per-card balance is now click-to-edit, reusing the shared grid anchor editor and the

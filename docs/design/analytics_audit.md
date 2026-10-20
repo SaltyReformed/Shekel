@@ -737,8 +737,8 @@ month; no CSV) still stand. The section is kept as the historical S-P1..S-P2 rec
 Built per the then-locked Spending anatomy (hero band; Where It Went rows with share bar + amount/%
 
 - per-period sparkline + delta chip; rail = Top Movers + Estimate Surprises) and the S-P1 Gate
-rulings (checking-only labeled; calendar-month picker defaulting to the most recent COMPLETED month;
-no CSV).
+  rulings (checking-only labeled; calendar-month picker defaulting to the most recent COMPLETED
+  month; no CSV).
 
 - **S-P1 `c7bc39a4`** -- the unified
   `spending_report_service.compute_spending_report(user_id, window)` producer + shared

@@ -156,8 +156,8 @@ Rebuild in the account-detail band grammar, cockpit rules:
 - **Sections:** this month's allocation bar (principal/interest/escrow); confirmed payment history
   table (cash + per-payment split, CONFIRMED badges, view-all link); balance anchors (true-up events
   - origination + drift column); escrow active components with closed history behind a toggle;
-  Secured By (market value, equity, LTV); loan parameters card with Edit parameters / Record balance
-  actions.
+    Secured By (market value, equity, LTV); loan parameters card with Edit parameters / Record
+    balance actions.
 - **Amortization schedule:** demoted to a footer link (own page/fragment), Confirmed/Projected
   badges preserved.
 
