@@ -84,10 +84,12 @@ class CheckSpec:
 #: ruling **R-BAL88**), spelled again because raw SQL cannot call an ORM
 #: expression -- the second spelling DC-11's leg arm introduced at leaf
 #: ``balance:X-bi-6-4a``.  **Stated ONCE for the sweep since plan step
-#: ``balance:X-bi-6-4c-4``**, when BA-06 began asking a transfer's legs too:
-#: DC-11 and BA-06 both read this constant, so plan step
-#: ``balance:X-bi-6-4d-2`` re-pointed it off the shadow rows and onto the side
-#: links here, in one place.  **It asks no covering test and no live-row test,
+#: ``balance:X-bi-6-4c-4``**, when BA-06 began asking a transfer's legs too,
+#: so plan step ``balance:X-bi-6-4d-2`` re-pointed it off the shadow rows and
+#: onto the side links here, in one place.  BA-06 is its one reader since plan
+#: step ``balance:X-bi-6-4d-3`` deleted DC-11's leg arm, whose state the
+#: database refuses at commit (``app.side_band_infrastructure``).  **It asks
+#: no covering test and no live-row test,
 #: as the app's join asks none** (``_records._side_records``): a side link is
 #: a record by ``ck_transaction_entries_side_link_is_a_record``, and a record
 #: under a hidden transfer is unstorable by the deleted-row rule's transfer

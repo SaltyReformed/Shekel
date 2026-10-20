@@ -159,7 +159,8 @@ and names the transfer now, as its owner finds it in the app.
 **The last readers that reached a transfer's movement themselves moved at
 plan step ``balance:X-bi-6-4d-2``**, with the join: the integrity sweep's one
 raw-SQL leg join (``scripts/_integrity_core.TRANSFER_LEG_RECORDS_JOIN``,
-which DC-11's and BA-06's leg arms read) spells :func:`_records._movement_link`
+which BA-06's leg arm reads, and DC-11's did until plan step
+``balance:X-bi-6-4d-3``) spells :func:`_records._movement_link`
 again over the side links, since raw SQL cannot call it; statement match's
 ``_acts.named_rows`` names a payment's parent by :func:`cell_key` over
 :func:`movement_parent` (a transfer side's record its LEG) where it read the

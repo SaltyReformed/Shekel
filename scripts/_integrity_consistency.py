@@ -6,11 +6,7 @@ along its ``--category`` values at plan step ``balance:X-bi-6-4c-4`` (ruling
 **R-BAL161**); ``scripts/_integrity_core.py`` says why.
 """
 
-from scripts._integrity_core import (
-    TRANSFER_LEG_RECORDS_JOIN,
-    CheckSpec,
-    run_check,
-)
+from scripts._integrity_core import CheckSpec, run_check
 
 
 # ── Category 4: Data Consistency ─────────────────────────────────
@@ -280,18 +276,26 @@ def check_data_consistency(session):
     # migration ``45f10b870c8b``, which refused any row where the two
     # disagreed, and a settled row with no movement is the ``$0.00`` record
     # since, ruling **R-BAL82**.)
-    # A settled TRANSFER's money is graded as its LEGS since leaf ``X-bi-6-4a``
-    # (ruling **R-BAL106**; the UNION's second arm, one row per undated leg).
-    # Its leg join is ``_integrity_core.TRANSFER_LEG_RECORDS_JOIN`` since plan
-    # step ``balance:X-bi-6-4c-4``, which BA-06 reads too, so plan step
-    # ``balance:X-bi-6-4d-2`` moved the sweep's one raw spelling of it onto
-    # the side links in one place.
-    # **The row arm grades no SHADOW since that step** (``t.transfer_id IS
-    # NULL`` over the whole arm; it graded a shadow's own missing day until
-    # then).  A shadow holds no money from that step -- its side's record hangs
-    # off the transfer, which the leg arm grades -- and no reader reads a
-    # shadow's status or day: the status seam's Transfer arm writes the
-    # transfer and each side's record and leaves the twins as they were.  So
+    # **A settled TRANSFER's money is not graded here since plan step
+    # ``balance:X-bi-6-4d-3``**, which deleted the LEG arm (one row per
+    # un-dated side record under a settled, live transfer, from leaf
+    # ``X-bi-6-4a``, ruling **R-BAL106**).  The database refuses that state at
+    # COMMIT since ``X-bi-6-4d-2``: the deferred side-band rule
+    # (``app.side_band_infrastructure``) rejects a settled transfer holding an
+    # un-dated side record, firing when a record is written or re-dated and
+    # when a transfer's status moves, so this sweep, which reads only what
+    # was committed, could not meet it.  What the rule cannot see is an
+    # owner's or superuser's edit beneath the application: a trigger bypass
+    # (``session_replication_role = 'replica'``) or a status flipped into the
+    # settled band in ``ref.statuses``, which no attachment watches and which
+    # every other band rule trusts too.
+    # **The row arm grades no SHADOW since plan step ``balance:X-bi-6-4d-2``**
+    # (``t.transfer_id IS NULL`` over the whole arm; it graded a shadow's own
+    # missing day until then).  A shadow holds no money from that step -- its
+    # side's record hangs off the transfer, which the side-band rule holds to
+    # the transfer's status -- and no reader reads a shadow's status or day:
+    # the status seam's Transfer arm writes the transfer and each side's
+    # record and leaves the twins as they were.  So
     # a shadow's day is no fact the fold can miss, and grading it would be
     # wrong as well as idle: a transfer CREATED settled built its twins in
     # its settled status with no day (the create door stated none, and the arm
@@ -303,9 +307,9 @@ def check_data_consistency(session):
     results.append(run_check(session, CheckSpec(
         "DC-11", "consistency", "critical",
         "Settled rows the fold cannot see: no settle day, or a covering "
-        "movement with no day; settled transfers holding an undated leg",
-        f"""
-        SELECT t.id AS transaction_id, NULL::integer AS transfer_id,
+        "movement with no day",
+        """
+        SELECT t.id AS transaction_id,
                t.account_id, s.name AS status, t.settled_on,
                (SELECT COUNT(*) FROM budget.transaction_entries e
                  WHERE e.transaction_id = t.id AND e.covers_settlement)
@@ -325,12 +329,7 @@ def check_data_consistency(session):
                 AND e.settled_on IS NULL
             )
           )
-        UNION ALL
-        SELECT NULL::integer, x.id, e.account_id, s.name, NULL::date, 1, 1
-        FROM budget.transfers x
-        JOIN ref.statuses s ON s.id = x.status_id{TRANSFER_LEG_RECORDS_JOIN}
-        WHERE s.is_settled AND NOT x.is_deleted AND e.settled_on IS NULL
-        ORDER BY transaction_id NULLS LAST, transfer_id, account_id
+        ORDER BY t.id
         """,
     )))
 
