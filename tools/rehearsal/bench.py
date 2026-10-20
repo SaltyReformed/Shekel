@@ -361,10 +361,18 @@ def parse_states(given: list[str]) -> dict[str, str]:
 
 
 @dataclass
-class Bench:
+class Bench:  # pylint: disable=too-many-instance-attributes
     """The bench as a context manager: entering makes it, leaving tears it down and refuses
     (:class:`BenchError`) when anything is left.  ``states`` maps each state's name to the
-    revision of this repository its worktree holds."""
+    revision of this repository its worktree holds.
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- suppressed because each field is one
+    part of the bench as made (its dump, its states, their copies, the cluster's socket, the
+    scratch directory, the dump's listing, the timings and the teardown), which the run reads
+    by name and the teardown undoes one by one; grouping two of them into a sub-record would
+    name a pair nothing reads as one.  It reached 8 at step X-cx's K1c-2, when the crawl
+    needed the scratch directory its responses are kept in until teardown.
+    """
 
     dump: Path
     states: dict[str, str]
@@ -373,6 +381,9 @@ class Bench:
     #: Each state, once made.
     made: dict[str, State] = field(default_factory=dict)
     socket_dir: Path | None = None
+    #: The run's scratch directory, which holds each state's worktree and whatever else a
+    #: run keeps until teardown (a crawl's responses); gone at teardown.
+    scratch: Path | None = None
     #: What the dump says of itself, once its listing is read.
     listing: Listing | None = None
     _teardown: _Teardown = field(default_factory=_Teardown)
@@ -413,6 +424,7 @@ class Bench:
         scratch = Path(tempfile.mkdtemp(prefix="shekel-rehearsal-"))
         self._teardown.callback(self._census, scratch)
         self._teardown.callback(shutil.rmtree, scratch, ignore_errors=True)
+        self.scratch = scratch
         token = cluster("token").strip()
         self._teardown.callback(self._stop_cluster, token)
         began = time.monotonic()
