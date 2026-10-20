@@ -17,7 +17,8 @@
 #   lint           every pylint floor and the checker tests (steps 5-5c),
 #                  skipped when the scope is ``registry-only``.
 #   test           the suite in six shards, each on its own runner through
-#                  ``scripts/test.sh`` (steps 5d-7b), skipped likewise.
+#                  ``scripts/test.sh`` (steps 5d-7b), and the rehearsal kit's
+#                  cluster tests on one of them (step 7c), skipped likewise.
 #   polyglot-lint  the non-Python linters, in every scope (its own check).
 #   lint-and-test  the check branch protection on ``main`` requires.  It
 #                  NEEDS the first seven and runs ``if: always()``, because a
@@ -398,7 +399,8 @@ jobs:
       # floor here.  Its tests that start a real private cluster carry the
       # ``cluster`` marker and are deselected: a registry-only change set
       # cannot change the kit, so a cluster here would grade nothing new (the
-      # coordinator's K1 leaf-plan ruling, item 3).
+      # coordinator's K1 leaf-plan ruling, item 3).  They run in the test job,
+      # step 7c.
       - name: Plan gate (every scope)
         run: |
           pylint tools/plan_gate/ --fail-under=10 --fail-on=E,F --output-format=colorized
@@ -611,9 +613,12 @@ jobs:
         # so a check named ``test (0)`` runs shard 0.
         shard: [0, 1, 2, 3, 4, 5]
     steps:
+      # Depth 2, not the default 1: step 7c's bench case checks out ``HEAD~1``
+      # as its base state, and a depth-1 clone does not hold that commit.
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Set up Python 3.14
@@ -719,6 +724,23 @@ jobs:
       - name: Run audit-trigger benchmarks (serial)
         if: strategy.job-index == 0
         run: ./scripts/test.sh tests/test_performance -q -n 0 -p no:randomly --override-ini=addopts=
+
+      # ── 7c. The rehearsal kit's cluster tests, on ONE shard ──────
+      # ``tools/rehearsal``'s ``cluster`` tests start a real private cluster
+      # from the image step 7 built or verified, and dump and restore with the
+      # IMAGE's own ``pg_dump`` and ``pg_restore``, run inside the cluster's
+      # container, so the runner needs no PostgreSQL tools (ruling
+      # balance:R-BAL327).  The plan gate's step deselects them, since a
+      # registry-only change set cannot change the kit; here they run in the
+      # full scope.  ``CI`` sanctions the runner's own daemon, as in step 7.
+      #
+      # Shard 3 because it had the lowest mean wall time of the six over the
+      # six newest green runs (449-693 s, against 704-742 s for shard 0, which
+      # carries step 7b), measured 2026-10-20.  The bench case's base state is
+      # ``HEAD~1``: hence the checkout's depth of 2.
+      - name: Run the rehearsal kit's cluster tests (shard 3)
+        if: strategy.job-index == 3
+        run: pytest tools/rehearsal -c /dev/null -q -m cluster
 
   lint-and-test:
     needs: [scope, commit-trailers, landing, plan-gate, tax-law, lint, test]

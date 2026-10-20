@@ -11,21 +11,23 @@ What it is built from, each its one home's:
 * Git runs through :mod:`tools.ci.gitcmd`, which strips the variables that bind git to
   another repository (a hook run from a linked worktree sets them), and every worktree is
   ``git worktree add --detach``, never a checkout.
-* The dump is restored by the host's ``pg_restore`` over the cluster's socket, at the URL
-  ``private_cluster.py url`` gives; a host with no ``pg_restore``, or one too old for the
-  dump, is refused by name.
+* The dump is read and restored by the IMAGE's ``pg_restore``, run inside the cluster's
+  container by ``private_cluster.py client`` with the dump on its standard input
+  (:func:`in_cluster`), so neither this host nor CI needs PostgreSQL's tools, and the tools
+  are always the cluster's major (``balance:R-BAL327``).
 
 THE CLUSTER IS OWNED BY A TOKEN made before anything starts, and the stop by it is handed to
 the teardown before the start runs, so a failure or a Ctrl-C at any later point stops what the
 start made.  One window outlives that stop, the cluster module's own: a start KILLed while its
 ``docker run`` is in flight leaves its socket directory, empty.
 
-THE BENCH CHOOSES NO DAEMON.  The cluster goes to the daemon docker itself picks: the one
-``DOCKER_HOST`` names, or else docker's default context, which on this host is the SYSTEM
-daemon that runs production.  ``test.sh`` refuses that daemon and the bench does not (K1a-2's
-review, B1: nothing it does can name or stop another container, so it is churn beside
-production, not a risk to its data), so run it with ``DOCKER_HOST`` at the rootless daemon:
-``export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock``.
+THE DAEMON IS THE CLUSTER MODULE'S.  ``private_cluster.py`` chooses it (``DOCKER_HOST``, else
+the rootless socket in ``XDG_RUNTIME_DIR``) and refuses one that is not rootless unless CI or
+``SHEKEL_ALLOW_HOST_DOCKER=1`` sanctions it, in the start itself (the coordinator's ruling on
+K1a-2's review, B1: a bench that chose none put a cluster holding a production dump on the
+SYSTEM daemon whenever ``DOCKER_HOST`` was unset).  The bench asks it first, before the image is
+prepared, and hands its answer to the image builder (:func:`image_tag`), so a refused daemon
+gets no image and the image is baked where the cluster runs.
 
 A DUMP FROM ANOTHER POSTGRESQL MAJOR IS REFUSED before it is restored.  Every custom-format
 archive records the server that made it (``Dumped from database version``), so production's
@@ -66,6 +68,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
+from typing import IO
 
 import psycopg
 from psycopg import sql
@@ -106,8 +109,12 @@ class State:
     python: Path
 
 
-def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run ``argv`` to its end, its output captured and decoded with ``errors="replace"``.
+def _run(argv: list[str], env: dict[str, str] | None = None, *,
+         stdin: IO[bytes] | int | None = None, stdout: IO[bytes] | int = subprocess.PIPE
+         ) -> subprocess.CompletedProcess[str]:
+    """Run ``argv`` to its end, in ``env`` (this process's when None), reading ``stdin`` (this
+    process's when None), its stderr captured, and its stdout too unless ``stdout`` names where
+    it goes; what is captured is decoded with ``errors="replace"``.
 
     A terminal's Ctrl-C reaches the child as it reaches this process (one process group), so
     the child is WAITED FOR and never killed: ``subprocess.run`` SIGKILLs a child 0.25 s after
@@ -120,8 +127,8 @@ def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
         KeyboardInterrupt: once the child has ended, when a Ctrl-C reached this process.
     """
     try:
-        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   text=True, errors="replace")
+        process = subprocess.Popen(argv, stdin=stdin, stdout=stdout, stderr=subprocess.PIPE,
+                                   text=True, errors="replace", env=env)
     except OSError as exc:
         raise BenchError(f"{argv[0]} cannot be run: {exc}") from exc
     with process:
@@ -146,13 +153,32 @@ def cluster(*args: str) -> str:
     return done.stdout
 
 
-def image_tag() -> str:
-    """The test-db image's tag, built or verified first, as ``test.sh`` has it done.
+def in_cluster(container: str, argv: list[str], *, stdin: IO[bytes] | None = None,
+               stdout: IO[bytes] | None = None) -> subprocess.CompletedProcess[str]:
+    """Run the PostgreSQL client tool ``argv`` inside the cluster's ``container``, by
+    ``private_cluster.py client``, which alone spells the cluster's socket and user there; the
+    tool reads ``stdin`` (nothing, when None) and writes to ``stdout`` (captured, when None).
+    Its exit status is the tool's, for the caller to judge.
 
     Raises:
-        BenchError: when the image cannot be prepared.
+        BenchError: when the cluster module cannot be run.
     """
-    done = _run([sys.executable, str(_IMAGE_BUILDER), "--json"])
+    return _run([sys.executable, str(_CLUSTER), "client", "--", container, *argv],
+                stdin=subprocess.DEVNULL if stdin is None else stdin,
+                stdout=subprocess.PIPE if stdout is None else stdout)
+
+
+def image_tag() -> str:
+    """The test-db image's tag, built or verified first, as ``test.sh`` has it done: on the
+    daemon the cluster will run on, which ``private_cluster.py daemon`` names once it has
+    judged it (the module says why the bench asks it first).
+
+    Raises:
+        BenchError: when the daemon is refused or the image cannot be prepared.
+    """
+    chosen = cluster("daemon").strip()
+    done = _run([sys.executable, str(_IMAGE_BUILDER), "--json"],
+                env={**os.environ, "DOCKER_HOST": chosen} if chosen else None)
     if done.returncode:
         raise BenchError(f"build_test_db_image.py exited {done.returncode}: "
                          f"{(done.stderr or done.stdout).strip()}")
@@ -314,12 +340,12 @@ class Bench:
         token = cluster("token").strip()
         self._stack.callback(self._stop_cluster, token)
         began = time.monotonic()
-        socket_dir, _container = cluster(
+        socket_dir, container = cluster(
             "start", "--", f"shekel-rehearsal-{os.getpid()}-{token[:8]}", token,
             image).splitlines()
         self.socket_dir = Path(socket_dir)
         self._timed("start", began)
-        self._restore()
+        self._restore(container)
         for name, revision in self.states.items():
             self._make_state(name, revision, scratch / name)
 
@@ -327,13 +353,14 @@ class Bench:
         """The URL of ``database`` on this bench's cluster (``private_cluster.py url``)."""
         return cluster("url", str(self.socket_dir), database).strip()
 
-    def _restore(self) -> None:
-        """Restore the dump into :data:`PRISTINE`, once its major is known to be the cluster's.
+    def _restore(self, container: str) -> None:
+        """Restore the dump into :data:`PRISTINE`, once its major is known to be the cluster's,
+        by the cluster's own ``pg_restore``, run in its ``container`` (:meth:`_on_the_dump`).
 
         Raises:
             BenchError: when the dump is another major's, or cannot be read or restored.
         """
-        listed = _run(["pg_restore", "--list", str(self.dump)])
+        listed = self._on_the_dump(container, ["pg_restore", "--list"])
         if listed.returncode:
             raise BenchError(f"pg_restore cannot read {self.dump}: {listed.stderr.strip()}")
         admin = self._url("postgres")
@@ -341,12 +368,27 @@ class Bench:
             refuse_another_major(dump_major(listed.stdout), connection.info.server_version)
             connection.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(PRISTINE)))
         began = time.monotonic()
-        restored = _run(["pg_restore", "--exit-on-error", "--no-owner", "--no-privileges",
-                         "--dbname", self._url(PRISTINE), str(self.dump)])
+        restored = self._on_the_dump(container, ["pg_restore", "--exit-on-error", "--no-owner",
+                                                 "--no-privileges", "--dbname", PRISTINE])
         if restored.returncode:
             raise BenchError(f"pg_restore of {self.dump} exited {restored.returncode}: "
                              f"{restored.stderr.strip()}")
         self._timed("restore", began)
+
+    def _on_the_dump(self, container: str, argv: list[str]
+                     ) -> subprocess.CompletedProcess[str]:
+        """Run the client tool ``argv`` in the cluster's ``container`` with the dump, opened
+        here, on its standard input (:func:`in_cluster`).
+
+        Raises:
+            BenchError: when the dump cannot be opened, or the cluster module cannot be run.
+        """
+        try:
+            archive = self.dump.open("rb")
+        except OSError as exc:
+            raise BenchError(f"the dump {self.dump} cannot be read: {exc}") from exc
+        with archive:
+            return in_cluster(container, argv, stdin=archive)
 
     def _make_state(self, name: str, revision: str, worktree: Path) -> None:
         """Clone :data:`PRISTINE` for state ``name``, add its detached ``worktree``, and find

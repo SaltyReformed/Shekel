@@ -38,6 +38,8 @@ _MODULE = Path(private_cluster.__file__)
 _DIRECTORY = f"shekel-cluster-{_TOKEN}"
 _LABEL = f"shekel.private_cluster.token={_TOKEN}"
 _LISTED = f"ps --all --quiet --filter label={_LABEL}"
+# What a start asks the daemon before it makes anything (``private_cluster.daemon``).
+_ASKED = "info --format {{.SecurityOptions}}"
 # The id the stub gives the container a start makes.
 _MADE = "c0ffee"
 _CONTAINER_LEFT = (f"container {_MADE} of cluster {_TOKEN} survived teardown -- remove it by "
@@ -57,7 +59,10 @@ class _Behaviour:
     lists the ids of the containers whose label is exactly the one its filter names (any
     value, given only the key, as docker's filter does), or exits 1 as an ``unreachable``
     daemon does; ``rm`` removes the containers it is given by id or by name unless
-    ``survives``; ``exec`` (the readiness probe) answers ``ready``.  The command
+    ``survives``; ``exec`` (the readiness probe, or ``client``'s tool) answers ``ready``, and
+    given ``-i`` first echoes its stdin and writes on stderr the daemon it was handed
+    (``DOCKER_HOST``); ``info`` says the daemon is rootless unless ``rootless`` is False.  The
+    command
     named ``slow`` takes 2 seconds; a ``run`` CLI signalled in that wait exits at once and
     its create lands 0.5 s later, as the daemon finishes a create its CLI abandoned (the
     delta review of bb2f1492a's MEDIUM-A).
@@ -69,6 +74,7 @@ class _Behaviour:
     survives: bool = False
     unreachable: bool = False
     slow: str = ""
+    rootless: bool = True
 
 
 _WORKS = _Behaviour()
@@ -180,7 +186,12 @@ class _Stub:
             "        if wanted in (label, label.split('=', 1)[0]):\n"
             "            print(c)\n"
             "elif cmd == 'exec':\n"
+            "    if '-i' in args:\n"
+            "        sys.stdout.buffer.write(sys.stdin.buffer.read())\n"
+            "        sys.stderr.write(os.environ.get('DOCKER_HOST', ''))\n"
             f"    sys.exit(0 if {behaviour.ready!r} else 1)\n"
+            "elif cmd == 'info':\n"
+            f"    print({'[name=rootless]' if behaviour.rootless else '[name=seccomp]'!r})\n"
             "sys.exit(0)\n",
             encoding="utf-8",
         )
@@ -223,10 +234,11 @@ def _unpin(directory: Path) -> None:
 def test_a_started_cluster_is_reached_by_its_socket_and_stopping_it_leaves_nothing(
         docker, runtime, capfd):
     """``start`` makes the token's socket directory open to the container (0777), starts the
-    container labelled with the token, probes it over ``/sockets`` by its id and prints the
+    container labelled with the token, probes it by its id over ``/sockets`` as the image's user
+    (``client``'s spelling, its stdin not attached) and prints the
     socket directory, then the container's id; the socket is in it.  ``stop`` lists what
     carries the token, removes it by id with its volume, lists again, removes the directory,
-    names nothing and exits 0.  The start asks docker nothing before its run.
+    names nothing and exits 0.  Before its run, the start asks docker only what daemon it is.
 
     The two lines are read from the process's file descriptor 1, where ``test.sh`` reads
     them: the start writes them there as bytes, never through ``sys.stdout`` (K1a commit B3)."""
@@ -240,9 +252,9 @@ def test_a_started_cluster_is_reached_by_its_socket_and_stopping_it_leaves_nothi
     assert not (runtime / _DIRECTORY).exists()
     assert not stub.made.exists()
     calls = stub.calls()
-    assert calls[0].startswith("run ") and calls[1:] == [
-        f"exec {_MADE} pg_isready -q -h /sockets -U shekel_user", _LISTED, f"rm -fv {_MADE}",
-        _LISTED]
+    assert calls[0] == _ASKED and calls[1].startswith("run ") and calls[2:] == [
+        f"exec -e PGHOST=/sockets -e PGUSER=shekel_user {_MADE} pg_isready -q", _LISTED,
+        f"rm -fv {_MADE}", _LISTED]
 
 
 def test_a_token_is_new_each_time_and_is_one_a_start_takes(capsys):
@@ -262,7 +274,44 @@ def test_url_names_the_database_on_the_socket_directory_as_the_cluster_s_user(ca
     byte: the baked image's user and password, the database, the socket directory as host."""
     assert private_cluster.main(["url", "/run/user/1000/shekel-cluster-ab", "shekel_test"]) == 0
     assert capsys.readouterr().out == (
-        "postgresql://shekel_user:shekel_pass@/shekel_test?host=/run/user/1000/shekel-cluster-ab\n")
+        "postgresql://shekel_user:shekel_pass@/shekel_test"
+        "?host=/run/user/1000/shekel-cluster-ab\n")
+
+
+@pytest.mark.parametrize("ready", [True, False], ids=["the tool succeeds", "the tool fails"])
+def test_client_becomes_the_tool_in_the_container_its_bytes_and_status_the_tool_s(
+        docker, runtime, ready):
+    """``client`` runs a client tool INSIDE the container at its socket as the image's user,
+    stdin attached (``balance:R-BAL327``).  The process becomes that ``docker exec``, so the
+    bytes it reads reach the tool, its stdout and exit status are the tool's, and docker is
+    handed the daemon a start goes to: here the rootless socket in ``XDG_RUNTIME_DIR``, with
+    ``DOCKER_HOST`` unset.  Run as a command, since it replaces the process it runs in."""
+    stub = docker(_Behaviour(ready=ready))
+    rootless = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    rootless.bind(str(runtime / "docker.sock"))
+    try:
+        ran = subprocess.run(
+            [sys.executable, str(_MODULE), "client", "--", _MADE, "pg_restore", "--list"],
+            input=b"\x00a dump\xff", capture_output=True, check=False, timeout=30,
+            env={name: value for name, value in os.environ.items() if name != "DOCKER_HOST"})
+    finally:
+        rootless.close()
+    assert (ran.returncode, ran.stdout, ran.stderr) == (
+        0 if ready else 1, b"\x00a dump\xff", os.fsencode(f"unix://{runtime}/docker.sock"))
+    assert stub.calls() == [
+        f"exec -i -e PGHOST=/sockets -e PGUSER=shekel_user {_MADE} pg_restore --list"]
+
+
+def test_client_names_a_docker_it_cannot_run_and_exits_2(tmp_path, monkeypatch):
+    """A ``docker`` that cannot be executed is named, exit 2, never a traceback: ``PATH`` holds
+    ONLY that one, so the real docker is never reached."""
+    (tmp_path / "docker").write_text("#!/bin/sh\n", encoding="utf-8")
+    (tmp_path / "docker").chmod(0o644)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    ran = subprocess.run([sys.executable, str(_MODULE), "client", _MADE, "psql"],
+                         capture_output=True, text=True, check=False, timeout=30)
+    assert (ran.returncode, ran.stdout, ran.stderr) == (2, "", (
+        f"[private_cluster] docker cannot be run: Permission denied: {tmp_path}/docker\n"))
 
 
 def test_the_run_is_the_one_the_suite_reads_argument_for_argument(docker, runtime):
@@ -273,7 +322,7 @@ def test_the_run_is_the_one_the_suite_reads_argument_for_argument(docker, runtim
     ``-c`` setting the suite relies on, the non-durable three among them."""
     stub = docker()
     private_cluster.start(_NAME, _TOKEN, _IMAGE)
-    assert stub.calls()[0].split() == [
+    assert stub.calls()[1].split() == [
         "run", "-d", "--rm", "--name", _NAME, "--label", _LABEL, "--network=none",
         "-e", "POSTGRES_USER=shekel_user", "-e", "POSTGRES_PASSWORD=shekel_pass",
         "-e", "POSTGRES_DB=postgres", "-e", "PGDATA=/pgdata-baked",
@@ -383,6 +432,29 @@ def test_a_malformed_token_is_refused_before_anything_is_asked_or_removed(
     assert (runtime / "kept").exists()
 
 
+@pytest.mark.parametrize("answer", ["not rootless", "cannot be asked"])
+def test_a_daemon_that_is_not_rootless_is_refused_before_anything_is_made(
+        docker, runtime, monkeypatch, capsys, answer):
+    """The coordinator's ruling 1 on K1a-2's review (B1): the refusal lives in the act that
+    starts a cluster, so no caller can start one on the system daemon, which runs production.
+    A daemon that says it is not rootless, or cannot say what it is, with neither sanction
+    set, fails the start (exit 2) naming why and the way past it, having asked docker only
+    that: no socket directory, no run.  ``CI`` and ``SHEKEL_ALLOW_HOST_DOCKER`` are cleared,
+    since CI sets the first and either would sanction the daemon."""
+    stub = docker(_Behaviour(rootless=False, unreachable=answer == "cannot be asked"))
+    if answer == "cannot be asked":
+        (stub.binaries / "docker").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("SHEKEL_ALLOW_HOST_DOCKER", raising=False)
+    assert private_cluster.main(["start", _NAME, _TOKEN, _IMAGE]) == 2
+    said = {"not rootless": ("is not rootless", "SHEKEL_ALLOW_HOST_DOCKER=1 to accept"),
+            "cannot be asked": ("could not ask", "systemctl --user start docker.service")}
+    err = capsys.readouterr().err
+    assert all(part in err for part in said[answer]), err
+    assert stub.calls() == ([_ASKED] if answer == "not rootless" else [])
+    assert not (runtime / _DIRECTORY).exists()
+
+
 @pytest.mark.parametrize("kind", ["a file", "a symlink"])
 def test_anything_already_at_the_socket_directory_s_path_is_refused_never_taken_over(
         docker, runtime, capsys, kind):
@@ -433,7 +505,7 @@ def test_a_socket_directory_that_cannot_be_made_is_named_never_a_traceback(
     finally:
         runtime.chmod(0o700)
     assert err == f"[private_cluster] socket directory {held} cannot be made: {said}: '{held}'\n"
-    assert stub.calls() == [_LISTED]
+    assert stub.calls() == [_ASKED, _LISTED]
 
 
 def _wait_for(stub: _Stub, command: str) -> None:
@@ -489,8 +561,8 @@ def test_ctrl_c_ends_a_start_by_sigint_once_it_has_stopped_what_it_made(
     group, as a terminal sends it, stops what the start made, NAMES each thing that stop
     could not remove, and ends the start BY SIGINT with no traceback, so the shell that ran
     it stops too: an exit status of 130 tells a shell the child dealt with the Ctrl-C, and it
-    went on to its next command.  (A Ctrl-C before anything is made has no docker command
-    left to land in: the start asks docker nothing before its run.)"""
+    went on to its next command.  (A Ctrl-C before anything is made, while the start asks the
+    daemon what it is, ends it as Python ends on one: there is nothing to stop.)"""
     stub = docker(behaviour)
     with _start_in_a_shell('; echo "carried on: $?"') as shell:
         _wait_for(stub, "exec")

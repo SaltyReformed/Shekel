@@ -61,14 +61,20 @@ UNGUARDED_CODE_STEPS = {
 #: The step conditions a graded job may carry, each for its own reason.  A step
 #: skipped by its own ``if:`` leaves its job ``success``, so ``ci_verdict`` would
 #: read a skipped GRADER as green: every other step in a graded job runs
-#: unconditionally.  The serial benchmarks run on one shard of six.  The landing
+#: unconditionally.  The serial benchmarks run on one shard of six, and so do the
+#: rehearsal kit's cluster tests (ruling balance:R-BAL327), on another.  The landing
 #: job's mint grades nothing: it is skipped on a run handed no key (GitHub
 #: documents that a Dependabot run and a fork's pull request get no Actions
 #: secrets), and the check after it, which has no condition, then refuses to
 #: judge a change set naming a card, so the skip can never turn a needed read
 #: green (step X-cx's L9d).
+#: The test job's step that runs the rehearsal kit's cluster tests, and the shard it runs on.
+REHEARSAL_STEP = "Run the rehearsal kit's cluster tests (shard 3)"
+REHEARSAL_SHARD = 3
+
 STEP_CONDITIONS = {
     ("test", "Run audit-trigger benchmarks (serial)"): "strategy.job-index == 0",
+    ("test", REHEARSAL_STEP): f"strategy.job-index == {REHEARSAL_SHARD}",
     ("landing", "Mint the tracker read token"): "env.PLAN_READER_KEY_PRESENT == 'true'",
 }
 
@@ -146,6 +152,7 @@ class TestTheWorkflowIsWiredToTheAnswer:
             "test": [
                 "Run tests",
                 "Run audit-trigger benchmarks (serial)",
+                REHEARSAL_STEP,
             ],
         }
         for job, names in graders.items():
@@ -184,6 +191,20 @@ class TestTheWorkflowIsWiredToTheAnswer:
         run = _steps("plan-gate")["Plan gate (every scope)"]["run"]
         assert "pylint tools/rehearsal/ --fail-under=10 --fail-on=E,F" in run
         assert 'pytest tools/rehearsal -c /dev/null -q -m "not cluster"' in run
+
+    def test_the_rehearsal_kit_s_cluster_tests_run_on_one_shard_that_holds_their_base(self):
+        """The ``cluster`` tests the plan gate deselects run in the guarded test job, on ONE
+        shard, which must be one the matrix still has: a shard index past its end would skip
+        the step on every run, and a skipped step reads green (ruling balance:R-BAL327).  The
+        job's checkout fetches depth 2, since the bench case's base state is ``HEAD~1``, which
+        a depth-1 clone does not hold."""
+        job = _jobs()["test"]
+        step = _steps("test")[REHEARSAL_STEP]
+        assert step["run"] == "pytest tools/rehearsal -c /dev/null -q -m cluster"
+        assert step["if"] == f"strategy.job-index == {REHEARSAL_SHARD}"
+        assert REHEARSAL_SHARD in job["strategy"]["matrix"]["shard"]
+        assert _steps("test")["Checkout code"]["with"] == {"fetch-depth": 2,
+                                                            "persist-credentials": False}
 
     def test_no_code_running_job_escapes_the_guard(self):
         """A job that runs pytest, pylint, a script or ``test.sh`` is guarded or named here."""
