@@ -680,14 +680,14 @@ class TestGenerateTransferOf:
         :class:`~app.services.transfer_legs.TransferLeg` stores no amount of
         its own (it holds its parent and, once settled, its record; a
         still-planned leg is worth what its parent resolves to), and the
-        declaration's one writer in ``app/``,
-        ``transfer_service._amount.apply_amount_ownership``, writes it onto
-        ``TransferRows.shadows``, empty on every transfer -- an arm the step's
-        second leaf deletes (``TransferRows``'s docstring, in
+        declaration's one writer in ``app/`` is gone: the loop in
+        ``transfer_service._amount.apply_amount_ownership`` that wrote it onto
+        ``TransferRows.shadows``, empty on every transfer, went with that
+        attribute at the step's second leaf (``TransferRows``'s docstring, in
         ``app/services/transfer_service/_validation.py``).  Measured
-        2026-10-18: that writer declaring ``TEMPLATE`` in its place fails no
-        test the unmutated suite passes, over the whole suite (the
-        coordinator's ruling, **R-BAL207**).
+        2026-10-18, before that deletion: the loop declaring ``TEMPLATE`` in
+        its place failed no test the unmutated suite passed, over the whole
+        suite (the coordinator's ruling, **R-BAL207**).
         """
         with app.app_context():
             savings = create_savings_account(
