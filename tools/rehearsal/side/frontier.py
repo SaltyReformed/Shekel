@@ -30,7 +30,29 @@ LIMIT, since earlier swaps may have changed that page in a browser.
 
 WHAT IT CANNOT ASSEMBLE IS NAMED, never guessed (:attr:`Found.unassembled`): an ``hx-vals``
 evaluated as script, a selector in a form this module does not read, an ``hx-target`` found
-nowhere (the request is kept, without ``HX-Target``).
+nowhere (the request is kept, without ``HX-Target``, where htmx issues none: the page as
+served may lack a target an earlier swap made).
+
+WHERE IT DEPARTS FROM A BROWSER, each found by K1c-1's review against htmx 2.0.10's source;
+on the seeded pages that review read, only the ``required`` one met a template
+(``salary/stub_payday.html``, whose empty submit reads a 422):
+
+* in a fragment, ``closest`` and every inherited attribute stop at the fragment's own root,
+  where a browser's carry on into the page around the swap; a plain selector falls back to
+  that page part by part, never as the union a browser's ``querySelectorAll`` returns;
+* ``hx-include``'s parts are read in the order written, where htmx reads ``closest`` and
+  ``find`` parts first, so a control outside a form that the form also names is sent once;
+* ``hx-push-url`` is read on the element only, and any value but ``false`` pushes the
+  request's own URL, where htmx inherits it and pushes a URL it is given;
+* a disabled option is varied, and a form with an empty ``required`` control is submitted,
+  where a browser allows neither;
+* ``HX-Current-URL`` carries the document's path and query, not the browser's whole address
+  (its one reader, ``app/routes/_render_helpers.py``, reads only the query);
+* a ``year`` of ``0000``, an ISO month ``0000-01`` or a month at ``9999-12`` raises in
+  :func:`followed`;
+* :meth:`Node.walk` recurses, so a page nesting 1,000 elements raises ``RecursionError``
+  (measured 2026-10-20 at Python's default limit: 950 reads);
+* ``hx-vals``: see :func:`_vals` and :func:`_js_string`.
 
 THE KEY (:meth:`Request.key`): a request is fetched once, keyed by its path and its query,
 keys sorted (:func:`canonical`), and by whether htmx issues it, since a view answers htmx
@@ -340,7 +362,10 @@ def _inherited(element: Node, name: str) -> tuple[Node, str] | None:
 
 
 def _js_string(value: object) -> list[str]:
-    """A JSON value as ``FormData.append`` stringifies it, an array one value per item."""
+    """A JSON value as ``FormData.append`` stringifies it, an array one value per item.  An
+    object is written ``[object Object]``, which is htmx's for an object inside an array; a
+    top-level one htmx JSON-encodes (``formDataFromObject``), a departure no template's
+    ``hx-vals`` exercises."""
     if isinstance(value, list):
         return [text for item in value for text in _js_string(item)]
     if isinstance(value, bool):
@@ -356,7 +381,9 @@ def _js_string(value: object) -> list[str]:
 
 def _vals(element: Node, found: Found, where: str) -> list[Pair]:
     """htmx's ``getExpressionVars`` for ``hx-vals``: each of the element's and its ancestors'
-    JSON objects, the nearest key winning; one evaluated as script is named and adds nothing."""
+    JSON objects, the nearest key winning, a ``null`` included (htmx lets a farther value win
+    over a nearest ``null``, a departure no template exercises); one evaluated as script is
+    named and adds nothing."""
     merged: dict[str, object] = {}
     for node in element.lineage():
         text = node.attrs.get("hx-vals", node.attrs.get("data-hx-vals"))

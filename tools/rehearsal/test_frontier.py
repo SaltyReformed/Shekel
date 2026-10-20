@@ -226,7 +226,9 @@ def test_a_selector_in_a_form_not_read_is_named_and_selects_nothing():
 
 def test_hx_vals_merge_up_the_ancestors_the_nearest_key_winning_over_any_control():
     """Each ancestor's JSON object adds its keys, the element's own first; a key replaces
-    every control of its name; values are stringified as ``FormData`` does."""
+    every control of its name; values are stringified as ``FormData`` does, a top-level
+    object as the module writes it (``[object Object]``; htmx JSON-encodes one, a departure
+    its docstring states)."""
     body = ('<div hx-vals=\'{"far": "1", "near": "outer"}\'>'
             '<form method="post"><input name="near" value="control">'
             '<input name="other" value="o">'
