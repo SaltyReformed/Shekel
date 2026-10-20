@@ -5,7 +5,8 @@
 starts and stops it here; the release rehearsal kit's bench
 (``tools/rehearsal/bench.py``, step X-cx's K1) starts its own here too, so there is one
 ``docker run``, one readiness rule and one teardown (the coordinator's K1 leaf-plan ruling,
-2026-10-18, point 1).  It is a container on
+2026-10-18, point 1), and one way a client tool reaches the cluster from inside its
+container (``balance:R-BAL327``).  It is a container on
 a rootless daemon this module chooses, and refuses any other (:func:`daemon`), reached over a
 UNIX SOCKET in a directory under ``XDG_RUNTIME_DIR``, with no network and no port.
 
@@ -26,28 +27,35 @@ Usage::
     python scripts/private_cluster.py start <name> <token> <image>
     python scripts/private_cluster.py stop <token>
     python scripts/private_cluster.py url <socket-dir> <database>
+    python scripts/private_cluster.py client <container> <tool> [<argument> ...]
 
 ``token`` prints a new token.  ``daemon`` prints the daemon a cluster goes to, as the
 ``DOCKER_HOST`` docker is handed (an empty line for docker's own default), once it is known to
 be one a cluster may go to (:func:`daemon`); a caller that runs docker itself before the start
 -- the image builder -- hands it on.  ``url`` prints the URL a caller connects to a database of
 a started cluster by, from the socket directory ``start`` handed over (:func:`url`).
+``client`` runs a PostgreSQL client tool -- ``pg_restore``, ``pg_dump``, ``psql`` -- INSIDE
+a started cluster's container, given its id, at the cluster's socket as the image's user
+(:func:`_in_container`).  The process BECOMES that ``docker exec``, so what it reads reaches
+the tool, and what the tool writes and its exit status are the caller's.  The tools are the
+image's, so a caller needs no PostgreSQL tools of its own, and theirs are always the
+cluster's major (``balance:R-BAL327``).
+
 ``start`` prints the socket directory, then the container's id, one per line, once the
-cluster accepts connections there.  A start that fails stops
-what it made, naming anything that stop left behind, and writing those two lines is the
-last thing it can fail at: a start that cannot write them -- to a pipe nobody reads any
-more, its caller killed while it waited, or anywhere else a write fails -- stops the
-cluster too, since no caller can have it (K1a commit B3).  One killed outright (KILL)
-cannot stop anything, which is why the caller makes the token before starting and stops
-by it.  That stop leaves nothing, but for one window: a start KILLed while its ``docker
-run`` is in flight leaves its socket directory, empty.  The create finishes after the
-caller's stop has removed the directory, and docker makes it again as the mount's source
-(16 of 16 on the rootless daemon, K1a's review, 2026-10-19; the container ends by itself
-under ``--rm``).  ``stop`` removes
-the token's container with its anonymous volume, and its socket directory, and names on
-stderr anything that survived or could not be asked about; it is safe to run on a cluster
-that never started, or twice, which is what lets a caller's signal traps call it whenever
-they fire.
+cluster accepts connections there.  A start that fails stops what it made, naming anything
+that stop left behind, and writing those two lines is the last thing it can fail at: a start
+that cannot write them -- to a pipe nobody reads any more, its caller killed while it
+waited, or anywhere else a write fails -- stops the cluster too, since no caller can have
+it (K1a commit B3).  One killed outright (KILL) cannot stop anything, which is why the
+caller makes the token before starting and stops by it.  That stop leaves nothing, but for
+one window: a start KILLed while its ``docker run`` is in flight leaves its socket
+directory, empty.  The create finishes after the caller's stop has removed the directory,
+and docker makes it again as the mount's source (16 of 16 on the rootless daemon, K1a's
+review, 2026-10-19; the container ends by itself under ``--rm``).  ``stop`` removes the
+token's container with its anonymous volume, and its socket directory, and names on stderr
+anything that survived or could not be asked about; it is safe to run on a cluster that
+never started, or twice, which is what lets a caller's signal traps call it whenever they
+fire.
 
 From just before it makes anything until it has handed over a cluster that accepts
 connections (on the command line: until those two lines are written), or has stopped what
@@ -62,7 +70,9 @@ looked (the delta review of 668b53c99 + bb2f1492a, MEDIUM-A).
 Exit status: 0 done; 1 ``stop`` left something behind, each named; 2 ``start`` could not give
 a cluster that accepts connections, or could not hand one over, or refused before making
 anything (each reason printed, and anything its own stop left behind), or ``daemon`` refused
-the daemon, or the command line was wrong.  A start that cannot write on stderr either, to say
+the daemon, or ``client`` could not run docker at all, or the command line was wrong.
+``client`` otherwise exits as the tool did, or as ``docker exec`` did when it could not run
+the tool there (no such container).  A start that cannot write on stderr either, to say
 why, has run its stop all the same, and exits 120, CPython's status for an output it cannot
 flush as it exits.  A start ended by a held signal ends BY that signal, as Python ends on an
 unhandled Ctrl-C; ``main`` ends the process it runs in that way, so a caller in process wants
@@ -434,6 +444,30 @@ def url(directory: Path | str, database: str) -> str:
     return f"postgresql://{_USER}:{_PASSWORD}@/{database}?host={directory}"
 
 
+def _in_container(container: str, tool: str, *args: str, attach_stdin: bool = False
+                  ) -> list[str]:
+    """The docker arguments that run the PostgreSQL client ``tool``, given ``args``, inside
+    ``container``, at the cluster's socket as the image's user: the ONE home of that spelling
+    from inside the container (``balance:R-BAL327``), which the readiness probe and
+    ``client`` both run.
+
+    The socket and the user go in as libpq's ``PGHOST`` and ``PGUSER``, so the tool's own
+    arguments say only what it is to do, and name a database by its name.  ``attach_stdin``
+    hands the tool docker's standard input (``-i``): ``client`` does, for a dump the tool is
+    to read; the probe reads nothing, and attached, docker would read whatever its caller's
+    standard input holds, a terminal's keystrokes included.
+    """
+    return ["exec", *(["-i"] if attach_stdin else []), "-e", f"PGHOST={_SOCKETS}",
+            "-e", f"PGUSER={_USER}", container, tool, *args]
+
+
+def _docker_env() -> dict[str, str]:
+    """The environment a docker command runs in: this process's, with ``DOCKER_HOST`` the
+    daemon :func:`_endpoint` names when it names one."""
+    endpoint = _endpoint()
+    return {**os.environ, "DOCKER_HOST": endpoint} if endpoint else dict(os.environ)
+
+
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:
     """One docker command, its output captured; a daemon that does not answer within
     :data:`_DOCKER_TIMEOUT_SECONDS` is reported as one, where a shell waited forever.
@@ -458,12 +492,10 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
     Raises:
         ClusterError: when docker cannot be run or does not answer in time.
     """
-    endpoint = _endpoint()
     try:
         return subprocess.run(["docker", *args], capture_output=True, text=True,
                               errors="replace", check=False, start_new_session=True,
-                              timeout=_DOCKER_TIMEOUT_SECONDS,
-                              env={**os.environ, "DOCKER_HOST": endpoint} if endpoint else None)
+                              timeout=_DOCKER_TIMEOUT_SECONDS, env=_docker_env())
     except subprocess.TimeoutExpired as exc:
         raise ClusterError(f"docker {args[0]} did not answer within "
                            f"{_DOCKER_TIMEOUT_SECONDS}s; the daemon may be wedged") from exc
@@ -620,7 +652,7 @@ def _wait_ready(name: str, container: str, directory: Path, seconds: float,
     """
     deadline = time.monotonic() + seconds
     while True:
-        probed = _docker("exec", container, "pg_isready", "-q", "-h", _SOCKETS, "-U", _USER)
+        probed = _docker(*_in_container(container, "pg_isready", "-q"))
         held.act()
         if not probed.returncode:
             break
@@ -820,8 +852,25 @@ def _stop(args: argparse.Namespace) -> int:
     return 1 if survived else 0
 
 
+def _client(args: argparse.Namespace) -> int:
+    """``client``, as the module says: this process BECOMES the ``docker exec`` that runs the
+    tool, handed the daemon :func:`_endpoint` names, so a dump streams to the tool and its
+    output back with no copy in between, and the tool's exit status is this process's.  It
+    returns only when docker cannot be run at all, naming why: exit 2."""
+    argv = ["docker", *_in_container(args.container, args.tool, *args.arguments,
+                                     attach_stdin=True)]
+    try:
+        os.execvpe("docker", argv, _docker_env())
+    except OSError as exc:
+        # The path ``execvpe`` tried is BYTES, which its own message would quote as ``b'...'``.
+        print(f"[private_cluster] docker cannot be run: {exc.strerror}: "
+              f"{os.fsdecode(exc.filename)}", file=sys.stderr)
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Make a token, or start or stop a cluster, as the module says; its exit status."""
+    """Make a token, start or stop a cluster, or run a client tool in one, as the module says;
+    its exit status."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("token", help="print a new token, to own a cluster by")
@@ -839,6 +888,11 @@ def main(argv: list[str] | None = None) -> int:
                                      "cluster, from its socket directory")
     connecting.add_argument("socket_dir")
     connecting.add_argument("database")
+    entering = commands.add_parser("client", help="run a PostgreSQL client tool inside a "
+                                   "started cluster's container, at its socket")
+    entering.add_argument("container")
+    entering.add_argument("tool")
+    entering.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if args.command == "token":
         print(new_token())
@@ -853,6 +907,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[private_cluster] {exc}", file=sys.stderr)
             return 2
         return 0
+    if args.command == "client":
+        return _client(args)
     return _start(args) if args.command == "start" else _stop(args)
 
 

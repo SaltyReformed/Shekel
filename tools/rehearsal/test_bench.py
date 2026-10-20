@@ -3,9 +3,9 @@ teardown whose census names anything left (step X-cx's K1a-2).
 
 The cases marked ``cluster`` start a real private cluster (``scripts/private_cluster.py``) on
 the daemon that module chooses (the rootless one, unless CI sanctions its own), and restore a
-dump planted by the module's fixture, so they need docker, the test-db image and the host's
-``pg_dump`` and ``pg_restore``; the conftest says where they run.  The
-rest grade the bench's pure parts on planted inputs.
+dump planted by the module's fixture, so they need docker and the test-db image, whose own
+``pg_dump`` and ``pg_restore`` run inside the cluster (``balance:R-BAL327``); the conftest
+says where they run.  The rest grade the bench's pure parts on planted inputs.
 """
 from __future__ import annotations
 
@@ -130,13 +130,37 @@ def test_a_venv_pip_could_not_install_is_named_and_never_marked_built(tmp_path, 
     assert not list((tmp_path / "cache").rglob(".rehearsal-built"))
 
 
+def test_a_dump_that_cannot_be_opened_is_refused_by_name_before_any_tool_runs(tmp_path,
+                                                                              monkeypatch):
+    """The bench opens the dump itself, to hand it to the cluster's ``pg_restore`` on its
+    standard input, so a dump it cannot open fails the bench naming it, with no tool run in
+    the cluster and the cluster it started stopped.  The cluster module is a stand-in that
+    answers each command and records it."""
+    commands: list[str] = []
+
+    def cluster_module(argv: list[str], **_given: object) -> subprocess.CompletedProcess[str]:
+        """Answer as ``private_cluster.py`` would, recording which command it was given."""
+        commands.append(argv[2])
+        said = {"token": "01" * 16 + "\n", "start": f"{tmp_path}/sockets\nc0ffee\n"}
+        return subprocess.CompletedProcess(argv, 0, said.get(argv[2], ""), "")
+
+    monkeypatch.setattr(bench, "image_tag", lambda: "stub-image:test")
+    monkeypatch.setattr(bench, "_run", cluster_module)
+    absent = tmp_path / "absent.dump"
+    with pytest.raises(BenchError) as refused:
+        with Bench(absent, {"cut": "HEAD"}):
+            pass
+    assert str(refused.value).startswith(f"the dump {absent} cannot be read: [Errno 2] No such")
+    assert commands == ["token", "start", "stop"]
+
+
 @pytest.fixture(name="dump", scope="module")
 def _dump(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     """A ``pg_dump -Fc`` archive of a planted database: one table, two rows of money."""
     path = tmp_path_factory.mktemp("dump") / "planted.dump"
     token = bench.cluster("token").strip()
     try:
-        socket_dir, _container = bench.cluster(
+        socket_dir, container = bench.cluster(
             "start", "--", f"shekel-rehearsal-test-{os.getpid()}-{token[:8]}", token,
             bench.image_tag()).splitlines()
         with psycopg.connect(bench.cluster("url", socket_dir, "postgres").strip(),
@@ -147,8 +171,10 @@ def _dump(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
             connection.execute(
                 "CREATE TABLE ledger (id integer PRIMARY KEY, amount numeric(12, 2))")
             connection.execute("INSERT INTO ledger VALUES (1, 12.34), (2, 0.01)")
-        subprocess.run(["pg_dump", "--format=custom", "--file", str(path), "--dbname", planted],
-                       check=True, capture_output=True)
+        with path.open("wb") as archive:
+            dumped = bench.in_cluster(container, ["pg_dump", "--format=custom", "--dbname",
+                                                  "planted"], stdout=archive)
+        assert dumped.returncode == 0, dumped.stderr
     finally:
         bench.cluster("stop", token)
     yield path
