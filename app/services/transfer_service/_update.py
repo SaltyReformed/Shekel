@@ -643,15 +643,14 @@ def settle_transfer(
     four modules and its settle day was written twice per tick, the second
     time through the door ruling **R-ED** built for a user CORRECTING a day.
 
-    **Both legs and the parent move in this one call**, which is ``CLAUDE.md``
-    transfer invariants 3 and 4 held structurally rather than by each caller
-    remembering them.  ``transaction_service.settle_transaction`` REFUSES a
-    shadow outright and names this module as where one goes.
-
-    **The status is DONE for all three rows, including the INCOME leg.**  The
-    Paid/Received split is a display convention for ordinary rows and it is
-    meaningless for a pair whose whole point is that one leg is each, so one
-    status covers all three.
+    **The transfer and both its sides move in this one call**: the transfer's
+    status, and each side's payment record on its own day, written by the ONE
+    writer (``_status.apply_status_to_all_three``).  That is CLAUDE.md's rule
+    that every write of a transfer goes through this package, kept here so no
+    caller has to remember it.  **The
+    status is DONE, never RECEIVED, though one side is an income**: the
+    Paid/Received split is a display convention for ordinary rows and
+    meaningless for a transfer, whose whole point is that one side is each.
 
     Does NOT commit -- the caller owns the session boundary.
 
@@ -660,7 +659,7 @@ def settle_transfer(
         user_id: The expected owner (defense-in-depth).
         submitted: The figure a door stated and who wrote it
             (:class:`~app.services.stated_figure.StatedFigure`; the reconcile
-            panel's amount box and the shadow popover, both ``typed``).
+            panel's amount box, ``typed``).
             ``None`` means nobody stated one, and the settle then books what
             the row is worth.
         side_days: The day the money moved on an ACCOUNT and how it is known

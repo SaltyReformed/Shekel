@@ -7,14 +7,14 @@ package.  Direct ORM manipulation of budget.transfers is forbidden
 outside it and the transfer recurrence engine (which delegates
 to this service for the final insert step).
 
-The service enforces the five core invariants (design doc section 4.5):
-
-  1. Every transfer has exactly two linked shadow transactions
-     (one expense, one income).
-  2. Shadow transactions are never orphaned.
-  3. Shadow amounts always equal the transfer amount.
-  4. Shadow statuses always equal the transfer status.
-  5. Shadow periods always equal the transfer period.
+The transfer rules are CLAUDE.md's (the end of its Architecture section).  A
+transfer is one row, and the database refuses the states its sides' payment
+records may not reach (``ck_transactions_names_no_transfer``, the side keys,
+and the deferred rules in ``app/side_band_infrastructure.py`` and
+``app/deleted_row_infrastructure.py``).  The two rules it cannot refuse are
+kept here: every write of a transfer goes through this package, and a settled
+transfer's amount is its sides' records.  Plan steps ``balance:X-eu`` and
+``balance:X-bi-6-4d-4`` make them structural.
 
 **Why it is a PACKAGE, and it is findings N-152 / N-156 ANSWERED rather
 than deferred again.**  This was one module and four ``_transfer_*``
