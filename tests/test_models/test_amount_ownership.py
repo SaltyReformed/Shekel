@@ -65,8 +65,7 @@ from app.enums import (
 )
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
-from app.models.ref import AmountSource, FilingStatus, TransactionType
-from app.models.salary_profile import SalaryProfile
+from app.models.ref import AmountSource, TransactionType
 from app.models.template_amount_version import TemplateAmountVersion
 from app.models.transaction_template import TransactionTemplate
 from app.models.amount_ownership import AmountOwnership
@@ -81,7 +80,6 @@ from tests._test_helpers import (
     make_every_period_rule,
     repriced_by_the_owner,
     settle_day_columns,
-    start_test_pay_list,
 )
 from app.services.cash_ledger import (
     derived_amount_basis,
@@ -101,50 +99,6 @@ _TEMPLATE_CUTOVER = load_migration_module(
 _TRANSFER_CUTOVER = load_migration_module(
     "b7e4c1f38a20_a_generated_transfer_reads_its_definition.py",
 )
-
-
-def _salary_template(seed_user):
-    """A definition an ACTIVE salary profile names, stating a distant scalar.
-
-    ``default_amount`` is ``$11.11`` and every settled figure the cases below
-    record is in the thousands, so the two restore arms of migration
-    ``d7b2e6c1a483`` can never answer the same number by accident -- which is
-    what lets a reversed statement order fail on the FIGURE rather than on a
-    count.  It carries a cadence and NO price series: its rows are the
-    engine's (:func:`_make_transaction`), and the migrations driven here read
-    the scalar, never the series.
-
-    Args:
-        seed_user: The ``seed_user`` fixture payload.
-
-    Returns:
-        The flushed :class:`~app.models.transaction_template.TransactionTemplate`.
-    """
-    income = db.session.query(TransactionType).filter_by(name="Income").one()
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Rent"].id,
-        transaction_type_id=income.id,
-        name="Paycheck",
-        default_amount=Decimal("11.11"),
-    )
-    db.session.add(template)
-    db.session.flush()
-    make_every_period_rule(db.session, template)
-    profile = SalaryProfile(
-        user_id=seed_user["user"].id,
-        scenario_id=seed_user["scenario"].id,
-        filing_status_id=db.session.query(FilingStatus).first().id,
-        template_id=template.id,
-        name="X-au-d control",
-        state_code="NC",
-        is_active=True,
-    )
-    db.session.add(profile)
-    db.session.flush()
-    start_test_pay_list(profile, Decimal("4000.00"))  # $104,000.00 a year / 26
-    return template
 
 
 def _make_transaction(seed_user, seed_periods, **overrides):
@@ -1207,13 +1161,11 @@ class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
 def _plain_template(seed_user):
     """An ordinary expense definition NO salary profile names.
 
-    ``default_amount`` is ``$7.77`` and every settled figure the cases below
-    record is in the hundreds, so migration ``c8f3a5d2e714``'s two restore arms
-    can never answer the same number by accident -- which is what lets a
-    reversed statement order fail on the FIGURE rather than on a count.  The
-    same device ``_salary_template`` uses, and for the same reason -- and,
-    like it, a cadence and no price series: the cases that need a series
-    state one themselves.
+    Migration ``c8f3a5d2e714``'s pre-flight skips every row of a definition an
+    ACTIVE salary profile names (``_ACTIVE_SALARY_TEMPLATES_SQL``), so the
+    cases' rows must be of one no profile names, or the probe would never
+    see them.  It carries a cadence and no price series: the cases that need
+    a series state one themselves.
 
     Args:
         seed_user: The ``seed_user`` fixture payload.
@@ -1238,6 +1190,26 @@ def _plain_template(seed_user):
     return template
 
 
+# ``TestTheSalaryCutoverKnowsWhatItCannotRestore``,
+# ``TestTheSalaryCutoverRestoresEachRowFromTheRightPlace``,
+# ``TestTheTemplateCutoverKnowsWhatItCannotRestore``,
+# ``TestTheTemplateCutoverRestoresEachRowFromTheRightPlace`` and
+# ``TestTheTransferCutoverRestoresEachRowFromTheRightPlace`` -- thirteen cases
+# driving ``settled_rows_whose_plan_is_not_recoverable`` and ``downgrade_rows``
+# of the salary, template and transfer cutovers (``d7b2e6c1a483``,
+# ``c8f3a5d2e714``, ``b7e4c1f38a20``), which read the row's own
+# ``settled_amount`` / ``settled_basis_id`` -- were DELETED at plan step
+# ``balance:X-bi-4b-2`` (developer ruling R-BAL84, 2026-09-20): their staged
+# input, a settled row carrying those columns, cannot be built at head once
+# migration ``45f10b870c8b`` deletes them.  **Those two arms of the three
+# migrations are UNGRADED at head**: they run only on an old-dump restore (the
+# test template replays the chain from base over an EMPTY database, which
+# exercises no refusal or restore arm), and no test at head drives them.  What
+# head grades instead is (a) the fact the probes stood for -- a stated figure
+# is not the plan -- as ``Settlement.stated``
+# (``test_settlement_record.py::TestPurchasesIffNoStoredFigure``), and (b) that
+# ``45f10b870c8b``'s downgrade rebuilds the input those arms read, the columns,
+# from the movements exactly (``test_the_record_is_its_movements``).
 class TestTheTemplateCutoverRefusesRatherThanStrandingARow:
     """Migration ``c8f3a5d2e714``'s PRE-FLIGHT, driven directly.
 
@@ -1503,25 +1475,3 @@ class TestTheTransferCutoverRefusesRatherThanStrandingARow:
             assert _TRANSFER_CUTOVER.rows_the_declare_would_strand(
                 db.session.connection(),
             ) == []
-
-
-# ``TestTheSalaryCutoverKnowsWhatItCannotRestore``,
-# ``TestTheSalaryCutoverRestoresEachRowFromTheRightPlace``,
-# ``TestTheTemplateCutoverKnowsWhatItCannotRestore``,
-# ``TestTheTemplateCutoverRestoresEachRowFromTheRightPlace`` and
-# ``TestTheTransferCutoverRestoresEachRowFromTheRightPlace`` -- thirteen cases
-# driving ``settled_rows_whose_plan_is_not_recoverable`` and ``downgrade_rows``
-# of the salary, template and transfer cutovers (``d7b2e6c1a483``,
-# ``c8f3a5d2e714``, ``b7e4c1f38a20``), which read the row's own
-# ``settled_amount`` / ``settled_basis_id`` -- were DELETED at plan step
-# ``balance:X-bi-4b-2`` (developer ruling R-BAL84, 2026-09-20): their staged
-# input, a settled row carrying those columns, cannot be built at head once
-# migration ``45f10b870c8b`` deletes them.  **Those two arms of the three
-# migrations are UNGRADED at head**: they run only on an old-dump restore (the
-# test template replays the chain from base over an EMPTY database, which
-# exercises no refusal or restore arm), and no test at head drives them.  What
-# head grades instead is (a) the fact the probes stood for -- a stated figure
-# is not the plan -- as ``Settlement.stated``
-# (``test_settlement_record.py::TestPurchasesIffNoStoredFigure``), and (b) that
-# ``45f10b870c8b``'s downgrade rebuilds the input those arms read, the columns,
-# from the movements exactly (``test_the_record_is_its_movements``).
