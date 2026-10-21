@@ -10,9 +10,9 @@ split from the loan-side shadow it carried (the split is a date-keyed
 correction with no row link, R-BAL102; leaf 2).  It re-books NO posting: the
 deploy's cash resync re-books the transfers through the go-forward writer
 (R-BAL98), graded in
-``test_posting_service.py::TestTheDeployResyncReBooksTheLegacyShape``, and the
-unlinked splits already sit at their key, so the deploy's loan hook writes
-nothing over them (graded in ``test_loan_posting_service.py``).
+``test_posting_service/test_the_deploy_resync.py::TestTheDeployResyncReBooksTheLegacyShape``,
+and the unlinked splits already sit at their key, so the deploy's loan hook
+writes nothing over them (graded in ``test_loan_posting_service.py``).
 
 The migration is already at HEAD when these tests run (the template builder
 upgraded it base->head), so the per-worker DB shows the post-migration
