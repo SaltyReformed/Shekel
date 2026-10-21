@@ -291,13 +291,13 @@ def check_data_consistency(session):
     # every other band rule trusts too.
     # **The row arm grades no SHADOW since plan step ``balance:X-bi-6-4d-2``**
     # (``t.transfer_id IS NULL`` over the whole arm; it graded a shadow's own
-    # missing day until then).  A shadow holds no money from that step -- its
+    # missing day until then).  From that step a shadow held no money -- its
     # side's record hangs off the transfer, which the side-band rule holds to
-    # the transfer's status -- and no reader reads a shadow's status or day:
-    # the status seam's Transfer arm writes the transfer and each side's
-    # record and leaves the twins as they were.  So
-    # a shadow's day is no fact the fold can miss, and grading it would be
-    # wrong as well as idle: a transfer CREATED settled built its twins in
+    # the transfer's status -- and no reader read a shadow's status or day:
+    # the status seam's Transfer arm wrote the transfer and each side's
+    # record and left the twins as they were.  So a shadow's day was no fact
+    # the fold could miss, and grading it would have been wrong as well as
+    # idle: a transfer CREATED settled built its twins in
     # its settled status with no day (the create door stated none, and the arm
     # dates the side records instead), which this arm read as CRITICAL money
     # the fold cannot see.  The twins themselves went at ``X-bi-6-4d-3``

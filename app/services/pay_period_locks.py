@@ -583,12 +583,13 @@ def settled_items(periods: "list[int] | Query") -> "tuple[Query, Query]":
     so a row that does not lock a period cannot block a reset.
 
     **The parent decides, and since plan step ``balance:X-bi-6-4d-2`` it is
-    the only status read here**: a settle still STORES its twins Projected
-    under a Paid transfer, until ``balance:X-bi-6-4d-3`` deletes the twins,
-    but the row query excludes every twin (``transfer_id IS NULL``) and the
-    transfer query asks the transfer, so the drift ruling **R-JM** settled
-    here (a parent over a shadow whose status differed) is stored and never
-    read.  A movement either side holds still holds its period, whatever the
+    the only status read here**: a settle STORED its twins Projected under a
+    Paid transfer until ``balance:X-bi-6-4d-3`` deleted the twins, but the
+    row query excluded every twin (``transfer_id IS NULL``) and the transfer
+    query asks the transfer, so the drift ruling **R-JM** settled here (a
+    parent over a shadow whose status differed) was stored and never read.
+    No row names a transfer now (``ck_transactions_names_no_transfer``).  A
+    movement either side holds still holds its period, whatever the
     status, through :func:`items_holding_a_movement`.
 
     Args:
@@ -628,21 +629,18 @@ def _items(
     (``Query.count``); one that needs more of each item swaps the columns
     with ``with_entities``, keeping the scope.
 
-    **One premise the DOORS hold and no key does** (the reason
-    :func:`settled_items` gives for status drift, for the period a shadow
-    mirrors).  A shadow's
-    ``pay_period_id`` is its transfer's (Transfer Invariant 3:
-    ``transfer_service`` moves both together, a restore re-aligns them,
-    carry-forward's bulk moves exclude shadows), so the row query's
-    ``transfer_id IS NULL`` drops nothing the transfer query does not ask.
-    On the PERIOD drift no door writes -- a shadow filed in period B while
-    its transfer is in period A -- each read misses one of the two: the
-    shadow read locked B and missed A, whose delete takes the transfer and
-    its shadows by cascade; this one locks A and misses B.  Deleting the
-    missed period then, at worst, meets
-    ``fk_transaction_entries_transaction_id``'s refusal (an error page,
-    nothing lost) instead of this designed one.  0 of 358 shadows on the
-    2026-09-30 00:11 production dump.
+    **One premise the DOORS held and no key did until plan step
+    ``balance:X-bi-6-4d-3``** (the reason :func:`settled_items` gives for
+    status drift, for the period a shadow mirrored).  A shadow's
+    ``pay_period_id`` was its transfer's (``transfer_service`` moved both
+    together, a restore re-aligned them, carry-forward's bulk moves excluded
+    shadows), so the row query's ``transfer_id IS NULL`` dropped nothing the
+    transfer query did not ask.  On the PERIOD drift no door wrote -- a
+    shadow filed in period B while its transfer was in period A -- each read
+    missed one of the two (0 of 358 shadows on the 2026-09-30 00:11
+    production dump).  That step deleted the shadows, and
+    ``ck_transactions_names_no_transfer`` refuses a new one, so no row can
+    sit in a period its transfer is not in.
 
     Args:
         periods: The pay-period ids to look in -- a list or a query of ids.

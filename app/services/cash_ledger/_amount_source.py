@@ -677,11 +677,12 @@ def _loan_payment_cash(xfer, basis: AmountBasis) -> Decimal:
       standing extra.
 
     **The standing extra is part of BOTH arms and lives on neither leg.**  It
-    was added at the SHADOW before this step, which after ``X-au-m`` would give
-    an owner who typed ``$1,325.00`` legs worth ``$1,425.00`` (manual) or
-    ``$1,610.95`` (derive) -- the ``$174.10`` shape ruling **R-JM** makes
-    unrepresentable, and the reason R-BAL10 rejected keeping the base at the
-    parent and the extra at the leg.  Worked, on P&I ``$1,400.00`` + escrow
+    was added at the SHADOW before this step, which, once every leg reads its
+    parent's figure (the read half of ruling **R-JM**, structural since plan
+    step ``X-bi-6-1``), would give an owner who typed ``$1,325.00`` legs worth
+    ``$1,425.00`` (manual) or ``$1,610.95`` (derive) -- the ``$174.10`` shape
+    R-JM makes unrepresentable, and the reason R-BAL10 rejected keeping the
+    base at the parent and the extra at the leg.  Worked, on P&I ``$1,400.00`` + escrow
     ``$110.95`` + extra ``$100.00``: parent and both legs ``$1,610.95``.
 
     **ONE ``round_money`` boundary per arm, over the WHOLE sum** (ruling

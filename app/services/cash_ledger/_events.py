@@ -717,9 +717,10 @@ def _movements_of(account_id: int, scenario_id: int, *narrowing):
       here, as they post nothing (``_posting_purchases.purchase_posts``).
     * the parent is a PLAN ROW, not a transfer's shadow (leaf ``X-bi-6-4a``):
       a leg's movement is read with its transfer by :func:`settled_cash_facts`'
-      other arm.  A shadow takes no purchase (``tracks_purchases`` is
-      ``False``), so the in-flight tier loses nothing; the clause excludes
-      nothing from ``X-bi-6-4d`` and goes with the shadows at ``X-bi-6-5``.
+      other arm.  A shadow took no purchase (``tracks_purchases`` was
+      ``False``), so the in-flight tier lost nothing; the clause excludes
+      nothing since ``X-bi-6-4d`` deleted the shadows, and goes with the
+      ``transfer_id`` column at ``X-bi-6-5``.
 
     Deliberately NOT narrowed by the parent's STATUS: a dated purchase
     against a still-Projected envelope has left the bank exactly as one
