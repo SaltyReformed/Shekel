@@ -3,8 +3,10 @@
 Every card write goes through quill's GitHub App (ruling
 ``balance:R-BAL170``), a separate identity from the developer's login, so a
 reader can tell the tool's write from his own edit and never act on his.  This
-module is the only place quill speaks to the tracker; it decides
-nothing about the plan (``_state`` does), it only reads and writes.
+module is the only place quill speaks to the tracker -- the daily backup
+(:mod:`_export`) keeps GitHub's own answers to the reads here, each built on the one
+walk of a connection, :func:`_github.paged` -- and it decides nothing about the plan
+(``_state`` does), it only reads and writes.
 
 **What each read can see, measured on the tracker 2026-10-04:**
 
@@ -69,9 +71,10 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
+from functools import partial
 from typing import overload
 from urllib.parse import quote
 
@@ -83,6 +86,7 @@ from tools.quill._github import (
     app_installation,
     app_jwt,
     installation_token,
+    paged,
 )
 from tools.quill.setup_tracker import (
     APP_LOGIN,
@@ -277,7 +281,7 @@ class Comment:
     body: str
 
 
-def _listed(connection: dict | None, what: str, number: int) -> list:
+def connection_nodes(connection: dict | None, what: str, number: int) -> list:
     """A connection's nodes, refusing one GitHub answered as null, which would read as none,
     and one holding a null node, which no fact can be read from: GitHub's schema lets it
     answer an issue's ``labels`` so, any connection's ``nodes``, and each node in them
@@ -292,15 +296,61 @@ def _listed(connection: dict | None, what: str, number: int) -> list:
 
 
 def _counted(connection: dict | None, what: str, number: int) -> list:
-    """A connection's nodes (:func:`_listed`), refusing one GitHub truncated (a silent
+    """A connection's nodes (:func:`connection_nodes`), refusing one GitHub truncated (a silent
     partial read)."""
-    nodes = _listed(connection, what, number)
+    nodes = connection_nodes(connection, what, number)
     if connection["totalCount"] > len(nodes):
         raise TrackerError(
             f"plan#{number} has {connection['totalCount']} {what}; the read holds "
             f"{len(nodes)}"
         )
     return nodes
+
+
+def listing(github: GitHub, query: str) -> list[dict]:
+    """Every issue node a listing ``query`` holds (:func:`_queries.open_cards`,
+    :func:`_queries.marked_cards`, :func:`_queries.all_cards`,
+    :func:`_queries.export_cards`), read page by page (:func:`_github.paged`)."""
+    return paged(partial(github.graphql, query),
+                 lambda answer: answer["repository"]["issues"])[0]
+
+
+def saved_versions(github: GitHub, place: Place, number: int) -> tuple[list[dict], dict]:
+    """Every saved version of card ``number``'s text as GitHub answers it
+    (:func:`_queries.edits`), and the last answer read, which holds the card's text, who
+    filed it and when.
+
+    Raises:
+        TrackerError: When a page answers the card as null.
+    """
+    def saved(answer: dict) -> dict:
+        if answer["repository"]["issue"] is None:
+            raise TrackerError(f"plan#{number} does not exist")
+        return answer["repository"]["issue"]["userContentEdits"]
+
+    return paged(partial(github.graphql, _queries.edits(place), number=number), saved)
+
+
+def comment_nodes(github: GitHub, place: Place, number: int,
+                  fields: str = _queries.COMMENT_FIELDS) -> list[dict]:
+    """Every comment on card ``number`` as GitHub answers it, each read as ``fields``
+    (:func:`_queries.comments`)."""
+    return paged(partial(github.graphql, _queries.comments(place, fields), number=number),
+                 lambda answer: answer["repository"]["issue"]["comments"])[0]
+
+
+def comment_versions(github: GitHub, comment: str) -> list[dict]:
+    """Every saved version of the comment whose node id is ``comment``, as GitHub answers
+    it (:data:`_queries.COMMENT_EDITS`)."""
+    return paged(partial(github.graphql, _queries.COMMENT_EDITS, id=comment),
+                 lambda answer: answer["node"]["userContentEdits"])[0]
+
+
+def milestone_nodes(github: GitHub, place: Place) -> list[dict]:
+    """Every milestone of ``place``, open and closed, as GitHub answers it
+    (:func:`_queries.milestones`)."""
+    return paged(partial(github.graphql, _queries.milestones(place)),
+                 lambda answer: answer["repository"]["milestones"])[0]
 
 
 def _is_tracker_issue(node: dict, place: Place) -> bool:
@@ -331,7 +381,7 @@ def card_from(node: dict, place: Place, board_id: str | None, app_login: str) ->
     None), a :class:`BareCard` (:data:`_queries.BARE_CARD_FIELDS`).  ``app_login`` is the
     reader's: a close by it is the tool's."""
     number = node["number"]
-    events = _listed(node["timelineItems"], "close events", number)
+    events = connection_nodes(node["timelineItems"], "close events", number)
     last_actor = ((events[-1].get("actor") or {}).get("login")) if events else None
     is_open = node["state"] == "OPEN"
     links = [(node["parent"], "parent")] if node["parent"] else []
@@ -484,17 +534,10 @@ class Board:
 
     def order(self) -> list[tuple[int, str]]:
         """The board's cards in their drag order: ``(card number, board item id)``."""
-        order, after = [], None
-        while True:
-            items = self.github.graphql(_queries.BOARD_ORDER, id=self.board_id,
-                                        after=after)["node"]["items"]
-            order += [
-                (item["content"]["number"], item["id"]) for item in items["nodes"]
-                if _is_tracker_issue(item["content"] or {}, self.location)
-            ]
-            if not items["pageInfo"]["hasNextPage"]:
-                return order
-            after = items["pageInfo"]["endCursor"]
+        items, _ = paged(partial(self.github.graphql, _queries.BOARD_ORDER, id=self.board_id),
+                         lambda answer: answer["node"]["items"])
+        return [(item["content"]["number"], item["id"]) for item in items
+                if _is_tracker_issue(item["content"] or {}, self.location)]
 
     def add(self, card: Card) -> str:
         """Put a card on the board (GitHub adds it at the bottom); its board item id."""
@@ -627,18 +670,6 @@ class Tracker(CardReader):  # pylint: disable=too-many-public-methods
 
     # -- reads ---------------------------------------------------------------
 
-    def _nodes(self, query: str) -> Iterator[dict]:
-        """Every issue node a listing ``query`` (:func:`_queries.open_cards`,
-        :func:`_queries.marked_cards`, :func:`_queries.all_cards`) holds, read page by page:
-        the one walk of a listing."""
-        after = None
-        while True:
-            page = self.github.graphql(query, after=after)["repository"]["issues"]
-            yield from page["nodes"]
-            if not page["pageInfo"]["hasNextPage"]:
-                return
-            after = page["pageInfo"]["endCursor"]
-
     def _card(self, node: dict) -> Card:
         """A :class:`Card` of this tracker from one GraphQL issue node, its board item read."""
         return card_from(node, self.place, self.board_id, self.app_login)
@@ -651,7 +682,7 @@ class Tracker(CardReader):  # pylint: disable=too-many-public-methods
 
     def _listing(self, query: str) -> dict[int, Card]:
         """Every card a listing ``query`` holds, by number."""
-        return {node["number"]: self._card(node) for node in self._nodes(query)}
+        return {node["number"]: self._card(node) for node in listing(self.github, query)}
 
     def open_cards(self) -> dict[int, Card]:
         """Every open card, by number."""
@@ -670,7 +701,7 @@ class Tracker(CardReader):  # pylint: disable=too-many-public-methods
         all read by :meth:`comments`, so no card's comments are cut short.
         """
         cards = {}
-        for node in self._nodes(_queries.all_cards(self.place)):
+        for node in listing(self.github, _queries.all_cards(self.place)):
             number, held = node["number"], node["comments"]
             comments = ([_comment(each) for each in held["nodes"]]
                         if held["totalCount"] <= len(held["nodes"]) else self.comments(number))
@@ -762,21 +793,10 @@ class Tracker(CardReader):  # pylint: disable=too-many-public-methods
         diff; measured 2026-10-04), and on the first edit adds one for the body
         as filed.  A card never edited has none: its body is the filed text.
         """
-        versions, after = [], None
-        while True:
-            issue = self.github.graphql(_queries.edits(self.place), number=number,
-                                        after=after)["repository"]["issue"]
-            if issue is None:
-                raise TrackerError(f"plan#{number} does not exist")
-            page = issue["userContentEdits"]
-            versions += [
-                Edit(node["id"], node["editedAt"], (node["editor"] or {}).get("login"),
-                     node["diff"] or "")
-                for node in page["nodes"]
-            ]
-            if not page["pageInfo"]["hasNextPage"]:
-                break
-            after = page["pageInfo"]["endCursor"]
+        nodes, last = saved_versions(self.github, self.place, number)
+        versions = [Edit(node["id"], node["editedAt"], (node["editor"] or {}).get("login"),
+                         node["diff"] or "") for node in nodes]
+        issue = last["repository"]["issue"]
         body = issue["body"] or ""
         if not versions:
             versions = [Edit(None, issue["createdAt"], (issue["author"] or {}).get("login"), body)]
@@ -785,15 +805,7 @@ class Tracker(CardReader):  # pylint: disable=too-many-public-methods
     def comments(self, number: int) -> list[Comment]:
         """Every comment on a card, oldest first, read page by page.  A number nobody
         filed is GitHub's NOT_FOUND error, which :meth:`_github.GitHub.graphql` raises."""
-        comments, after = [], None
-        while True:
-            answer = self.github.graphql(_queries.comments(self.place), number=number,
-                                         after=after)
-            page = answer["repository"]["issue"]["comments"]
-            comments += [_comment(node) for node in page["nodes"]]
-            if not page["pageInfo"]["hasNextPage"]:
-                return comments
-            after = page["pageInfo"]["endCursor"]
+        return [_comment(node) for node in comment_nodes(self.github, self.place, number)]
 
     def merged_into_dev(self, repository: str, sha: str) -> set[str]:
         """The head branches of the merged pull requests into ``dev`` that carried
