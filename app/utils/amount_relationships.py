@@ -134,9 +134,10 @@ def pricing_load_options() -> tuple:
       silence.  Filed as **BAL-477** against plan step X-bm, which owns this
       set's batch callers.  **It was missing from the first draft
       of this set**, and the control in
-      ``test_a_transfer_shadow_is_derived.TestTheAmountModelsOwnEagerLoad`` is
-      what found it: three ``budget.pay_periods`` reads against an assertion of
-      zero.  Before that step the obligation was one loader's --
+      ``test_a_transfer_shadow_is_derived.test_the_declaration
+      .TestTheAmountModelsOwnEagerLoad`` is what found it: three
+      ``budget.pay_periods`` reads against an assertion of zero.  Before that
+      step the obligation was one loader's --
       ``loan_loaders.query_shadow_income`` eager-loaded it, and every caller of
       that derivation came through there -- and declaring every shadow derived
       is what spread it to the grid and the cash fold.  *That loader carried no

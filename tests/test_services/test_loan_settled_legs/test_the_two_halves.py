@@ -133,8 +133,9 @@ class TestTheSettledHalfComplementsThePlanHalf:
         whatever it carries -- measured bare, dated, Paid and dated, and Paid,
         dated and hidden -- so the movement and the hide planted after it can
         never be written: ONE refused shape, pinned on the income side by
-        ``test_a_transfer_shadow_is_derived.py``'s ``TestAShadowIsBornDerived``
-        case ``test_the_transfer_owns_its_figure_and_neither_twin_can_be_stored``
+        ``test_a_transfer_shadow_is_derived/test_the_declaration.py``'s
+        ``TestAShadowIsBornDerived`` case
+        ``test_the_transfer_owns_its_figure_and_neither_twin_can_be_stored``
         and, for a loan payment, by ``test_loan_plan_assembly.py``'s
         ``test_a_projected_loan_payment_is_priced_and_its_derived_twin_refused``.
         The fourth, "parent Paid, twin still Projected" (its status written

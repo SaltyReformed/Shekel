@@ -64,7 +64,7 @@ class TestRestoreTransfer:
     (``ck_transactions_names_no_transfer``, ruling R-BAL258), so there is
     nothing to plant; the refusal is ``test_a_transfer_is_one_row.py``'s
     ``test_the_database_refuses_a_twin`` (the expense side) and
-    ``test_a_transfer_shadow_is_derived.py``'s
+    ``test_a_transfer_shadow_is_derived/test_the_declaration.py``'s
     ``test_the_transfer_owns_its_figure_and_neither_twin_can_be_stored``
     (both sides) until plan step ``balance:X-bi-6-5`` deletes the column
     it guards.  The eighth,

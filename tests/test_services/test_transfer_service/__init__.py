@@ -29,7 +29,7 @@ One leg per side is that package's
 each side is on its ``TestLegOf`` and the projection table.  The database
 refuses a second side row: the expense side's in
 ``test_a_transfer_is_one_row.py``'s ``test_the_database_refuses_a_twin``,
-both sides' in ``test_a_transfer_shadow_is_derived.py``'s
+both sides' in ``test_a_transfer_shadow_is_derived/test_the_declaration.py``'s
 ``test_the_transfer_owns_its_figure_and_neither_twin_can_be_stored``.  The
 ``TestInvariants`` class that checked them here was dissolved into those
 tests and this file's edit group at checkpoint 2e-2b-1b-1.

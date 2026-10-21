@@ -557,7 +557,7 @@ class TestTheFeedPricesADerivedRow:
     the ROW accessor :func:`~app.services.row_valuation.settled_contribution`.
     A transfer is one row since that step (ruling **R-BAL258**), so that
     shadow cannot be stored: its refusal is pinned on the income side by
-    ``test_a_transfer_shadow_is_derived.py``'s
+    ``test_a_transfer_shadow_is_derived/test_the_declaration.py``'s
     ``TestAShadowIsBornDerived::test_the_transfer_owns_its_figure_and_neither_twin_can_be_stored``
     and ``test_loan_plan_assembly.py``'s
     ``test_a_projected_loan_payment_is_priced_and_its_derived_twin_refused``.
