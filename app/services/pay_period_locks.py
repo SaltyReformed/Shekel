@@ -381,7 +381,8 @@ def movements_held_in(periods: "list[int] | Query") -> "list[HeldMovement]":
     of it (one covering movement per side, one ``Settlement`` written onto
     both), and the owner sees one transfer and one payment.  The copies are
     collapsed by transfer and amount -- the sides' descriptions are their
-    own rows' names and differ -- and ONLY the copies: every other movement
+    legs' labels (``status_seam._side``, ``TransferLeg.name``) and differ --
+    and ONLY the copies: every other movement
     is named, so two equal purchases are two purchases, under a row or
     (no door writes one) under a transfer's leg.
 
@@ -621,9 +622,11 @@ def _items(
     """Return ``(rows, transfers)``: one query per KIND of item, each yielding its period.
 
     **An item is what the owner sees in a pay period**: a plan row, or a
-    TRANSFER once for its two legs.  A shadow row is never one -- it is its
-    transfer's -- so the row query excludes them (``transfer_id IS NULL``,
-    the discard gate's idiom) and the transfer query asks the transfer.
+    TRANSFER once for its two legs, which the transfer query asks.  The row
+    query's ``transfer_id IS NULL`` (the discard gate's idiom) kept a
+    transfer's shadow rows out until plan step ``balance:X-bi-6-4d-3``
+    deleted them; it excludes nothing since, and goes with the column at
+    plan step ``balance:X-bi-6-5``.
     Each query yields one ``(pay_period_id,)`` per item, so a caller reads
     the set of periods (:func:`_period_ids_of`) or counts the items
     (``Query.count``); one that needs more of each item swaps the columns

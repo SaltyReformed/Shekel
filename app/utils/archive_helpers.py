@@ -77,9 +77,12 @@ def holds_a_movement():
     configures the mappers, which an import must not.
 
     **A ROW's question, not a transfer's** (plan step
-    ``balance:X-bi-6-4a-3``, ruling **R-BAL125**): a door whose row scope
-    could reach a transfer's shadow excludes the shadows and asks
-    ``transfer_legs.transfer_holds_a_movement`` of the transfer instead.
+    ``balance:X-bi-6-4a-3``, ruling **R-BAL125**): a transfer is asked
+    ``transfer_legs.transfer_holds_a_movement``, because a side's record
+    hangs off its transfer, never a row, since plan step
+    ``balance:X-bi-6-4d-2``.  Until plan step ``balance:X-bi-6-4d-3`` deleted
+    the shadows (ruling **R-BAL166**), a door whose row scope could reach one
+    excluded them.
 
     Returns:
         An ``EXISTS`` clause correlated to ``Transaction``.

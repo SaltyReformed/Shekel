@@ -23,8 +23,9 @@ that stream.  Two kinds of fact enter it, and nothing else:
   R-BAL13) -- read with its transfer and side
   (:func:`app.services.transfer_legs.recorded_transfer_legs`, leaf
   ``X-bi-6-4a``), so its budget column, direction and contributing gate are
-  the TRANSFER's and nothing here reads the shadow row the movement still
-  hangs off until ``X-bi-6-4d`` re-parents it onto ``budget.transfers``.
+  the TRANSFER's.  The movement hangs off its transfer by a side link since
+  plan step ``balance:X-bi-6-4d-2`` re-parented it from the shadow row
+  (ruling **R-BAL88**).
   A still-PROJECTED transfer's legs are derived from the parent
   (:mod:`app.services.transfer_legs`) by the plan half below.
 

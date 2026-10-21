@@ -51,9 +51,12 @@ discriminator by tracing -- because two of them are SUBSETS of two others:
      transfer template.  **It was a rule about the SHADOW until plan step
      X-au-f-2** (ruling **R-BAL10**), where it moved onto the transfer, took
      the standing ``extra_principal`` with it, and made rule 5 exceptionless.
-  5. **TRANSFER** -- any transfer shadow, priced by its parent transfer, which
+  5. **TRANSFER** -- a transfer shadow, priced by its parent transfer, which
      is itself priced by rule 1, rule 3 or rule 4
-     (:func:`resolve_transfer_amount`).
+     (:func:`resolve_transfer_amount`).  No row is one since plan step
+     ``balance:X-bi-6-4d-3`` deleted the shadows (ruling **R-BAL166**): the
+     rule refuses a row that still declares it (:func:`_transfer_answer`),
+     and that arm goes at plan step ``balance:X-bi-6-5``.
 
 **WHICH rule owns a row is next door** (:mod:`._amount_rule`, split out at plan
 step X-au-f-2 when this module passed ``max-module-lines``).  That leaf holds
@@ -184,12 +187,14 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
     was a paragraph naming seven relationships that every routed loader had to
     remember; plan step X-au-g-2c-2 made it a function, because
     that step is what made the ``Transaction.transfer`` chain load-bearing --
-    a transfer shadow is DERIVED now, so a surface that loads projected shadows
-    walks to a parent per row without it (the grid, since plan step X-bi-6a;
-    the cash fold and the loan payment feed read projected transfers as legs of
-    the PARENT and take
+    a transfer shadow was DERIVED from then, so a surface that loaded
+    projected shadows walked to a parent per row without it.  None loads one
+    now: the grid prices a transfer's legs since leaf ``X-bi-6-1``
+    (:func:`leg_amounts_by_key`), the cash fold and the loan payment feed read
+    projected transfers as legs of the PARENT and take
     :func:`~app.utils.amount_relationships.transfer_pricing_load_options`
-    instead).  It lives one tier
+    instead, and plan step ``balance:X-bi-6-4d-3`` deleted the shadows (ruling
+    **R-BAL166**).  It lives one tier
     DOWN because ``loan_loaders`` needs it and this package imports
     ``loan_loaders``; that module states the argument.
 
@@ -374,9 +379,10 @@ def resolve_transfer_amount(xfer, basis: AmountBasis) -> Decimal:
     arm and was REFUSED by ``template_amount_service.owns_its_amount``, which
     was correct while the parent still stored a figure and unpriceable the
     moment ``X-au-f-3`` empties that column.  The occurrence is ONE economic
-    event held as three rows only because Transfer Invariant 5 makes the fold
-    read ``budget.transactions``; the two legs are its PROJECTION, so the
-    value's home is the parent and each leg reads it (rule 5).
+    event, held as three rows until plan step ``balance:X-bi-6-4d-3`` deleted
+    its two shadows (ruling **R-BAL166**) and as one since; the two legs are
+    its PROJECTION, so the value's home is the parent and each leg reads it
+    (:func:`leg_amounts_by_key`).
 
     **The OWN arm is asked FIRST, and on a loan payment that is the whole of
     R-JM.**  A transfer carrying a figure owns it whatever its template says, so
@@ -693,7 +699,7 @@ def _loan_payment_cash(xfer, basis: AmountBasis) -> Decimal:
     a cent.
 
     **The derive arm reads no STATUS, and that is plan step X-au-c2b's split.**
-    The map it used to index was built by the read-time repair, which filters to
+    The map it used to index was built by the read-time repair, which filtered to
     Projected non-overridden shadows -- so a Cancelled or hand-priced loan
     payment was refused here as though its LOAN would not resolve, which is a
     different and alarming statement.  Whether a row still counts is finding
@@ -725,10 +731,10 @@ def _loan_payment_cash(xfer, basis: AmountBasis) -> Decimal:
 
     Args:
         xfer: The loan-payment transfer being priced.  Its ``due_date`` and its
-            ``pay_period`` date the installment -- the parent's columns rather
-            than a leg's, which are the same value (``due_date`` is mirrored
-            onto both shadows in one statement with the parent canonical) read
-            from where it is canonical.
+            ``pay_period`` date the installment -- the parent's columns, which
+            every leg reads rather than holds
+            (:class:`~app.services.transfer_legs.TransferLeg`'s ``due_date``
+            and ``pay_period``).
         basis: The read pass's basis; its ``loans`` derivation resolves the
             destination loan and holds its escrow history.
 
@@ -751,46 +757,51 @@ def _loan_payment_cash(xfer, basis: AmountBasis) -> Decimal:
 
 
 def _transfer_answer(txn, basis: AmountBasis) -> Decimal:
-    """Rule 5: a shadow is worth exactly what its parent transfer is.
+    """Rule 5: a row declaring ``PARENT_TRANSFER`` is worth its parent transfer.
 
-    **This is Transfer Invariant 3 made structural rather than maintained.**
-    Today the parent's figure is COPIED onto both shadows by
-    ``transfer_service.update_transfer`` and a drift corrector in
-    ``restore_transfer`` logs and repairs the copies that got away; a shadow
-    that reads its parent cannot drift from it at all.  Measured on the
-    2026-08-12 production clone: all 298 projected shadows already equal their
-    parent, so the rule moves nothing and removes the way it could.  Plan step
-    X-au-f is where the copy and the corrector are deleted.
+    **No stored row has a parent to read now, so the arm's live job is its
+    refusal.**  Rule 5 priced a transfer's two shadows: Transfer Invariant 3
+    made structural rather than maintained, the parent's figure READ where
+    ``transfer_service.update_transfer`` had COPIED it onto both shadows and
+    a drift corrector in ``restore_transfer`` repaired the copies that got
+    away (measured on the 2026-08-12 production clone: all 298 projected
+    shadows already equalled their parent).  From plan step X-au-f-2 it was
+    the answer for every declared shadow, a loan payment's two legs included
+    (ruling **R-BAL10**), so it was R-JM's one chain -- *a leg reads its
+    parent, and the parent decides owner or contract*.  Plan step
+    ``balance:X-bi-6-4d-3`` deleted the shadows (ruling **R-BAL166**) and
+    ``ck_transactions_names_no_transfer`` refuses a row naming a transfer,
+    while a definition's row declaring ``PARENT_TRANSFER`` still passes every
+    CHECK and is stored with no transfer to load: the refusal below answers
+    it, and the arm goes with the ``transfer_id`` column at plan step
+    ``balance:X-bi-6-5``.  A leg reads its parent through
+    :func:`leg_amounts_by_key` now.
 
-    **It is the answer for EVERY declared shadow since plan step X-au-f-2, a
-    loan payment's two legs included** (ruling **R-BAL10**).  Rule 4 used to
-    intercept those legs and price them from the loan; it prices their PARENT
-    now, so this rule is R-JM's one chain -- *a leg reads its parent, and the
-    parent decides owner or contract* -- with no exception left in it.
-
-    **It NOW passes the basis on rather than ignoring it**, because the parent
-    it delegates to can reach a live producer: a derive-mode loan payment
-    resolves through ``basis.loans``.  An owner-priced or series-priced parent
-    still reads none.
+    It passes the basis on rather than ignoring it, because the parent it
+    delegates to can reach a live producer: a derive-mode loan payment
+    resolves through ``basis.loans``.
 
     Args:
-        txn: The transfer shadow being priced.
+        txn: The transaction declaring ``PARENT_TRANSFER``.
         basis: The read pass's basis, handed to the parent's own rule.
 
     Returns:
         The parent transfer's resolved amount.
 
     Raises:
-        AmountUnresolvable: When the shadow has no parent, or the parent's own
+        AmountUnresolvable: When the row's parent transfer is not loaded --
+            every stored row, since none can name one -- or the parent's own
             rule cannot answer.
     """
     if txn.transfer is None:
         raise AmountUnresolvable(
-            f"Transaction {txn.id} is a transfer shadow whose parent transfer "
-            f"{txn.transfer_id} could not be loaded, so there is nothing for "
-            "its amount to be equal to. Every transfer has exactly two shadows "
-            "and a shadow is never orphaned (Transfer Invariants 1 and 2), so "
-            "this row breaks one of them."
+            f"Transaction {txn.id} declares its amount PARENT_TRANSFER and its "
+            f"parent transfer (transfer_id={txn.transfer_id}) "
+            "could not be loaded, so there is nothing for its amount to be "
+            "equal to. No stored row names a transfer "
+            "(ck_transactions_names_no_transfer), so a stored row declaring "
+            "PARENT_TRANSFER has no parent to read; no door writes one, so "
+            "investigate the write that declared it."
         )
     return resolve_transfer_amount(txn.transfer, basis)
 
