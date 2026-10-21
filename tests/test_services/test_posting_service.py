@@ -103,7 +103,6 @@ from app.services._posting_write import (
     _PostingLeg,
     emit_typed_source_deltas,
 )
-from app.services.cash_ledger import settled_cash_facts
 from app.services.posting_service import PostingError
 from app.utils.dates import display_today
 from tests._test_helpers import (
