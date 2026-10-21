@@ -72,9 +72,6 @@ the 2024 bootstrap period is attributed BEFORE the origination assertion and
 is absorbed into the opening delta instead (the total returns to the anchor).
 The ``settled_*_effect`` source-table readers are unchanged.
 """
-# pylint: disable=redefined-outer-name
-# Rationale: ``redefined-outer-name`` is the canonical pytest fixture
-# pattern; test bodies bind fixtures by name.
 from __future__ import annotations
 
 import logging
