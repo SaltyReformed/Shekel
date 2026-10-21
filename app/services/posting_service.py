@@ -337,10 +337,10 @@ def _transfer_family_accounts(xfer: Transfer, movements) -> tuple:
     """Return every real account a transfer family's legs can touch.
 
     The transfer twin of :func:`_family_accounts`: both endpoints (the legacy
-    entry's legs, and the shadows' accounts) and each movement's own account
-    (its leg lands there, ruling **R-BAL75**; one with the endpoint until the
-    settle door takes a tender of its own).  Deduplicated, in first-seen
-    order, so the anchor self-heal visits an account once.
+    entry's legs; the shadows' too, until ``X-bi-6-4d-3`` deleted them) and
+    each movement's own account (its leg lands there, ruling **R-BAL75**; one
+    with the endpoint until the settle door takes a tender of its own).
+    Deduplicated, first-seen order, so the self-heal visits an account once.
     """
     seen: dict[int, None] = {
         xfer.from_account_id: None, xfer.to_account_id: None,
@@ -415,19 +415,19 @@ def sync_transaction_postings(txn: Transaction) -> list[JournalEntry]:
     made worthless.  The ``settled`` flag this took through ``X-bi-3e`` chose
     the row's OWN target, and a row has none.
 
-    A transfer shadow (``transfer_id`` set) is a row like any other here since
-    plan step ``balance:X-bi-6-3`` (ruling **R-BAL101**): its own TRANSACTION
-    source target is empty as every row's is.  **It holds no movement since
-    plan step ``balance:X-bi-6-4d-2``**: a transfer side's payment record
-    hangs off the TRANSFER by its side link (ruling **R-BAL88**), so a door
-    that reaches a shadow finds nothing under it to post.  The pair's own
-    door, :func:`sync_transfer_postings`, reaches both sides' records from the
-    parent and books each under its transfer LEG against the owner's transit
-    account (every movement's parent is
-    :func:`~app.services.transfer_legs.movement_parent`'s answer).  Until that
-    step the shadow's covering movement posted here, under its leg since leaf
-    ``X-bi-6-4a``.  The guard that returned ``[]`` for a shadow (ruling
-    **R-BAL45**'s interval) is gone with the interval.
+    **No transfer shadow reaches here since plan step ``balance:X-bi-6-4d-3``
+    deleted them** (ruling **R-BAL166**; ``ck_transactions_names_no_transfer``
+    refuses a row naming a transfer).  A transfer side's payment record hangs
+    off the TRANSFER by its side link since plan step ``balance:X-bi-6-4d-2``
+    (ruling **R-BAL88**), and the pair's own door, :func:`sync_transfer_postings`,
+    reaches both sides' records from the parent and books each under its
+    transfer LEG against the owner's transit account (every movement's parent
+    is :func:`~app.services.transfer_legs.movement_parent`'s answer).  From
+    plan step ``balance:X-bi-6-3`` (ruling **R-BAL101**) a shadow was a row
+    like any other here, its TRANSACTION source target empty, and until 4d-2
+    its covering movement posted here, under its leg since leaf ``X-bi-6-4a``.
+    The guard that returned ``[]`` for a shadow (ruling **R-BAL45**'s
+    interval) is gone with the interval.
     Idempotency rests on the delta math plus the row's ``version_id``
     optimistic lock (a concurrent double mark-done collides on the version,
     surfacing as a 409).
@@ -511,14 +511,14 @@ def _emit_transaction_deltas(txn: Transaction) -> "list[JournalEntry]":
     touched, or one already brought to zero, emits nothing.
 
     Args:
-        txn: The transaction, a transfer shadow included (whose TRANSACTION
-            source the sync skipped from its first version to plan step
-            ``balance:X-bi-6-3`` and whose target is empty since: 0 such
-            entries on the 2026-09-22 17:06 production dump).  The kind a
-            reversal would stamp is the ROW's type since leaf ``X-bi-6-4a``
-            (``transfer`` before, when the dispatch read the shadow's
-            column); with nothing ever posted to this source for a shadow,
-            no entry can carry either.
+        txn: The transaction, never a transfer shadow since plan step
+            ``balance:X-bi-6-4d-3`` deleted them (the sync skipped a shadow's
+            TRANSACTION source from its first version to ``X-bi-6-3``, its
+            target empty after: 0 such entries on the 2026-09-22 17:06
+            production dump).  The kind a reversal would stamp is the ROW's
+            type since leaf ``X-bi-6-4a`` (``transfer`` before, when the
+            dispatch read the shadow's column); with nothing ever posted to
+            this source for a shadow, no entry can carry either.
 
     Returns:
         The emitted reversal entries; ``[]`` when the ledger holds nothing
@@ -584,12 +584,12 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
     as an immutable net-zero pair (their links SET-NULL together on the delete),
     so every ledger account still nets correctly.  The transaction analog of
     :func:`reverse_transfer_postings_before_delete`, which
-    ``transfer_service.delete_transfer`` runs first for the same reason.  A
-    transfer shadow reaching here (``transfer_id`` set) is a row like any
-    since plan step ``balance:X-bi-6-3`` and holds no movement since plan step
-    ``balance:X-bi-6-4d-2``: its side's payment record hangs off the transfer,
-    and :func:`reverse_transfer_postings_before_delete` reverses the pair's.
-    Until then the shadow's movement was reversed here, typed by its transfer
+    ``transfer_service.delete_transfer`` runs first for the same reason.  No
+    transfer shadow reaches here since plan step ``balance:X-bi-6-4d-3``
+    deleted them (ruling **R-BAL166**): a transfer side's payment record
+    hangs off the transfer since plan step ``balance:X-bi-6-4d-2``, and
+    :func:`reverse_transfer_postings_before_delete` reverses the pair's.
+    Until 4d-2 a shadow's movement was reversed here, typed by its transfer
     LEG since leaf ``X-bi-6-4a`` (``transfer_legs.movement_parent``); the
     guard that returned for one (ruling **R-BAL45**'s interval) is gone with
     the interval.
@@ -751,10 +751,10 @@ def resync_all_cash_postings() -> tuple[int, int]:
     :func:`_rebook_transfer_family`, so whichever runs first leaves the other at
     target.  **Its transfer half is total over the family the ledger holds
     for the same reason its transaction half is** (below): it walks every
-    live transfer that is settled OR holds a dated covering movement on a
-    live shadow, PLUS every transfer -- live or not -- the legacy one-entry
-    source ever posted for, and hands each to the pair's door, which reads
-    each movement's own state and brings the legacy source to zero.
+    live transfer that is settled OR holds a dated record on either side,
+    PLUS every transfer -- live or not -- the legacy one-entry source ever
+    posted for, and hands each to the pair's door, which reads each
+    movement's own state and brings the legacy source to zero.
 
     Flushes but does NOT commit -- the caller owns the transaction boundary
     (``scripts.init_database.initialise_database``, whose ONE commit covers the
@@ -843,8 +843,9 @@ def resync_all_cash_postings() -> tuple[int, int]:
             # **Measured 2026-09-03 rather than deduced**: with the option this
             # walk hydrates ONE ``PayPeriod``, without it ZERO -- so nothing
             # lazy-loads in its place and no autoflush moves into the loop.
-            # The whole walk is enumerable here because the query excludes
-            # shadows (``transfer_id IS NULL``), so the transfer arm that made
+            # The whole walk is enumerable here because no row can name a
+            # transfer (``ck_transactions_names_no_transfer``, since plan step
+            # ``balance:X-bi-6-4d-3``), so the transfer arm that made
             # ``reconcile_service._rows``' twin undecidable does not apply.
         )
         .filter(
@@ -886,11 +887,11 @@ def resync_all_cash_postings() -> tuple[int, int]:
         db.session.query(Transfer)
         .filter(
             db.or_(
-                # LIVE and SETTLED, or live and holding a dated covering
-                # movement on a live shadow (plan step ``balance:X-bi-6-3``,
-                # ruling **R-BAL101**) -- the transaction arm's totality
-                # argument: this reaches every transfer that could hold a
-                # leg today.
+                # LIVE and SETTLED, or live and holding a dated record on
+                # either side (plan step ``balance:X-bi-6-3``, ruling
+                # **R-BAL101**; by the side links since ``X-bi-6-4d-2``) --
+                # the transaction arm's totality argument: this reaches every
+                # transfer that could hold a leg today.
                 db.and_(
                     Transfer.is_deleted.is_(False),
                     db.or_(

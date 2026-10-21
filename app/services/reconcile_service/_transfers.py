@@ -15,14 +15,15 @@ ruling **R-FA**'s own OF-WHICH figure to the cent.
 
 **53 DAYS, not 57**: the account carries 57 assertion ROWS over 53 distinct
 days, and X-f2-c's own text records that confusing the two is how a figure in
-this arc went wrong before.  At the LATEST assertion (2026-08-06) this arm
-offers NOTHING, because every projected shadow starts 2026-08-13 -- so the
-panel is unchanged on production today.
+this arc went wrong before.  At the then-LATEST assertion (2026-08-06) this arm
+offered NOTHING, because every projected shadow started 2026-08-13 -- so the
+panel was unchanged on production when plan step X-f2-c3 shipped.
 
 **It offers the LEG, off ``budget.transfers``, since leaf
 ``balance:X-bi-6-4c-2``** (the one-place rule leaves ``X-bi-6-4a`` / ``6-4b``
-follow: a reader reaches a shadow only through a leg-shaped call in
-``transfer_legs`` or ``transfer_service``): a
+followed: a reader reached a shadow only through a leg-shaped call in
+``transfer_legs`` or ``transfer_service``, until ``X-bi-6-4d-3`` deleted the
+shadows): a
 :class:`~app.services.transfer_legs.TransferLeg` from
 ``transfer_legs.offerable_transfer_legs``, keyed by
 ``transfer_legs.cell_key`` -- ``(transfer id, account id)``, ruling
@@ -31,9 +32,10 @@ follow: a reader reaches a shadow only through a leg-shaped call in
 under its own form fields (ruling **R-BAL145**, :class:`~._offers.TickForm`).
 Until then it offered the transfer's SHADOW row on this account, keyed by the
 shadow's id in one map with the transaction arm's rows, which only the
-table's partition on ``transfer_id`` kept from colliding.  So this arm reaches
-no shadow itself; the two doors do, through the interval, and plan step
-``X-bi-6-4d`` re-bodies them once.  **What can move on screen**, all of it
+table's partition on ``transfer_id`` kept from colliding.  So this arm reached
+no shadow itself; the two doors did, through the interval, until plan step
+``balance:X-bi-6-4d-2`` re-bodied them onto the transfer and its sides' records
+and ``X-bi-6-4d-3`` deleted the shadows.  **What can move on screen**, all of it
 declared: a transfer's block is headed by its leg's label, composed from the
 endpoints' CURRENT names, where it printed the shadow's stored copy (leaf
 ``X-bi-6-1``'s same change on the grid) -- 0 of 354 shadows disagreed on the
@@ -42,17 +44,18 @@ where they ordered by shadow id (``_assemble._block_order``); a transfer whose
 shadow pair is broken was warned about rather than offered (ruling
 **R-BAL148**) until plan step ``balance:X-bi-6-4d-2`` priced a leg off its
 transfer alone and ruling **R-BAL235** offered it like any other; and a
-shadow drifted from its parent is offered by the parent's state
-(``transfer_legs.offerable_transfer_legs``).
+shadow drifted from its parent was offered by the parent's state
+(``transfer_legs.offerable_transfer_legs``) until ``X-bi-6-4d-3`` deleted the
+shadows.
 
 **Its settle is ``transfer_service.settle_transfer``, and that is the whole
-reason it is a separate arm** (ruling **R-FA**).  A transfer is THREE rows -- a
-parent and two shadows -- and ``CLAUDE.md`` transfer invariants 3 and 4 say they
-move together, so ``transaction_service.settle_transaction`` REFUSES a shadow
-outright.  Ticking one here therefore settles the leg on the OTHER account too,
-which is a fact about the act rather than about any row and is why the panel
-prints it once under the section heading
-(:attr:`~app.services.reconcile_service.OfferKind.section_note`).
+reason it is a separate arm** (ruling **R-FA**).  A transfer is ONE row since
+plan step ``balance:X-bi-6-4d-3`` (ruling **R-BAL166**; it was a parent and two
+shadows until then), its status is the transfer's, and every write of it goes
+through ``transfer_service`` (``CLAUDE.md``, Architecture).  Ticking one here
+therefore settles the leg on the OTHER account too, which is a fact about the
+act rather than about any row and is why the panel prints it once under the
+section heading (:attr:`~app.services.reconcile_service.OfferKind.section_note`).
 
 **Nothing here decides what a tick BOOKS, which status the rows take, or
 whether a submitted figure is a CORRECTION.**  All three are the transfer
@@ -103,14 +106,15 @@ def _settle_one(
     """Settle one leg's transfer through the service; say if a human's figure won.
 
     This arm's settle, named by :data:`ARM`.
-    **Both legs and the parent move in this one call**, which is transfer
-    invariants 3 and 4 held structurally rather than by this function
-    remembering them, and it is why a tick here settles the matching leg on the
+    **Both legs move in this one call**: a transfer is one row whose status
+    is the transfer's (plan step ``balance:X-bi-6-4d-3``, ruling
+    **R-BAL166**), so the structure holds that rather than this function
+    remembering it, and it is why a tick here settles the matching leg on the
     other account (the section note says so on the panel).
 
     The submitted figure and the statement's day are handed straight through:
     what a tick BOOKS, whether the figure is written at all, and which status
-    the three rows take are the transfer service's rules and are not restated
+    the transfer takes are the transfer service's rules and are not restated
     here.
 
     Args:
@@ -127,8 +131,8 @@ def _settle_one(
             ruling **R-CC135**), over the lines named under the ROWS ticked:
             the panel captions no leg (plan step ``credit_card:CC-5-4a-5``).
             A ``$0.00`` figure is the one
-            transfer settle that takes a kept payment out of its matches, its
-            shadows holding no purchase to settle from; ruling **R-CC125**
+            transfer settle that takes a kept payment out of its matches, a
+            transfer holding no purchase to settle from; ruling **R-CC125**
             refuses a typed one before this runs, and any other figure books
             each side's payment where it already is.  A leg whose own price
             resolved to ``$0.00`` ticked with its box CLEARED is refused
