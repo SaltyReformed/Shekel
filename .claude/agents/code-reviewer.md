@@ -50,13 +50,15 @@ Security and data scoping:
 - Soft-deleted rows (`is_deleted`) are filtered unless explicitly needed.
 - State-changing routes validate through a Marshmallow schema before any DB work,
   and validate FK existence and ownership before commit.
+- A database refusal (a CHECK, a trigger, a foreign key) is a backstop: a code
+  path that can REACH one is a bug, whatever the rule guards (a card's, a row's
+  or a transfer's). The code refuses the state first, with an actionable message.
 - No `|safe` on user data in templates; CSRF on every form; mutations use POST.
 
 Transfer rules (critical -- breaking either is a critical bug):
 - A transfer is ONE row. The database refuses a transaction that names a transfer,
   and a payment record on the wrong account, out of step with its transfer's
-  status, or under a deleted transfer; a door that can REACH one of those
-  refusals is still a bug.
+  status, or under a deleted transfer.
 - Every write of a transfer goes through `transfer_service`: a write anywhere else
   skips its refusals and the copies it keeps in step, the posted ledger's among
   them (balance:X-eu makes this structural).
