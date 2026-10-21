@@ -7,8 +7,6 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-import pytest
-
 from app import ref_cache
 from app.enums import PostingKindEnum, PostingSourceEnum, StatusEnum
 from app.extensions import db as _db
@@ -212,7 +210,15 @@ _A_RECORDED_SETTLE_DAY = date(2026, 3, 9)
 
 
 class TestSyncSettleEntryDate:
-    """``entry_date`` is the shadow's recorded settle DAY."""
+    """``entry_date`` is the shadow's recorded settle DAY.
+
+    ``test_a_settled_transfer_cannot_be_left_without_a_day`` was deleted by
+    ruling **R-BAL342** (the developer, 2026-10-20, finding **BAL-581**): it
+    asked :class:`~app.services.transfer_service.SideDay` to refuse ``None``
+    and wrote nothing, the refusal
+    ``test_the_due_date_and_settle_day.py``'s
+    ``test_a_settled_transfer_refuses_to_have_its_day_CLEARED`` asks.
+    """
 
     def test_entry_date_is_the_rows_recorded_settle_day(
         self, app, db, seed_user, savings,
@@ -257,27 +263,6 @@ class TestSyncSettleEntryDate:
             assert {entry.entry_date for entry in entries} == {
                 _A_RECORDED_SETTLE_DAY,
             }
-
-    def test_a_settled_transfer_cannot_be_left_without_a_day(
-        self, app, db, seed_user, savings,
-    ):
-        """Clearing a settled transfer's day cannot be asked, so it is never defaulted.
-
-        **This test asserted the fallback until plan step X-f1**: with no
-        ``paid_at`` recorded, ``entry_date`` -- which is NOT NULL -- took the pay
-        period's ``start_date``.  That was a guess the reader could not see, and
-        the day is a stored fact now, so there is nothing to fall back TO.  A
-        transfer edit that would leave a settled pair undated was refused at the
-        service (``ValidationError``, "cannot be cleared") until plan step
-        ``balance:X-bi-6-4c-3``; since then a door states each side's day as a
-        :class:`~app.services.transfer_service.SideDay`, which cannot wrap
-        ``None``, so the edit has no spelling at all -- which is what keeps
-        ``entry_date`` derivable.
-        """
-        with app.app_context():
-            with pytest.raises(ValueError) as exc:
-                transfer_service.SideDay(savings.id, None)
-            assert "cannot wrap None" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------

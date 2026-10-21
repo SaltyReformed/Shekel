@@ -193,7 +193,7 @@ class TestDueDateAndSettleDayShadows:
             assert "not a settled status" in str(exc.value)
 
     def test_a_settled_transfer_refuses_to_have_its_day_CLEARED(
-        self, app, db, transfer_data,
+        self, app, db, auth_client, transfer_data,
     ):
         """Clearing a settled transfer's day cannot be asked; reverting is the way.
 
@@ -212,6 +212,18 @@ class TestDueDateAndSettleDayShadows:
         RECORD's since plan step ``balance:X-bi-6-4d-2``; the shadows carried
         it until then (ruling R-BAL167 class 1, plan step
         balance:X-bi-6-4d-2).
+
+        **Erasing both day boxes in the popover asks nothing either** (ruling
+        **R-BAL342**, the developer, 2026-10-20, finding **BAL-581**): a save
+        through the popover's door, ``PATCH /transfers/instance/<id>``, with
+        both boxes posted empty and the Status select still on Paid, answers
+        200 and leaves each side's record on its day, still known as the day
+        the owner typed.  It replaced a re-read of both records after the
+        ``SideDay`` refusal, which wrote nothing, so the re-read could not
+        fail.  Each side's day is typed three days back first, so both boxes
+        render prefilled
+        (:func:`~app.routes._render_helpers.transfer_side_boxes`) and the
+        erase erases a day the owner can see.
         """
         with app.app_context():
             td = transfer_data
@@ -228,11 +240,34 @@ class TestDueDateAndSettleDayShadows:
                 transfer_service.SideDay(xfer.from_account_id, None)
             assert "cannot wrap None" in str(exc.value)
 
-            # The day survived the refusal.
+            typed = display_today() - timedelta(days=3)
+            transfer_service.update_transfer(
+                xfer.id, td["user"].id,
+                side_days=tuple(
+                    transfer_service.SideDay(account_id, an_entered_day(typed))
+                    for account_id in sides
+                ),
+            )
+            version = _reread(xfer.id).version_id
+
+            erased = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "status_id": str(done_status.id),
+                    "settled_on_from": "",
+                    "settled_on_to": "",
+                    "version_id": str(version),
+                },
+            )
+
+            assert erased.status_code == 200, erased.get_data(as_text=True)
+            db.session.expire_all()
             for account_id in sides:
-                assert transfer_side_record(
+                assert transfer_side_settle_day(
                     db.session, xfer.id, account_id,
-                ).settled_on == display_today()
+                ) == an_entered_day(typed), (
+                    f"the erased boxes moved the day on account {account_id}"
+                )
 
             # And the supported route out clears it on both sides.
             transfer_service.update_transfer(
@@ -245,31 +280,47 @@ class TestDueDateAndSettleDayShadows:
                     db.session, xfer.id, account_id,
                 ) is None
 
-    def test_an_undated_projected_transfer_stays_undated(self, app, transfer_data):
-        """Stating NO day on a PROJECTED transfer is a no-op: it stays Projected.
+    def test_an_undated_projected_transfer_stays_undated(
+        self, app, db, auth_client, transfer_data,
+    ):
+        """Empty day boxes on a PROJECTED transfer are a no-op: it stays Projected.
 
-        A no-op rather than a refusal: the submitted value agrees with the row's
-        state (no money has moved, so there is no day), and refusing an edit
-        that asks for what is already true would reject an ordinary form
-        round-trip that carried an empty date field.
+        A no-op rather than a refusal: an empty box states no day, which
+        agrees with the row's state (no money has moved, so there is no day),
+        and refusing an edit that asks for what is already true would reject
+        a save for saying nothing.  The popover renders no day box on a
+        Projected transfer
+        (``test_full_edit_offers_the_correction_only_on_a_settled_transfer``),
+        so the popover never posts the two boxes here; a hand-built request
+        does.
 
-        The status is read off the row re-read from the database since plan
-        step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-2b, where it asked
-        the transfer's two shadow rows for a day (ruling R-BAL290 part 1):
-        an update that read the empty statement as a settle fails it first
-        (measured there).  No side's day is read.  The status seam writes no
-        day for a change that neither enters nor leaves the settled band, so
-        an update that dated a side would have settled the transfer and
-        failed the status read first, and with every refusal of a day on an
-        unsettled transfer deleted, an update stating one still writes no
-        record or day on either side (measured there).
+        **Asked through the popover's door since ruling R-BAL342** (the
+        developer, 2026-10-20, finding **BAL-581**): ``PATCH
+        /transfers/instance/<id>`` with both boxes posted empty and the Status
+        select on Projected answers 200, the transfer re-read from the
+        database is still Projected, and neither side holds a record.  It
+        called the service with ``side_days=()``, the same call as stating
+        nothing, so the case could not tell an empty statement from none.
         """
         with app.app_context():
             td = transfer_data
             xfer_id = _create_basic_transfer(td).id
+            xfer = _reread(xfer_id)
 
-            transfer_service.update_transfer(
-                xfer_id, td["user"].id, side_days=(),
+            empty = auth_client.patch(
+                f"/transfers/instance/{xfer_id}",
+                data={
+                    "status_id": str(td["projected_status"].id),
+                    "settled_on_from": "",
+                    "settled_on_to": "",
+                    "version_id": str(xfer.version_id),
+                },
             )
 
-            assert _reread(xfer_id).status_id == td["projected_status"].id
+            assert empty.status_code == 200, empty.get_data(as_text=True)
+            xfer = _reread(xfer_id)
+            assert xfer.status_id == td["projected_status"].id
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                assert transfer_side_record(
+                    db.session, xfer_id, account_id,
+                ) is None, f"the empty boxes recorded a side on {account_id}"
