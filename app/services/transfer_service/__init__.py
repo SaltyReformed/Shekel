@@ -8,9 +8,10 @@ outside it and the transfer recurrence engine (which delegates
 to this service for the final insert step).
 
 The transfer rules are CLAUDE.md's (the end of its Architecture section).  A
-transfer is one row, and the database refuses the states its sides' payment
-records may not reach (``ck_transactions_names_no_transfer``, the side keys,
-and the deferred rules in ``app/side_band_infrastructure.py`` and
+transfer is one row, which ``ck_transactions_names_no_transfer`` holds by
+refusing a transaction that names one, and the database refuses the states its
+sides' payment records may not reach (the side keys, and the deferred rules in
+``app/side_band_infrastructure.py`` and
 ``app/deleted_row_infrastructure.py``).  The two rules it cannot refuse are
 kept here: every write of a transfer goes through this package, and a settled
 transfer's amount is its sides' records.  Plan steps ``balance:X-eu`` and

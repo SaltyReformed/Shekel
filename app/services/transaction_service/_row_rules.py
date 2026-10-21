@@ -208,8 +208,8 @@ def deletion_refusal(
       (ruling **R-BAL166**), and the database refuses a row naming a transfer
       at the write (``ck_transactions_names_no_transfer``,
       ``app/models/_transaction_table_args.py``), so the arm answers a row
-      that cannot exist; it goes with the ``transfer_id`` column at plan step
-      ``balance:X-bi-6-5``.
+      that cannot be stored (one reaches it only unflushed); it goes with the
+      ``transfer_id`` column at plan step ``balance:X-bi-6-5``.
     * **A CC PAYBACK.**  A payback exists only because its source is marked
       Credit, and the source stays Credit and out of the balance
       (``ref.statuses.excludes_from_balance``) when the payback goes -- so
@@ -321,8 +321,8 @@ def reject_unsettleable(txn: Transaction) -> None:
     No stored row is one since plan step ``balance:X-bi-6-4d-3`` deleted the
     twins (ruling **R-BAL166**), and the database refuses a new one
     (``ck_transactions_names_no_transfer``), so this arm answers a row that
-    cannot exist; it goes with the ``transfer_id`` column at plan step
-    ``balance:X-bi-6-5``.
+    cannot be stored (one reaches it only unflushed); it goes with the
+    ``transfer_id`` column at plan step ``balance:X-bi-6-5``.
 
     **A soft-deleted row** must not be resurrected by a status change.  It
     values at ``Decimal("0")`` through the valuation gate, so settling one

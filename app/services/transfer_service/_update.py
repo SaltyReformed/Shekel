@@ -302,8 +302,8 @@ def _apply_remaining_fields(
     # and the two are equal.
     new_status_id = updates.get("status_id", rows.transfer.status_id)
     # Resolved from the EXPENSE side's record, read once for the act
-    # (``rows.expense_leg``) as :func:`._settle.settle` reads it: both legs
-    # carry the same record (Transfer Invariant 3), so one side is the choice.
+    # (``rows.expense_leg``) as :func:`._settle.settle` reads it: both sides'
+    # records carry the same figure, so one side is the choice.
     # A figure only ever reaches here as a CORRECTION -- a settling one is the
     # settle's (:data:`_SETTLE_OWNED_FIELDS`), and one on an unsettled pair was
     # refused before any field was written (:func:`_grade_submitted_figure`).
@@ -644,8 +644,9 @@ def settle_transfer(
     time through the door ruling **R-ED** built for a user CORRECTING a day.
 
     **The transfer and both its sides move in this one call**: the transfer's
-    status, and each side's payment record on its own day, written by the ONE
-    writer (``_status.apply_status_to_all_three``).  That is CLAUDE.md's rule
+    status, and each side's payment record on its own day (a ``$0.00`` close
+    writes none), by the ONE writer
+    (``_status.apply_status_to_all_three``).  That is CLAUDE.md's rule
     that every write of a transfer goes through this package, kept here so no
     caller has to remember it.  **The
     status is DONE, never RECEIVED, though one side is an income**: the
@@ -705,10 +706,14 @@ def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
 
     A side's record is written by the one writer
     (``_status.apply_status_to_all_three``).  Each side's leg reads the
-    transfer's period, category, due date and price (``transfer_legs``), so
-    no copy of them is kept to hold equal: the twin rows that carried one
-    went at plan step ``balance:X-bi-6-4d-3``, and their mirrors at its leaf
-    3b.
+    transfer's period, category and due date (``transfer_legs``), so no copy
+    of them is kept to hold equal: the twin rows that carried one went at
+    plan step ``balance:X-bi-6-4d-3``, and their mirrors at its leaf 3b.  A
+    planned leg reads its PRICE off the transfer too, but a settled side's
+    figure is its record's (``$0.00`` when it holds none), and the one
+    writer puts the same figure on both sides' records, so that figure IS
+    kept twice, equal, until plan step ``balance:X-bi-6-4d-4`` gives it one
+    home.
 
     **A change that moves the transfer INTO the settled band is a SETTLE**, and
     this hands that act whole to

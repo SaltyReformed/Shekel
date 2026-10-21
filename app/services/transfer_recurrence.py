@@ -40,8 +40,9 @@ Key differences from transaction recurrence:
   - Single amount column (no estimated/actual split).
   - Simpler amount logic: always uses template.default_amount.
   - EVERY write goes through ``transfer_service`` -- create, update and delete
-    alike -- so the two shadow transactions move with their parent atomically
-    (``CLAUDE.md`` Transfer Invariants 1-5).  That is also why the maintain pass
+    alike -- as ``CLAUDE.md`` (Architecture) requires of every write of a
+    transfer: a write anywhere else skips its refusals and the copies it keeps
+    in step, the posted ledger's among them.  That is also why the maintain pass
     sends only the fields that actually DIFFER: the update door reconciles the
     posting ledger and emits an audit row per call, so a pass that changes
     nothing must call it for nothing.
@@ -160,14 +161,14 @@ class DerivedTransferFields(NamedTuple):
     Attributes:
         from_account_id: The account the money leaves, from the template.
         to_account_id: The account it arrives at.  With *from_account_id* it is
-            the one derived pair whose change is not always applicable: both
-            shadows live on these accounts and a settled leg's records are filed
-            against them, so :func:`_rows_the_definition_reattributes` routes a
-            move on a record-holding row to the owner as a RETAINED conflict
-            instead of applying it.
-        name: The template's name.  The parent's only; each shadow's display
-            name is derived from the ENDPOINTS and re-derived by the door that
-            moves them.
+            the one derived pair whose change is not always applicable: each
+            side's payment record is filed against its endpoint, so
+            :func:`_rows_the_definition_reattributes` routes a move on a
+            record-holding row to the owner as a RETAINED conflict instead of
+            applying it.
+        name: The template's name.  The transfer's only; each leg's label is
+            composed from the ENDPOINTS' names when it is drawn
+            (``transfer_legs.leg_label``).
         category_id: The template's category, or ``None``.
         amount_ownership: WHERE this transfer's amount comes from, as ruling
             **R-FI**'s one attribute rather than a figure.  Since plan step
@@ -382,7 +383,7 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     # is this engine's, and that split is the whole of it since plan step
     # balance:X-au-d.
     def _new_row(period, occurrence):
-        """Build one generated transfer and its shadow pair for *occurrence*.
+        """Build one generated transfer for *occurrence*.
 
         Every derived column comes from the ONE statement of them
         (:class:`DerivedTransferFields`), which the maintain pass assigns onto
@@ -442,18 +443,17 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
 
       1. the rule names the period and an auto-generated transfer is there --
          the fields that DIFFER from :class:`DerivedTransferFields` are applied
-         through ``transfer_service.update_transfer``, which carries both shadow
-         rows and reconciles the ledger;
-      2. the rule names the period and nothing is there -- a transfer and its
-         two shadows are created, exactly as :func:`generate_for_template`
-         would;
+         through ``transfer_service.update_transfer``, which reconciles the
+         ledger;
+      2. the rule names the period and nothing is there -- a transfer is
+         created, exactly as :func:`generate_for_template` would;
       3. the rule NO LONGER names the period -- the transfer is removed through
          ``transfer_service.delete_transfer`` if it carries nothing, and
          RETAINED as a conflict if the owner has records against it;
       4. the transfer answers NO occurrence at all (``occurs_on`` is NULL) --
          it is left exactly as found and RETAINED as a conflict (finding
          **REC-516**).  This engine is where that matters most: its retire arm
-         destroys the parent AND BOTH SHADOWS, and the app's one live writer of
+         hard-deletes the transfer, and the app's one live writer of
          undated rows is a transfer one
          (``routes/transfers/_instances._materialize_one_time_transfer``).
 
@@ -462,7 +462,7 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
 
     **What the old sweep destroyed, and it was not only churn.**  It hard-deleted
     every non-overridden generated transfer in the window and re-created it.  A
-    transfer holds no purchases -- ``entry_service`` refuses a transfer row --
+    transfer holds no purchases -- ``entry_service`` refused its shadow rows --
     which is why this leaf came after the transaction one, but two owner-held
     facts still went with each deletion: the transfer's ``notes``, which
     ``create_transfer`` never receives, and a settlement RECORD retained through
@@ -547,8 +547,9 @@ def _rows_holding_owner_records(existing) -> "set[int]":
     "The owner's own records" is what finding **N-292** is about, and the
     transfer table's answer differs from the transaction table's in both
     directions.  A transfer holds no PURCHASES -- ``entry_service.create_entry``
-    refuses a transfer row outright -- which is why this engine was not part of
-    plan step R10-a.  What it does hold is:
+    refused its shadow rows outright, and a side link holds only a payment
+    record (``ck_transaction_entries_side_link_is_a_record``) -- which is why
+    this engine was not part of plan step R10-a.  What it does hold is:
 
       - ``notes`` on the parent: free text the owner typed, which no writer
         derives and which ``create_transfer`` is never handed, so every
@@ -588,14 +589,14 @@ def _rows_holding_owner_records(existing) -> "set[int]":
 
     **Both legs are asked in ONE query, not one per row.**  A regeneration
     considers every future transfer of a template -- 62 of them on one live
-    template on a production clone -- so reading each transfer's shadows in the
+    template on a production clone -- so reading each transfer's records in the
     classifier would issue a query per row on the hot path of every template
     edit.  The query is :func:`app.services.transfer_legs.transfers_holding_records`
-    since leaf ``balance:X-bi-6-4c-2``, moved there unchanged so the one place
-    a transfer's movement is reached through a shadow row answers it (plan step
-    ``X-bi-6-4d`` moves that join once); a leg holds no purchase
-    (``entry_service`` refuses a shadow), so a covering movement is every entry
-    a leg can hold, and the mark is what the seam's own record is called.
+    since leaf ``balance:X-bi-6-4c-2``, so the one join from a transfer to its
+    sides' records answers it (plan step ``balance:X-bi-6-4d-2`` moved that
+    join onto the side links); a side link holds only a payment record
+    (``ck_transaction_entries_side_link_is_a_record``), so a record is every
+    entry a side can hold.
 
     Args:
         existing: The transfers this pass is considering.
@@ -622,9 +623,9 @@ def _rows_the_definition_reattributes(existing, template) -> "set[int]":
 
     The transfer half of what
     :func:`_recurrence_common.classify_maintain_work` needs and cannot ask for
-    itself.  A transaction has ONE account; a transfer has two, and both shadow
-    rows live on them -- so "the definition moved where this row's records are
-    filed" is a question about the PAIR.
+    itself.  A transaction has ONE account; a transfer has two, and each side's
+    record is filed against its own -- so "the definition moved where this
+    row's records are filed" is a question about the PAIR.
 
     The move itself is applicable: ``transfer_service.update_transfer`` carries
     a transfer and both legs between accounts (plan step R10-b), and a transfer
@@ -632,7 +633,7 @@ def _rows_the_definition_reattributes(existing, template) -> "set[int]":
     ordinary case and the behaviour the old sweep had.  What is NOT applicable
     is doing it to a row that RECORDS something: a settled leg's figure is what
     moved between the OLD two accounts, and its statement link is scoped by
-    account (``fk_transactions_reconciled_by``), so re-pointing the pair would
+    account (``fk_transaction_entries_reconciled_by``), so re-pointing the pair would
     re-file both against accounts nobody asserted them on.  Those rows are
     retained and reported instead.
 
@@ -655,12 +656,12 @@ def _rows_the_definition_reattributes(existing, template) -> "set[int]":
 def _create_from_definition(
     fields, template, placed, scenario_id, projected_id,
 ):
-    """Create one transfer and its two shadows from *fields*.
+    """Create one transfer from *fields*.
 
     The ONE create in this engine, shared by :func:`generate_for_template` and
     the maintain pass's create arm so the two cannot come to build a generated
-    transfer two ways.  Routed through ``transfer_service.create_transfer`` so
-    the pair is established atomically (Transfer Invariants 1 and 3-5).
+    transfer two ways.  Routed through ``transfer_service.create_transfer``,
+    which every write of a transfer goes through (``CLAUDE.md``, Architecture).
 
     Args:
         fields: The :class:`DerivedTransferFields` for this (template, period)
@@ -696,11 +697,11 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
     """Write one classified maintain pass, through the transfer service.
 
     The only writer in this engine's maintain path, and every one of its three
-    arms goes through ``transfer_service``: ``CLAUDE.md`` Transfer Invariant 4
-    says no code path mutates a shadow directly, and a maintain pass that
-    assigned to a parent's columns would leave both shadows behind.  That is the
-    difference from the transaction twin's applier, which assigns fields itself
-    -- an ordinary row has no pair to keep equal.
+    arms goes through ``transfer_service``, which ``CLAUDE.md`` (Architecture)
+    sends every write of a transfer through: a maintain pass that assigned to a
+    transfer's columns would skip its refusals and the copies it keeps in step,
+    the posted ledger's among them.  That is the difference from the
+    transaction twin's applier, which assigns fields itself.
 
     **One field's derived value can disagree with what the CREATE path stored,
     and it is bounded rather than guarded** (adversarial review of R10-b).
@@ -783,9 +784,9 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
     # of the owner's.  Routed through the canonical hard-delete path (Transfer
     # Invariant 4): ``delete_transfer`` reverses any posted cash effect while
     # the rows still exist to link against, re-syncs a loan the payment left
-    # (its split links no row, ruling **R-BAL102**),
-    # runs the orphan-verification self-check and emits
-    # ``EVT_TRANSFER_HARD_DELETED`` per deletion.  See audit B6-03 / LOW-02.
+    # (its split links no row, ruling **R-BAL102**) and emits
+    # ``EVT_TRANSFER_HARD_DELETED`` per deletion; its orphan self-check went
+    # with the twins at plan step ``balance:X-bi-6-4d-3``.  See audit B6-03 / LOW-02.
     for xfer in work.retire:
         transfer_service.delete_transfer(xfer.id, template.user_id, soft=False)
 
@@ -826,9 +827,10 @@ def resolve_conflicts(
 ) -> str | None:
     """Resolve override/delete conflicts after a regeneration.
 
-    Routes all mutations through the transfer service so shadow
-    transactions are updated atomically.  Soft-deleted transfers are
-    restored via ``transfer_service.restore_transfer`` before updating --
+    Routes all mutations through the transfer service, which every write
+    of a transfer goes through (``CLAUDE.md``, Architecture).  Soft-deleted
+    transfers are restored via ``transfer_service.restore_transfer`` before
+    updating --
     only those the template's unarchive would restore (ruling
     **R-BAL253**): a deleted transfer its books hold stays deleted,
     untouched, and is named.
@@ -906,15 +908,15 @@ def resolve_conflicts(
         for xfer in use.handed_back:
             # Soft-deleted transfers must be restored before they can
             # be updated.  restore_transfer sets is_deleted=False on the
-            # transfer and both shadows, and verifies invariants.
+            # transfer.
             if xfer.is_deleted:
                 transfer_service.restore_transfer(xfer.id, ctx.user_id)
 
             # The owner is handing the pair BACK to its definition, and since
             # ruling **R-BAL11** that is ONE statement rather than a flag plus
             # a figure plus a claim about who authored it: the ownership names
-            # TEMPLATE, so the parent stores nothing and reads its series and
-            # both legs re-declare their parent.  ``is_override=False`` rides
+            # TEMPLATE, so the transfer stores nothing and reads its series,
+            # and both legs read the transfer.  ``is_override=False`` rides
             # with it still, because the flag means *this row is the OWNER's,
             # not the rule's* (plan step X-au-h) and this act clears exactly
             # that -- it no longer says anything about the amount.
