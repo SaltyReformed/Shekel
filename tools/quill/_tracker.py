@@ -625,7 +625,7 @@ class Tracker(CardReader):  # pylint: disable=too-many-public-methods
     """A tracker as the App sees it: its cards, each with its board item, its claims, and
     its :class:`Board`.
 
-    Pylint: ``too-many-public-methods`` (29/20) -- ``connect``, then **one
+    Pylint: ``too-many-public-methods`` (30/20) -- ``connect``, then **one
     method per read or write quill makes of the tracker** (most one
     request, ``claim`` four; this module is the one place it speaks to
     GitHub), the board's own writes already apart in :class:`Board`.  Three
@@ -633,7 +633,8 @@ class Tracker(CardReader):  # pylint: disable=too-many-public-methods
     unlink (R-BAL205), took it past 20; ``show``'s read of a card's comments
     is the fourth; X-cx's migration (L7) reads every card whole and asks GitHub
     what a number is, the fifth and sixth, and reads and makes milestones and
-    closes a ruling with its mark's removal in one write, the seventh to ninth.
+    closes a ruling with its mark's removal in one write, the seventh to ninth;
+    its grade (R-BAL355) renders a card's Markdown as GitHub does here, the tenth.
     The claims' three (``claims``, ``claim``, ``release``: git references, not
     cards) could stand apart the same way; that split is not this change's.
 
@@ -759,6 +760,14 @@ class Tracker(CardReader):  # pylint: disable=too-many-public-methods
     def body(self, number: int) -> str:
         """A card's body as it stands."""
         return self.github.rest("GET", f"{self.place.path}/issues/{number}")["body"] or ""
+
+    def render(self, text: str) -> str:
+        """``text`` as GitHub renders a card's Markdown in this tracker, as HTML: its
+        Markdown API in ``gfm`` mode with the tracker as context, which links ``#N`` to card
+        N where card N exists, and stores nothing (X-cx's migration grades the cards'
+        numbers by it, ``_migrate_numbers.grade_rendered``)."""
+        return self.github.rest_text("POST", "/markdown", {
+            "text": text, "mode": "gfm", "context": self.place.full_name})
 
     def claims(self) -> dict[int, Claim]:
         """Every claim, by card: one REST listing, then one read of their commits."""

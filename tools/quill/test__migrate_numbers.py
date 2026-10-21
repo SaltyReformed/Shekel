@@ -1,11 +1,17 @@
-"""X-cx's migration, its bare ``#N`` (R-BAL277): which numbers GitHub would link, each one
-written as the input file decides, and what is refused rather than written.
+"""X-cx's migration, its bare ``#N`` (R-BAL277): which numbers are decided, each one written
+as the input file decides, what is refused rather than written, and GitHub's renderer
+grading each card before it is filed (R-BAL355).
 
 The forms GitHub links and does not were measured 2026-10-21 through its Markdown API,
 rendering in the plan tracker's context (the X-cx L8 lane's ``plan-tracker-2026-10-21/``
-records); the cards here are made up.
+records).  The grade is fed GitHub's own HTML for every text it renders here, captured once
+the same way into ``markdown_renders.json`` (card 1 exists on the tracker, as do 2 and 7);
+the cards are made up.
 """
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import pytest
 
@@ -16,11 +22,16 @@ from tools.quill._migrate_numbers import (
     CARD,
     PLAIN,
     PR,
+    SWAPPED_TO,
     UNDECIDED,
+    _named,
     decided_from,
+    grade_rendered,
     link,
     numbers,
 )
+from tools.quill._migrate_source import MAPPED
+from tools.quill.setup_tracker import PLAN
 
 #: Each form GitHub linked, and how many links it made: after a quote, a bracket, a dash,
 #: a slash, another ``#``, a backslash and emphasis among them.
@@ -69,11 +80,15 @@ def test_a_number_github_does_not_link_after_a_letter_or_in_code_is_no_candidate
 
 
 @pytest.mark.parametrize("text", ["a_#2 b", "#2_x c"])
-def test_more_than_github_links_may_be_taken_where_a_marker_reads_the_same(text):
+def test_more_than_github_links_may_be_taken_and_is_written(text):
     """``a_#2`` and ``#2_x``, which GitHub did not link, are taken: an ``_`` may be
-    emphasis, which GitHub links inside (``_#2_``), and a marker where GitHub would not link
-    reads the same."""
-    assert [number.text for number in numbers(_card(text))] == ["#2"]
+    emphasis, which GitHub links inside (``_#2_``).  Each is written as decided; the grade
+    holds its marker to reading the same
+    (:func:`test_a_marker_where_github_links_nothing_reads_the_same`)."""
+    card = _card(text)
+    assert [number.text for number in numbers(card)] == ["#2"]
+    assert _linked(card, _decided(card, PLAIN)).built["balance:R-X"].body == text.replace(
+        "#2", "#<!-- -->2")
 
 
 def test_a_code_span_starts_at_the_start_of_its_backtick_run():
@@ -183,70 +198,20 @@ def test_a_number_in_a_title_is_refused():
         "reword its name",)
 
 
-@pytest.mark.parametrize("text, references", [
-    ("&#35;2", [("#", "&#35;")]), ("&#x23;2", [("#", "&#x23;")]), ("&num;2", [("#", "&num;")]),
-    ("&#035;2", [("#", "&#035;")]), ("&#X23;2", [("#", "&#X23;")]),
-    ("#&#50;", [("2", "&#50;")]), ("&#35;&#50;", [("#", "&#35;"), ("2", "&#50;")]),
-])
-def test_a_hash_or_a_digit_written_as_a_character_reference_is_refused(text, references):
-    """GitHub reads each as its character and linked card 2 through every one (measured),
-    where no ``#N`` stands for a candidate; a reference's own digits are none."""
-    card = _card(f"see {text} here")
-    assert not numbers(card)
-    assert _linked(card, None).refusals == tuple(
-        f"numbers: balance:R-X: its text writes {read!r} as the character reference "
-        f"{reference!r}, which GitHub reads as that character, so it can link where no #N "
-        "stands: write the character itself in its source" for read, reference in references)
-
-
-@pytest.mark.parametrize("text", ["`&#35;2`", "&NUM;2", "&num2", "&amp; and &#65;"])
-def test_a_reference_in_code_or_reading_as_no_hash_or_digit_is_let_be(text):
-    """In code GitHub reads a reference as written, ``&NUM;`` and ``&num`` are none
-    (measured: neither linked), and ``&amp;`` or ``&#65;`` reads as no ``#`` or digit, so
-    its own digits are no candidate either."""
-    assert not _linked(_card(text), None).refusals
+@pytest.mark.parametrize("text", ["&#35;2", "&#x23;2", "&num;2", "&#035;2", "&#X23;2", "#&#50;",
+                                  "&#35;&#50;", "`&#35;2`", "&amp; and &#65;"])
+def test_a_number_written_with_character_references_is_no_candidate(text):
+    """GitHub reads each reference as its character and linked card 2 through every one of
+    the first seven (measured): no ``#N`` stands for a candidate, and a reference's own
+    digits are none, so the grade refuses each
+    (:func:`test_every_form_github_links_a_card_in_is_refused`)."""
+    assert not numbers(_card(f"see {text} here"))
 
 
 def test_a_decimal_run_too_long_for_a_reference_is_read_as_written():
     """Eight digits make no reference (CommonMark), so its ``#`` and digits are read as
     written: a candidate, after ``&``, where no rewrite was measured."""
     assert [number.text for number in numbers(_card("&#12345678;"))] == ["#12345678"]
-
-
-@pytest.mark.parametrize("text, problem", [
-    ("see a/#2", "#2 follows '/', after which no rewrite of it was measured "
-                 "(_migrate_numbers.MEASURED_BEFORE): reword its source"),
-    ("_#2_", "#2 follows '_', after which no rewrite of it was measured "
-             "(_migrate_numbers.MEASURED_BEFORE): reword its source"),
-    ("    code #2", "#2 sits on a line indented 4 spaces, which Markdown may read as code, "
-                    "where a marker or a link prints as written: reword or re-indent its "
-                    "source"),
-])
-def test_a_number_where_no_rewrite_was_measured_is_refused(text, problem):
-    """After a character no rewrite was rendered behind, or where Markdown may read code,
-    a marker or a link could change what the card reads: refused, whatever is decided."""
-    card = _card(text)
-    assert _linked(card, _decided(card, PLAIN)).refusals == (f"numbers: balance:R-X: {problem}",)
-
-
-def test_a_number_two_spaces_in_is_written():
-    """A spec's continuation line, two spaces in, is prose."""
-    card = _card("- a step\n  its rank #4")
-    assert _linked(card, _decided(card, PLAIN)).built["balance:R-X"].body == (
-        "- a step\n  its rank #<!-- -->4")
-
-
-def test_a_pull_request_inside_an_open_bracket_is_refused_and_a_marker_there_is_written():
-    """A link inside a link's text would nest, so a ``pr`` there is refused; R-PC111's
-    ``[ #2 (03/26 - 04/08) v ]``, a paycheck's number, takes the marker."""
-    linked = _card("[see PR #47](https://example.com)")
-    assert _linked(linked, _decided(linked, PR)).refusals == (
-        "numbers: balance:R-X: #47 at '[see PR #47](https://example.co' is decided pr "
-        "inside an open '[', where its link would nest in a link's text: decide it otherwise "
-        "or reword its source",)
-    menu = _card("[ #2 (03/26 - 04/08) v ]")
-    assert _linked(menu, _decided(menu, PLAIN)).built["balance:R-X"].body == (
-        "[ #<!-- -->2 (03/26 - 04/08) v ]")
 
 
 def test_only_the_card_refused_is_left_as_built():
@@ -257,3 +222,199 @@ def test_only_the_card_refused_is_left_as_built():
     assert found.built == {"balance:R-X": _card("Rank #<!-- -->5."), "balance:R-Y": bad}
     assert found.counts == {PLAIN: 1, UNDECIDED: 1}
     assert len(found.refusals) == 1 and found.refusals[0].startswith("numbers: balance:R-Y: ")
+
+
+# -- the grade: GitHub's renderer, before anything is filed (R-BAL355) ----------------
+
+def recording() -> dict:
+    """GitHub's answers as captured (the module docstring): ``renders``, each text's HTML,
+    and ``unlinked_control``, the control rendered as plain Markdown, which links no card."""
+    return json.loads((Path(__file__).parent / "markdown_renders.json").read_text(
+        encoding="utf-8"))
+
+
+def _github() -> dict[str, str]:
+    """GitHub's HTML for each text the grade renders here, as captured."""
+    return recording()["renders"]
+
+
+class _Renderer:
+    """GitHub's renderer as captured: each text's HTML, and every text asked, in order; a
+    text never captured fails the test (``KeyError``) rather than be answered."""
+
+    def __init__(self, answers: dict[str, str] | None = None):
+        """Answer from ``answers`` (GitHub's, as captured, by default)."""
+        self.answers = _github() if answers is None else answers
+        self.asked: list[str] = []
+
+    def __call__(self, text: str) -> str:
+        """``text``'s HTML."""
+        self.asked.append(text)
+        return self.answers[text]
+
+
+#: The grade's control as it renders it: card 1's number at each length a card's has.
+CONTROL = "#1 #01 #001 #0001"
+
+
+def _graded(card: Built, *treatments: str, renderer: _Renderer | None = None):
+    """:func:`grade_rendered` of the one card ``card``, keyed ``balance:R-X``, its numbers
+    decided ``treatments`` (none: no entry) and filed as :func:`link` writes them."""
+    decided = {"balance:R-X": _decided(card, *treatments)} if treatments else {}
+    filed = link({"balance:R-X": card}, decided)
+    assert not filed.refusals
+    return grade_rendered({"balance:R-X": card}, filed.built, decided,
+                          renderer or _Renderer(), PLAN.full_name)
+
+
+def _unasked(text: str, before: str, part: str = "body") -> str:
+    """The grade's refusal of a link GitHub makes to card ``text`` after ``before``."""
+    return (f"numbers: balance:R-X: GitHub links a card of the tracker from its {part} that no "
+            f"decision names card: {text!r} after {before!r} (every number named card 1 here, "
+            "so each link stands for one GitHub makes once its card is filed): reword its "
+            "source, or decide it")
+
+
+#: The opening of the grade's refusal of a part that renders otherwise once written.
+DIFFERS = ("numbers: balance:R-X: its body renders differently once its numbers are written: "
+           "GitHub's ")
+
+
+def test_the_card_every_number_names_is_filed_already_and_of_one_digit():
+    """A card the tracker holds before the migration files any, so GitHub links it; of one
+    digit, so a run of any length names it (:func:`_named`)."""
+    assert SWAPPED_TO in MAPPED.values() and 0 < SWAPPED_TO < 10
+
+
+def test_every_run_of_digits_is_made_to_name_the_card_at_its_length_and_in_its_form():
+    """Each digit keeps its form, a reference its leading zeros, a run its length; a
+    reference for anything but a digit is left whole, so ``&#65;`` stays A and eight digits
+    stay too many for a reference; a run at a line's start, which can be a list's number
+    and no card's, is left as written."""
+    card = _card("#149 #&#50; &#65; &#12345678; 2026-10-21 &#x32; &#0050;\n12. item #7\n"
+                 "> 3) quoted #44", "GH-12")
+    assert _named(card) == _card("#001 #&#49; &#65; &#00000001; 0001-01-01 &#x31; &#0049;\n"
+                                 "12. item #1\n> 3) quoted #01", "GH-01")
+
+
+def test_a_card_github_reads_as_built_is_unrefused_after_three_renders_and_the_control():
+    """Card #8 decided card, PR #47 pr, rank #149 plain: once written they render as built
+    (the pull request's link unwrapped), and with every number naming card 1 and card #8
+    written plain, GitHub links no card: the control, then before, after and the swap."""
+    card = _card("Card #8 cites PR #47 at rank #149.")
+    renderer = _Renderer()
+    assert not _graded(card, CARD, PR, PLAIN, renderer=renderer)
+    assert renderer.asked == [
+        CONTROL, "Card #8 cites PR #47 at rank #149.",
+        f"Card #8 cites PR [#47]({APP_PULLS}47) at rank #<!-- -->149.",
+        f"Card #<!-- -->1 cites PR [#01]({APP_PULLS}1) at rank #<!-- -->001."]
+
+
+def test_a_card_where_github_could_link_no_card_is_never_rendered():
+    """No ``#`` and digit, ``GH-`` and digit or issue URL, written or by reference: nothing
+    rendered, not even the control."""
+    renderer = _Renderer()
+    assert not _graded(_card("No number here, GH-x, #x or /issues/x."), renderer=renderer)
+    assert not renderer.asked
+
+
+def test_a_number_github_links_where_the_scanner_saw_code_is_refused():
+    """R-BAL355's card A: a code span wrapping a line hides ``#12`` from the scanner, which
+    reads the lines apart; GitHub reads ``pytest tools/quill`` as the span and links #12."""
+    card = _card("ran `pytest\ntools/quill` on #12 and `check`")
+    assert not numbers(card)
+    assert _graded(card) == (_unasked("#1", "ran pytest tools/quill on"),)
+
+
+@pytest.mark.parametrize("text", [
+    "> the log read:\n>\n>     stopped at #12",
+    "~~~\nrank #2\n~~~",
+    "a `b\nc #2` d",
+    "    code #2",
+    "<!-- see #2 -->\nvisible",
+    "[x](#2) here",
+    "[see PR #47](https://example.com)",
+], ids=["code-in-a-quote", "tilde-fence", "span-across-lines", "indented-code",
+        "html-comment", "link-target", "pr-in-link-text"])
+def test_a_written_number_github_reads_otherwise_is_refused(text):
+    """R-BAL355's card B (a code block inside a quote) and the review's H2: each number is
+    taken by the scanner, and written (a marker, or a pull request's link for the last),
+    reads otherwise than as built: shown in code, breaking a comment, moving a link's
+    target, or nesting a link in a link's text."""
+    card = _card(text)
+    treatment = PR if "PR" in text else PLAIN
+    (refused,) = _graded(card, treatment)
+    assert refused.startswith(DIFFERS) and refused.endswith(
+        ": decide them otherwise, or reword its source")
+
+
+def test_a_marker_where_github_links_nothing_reads_the_same():
+    """After ``_`` (a mark, or a letter), ``/``, in emphasis and in a bracket that opens no
+    link (R-PC111's paycheck menu), the marker reads as the number and links nothing."""
+    card = _card("a_#2 b, a/#2, _#3_ and [ #2 (03/26 - 04/08) v ]")
+    assert not _graded(card, PLAIN, PLAIN, PLAIN, PLAIN)
+
+
+@pytest.mark.parametrize("text, before", [
+    ("see GH-2 here", "see"),
+    ("see saltyreformed-labs/shekel-plan#2 here", "see"),
+    ("see &#35;2 here", "see"),
+    ("see #&#50; here", "see"),
+    ("see &num;2 here", "see"),
+    ("see GH&#45;2 here", "see"),
+    ("see https://github.com/saltyreformed-labs/shekel-plan/issues/7 here", "see"),
+], ids=["gh", "owner-repo", "reference-hash", "reference-digit", "named-reference",
+        "reference-hyphen", "issue-url"])
+def test_every_form_github_links_a_card_in_is_refused(text, before):
+    """The review's M1 and the references the scanner reads as spaces: no candidate, so no
+    decision, and GitHub links a card through each (here card 1, every number naming it):
+    refused.  A URL to a card too, which no decision can name."""
+    card = _card(text)
+    assert not numbers(card)
+    assert _graded(card) == (_unasked("#1" if "GH" not in text else "GH-1", before),)
+
+
+def test_a_number_after_a_pull_requests_link_is_refused():
+    """``#1#2`` with ``#1`` decided pr: the scanner takes no ``#2`` (after a digit), but
+    once ``#1`` is a link, GitHub reads ``#2`` after it and links it (the review's H2)."""
+    card = _card("see #1#2 here")
+    assert [number.text for number in numbers(card)] == ["#1"]
+    assert _graded(card, PR) == (_unasked("#1", "see #1"),)
+
+
+def test_a_number_in_code_written_with_references_is_not_refused():
+    """In code GitHub reads a reference as written and links nothing."""
+    assert not _graded(_card("see `&#35;2` in code"))
+
+
+def test_the_comment_is_graded_as_the_body_is():
+    """A card's comment is a Markdown text of its own, rendered and refused by its name."""
+    assert _graded(_card("No number.", "see GH-3 here")) == (
+        _unasked("GH-1", "see", part="comment"),)
+
+
+def test_a_number_written_with_a_leading_zero_and_decided_plain_is_refused_where_it_links():
+    """GitHub shows a linked ``#02`` as ``#2``, so where card 2 exists the text as built reads
+    ``#2`` and its marker ``#02``: refused, as the module docstring says, though the marker
+    is right; reword it ``#2``."""
+    (refused,) = _graded(_card("rank #02 here"), PLAIN)
+    assert refused.startswith(DIFFERS)
+
+
+def test_a_number_at_a_lines_start_is_left_so_a_paragraph_stays_one():
+    """``2.`` cannot open a list inside a paragraph, so GitHub reads ``GH-5`` after it as
+    the paragraph's text and links it.  Made ``1.``, it would open a list whose indented
+    line is code, where nothing links: so a run at a line's start keeps its digits."""
+    assert _graded(_card("para\n2.     code GH-5")) == (_unasked("GH-1", "para 2. code"),)
+
+
+def test_a_control_that_links_nothing_refuses_the_grade_whole():
+    """A renderer that links no card (here GitHub's own plain-Markdown answer, which links no
+    issue) would pass every card: the control refuses, and nothing else is rendered."""
+    answers = {CONTROL: recording()["unlinked_control"]}
+    renderer = _Renderer(answers)
+    assert _graded(_card("see GH-2 here"), renderer=renderer) == (
+        "numbers: GitHub's renderer, in saltyreformed-labs/shekel-plan's context, linked "
+        f"{CONTROL!r} to card(s) [], where each must link card 1: nothing is graded (is card 1 "
+        "on that tracker, and may this token read it?)",)
+    assert renderer.asked == [CONTROL]

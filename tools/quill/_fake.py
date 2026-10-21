@@ -89,16 +89,17 @@ class FakeBoard:
 class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-attributes
     """The tracker in memory: cards, bodies, comments, claims, its board, and every write.
 
-    Pylint: ``too-many-public-methods`` (29/20) -- it stands in for
-    :class:`_tracker.Tracker`, so it has each of that class's 28 reads and
+    Pylint: ``too-many-public-methods`` (30/20) -- it stands in for
+    :class:`_tracker.Tracker`, so it has each of that class's 29 reads and
     writes (its own disable says why there are so many), and ``add``, which
-    puts a card in.  ``too-many-instance-attributes`` (11/7) -- **one per kind
-    of fact it keeps**: ten a command reads back (cards, bodies, saved
+    puts a card in.  ``too-many-instance-attributes`` (12/7) -- **one per kind
+    of fact it keeps**: eleven a command reads back (cards, bodies, saved
     versions, comments, claims, merged pull requests, the board, the deleted
-    numbers, the milestones, and each card's milestone) and the log of writes
-    the tests read; the comments ``show`` reads (X-cx leaf B) made the eighth,
-    the numbering X-cx's migration reads (L7) the ninth, and its milestones the
-    tenth and eleventh.
+    numbers, the milestones, each card's milestone, and how GitHub renders a
+    text) and the log of writes the tests read; the comments ``show`` reads
+    (X-cx leaf B) made the eighth, the numbering X-cx's migration reads (L7)
+    the ninth, its milestones the tenth and eleventh, and its grade's renderer
+    (R-BAL355) the twelfth.
     """
 
     app_login = APP_LOGIN
@@ -115,6 +116,7 @@ class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-
         self.gone: set[int] = set()
         self.milestones_by_number: dict[int, Milestone] = {}
         self.milestone_of: dict[int, int] = {}
+        self.renderer = None
         self.writes: list[tuple] = []
         self.board = FakeBoard(self.writes)
 
@@ -183,6 +185,13 @@ class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-
     def body(self, number):
         """A card's body."""
         return self.bodies[number]
+
+    def render(self, text):
+        """``text`` as :attr:`renderer` answers it: a test that renders sets the answer GitHub
+        gives, and with none set a render fails loudly rather than guess GitHub's HTML."""
+        if self.renderer is None:
+            raise AssertionError(f"rendered with no renderer set: {text[:80]!r}")
+        return self.renderer(text)
 
     def claims(self):
         """Every claim."""

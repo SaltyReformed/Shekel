@@ -1,5 +1,6 @@
 """X-cx's migration, its NUMBERS: each bare ``#N`` a card's text holds, decided one by one
-(ruling ``balance:R-BAL277``).
+(ruling ``balance:R-BAL277``), and graded by GitHub's own renderer before anything is filed
+(ruling ``balance:R-BAL355``).
 
 GitHub links every bare ``#N`` in a card's Markdown to the tracker's card N, and leaves a
 "mentioned this" line on that card.  Some numbers the cards carry mean a tracker card
@@ -15,85 +16,91 @@ each decision into its card's text, which every phase then files and grades
 - ``plain``: ``#<!-- -->N``, which GitHub stores as sent and renders as ``#N``, linking
   nothing (the rehearsal's probe M6-3, 2026-10-12).
 
-Every card reads word for word as its sources do.  A card's decisions are written for
-its text as built (:func:`decided_from`, hashed), so a card whose text changed since has
-them refused until they are decided and reviewed again, as a stale name is.
+**What is decided** is each :data:`CANDIDATE` :func:`numbers` takes: a ``#N`` with no
+letter or digit beside it, outside the code spans and fences it reads on each line, a
+character reference read as spaces.  It reads Markdown a line at a time, where GitHub reads
+it by block, so it can take a number GitHub does not link (in a code span that wraps a
+line, say) and miss one GitHub does (after a code span that wraps a line).  So the scanner
+only lists what the input file decides; the grade below refuses a card GitHub would read
+otherwise.  A card's decisions are written for its text as built (:func:`decided_from`,
+hashed), so a card whose text changed since has them refused until they are decided and
+reviewed again, as a stale name is.  A candidate in a card's TITLE is refused: a title is
+not Markdown and takes no marker, so the name is reworded.
 
-**Which numbers GitHub links** (measured 2026-10-21 through GitHub's Markdown API, rendering
-in the plan tracker's context; the probe and its answers are in the X-cx L8 lane's
-``plan-tracker-2026-10-21/`` records): ``#`` and digits of an issue that EXISTS (``#149``
-links nothing while the tracker holds no card 149, so every probe used card 2), after
-anything but a letter or a digit and before anything but a letter, a digit or ``_``, as
-GitHub reads the text once Markdown has taken its marks, outside code -- after ``/``,
-``#``, ``\\``, a quote, a bracket or a dash, inside emphasis (``_#2_``, whose ``_`` are
-marks), ``#2.5`` and ``#02`` included; and where a character reference stands for the
-``#`` or a digit (``&#35;2``, ``&#x23;2``, ``&num;2``, ``#&#50;``), which GitHub reads as
-that character (``&NUM;2`` and ``&num2``, no references, are read as written).
-:data:`CANDIDATE` takes every such ``#N`` in the source and more (``a_#2`` and ``#2_x``,
-whose ``_`` may be a mark; a number in an indented code block or a link's text, which
-GitHub does not link): a candidate needs a decision whether GitHub would link it or not,
-and a marker or a link where GitHub would not link reads the same, so taking more costs a
-decision and never a wrong link.
+**The grade** (:func:`grade_rendered`): before ``check --target`` plans, or ``history`` or ``open``
+writes, anything, each part of a card (its body, its comment) where GitHub could link a
+card is rendered by GitHub's Markdown API in the tracker's context, which stores nothing
+(``_tracker.Tracker.render``).  Such a part holds ``#`` and a digit, ``GH-`` and a digit
+(any case), or ``/issues/`` or ``/pull/`` and a digit, as written or with its character
+references read (:data:`_LINKABLE`): ``#N``, ``GH-N``, ``owner/repo#N`` and an issue's URL
+each linked the tracker's card 1 (measured 2026-10-21 through the API, the tracker as
+context; ``GH-N`` and ``owner/repo#N`` are no candidate).  Three checks, each refusal naming
+the card:
 
-**What is refused, never rewritten** (each a refusal naming the card), being a place the
-transform was not measured in, where a marker or a link could change what the card reads:
+1. **It reads as built.**  The part as filed must render as the part as built, once each
+   link to a card of the tracker or to one of the app's pull requests is unwrapped to its
+   text; the first difference is quoted.  A marker in code (a code block inside a quote, a
+   tilde fence, a code span across lines), a ``pr`` link inside a link's text, and a
+   rewrite inside an HTML comment or a link's target are refused this way.  GitHub shows a
+   linked number as it reads it (``#001`` as ``#1``, measured 2026-10-21), so a number
+   written with leading zeros and decided ``plain`` or ``pr`` is refused wherever its card
+   exists (no card holds one today, measured 2026-10-21).
+2. **No number links a card unasked.**  GitHub links a number only to a card that EXISTS,
+   and most cards the numbers name are not filed yet, so the part is rendered with every
+   number made to name :data:`SWAPPED_TO`, a card filed already (:func:`_named`), and each
+   number decided ``card`` written as ``plain``: it must hold no link to a card of the
+   tracker.  GitHub links one only where a number no decision names ``card`` stands, and
+   each is refused, quoting it and the text before it.  ``GH-N``, ``owner/repo#N`` naming
+   the tracker, a number written with character references, one the scanner took for code,
+   and ``#2`` after a ``pr`` link in ``#1#2`` are refused this way, and so is a URL to a
+   tracker card, which no decision can name (write ``#N`` and decide it ``card``).
+3. **The renderer links.**  Once a grade, before any part, :data:`SWAPPED_TO`'s number
+   written at each length a card's number has (:data:`_CARD_DIGITS`) must link that card,
+   or the grade is refused whole and nothing is graded: a token or a context that linked
+   nothing would pass every card.
 
-- a candidate in a TITLE, which is not Markdown and takes no marker: the name is reworded;
-- a ``#`` or a digit written as a character reference outside code, which can link with
-  no ``#N`` in the source for :data:`CANDIDATE` to find;
-- a candidate after a character outside :data:`MEASURED_BEFORE` (a URL's ``/`` among
-  them), or on a line indented four spaces or more, which Markdown may read as code,
-  where a marker or a link prints as written;
-- a ``pr`` decision inside an open ``[`` on its line, where its link would nest inside a
-  link's text.
+The second check's text is written by :func:`_written`, the transform :func:`link` files by,
+on the part with each run of digits made to name the card at its own length and with each
+digit in its own form, as itself or as a character reference (GitHub reads a number's
+leading zeros as nothing: ``#000000000000000000001``, 21 digits, linked card 1, measured
+2026-10-21).  A run at a line's start, after spaces and ``>``, is left as written, as no
+card's number can start a line and an ordered list's number there decides whether the list
+interrupts a paragraph (only one starting at 1 does).  A digit is otherwise no Markdown mark
+but in a label: two footnote or link labels told apart by their digits alone (``[^1]``,
+``[^2]``) read as one in that text, so a definition the second names is not rendered there.
+No card holds a footnote or a link reference definition today (measured 2026-10-21).
 
 **What it does not grade**: whether a decision is RIGHT (``card #149`` linking whatever card
-ends up numbered 149, say); the input file's reviewer grades that, as it grades a name.
-
-**What it cannot see yet** (S2's review, H1, H2 and M1, 2026-10-21, each rendered through
-GitHub): it reads code spans and fences one line at a time, where GitHub reads Markdown by
-block.  So a code span that wraps a line, an escaped backtick, a line opening with an
-inline triple-backtick span, a code block inside a quote, a tilde fence, a tab-indented
-line, an HTML comment or block, or a link to ``#N`` can hide from :data:`CANDIDATE` a
-number GitHub links, or put a marker or a link where it prints as written.  ``GH-N`` and
-``owner/repo#N`` link a card with no candidate taken.  "Every card reads word for word" and
-"every such ``#N``" above hold only where none of those stands.  Ruling
-``balance:R-BAL355`` closes it: GitHub's own renderer grades every card holding a number
-before anything is filed, and the rules above about where a number may sit are deleted.
-Until that lands, no phase may file.
+ends up numbered 149, say); the input file's reviewer grades that, as it grades a name.  A
+link the author wrote relative to the card's own page (``[x](./1)``) is read by the
+browser, not by GitHub's renderer, and nothing here reads it.
 """
 from __future__ import annotations
 
 import html
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from tools.ci.arc_steps import fenced_lines
 from tools.quill._migrate_bodies import Built
 from tools.quill._migrate_input import NUMBER, TREATMENTS, Numbered
-from tools.quill._migrate_source import source_hash
+from tools.quill._migrate_source import MAPPED, source_hash
 from tools.quill.setup_tracker import ORG
 
 #: The treatments, by the names the input file writes them in (one home: its
 #: :data:`_migrate_input.TREATMENTS`, which this unpacking holds to exactly three).
 CARD, PR, PLAIN = TREATMENTS
-#: A ``#N`` GitHub may link (the module docstring): a :data:`_migrate_input.NUMBER`, its
-#: number group 1, with no letter or digit beside it.  An ``_`` beside it is no letter
+#: A ``#N`` the input file decides (the module docstring): a :data:`_migrate_input.NUMBER`,
+#: its number group 1, with no letter or digit beside it.  An ``_`` beside it is no letter
 #: here, as Markdown may take it as a mark.
 CANDIDATE = re.compile(rf"(?<![A-Za-z0-9]){NUMBER.pattern}(?![A-Za-z0-9])")
 #: A character reference, decimal, hex or named, as CommonMark bounds it (seven decimal
-#: digits, six hex), which GitHub reads as the character it stands for
-#: (:func:`html.unescape`'s; a name it does not know is read as written, and holds no ``#``).
+#: digits, six hex), which GitHub reads as the character it stands for.
 _REFERENCE = re.compile(r"&(?:#\d{1,7}|#[xX][0-9A-Fa-f]{1,6}|[A-Za-z][A-Za-z0-9]*);")
 #: An inline code span: a run of backticks, then text, then a run of as many.
 _CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)")
-#: What may precede a candidate the transform rewrites: each rendered by GitHub with each
-#: treatment, reading as written (2026-10-21); "" is a line's start.
-MEASURED_BEFORE = frozenset({"", " ", "(", "[", "'", '"', "-", "*"})
-#: Indentation at which Markdown may read a line as code (an indented code block).
-_CODE_INDENT = 4
 #: Where a ``pr`` number links: the app's pull requests, in the organization it moved into
 #: at L5 (PR #583), by its own name, so no link leans on GitHub's redirect from the old one.
 APP_PULLS = f"https://github.com/{ORG}/Shekel/pull/"
@@ -107,6 +114,33 @@ _WRITES = {
 _PARTS = ("body", "comment")
 #: The count a report gives the candidates of a card refused, decided or not.
 UNDECIDED = "undecided"
+#: Text where GitHub could link a card (the module docstring): read as written, and again
+#: with its character references read.
+_LINKABLE = re.compile(r"#\d|gh-\d|/(?:issues|pull)/\d", re.IGNORECASE)
+#: One digit as GitHub reads it: itself, or a decimal or hex character reference standing
+#: for it, with any leading zeros.
+_DIGIT = re.compile(r"[0-9]|&#0*(?:4[89]|5[0-7]);|&#[xX]0*3[0-9];")
+#: A run of digits (:data:`_DIGIT`), or a character reference standing for anything else,
+#: matched first so that its own digits are no run.
+_RUN = re.compile(rf"(?P<run>(?:{_DIGIT.pattern})+)|{_REFERENCE.pattern}")
+#: What may stand before a run at a line's start: indentation and a quote's marks.
+_LINE_START = " \t>"
+#: The card every number names in the grade's second check: one filed before the migration
+#: (:data:`_migrate_source.MAPPED`), so GitHub links it while the cards are not yet filed.
+#: Of one digit, so a run of any length can name it (a test holds it to one).
+SWAPPED_TO = min(MAPPED.values())
+#: The most digits a card's number has: about 2,000 cards once the migration and the
+#: history cards after it are filed, so no number of five digits names a card, and the
+#: grade's control need not show that one links.
+_CARD_DIGITS = 4
+#: A link in GitHub's HTML: its attributes and its text.
+_ANCHOR = re.compile(r"<a\b(?P<attributes>[^>]*)>(?P<text>.*?)</a>", re.DOTALL)
+#: The attribute of a link to one of the app's pull requests, as a ``pr`` write makes one.
+_APP_PULL = re.compile(rf'\bhref="{re.escape(APP_PULLS)}\d+"')
+#: An HTML tag, which a quote of rendered text leaves out.
+_TAG = re.compile(r"<[^>]*>")
+#: How much of the text around a difference or before a link a refusal quotes.
+_QUOTED = 40
 
 
 @dataclass(frozen=True)
@@ -146,8 +180,8 @@ def _blanked(found: re.Match) -> str:
 
 
 def _readable(line: str) -> str:
-    """``line`` with each code span blanked, the same length: what GitHub reads for links
-    on it, at the same positions."""
+    """``line`` with each code span blanked, the same length: where :func:`numbers` reads
+    for candidates on it, at the same positions."""
     return _CODE_SPAN.sub(_blanked, line)
 
 
@@ -158,23 +192,12 @@ def _unfenced(text: str) -> list[tuple[int, str]]:
             if not fenced]
 
 
-def _numeric(found: re.Match) -> bool:
-    """Whether the character reference ``found`` reads as ``#`` or a digit."""
-    read = html.unescape(found.group(0))
-    return read == "#" or read.isdigit()
-
-
-def _references(line: str) -> list[str]:
-    """Each character reference on ``line`` outside code that reads as ``#`` or a digit."""
-    return [found.group(0) for found in _REFERENCE.finditer(_readable(line)) if _numeric(found)]
-
-
 def numbers(built: Built) -> list[Number]:
     """Every candidate in ``built``'s body and comment, in reading order: what its decisions
     are listed in.  A character reference is read as spaces, as many, never as its own
     digits nor as the character it stands for: in ``&#65;#2`` the ``#2`` is taken, after
-    ``;``, where GitHub reads ``A#2`` (a reference reading as ``#`` or a digit is refused
-    whole, :func:`_problems`)."""
+    ``;``, where GitHub reads ``A#2`` (a number written with references is the grade's,
+    :func:`grade_rendered`)."""
     found = []
     for part in _PARTS:
         for index, line in _unfenced(getattr(built, part) or ""):
@@ -226,16 +249,10 @@ def link(built: Mapping[str, Built], decided: Mapping[str, Numbered]) -> Linked:
 
 def _problems(card: Built, found: Sequence[Number], decision: Numbered | None) -> list[str]:
     """Why ``card``'s candidates ``found`` cannot be written as ``decision`` (None: the input
-    file decides none of them): its title's candidates and its character references first,
-    then each candidate's context, then the decision against the text."""
+    file decides none of them): its title's candidates first, then the decision against
+    the text."""
     problems = [f"its title holds {match.group(0)}, which no marker can stop in a title: "
                 "reword its name" for match in CANDIDATE.finditer(card.title)]
-    problems += [f"its text writes {html.unescape(reference)!r} as the character reference "
-                 f"{reference!r}, which GitHub reads as that character, so it can link where "
-                 "no #N stands: write the character itself in its source"
-                 for part in _PARTS for _, line in _unfenced(getattr(card, part) or "")
-                 for reference in _references(line)]
-    problems += [problem for number in found for problem in _context(card, number)]
     if decision is None:
         return problems + ([
             f"its card holds {len(found)} bare #N, none decided: "
@@ -244,24 +261,9 @@ def _problems(card: Built, found: Sequence[Number], decision: Numbered | None) -
     return problems + _against(card, found, decision)
 
 
-def _context(card: Built, number: Number) -> list[str]:
-    """Why ``number``'s place on ``card`` is one the transform was not measured in."""
-    line = _lines(getattr(card, number.part))[number.line]
-    problems = []
-    if number.before not in MEASURED_BEFORE:
-        problems.append(f"{number.text} follows {number.before!r}, after which no rewrite of it "
-                        f"was measured (_migrate_numbers.MEASURED_BEFORE): reword its source")
-    indent = len(line) - len(line.lstrip(" "))
-    if indent >= _CODE_INDENT:
-        problems.append(f"{number.text} sits on a line indented {indent} spaces, which Markdown "
-                        "may read as code, where a marker or a link prints as written: reword "
-                        "or re-indent its source")
-    return problems
-
-
 def _against(card: Built, found: Sequence[Number], decision: Numbered) -> list[str]:
     """Why ``decision`` does not decide ``card``'s candidates ``found``: its hash is not the
-    card's text's, or it decides other numbers, or a ``pr`` would land in a link's text."""
+    card's text's, or it decides other numbers."""
     now = decided_from(card)
     if not found:
         return [f"decides {len(decision.each)} number(s), and its card holds no bare #N: "
@@ -273,16 +275,7 @@ def _against(card: Built, found: Sequence[Number], decision: Numbered) -> list[s
     if given != [number.text for number in found]:
         return [f"decides {', '.join(given)}, and its card holds "
                 f"{', '.join(number.text for number in found)}, in that order"]
-    return [f"{number.text} at {_shown(card, number)!r} is decided pr inside an open '[', "
-            "where its link would nest in a link's text: decide it otherwise or reword its "
-            "source" for number, (_, treatment) in zip(found, decision.each)
-            if treatment == PR and _bracketed(card, number)]
-
-
-def _bracketed(card: Built, number: Number) -> bool:
-    """Whether ``number`` sits inside a ``[`` its line opens before it and has not closed."""
-    head = _readable(_lines(getattr(card, number.part))[number.line])[:number.start]
-    return head.count("[") > head.count("]")
+    return []
 
 
 def _shown(card: Built, number: Number) -> str:
@@ -295,7 +288,7 @@ def _written(card: Built, found: Sequence[Number], treatments: Sequence[str]) ->
     """``card`` with each candidate ``found`` written as its treatment, part by part and
     line by line, each line's last first so the spans before it hold."""
     texts = {part: _lines(getattr(card, part) or "") for part in _PARTS}
-    for number, treatment in sorted(zip(found, treatments), key=lambda pair: (
+    for number, treatment in sorted(zip(found, treatments, strict=True), key=lambda pair: (
             pair[0].part, pair[0].line, -pair[0].start)):
         lines = texts[number.part]
         line = lines[number.line]
@@ -303,3 +296,145 @@ def _written(card: Built, found: Sequence[Number], treatments: Sequence[str]) ->
                               + line[number.stop:])
     return Built(card.title, "\n".join(texts["body"]),
                  None if card.comment is None else "\n".join(texts["comment"]))
+
+
+def grade_rendered(built: Mapping[str, Built], filed: Mapping[str, Built],
+                   decided: Mapping[str, Numbered], render: Callable[[str], str],
+                   tracker: str) -> tuple[str, ...]:
+    """What GitHub's renderer refuses of the cards' numbers (the module docstring's three
+    checks), each part where GitHub could link a card rendered by ``render``.
+
+    Args:
+        built: Each card's text as built, by key, before its numbers are written.
+        filed: Each card's text as :func:`link` wrote it, by key: what is filed.
+        decided: Each card's decisions, by key, as :func:`link` took them with no refusal:
+            the grade runs only then, so every candidate a card holds is decided.
+        render: GitHub's HTML for a part's Markdown, in the tracker's context
+            (``_tracker.Tracker.render``).
+        tracker: The tracker's ``owner/name``, whose cards a link names.
+
+    Returns:
+        Each refusal: none when every part renders as built and no number links a card
+        unasked; the control's alone when it fails.
+    """
+    graded = {key: parts for key, card in built.items()
+              if (parts := [part for part in _PARTS if _linkable(getattr(card, part))])}
+    if not graded:
+        return ()
+    if failed := _control(render, tracker):
+        return (failed,)
+    refusals = []
+    for key, parts in graded.items():
+        treatments = [treatment for _, treatment in decided[key].each] if key in decided else []
+        named = _named(built[key])
+        unasked = _written(named, numbers(named),
+                           [PLAIN if treatment == CARD else treatment for treatment in treatments])
+        for part in parts:
+            if getattr(built[key], part) != getattr(filed[key], part):
+                refusals += _differs(key, part, render(getattr(built[key], part)),
+                                     render(getattr(filed[key], part)), tracker)
+            refusals += [f"numbers: {key}: GitHub links a card of the tracker from its {part} "
+                         f"that no decision names card: {text!r} after {before!r} (every "
+                         f"number named card {SWAPPED_TO} here, so each link stands for one "
+                         "GitHub makes once its card is filed): reword its source, or decide it"
+                         for _, text, before in _links(render(getattr(unasked, part)), tracker)]
+    return tuple(refusals)
+
+
+def _linkable(text: str | None) -> bool:
+    """Whether GitHub could link a card in ``text`` (:data:`_LINKABLE`)."""
+    return text is not None and bool(_LINKABLE.search(text)
+                                     or _LINKABLE.search(html.unescape(text)))
+
+
+def _named(card: Built) -> Built:
+    """``card``'s body and comment with each run of digits (:data:`_RUN`) made to name
+    :data:`SWAPPED_TO`, at its own length and with each digit in its own form (``#149`` as
+    ``#001``, ``#&#50;`` as ``#&#49;``), but a run at a line's start; a character reference
+    standing for anything but a digit is left whole, and the title as built."""
+    def swapped(text: str) -> str:
+        """``text``, its runs named (:func:`_named`)."""
+        def run(found: re.Match) -> str:
+            """``found``, its run of digits named, if it is one off a line's start."""
+            line = text[text.rfind("\n", 0, found.start()) + 1:found.start()]
+            if found.group("run") is None or not line.strip(_LINE_START):
+                return found.group(0)
+            units = _DIGIT.findall(found.group("run"))
+            return "".join(_as(unit, digit) for unit, digit
+                           in zip(units, str(SWAPPED_TO).zfill(len(units)), strict=True))
+        return _RUN.sub(run, text)
+    return Built(card.title, swapped(card.body),
+                 None if card.comment is None else swapped(card.comment))
+
+
+def _as(unit: str, digit: str) -> str:
+    """``digit`` written in ``unit``'s form (:data:`_DIGIT`): itself, or a decimal or hex
+    character reference with the same leading zeros."""
+    if not unit.startswith("&"):
+        return digit
+    if unit[2] in "xX":
+        return f"{unit[:-2]}{digit};"
+    return f"{unit[:-3]}{ord(digit)};"
+
+
+def _control(render: Callable[[str], str], tracker: str) -> str | None:
+    """Why the grade cannot trust ``render`` (the module docstring's third check), or None:
+    :data:`SWAPPED_TO`'s number, written at each length to :data:`_CARD_DIGITS`, must link
+    that card, and only it."""
+    written = " ".join(f"#{str(SWAPPED_TO).zfill(length)}"
+                       for length in range(1, _CARD_DIGITS + 1))
+    linked = [number for number, _, _ in _links(render(written), tracker)]
+    if linked == [SWAPPED_TO] * _CARD_DIGITS:
+        return None
+    return (f"numbers: GitHub's renderer, in {tracker}'s context, linked {written!r} to card(s) "
+            f"{linked}, where each must link card {SWAPPED_TO}: nothing is graded (is card "
+            f"{SWAPPED_TO} on that tracker, and may this token read it?)")
+
+
+def _names(tracker: str) -> re.Pattern:
+    """A link's attribute naming a card of ``tracker``, an issue or a pull request, its
+    number group 1."""
+    return re.compile(rf"/{re.escape(tracker)}/(?:issues|pull)/(\d+)", re.IGNORECASE)
+
+
+def _links(rendered: str, tracker: str) -> list[tuple[int, str, str]]:
+    """Each link in ``rendered`` to a card of ``tracker``, by any of its attributes: the
+    number it links, its text, and the text before it, each as a reader sees it."""
+    names = _names(tracker)
+    return [(int(named.group(1)), _seen(anchor.group("text")),
+             _seen(rendered[:anchor.start()])[-_QUOTED:])
+            for anchor in _ANCHOR.finditer(rendered)
+            if (named := names.search(anchor.group("attributes")))]
+
+
+def _seen(rendered: str) -> str:
+    """``rendered`` as a reader sees it: its tags left out, its references read, its
+    whitespace one space."""
+    return " ".join(html.unescape(_TAG.sub("", rendered)).split())
+
+
+def _unwrapped(rendered: str, tracker: str) -> str:
+    """``rendered`` with each link to a card of ``tracker`` or to one of the app's pull
+    requests (:data:`_APP_PULL`) unwrapped to its text: what a decision may change."""
+    names = _names(tracker)
+
+    def text(anchor: re.Match) -> str:
+        """``anchor`` unwrapped to its text if it is such a link, else whole."""
+        attributes = anchor.group("attributes")
+        return (anchor.group("text") if names.search(attributes) or _APP_PULL.search(attributes)
+                else anchor.group(0))
+    return _ANCHOR.sub(text, rendered)
+
+
+def _differs(key: str, part: str, before: str, after: str, tracker: str) -> list[str]:
+    """The refusal of ``key``'s ``part`` when GitHub renders it ``before`` as built and
+    ``after`` as filed otherwise than :func:`_unwrapped` allows; none when they are alike."""
+    before, after = _unwrapped(before, tracker), _unwrapped(after, tracker)
+    if before == after:
+        return []
+    at = next((index for index, (one, other) in enumerate(zip(before, after)) if one != other),
+              min(len(before), len(after)))
+    around = slice(max(0, at - _QUOTED), at + _QUOTED)
+    return [f"numbers: {key}: its {part} renders differently once its numbers are written: "
+            f"GitHub's {before[around]!r} becomes {after[around]!r}: decide them otherwise, "
+            "or reword its source"]

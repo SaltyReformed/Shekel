@@ -185,6 +185,12 @@ class Run:
         self._items = {item.key: item for item in filing.items}
         self.made = 0
 
+    @property
+    def tracker(self) -> Tracker:
+        """The tracker this run reaches, before it reads or writes anything: what GitHub's
+        renderer grades the cards' numbers through (``migrate.run``)."""
+        return self._at.tracker
+
     def read(self) -> Tracked:
         """The tracker as this run reads it (:func:`read_tracked`)."""
         return read_tracked(self._at.tracker)

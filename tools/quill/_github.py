@@ -250,6 +250,11 @@ class GitHub:
         response = self._send(method, API + path, body)
         return response.json() if response.content else None
 
+    def rest_text(self, method: str, path: str, body: dict | None = None) -> str:
+        """One REST call whose answer is text, not JSON (``/markdown`` answers HTML); the
+        text."""
+        return self._send(method, API + path, body).text
+
     def graphql(self, query: str, **variables) -> dict:
         """One GraphQL call; its ``data``.  GraphQL reports errors in a 200."""
         payload = self.rest("POST", "/graphql", {"query": query, "variables": variables})

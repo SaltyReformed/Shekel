@@ -32,6 +32,7 @@ from tools.quill._migrate_fake import BALANCE, complete_input
 from tools.quill._migrate_plan_fake import corpus_plan, corpus_texts, filed_tracker, with_change
 from tools.quill._migrate_source import read_registries
 from tools.quill._tracker import TrackerError
+from tools.quill.test__migrate_numbers import recording
 
 
 def _run(corpus, code, path, capsys, *extra, connect=None):
@@ -66,6 +67,8 @@ def test_a_clean_check_prints_what_moves_and_exits_0(corpus, code, tmp_path, cap
     assert ("census balance: 16 lines -- on a card 11; a heading 2; a note, moving nowhere 2; "
             "a shipped step's pointer, moving nowhere 1") in lines
     assert "bare #N, which GitHub links to the tracker's card N: none" in lines
+    assert ("bare #N: not graded by GitHub's renderer (`check --target` grades them once "
+            "nothing above is refused)") in lines
     assert lines[-2:] == [
         "writes if every card is new, not counting the links of a card filed already "
         "(`check --target` counts them): 4 filing the rulings, then 40 filing the rest and the "
@@ -784,6 +787,68 @@ def test_check_counts_each_number_by_its_treatment_and_refuses_an_undecided_card
     assert refused.startswith("REFUSED: numbers: balance:R-A: its card holds 3 bare #N, none "
                               "decided: #8 at 'Question: may card #8 cite PR #47 at rank'; "
                               "#47 at ")
+
+
+#: The grade's control (:func:`_migrate_numbers.grade_rendered`), and GitHub's answer to it on
+#: the plan tracker, as captured for the grade's own tests.
+CONTROL = "#1 #01 #001 #0001"
+#: A paragraph linking the plan tracker's card 1, as GitHub links a number no decision names.
+LINKS_CARD_1 = ('<p dir="auto">x <a class="issue-link js-issue-link" '
+                'href="https://github.com/saltyreformed-labs/shekel-plan/issues/1">#1</a></p>')
+
+
+def _renderer(asked, other):
+    """GitHub's renderer for a flow: the control as GitHub answered it, and every other text
+    ``other``; each text asked is kept in ``asked``."""
+    control = recording()["renders"][CONTROL]
+    return lambda text: asked.append(text) or (control if text == CONTROL else other)
+
+
+def test_check_target_grades_the_numbers_by_githubs_renderer_before_it_plans(
+        corpus, code, tmp_path, capsys):
+    """R-BAL355: ``check --target`` renders R-A's body, its three numbers decided plain,
+    through the tracker (the control, then as built, as filed and every number naming card
+    1), and counts the writes left on a tracker holding it filed so;
+    GitHub linking a card from it refuses, and the tracker is neither planned on nor
+    read."""
+    numbered = _numbered(corpus)
+    path = _input(numbered, tmp_path)
+    tracker, _ = filed_tracker(numbered)
+    tracker.gone.add(1)
+    asked = []
+    tracker.renderer = _renderer(asked, '<p dir="auto">x</p>')
+    status, out, _ = _run(numbered, code, path, capsys, "check", "--target", "plan",
+                          connect=lambda place: tracker)
+    lines = out.splitlines()
+    assert status == 0 and lines[-2] == (
+        "writes left on the tracker: 0 filing the rulings, then 0 filing the rest and the 0 "
+        "milestones, before the board's moves")
+    assert not [line for line in lines if "not graded" in line]
+    assert asked[0] == CONTROL and len(asked) == 4
+    assert all("may card #" in text for text in asked[1:])
+    tracker.renderer = _renderer([], LINKS_CARD_1)
+    tracker.all_cards = lambda: pytest.fail("the tracker was read after the grade refused")
+    status, out, _ = _run(numbered, code, path, capsys, "check", "--target", "plan",
+                          connect=lambda place: tracker)
+    lines = out.splitlines()
+    assert status == 1 and "writes: not counted while anything is refused" in lines
+    assert [line for line in lines if line.startswith("REFUSED")] == [
+        "REFUSED: numbers: balance:R-A: GitHub links a card of the tracker from its body that "
+        "no decision names card: '#1' after 'x' (every number named card 1 here, so each link "
+        "stands for one GitHub makes once its card is filed): reword its source, or decide it"]
+
+
+def test_a_writing_phase_writes_nothing_once_githubs_renderer_refuses(
+        corpus, code, tmp_path, capsys):
+    """``history`` grades the numbers on the tracker it connects to before its first
+    write: refused, it writes nothing (exit 1)."""
+    numbered = _numbered(corpus)
+    tracker = FakeTracker()
+    tracker.renderer = _renderer([], LINKS_CARD_1)
+    status, out, _ = _run(numbered, code, _input(numbered, tmp_path), capsys,
+                          "history", "--target", "plan", connect=lambda place: tracker)
+    assert (status, out.splitlines()[-1], tracker.writes) == (
+        1, "1 refusal(s); nothing written", [])
 
 
 def test_verify_holds_a_cards_stored_text_to_its_numbers_as_decided(
