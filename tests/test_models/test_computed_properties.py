@@ -43,9 +43,9 @@ from tests._test_helpers import (
     amount_basis_for,
     cover_bare_settled_row,
     create_savings_account,
-    create_transfer,
     default_settle_day,
     one_off_row_of,
+    payback_row_of,
     settle_day_columns,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -168,10 +168,9 @@ class TestTransactionEffectiveAmount:
         its commit** (ruling **R-BAL167** class 2): the delete door takes the
         payments off (ruling **credit_card:R-CC75**) and the deleted-row
         rule's transfer arm refuses a transfer hidden holding one, so the
-        transfer and its twins are hidden by SQL with the payments left on,
-        the Checking leg -- its transfer and its side's record, the twin
-        holding none since that step -- is valued inside the save
-        (``leg_settled_contribution``, the leg's twin of
+        transfer is hidden by SQL with the payments left on, the Checking
+        leg -- its transfer and its side's record -- is valued inside the
+        save (``leg_settled_contribution``, the leg's twin of
         ``settled_contribution``), and then the commit is refused.
         """
         # pylint: disable=import-outside-toplevel
@@ -196,12 +195,7 @@ class TestTransactionEffectiveAmount:
             )
             db.session.commit()
             # Hidden the way the soft delete left it until the step: the
-            # transfer and both twins flagged, the payments in place.
-            db.session.execute(
-                text("UPDATE budget.transactions SET is_deleted = TRUE "
-                     "WHERE transfer_id = :t"),
-                {"t": xfer.id},
-            )
+            # transfer flagged, the payments in place.
             db.session.execute(
                 text("UPDATE budget.transfers SET is_deleted = TRUE WHERE id = :t"),
                 {"t": xfer.id},
@@ -684,8 +678,14 @@ class TestPaycheckBreakdownTotals:
 class TestDaysUntilDue:
     """Tests for Transaction.days_until_due computed property."""
 
-    def _make_txn(self, seed_user, seed_periods, status_name, due_date_val):
-        """Helper: create a transaction with given status and due_date."""
+    def _make_txn(
+        self, seed_user, seed_periods, status_name, due_date_val, is_envelope=False,
+    ):
+        """Helper: create a transaction with given status and due_date.
+
+        *is_envelope* makes its definition track purchases, so a card
+        purchase under it mints a payback.
+        """
         status = db.session.query(Status).filter_by(name=status_name).one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         txn = one_off_row_of(
@@ -698,6 +698,7 @@ class TestDaysUntilDue:
             transaction_type_id=expense_type.id,
             category_id=seed_user["categories"]["Groceries"].id,
             due_date=due_date_val,
+            is_envelope=is_envelope,
         )
         txn.status_id = status.id
         db.session.flush()
@@ -729,24 +730,29 @@ class TestDaysUntilDue:
     def test_days_until_due_no_due_date(self, app, db, seed_user, seed_periods):
         """An UNDATED row returns None.
 
-        The undated row is a transfer's shadow made without a due date: a
-        placed one-off is dated on its paycheck's start (R-BAL22) and the
-        cutover (plan step balance:X-bi-7d-2) dated every legacy one the
-        same way, so a row NO definition prices is what still reaches the
-        ``None`` arm.
+        The undated row is a card payback, which its producer writes with no
+        due date: a placed one-off is dated on its paycheck's start (R-BAL22)
+        and the cutover (plan step balance:X-bi-7d-2) dated every legacy one
+        the same way, so a row NO definition prices is what still reaches
+        the ``None`` arm.  It was a transfer's shadow until plan step
+        ``balance:X-bi-6-4d-3`` refused the shadow, and the card cutover
+        (``credit_card:CC-7``, ruling **R-CC17**) deletes the payback, so
+        this case goes with the arm.  The payback is Projected, so the
+        settled arm, which also answers ``None``, cannot answer for it.
         """
         with app.app_context():
-            savings = create_savings_account(
-                seed_user, db.session, "Savings", Decimal("500.00"),
+            envelope = self._make_txn(
+                seed_user, seed_periods, "Projected",
+                seed_periods[0].start_date, is_envelope=True,
             )
-            xfer = create_transfer(
-                seed_user, db.session, seed_user["account"], savings,
-                seed_periods[0],
+            payback = payback_row_of(
+                db.session, seed_user, envelope, Decimal("40.00"),
+                seed_periods[0].start_date,
             )
             db.session.flush()
-            shadow = xfer.shadow_transactions[0]
-            assert shadow.due_date is None
-            assert shadow.days_until_due is None
+            assert payback.due_date is None
+            assert payback.status.is_settled is False
+            assert payback.days_until_due is None
 
 
 class TestSettleDayRefusesAnInstant:
