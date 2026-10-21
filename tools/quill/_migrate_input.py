@@ -68,8 +68,9 @@ MAPS = ("names", "questions", "notes_kept", "notes", "preambles", "milestones", 
 NOTE_DISPOSITIONS = ("own", "note")
 #: How a bare ``#N`` is written on its card (R-BAL277; :mod:`_migrate_numbers` writes each).
 TREATMENTS = ("card", "pr", "plain")
-#: A number as a ``numbers`` entry names it: ``#`` and its digits, as its card writes it.
-_NUMBER = re.compile(r"#\d+")
+#: A number as its card writes it, ``#`` and its digits (group 1): what a ``numbers`` entry
+#: names, and the one spelling :data:`_migrate_numbers.CANDIDATE` finds in a card's text.
+NUMBER = re.compile(r"#(\d+)")
 #: Each preamble disposition and the fields it carries beside ``arc``, ``first_line``,
 #: ``disposition`` and ``source``.
 PREAMBLE_FIELDS = {
@@ -126,11 +127,20 @@ def load(path: Path) -> dict:
     """The input file as JSON.
 
     Raises:
-        InputError: When it is not UTF-8 JSON, or is JSON but not an object.
+        InputError: When it is not UTF-8 JSON, is JSON but not an object, or names a key
+            twice in one object, where JSON keeps the last and the entry a reviewer read
+            first would be dropped unseen.
         OSError: When it cannot be read.
     """
+    def unique(pairs: list[tuple[str, object]]) -> dict:
+        """One object's pairs, refused when a key comes twice."""
+        keys = [key for key, _ in pairs]
+        if twice := sorted({key for key in keys if keys.count(key) > 1}):
+            raise InputError(f"{path} names {twice} twice in one object")
+        return dict(pairs)
+
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique)
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise InputError(f"{path} is not UTF-8 JSON: {error}") from error
     if not isinstance(data, dict):
@@ -458,7 +468,7 @@ def _numbers(given: dict, items: Mapping[str, Item], problems: list[str]) -> dic
         wrong = [index + 1 for index, pair in enumerate(each) if not (
             isinstance(pair, list) and len(pair) == 2 and all(isinstance(part, str)
                                                               for part in pair)
-            and _NUMBER.fullmatch(pair[0]) and pair[1] in TREATMENTS)]
+            and NUMBER.fullmatch(pair[0]) and pair[1] in TREATMENTS)]
         if wrong:
             problems.append(f"{where}: its numbers {wrong} are not [\"#N\", treatment], the "
                             f"treatment one of {TREATMENTS}")

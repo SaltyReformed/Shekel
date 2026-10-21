@@ -97,6 +97,14 @@ def test_each_treatment_writes_what_was_measured_to_read_as_written():
     assert found.counts == {CARD: 1, PR: 1, PLAIN: 3}
 
 
+def test_a_pull_request_links_its_number_with_no_leading_zero():
+    """``PR #02`` reads as written and links pull request 2, whose URL GitHub writes with no
+    leading zero (review of S2, L2)."""
+    card = _card("PR #02 again.")
+    found = _linked(card, _decided(card, PR))
+    assert found.built["balance:R-X"].body == f"PR [#02]({APP_PULLS}2) again."
+
+
 def test_a_number_in_the_as_filed_block_is_none_and_moves_no_decision():
     """The block is fenced, so GitHub links nothing in it: none is taken, and a cell it
     quotes changing leaves the decisions standing."""

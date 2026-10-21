@@ -257,6 +257,7 @@ _FORM = "its numbers [1] are not [\"#N\", treatment], the treatment one of ('car
     ({"source": "s"}, "its 'each' is a non-empty list"),
     ("plain", "its 'each' is a non-empty list"),
     ({"each": [["1", "plain"]], "source": "s"}, _FORM),
+    ({"each": [["#1x", "plain"]], "source": "s"}, _FORM),
     ({"each": [["#1", "link"]], "source": "s"}, _FORM),
     ({"each": [["#1"]], "source": "s"}, _FORM),
     ({"each": [["#1", "plain", "x"]], "source": "s"}, _FORM),
@@ -293,7 +294,7 @@ def test_numbers_for_no_card_or_a_card_filed_already_are_refused(corpus, monkeyp
 
 
 def test_load_reads_an_object_and_refuses_anything_else(tmp_path):
-    """The file is a JSON object of the six maps."""
+    """The file is a JSON object of the seven maps."""
     good, listed, broken = (tmp_path / name for name in ("good.json", "list.json", "bad.json"))
     good.write_text(json.dumps({"names": {}}))
     listed.write_text("[1]")
@@ -306,6 +307,19 @@ def test_load_reads_an_object_and_refuses_anything_else(tmp_path):
     for path in (broken, latin):
         with pytest.raises(InputError, match="is not UTF-8 JSON"):
             load(path)
+
+
+def test_load_refuses_a_key_named_twice_in_one_object(tmp_path):
+    """JSON keeps a key's last value, so a card's numbers decided twice would file the
+    second where a reviewer read the first: refused, at any depth (review of S2, L6)."""
+    twice, nested = tmp_path / "twice.json", tmp_path / "nested.json"
+    twice.write_text('{"names": {}, "names": {}}')
+    nested.write_text('{"numbers": {"balance:R-A": {"each": [], "source": "a", '
+                      '"source": "b"}}}')
+    with pytest.raises(InputError, match=r"names \['names'\] twice in one object"):
+        load(twice)
+    with pytest.raises(InputError, match=r"names \['source'\] twice in one object"):
+        load(nested)
 
 
 def test_a_questions_hash_covers_its_finding_cell_as_well_as_its_note(corpus):

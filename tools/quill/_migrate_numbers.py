@@ -49,6 +49,18 @@ transform was not measured in, where a marker or a link could change what the ca
 
 **What it does not grade**: whether a decision is RIGHT (``card #149`` linking whatever card
 ends up numbered 149, say); the input file's reviewer grades that, as it grades a name.
+
+**What it cannot see yet** (S2's review, H1, H2 and M1, 2026-10-21, each rendered through
+GitHub): it reads code spans and fences one line at a time, where GitHub reads Markdown by
+block.  So a code span that wraps a line, an escaped backtick, a line opening with an
+inline triple-backtick span, a code block inside a quote, a tilde fence, a tab-indented
+line, an HTML comment or block, or a link to ``#N`` can hide from :data:`CANDIDATE` a
+number GitHub links, or put a marker or a link where it prints as written.  ``GH-N`` and
+``owner/repo#N`` link a card with no candidate taken.  "Every card reads word for word" and
+"every such ``#N``" above hold only where none of those stands.  Ruling
+``balance:R-BAL355`` closes it: GitHub's own renderer grades every card holding a number
+before anything is filed, and the rules above about where a number may sit are deleted.
+Until that lands, no phase may file.
 """
 from __future__ import annotations
 
@@ -60,16 +72,17 @@ from dataclasses import dataclass
 
 from tools.ci.arc_steps import fenced_lines
 from tools.quill._migrate_bodies import Built
-from tools.quill._migrate_input import TREATMENTS, Numbered
+from tools.quill._migrate_input import NUMBER, TREATMENTS, Numbered
 from tools.quill._migrate_source import source_hash
 from tools.quill.setup_tracker import ORG
 
 #: The treatments, by the names the input file writes them in (one home: its
 #: :data:`_migrate_input.TREATMENTS`, which this unpacking holds to exactly three).
 CARD, PR, PLAIN = TREATMENTS
-#: A ``#N`` GitHub may link (the module docstring): its number is group 1.  An ``_`` beside
-#: it is no letter here, as Markdown may take it as a mark.
-CANDIDATE = re.compile(r"(?<![A-Za-z0-9])#(\d+)(?![A-Za-z0-9])")
+#: A ``#N`` GitHub may link (the module docstring): a :data:`_migrate_input.NUMBER`, its
+#: number group 1, with no letter or digit beside it.  An ``_`` beside it is no letter
+#: here, as Markdown may take it as a mark.
+CANDIDATE = re.compile(rf"(?<![A-Za-z0-9]){NUMBER.pattern}(?![A-Za-z0-9])")
 #: A character reference, decimal, hex or named, as CommonMark bounds it (seven decimal
 #: digits, six hex), which GitHub reads as the character it stands for
 #: (:func:`html.unescape`'s; a name it does not know is read as written, and holds no ``#``).
@@ -158,8 +171,9 @@ def _references(line: str) -> list[str]:
 
 def numbers(built: Built) -> list[Number]:
     """Every candidate in ``built``'s body and comment, in reading order: what its decisions
-    are listed in.  A character reference is read as the character it stands for, never
-    as its own digits (``&#65;`` is ``A``; one reading as ``#`` or a digit is refused
+    are listed in.  A character reference is read as spaces, as many, never as its own
+    digits nor as the character it stands for: in ``&#65;#2`` the ``#2`` is taken, after
+    ``;``, where GitHub reads ``A#2`` (a reference reading as ``#`` or a digit is refused
     whole, :func:`_problems`)."""
     found = []
     for part in _PARTS:

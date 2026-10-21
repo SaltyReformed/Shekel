@@ -806,3 +806,17 @@ def test_verify_holds_a_cards_stored_text_to_its_numbers_as_decided(
     refused = [line for line in out.splitlines() if line.startswith("REFUSED")]
     assert status == 1 and len(refused) == 1
     assert "balance:R-A" in refused[0] and "it differs in its body" in refused[0]
+
+
+def test_the_census_reads_a_step_cards_text_before_its_numbers_are_written(corpus):
+    """A step's spec line citing a rank is on its card as the census reads it, and is filed
+    with its marker: the census reads the text as built and the numbers are written after
+    it (review of S2, L1).  The other way round, the census would find the line on no card."""
+    text = BALANCE.replace("A-3's own flush-left spec paragraph.\n",
+                           "A-3's own flush-left spec paragraph, rank #3.\n")
+    numbered = replace(corpus, documents={**corpus.documents, "balance": text})
+    prepared = migrate.prepare(numbered, complete_input(numbered))
+    assert not prepared.refusals
+    assert prepared.treated == Counter({"plain": 1})
+    assert [key for key, card in prepared.built.items()
+            if "spec paragraph, rank #<!-- -->3." in card.body] == ["balance:A-3"]
