@@ -621,7 +621,8 @@ class TestTheFeedPricesADerivedRow:
         loan-side income shadow declared derived until plan step
         balance:X-bi-6-4d-3 (see the class); that accessor's refusal of a
         derived Projected row is graded on an ordinary row by
-        ``test_amount_ownership.py``'s ``test_a_derived_transaction_refuses``.
+        ``test_amount_ownership/test_the_cheap_accessor.py``'s
+        ``test_a_derived_transaction_refuses``.
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)

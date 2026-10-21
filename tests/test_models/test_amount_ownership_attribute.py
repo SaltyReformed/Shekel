@@ -1,7 +1,7 @@
 """The amount-ownership pair is ONE attribute, and the illegal shape is unsayable.
 
 Plan step **X-au-k**, ruling **balance:R-IW**.  Its sibling
-``test_amount_ownership.py`` grades the DATABASE tier -- what
+``test_amount_ownership/test_the_constraints.py`` grades the DATABASE tier -- what
 ``ck_transactions_amount_ownership`` refuses a writer that is not this
 application.  This module grades the tier above it: what this application can
 express at all.
