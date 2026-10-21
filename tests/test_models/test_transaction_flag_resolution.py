@@ -8,8 +8,9 @@ every row it generates or places), and a row that names no definition
 answers ``False`` (ruling **R-BAL73**).  That row is a CC payback: the
 transfer shadow was the other until plan step ``balance:X-bi-6-4d-3``, where
 the database began refusing a row that names a transfer, and the card
-cutover (``credit_card:CC-7``, ruling **R-CC17**) deletes the payback, so
-these two cases go with the ``template_id is None`` arms they grade.
+cutover (``credit_card:CC-7``, rulings **R-CC17** / **R-CC20**) deletes the
+payback, so these two cases go with the ``template_id is None`` arms they
+grade.
 These properties are the load-bearing abstraction behind F2 (companion
 visibility) and F3 (purchase tracking).
 
@@ -73,11 +74,11 @@ def _generated(seed_user, period, *, is_envelope, companion_visible):
 def _payback(seed_user, period):
     """Return ``(envelope, payback)``: a card purchase's payback and the row it repays.
 
-    The payback names no definition -- its one pricing link is the envelope
-    it repays -- so it is the link-less shape these cases need.  The envelope's
-    definition states BOTH flags True, so a link-less arm that answered
-    through the payback's link to its envelope would read True where the
-    rule says ``False``.
+    The payback names no definition -- its one pricing link is the row it
+    repays, here an envelope -- so it is the link-less shape these cases
+    need.  The envelope's definition states BOTH flags True, so a link-less
+    arm that answered through the payback's link to its envelope would read
+    True where the rule says ``False``.
     """
     envelope = _placed(
         seed_user, period, is_envelope=True, companion_visible=True,

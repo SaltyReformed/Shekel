@@ -52,21 +52,24 @@ def _placed(seed_user, period):
 
 
 def _payback(seed_user, period):
-    """Return the payback of a card purchase under a one-off envelope.
+    """Return ``(envelope, payback)``: a card purchase's payback and the row it repays.
 
-    The payback names no definition -- its one pricing link is the envelope
-    it repays -- the one link-less shape left since plan step
+    The payback names no definition -- its one pricing link is the row it
+    repays, here an envelope -- the one link-less shape left since plan step
     ``balance:X-bi-6-4d-3`` refused the transfer shadow (the family's cutover,
-    plan step balance:X-bi-7d-2, minted every bare row a definition).
+    plan step balance:X-bi-7d-2, minted every bare row a definition).  The
+    envelope is the engine's row of a RECURRING definition, so it recurs: a
+    link-less arm that answered through the payback's link to its envelope
+    would read ``True`` where the rule says ``False``.
     """
-    envelope = one_off_row_of(
-        period, **_row_fields(seed_user, period), is_envelope=True,
+    envelope = generate_row_of(
+        make_expense_template(db.session, seed_user, is_envelope=True), period,
     )
     payback = payback_row_of(
         db.session, seed_user, envelope, Decimal("40.00"), period.start_date,
     )
     db.session.commit()
-    return payback
+    return envelope, payback
 
 
 class TestTheDefinitionAnswers:
@@ -152,16 +155,19 @@ class TestTheRowDelegates:
     def test_a_link_less_row_does_not(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A card payback names no definition, so nothing it could recur by.
+        """A card payback names no definition to recur by, though its envelope recurs.
 
         The ``template_id is None`` arm of the accessor, on the shape that
         still reaches it since the cutover minted every legacy one-off a
         definition; the live one-off arm is the rule-less definition's case
-        above.  The card cutover (``credit_card:CC-7``, ruling **R-CC17**)
-        deletes the payback, and this case goes with the arm.
+        above.  The envelope it repays recurs, so the payback's ``False`` is
+        the rule's and not its envelope's.  The card cutover
+        (``credit_card:CC-7``, rulings **R-CC17** / **R-CC20**) deletes the
+        payback, and this case goes with the arm.
         """
         with app.app_context():
-            row = _payback(seed_user, seed_periods_today[0])
+            envelope, row = _payback(seed_user, seed_periods_today[0])
+            assert envelope.recurs is True
             assert row.template_id is None and row.credit_payback_for_id is not None
             assert row.recurs is False
 

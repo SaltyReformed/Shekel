@@ -227,7 +227,8 @@ class TestVisibilityFiltering:
         below) and dropped the cell.  The link-less row left is a CC payback
         (the transfer shadow was the other until plan step
         ``balance:X-bi-6-4d-3``), and the card cutover (``credit_card:CC-7``,
-        ruling **R-CC17**) deletes it, so this case goes with the arm.
+        rulings **R-CC17** / **R-CC20**) deletes it, so this case goes with
+        the arm.
 
         The payback lands in the paycheck AFTER its envelope's, and the
         envelope's definition is companion-visible: the envelope's own

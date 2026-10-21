@@ -736,9 +736,10 @@ class TestDaysUntilDue:
         the same way, so a row NO definition prices is what still reaches
         the ``None`` arm.  It was a transfer's shadow until plan step
         ``balance:X-bi-6-4d-3`` refused the shadow, and the card cutover
-        (``credit_card:CC-7``, ruling **R-CC17**) deletes the payback, so
-        this case goes with the arm.  The payback is Projected, so the
-        settled arm, which also answers ``None``, cannot answer for it.
+        (``credit_card:CC-7``, rulings **R-CC17** / **R-CC20**) deletes the
+        payback, so this case goes with the arm.  The payback is Projected,
+        so the settled arm, which also answers ``None``, cannot answer for
+        it.
         """
         with app.app_context():
             envelope = self._make_txn(

@@ -33,8 +33,10 @@ press into a 500.
 Every row here is built BARE, for the reason ``test_settle_day_basis`` gives:
 the door helpers exist precisely to make the refused states unreachable, so a
 control routed through one would grade the helper and never the constraint.
-A bare ``Transfer`` has no shadow pair, which is fine for a constraint over
-the parent's own columns; it is the shape ``test_amount_ownership``'s
+The one exception is the CC payback the transaction class's over-refusal
+control stores, which comes from its producer: that control asserts the
+database ADMITS a row, and a row the database stored was admitted however
+it was built.  A bare ``Transfer`` is the shape ``test_amount_ownership``'s
 Core-insert probe and its ad-hoc arm use, while a transfer OF A DEFINITION
 anywhere else in the suite is the engine's (``generate_transfer_of``, plan
 step X-ch).  **The transfer link-arrival case assigns the link onto an
@@ -134,7 +136,7 @@ def _savings(seed_user):
 
 
 def _make_transfer(seed_user, seed_periods, savings, **overrides):
-    """Return an UNFLUSHED Projected transfer that OWNS its figure, no shadows.
+    """Return an UNFLUSHED Projected transfer that OWNS its figure.
 
     Args:
         seed_user: The ``seed_user`` fixture payload.
@@ -273,13 +275,15 @@ class TestATransactionOfADefinitionIsDated:
         """The control against over-refusal: a row priced by the row it repays may carry no date.
 
         Nothing prices a CC payback by its own date -- it is priced by the
-        row it repays -- and its one producer writes none.  The one undated
-        shape the schema still admits since the cutover; a transfer's shadow
-        was the other until plan step ``balance:X-bi-6-4d-3`` refused the
-        shadow, and the card cutover (``credit_card:CC-7``, ruling
-        **R-CC17**) deletes the payback, so this case goes with it.  The
-        envelope is built bare like every row here; the payback comes from
-        its producer, the only constructor the application has for one.
+        row it repays -- and its one constructor,
+        ``credit_workflow.create_cc_payback_transaction`` (both doors that
+        mint a payback reach it), writes none.  The one undated shape the
+        schema still admits since the cutover; a transfer's shadow was the
+        other until plan step ``balance:X-bi-6-4d-3`` refused the shadow, and
+        the card cutover (``credit_card:CC-7``, rulings **R-CC17** /
+        **R-CC20**) deletes the payback, so this case goes with it.  The
+        envelope is built bare like the file's other rows; the payback comes
+        from its producer, for the reason the module docstring gives.
         """
         with app.app_context():
             template = make_expense_template(db.session, seed_user, is_envelope=True)
