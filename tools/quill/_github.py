@@ -278,6 +278,25 @@ class GitHub:
         return payload["data"]
 
 
+def paged(read: Callable[..., dict],
+          connection: Callable[[dict], dict]) -> tuple[list[dict], dict]:
+    """Every node of a GraphQL connection, read a page at a time: the one walk of a
+    connection, which every read of :mod:`_tracker` that pages takes.
+
+    ``read(after=cursor)`` sends one page's query (None for the first page), and
+    ``connection`` finds the connection, with its ``pageInfo``, in that page's answer.  The
+    nodes in GitHub's order, and the last answer read, for a caller that reads what the
+    query holds around the connection (``_tracker.Tracker.edits``)."""
+    nodes, after = [], None
+    while True:
+        answer = read(after=after)
+        page = connection(answer)
+        nodes += page["nodes"]
+        if not page["pageInfo"]["hasNextPage"]:
+            return nodes, answer
+        after = page["pageInfo"]["endCursor"]
+
+
 def user_token() -> str:
     """The developer's own token, as ``gh`` holds it."""
     result = subprocess.run(

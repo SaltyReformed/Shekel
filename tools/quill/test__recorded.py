@@ -319,11 +319,11 @@ def test_a_create_github_refused_counts_nothing_as_scratch():
 
 
 #: Every recording in ``recorded/``, and whether it read the real cards (it must then hold a
-#: redacted title on a card node): ``tracker.json`` read them; ``label_missing.json``
-#: read only its scratch card.  A recording added or removed must be named here (the next
-#: test).
-RECORDINGS_READ_REAL_CARDS = {"comments": False, "label_missing": False, "tracker": True,
-                              "twice": False, "unlink": False}
+#: redacted title on a card node): ``tracker.json`` and ``export.json`` read them;
+#: ``label_missing.json`` read only its scratch card.  A recording added or removed must be
+#: named here (the next test).
+RECORDINGS_READ_REAL_CARDS = {"comments": False, "export": True, "label_missing": False,
+                              "tracker": True, "twice": False, "unlink": False}
 
 
 def test_every_recording_is_in_the_census():

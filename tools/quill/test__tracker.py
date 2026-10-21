@@ -778,6 +778,29 @@ def test_comments_are_read_page_by_page_and_an_author_may_be_gone():
         (QUILL, nodes[0]["body"]), (None, nodes[1]["body"])]
 
 
+def test_edits_are_read_page_by_page_and_the_text_is_the_last_pages():
+    """No scratch card holds a hundred saved versions, so from #11's recorded answer: its
+    four versions split over two pages, the first saying more follow after "CURSOR", and the
+    second page's card text changed, to show which page the text is read from.  Every
+    version is read, oldest first, and the card's text is the last page's."""
+    data = next(copy.deepcopy(exchange["answer"]["data"])
+                for exchange in recording("tracker")["exchanges"]
+                if "userContentEdits(first" in ((exchange["body"] or {}).get("query") or "")
+                and exchange["body"]["variables"]["number"] == 11)
+    first, second = copy.deepcopy(data), copy.deepcopy(data)
+    nodes = data["repository"]["issue"]["userContentEdits"]["nodes"]
+    first["repository"]["issue"]["userContentEdits"] = {
+        "pageInfo": {"hasNextPage": True, "endCursor": "CURSOR"}, "nodes": nodes[:2]}
+    second["repository"]["issue"]["userContentEdits"] = {
+        "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes[2:]}
+    second["repository"]["issue"]["body"] = "the last page's text"
+    github = _Pages([first, second])
+    body, versions = Tracker(github, Board(None, PLAN, "B"), QUILL).edits(11)
+    assert github.afters == [None, "CURSOR"] and body == "the last page's text"
+    assert [version.edit_id for version in versions] == [
+        node["id"] for node in sorted(nodes, key=lambda node: node["editedAt"])]
+
+
 def test_show_over_the_recording_prints_its_links_titles_and_its_comments(code, capsys):
     """The ``quill show plan#28`` the recording session ran, replayed: every read show makes,
     in its order, answered as GitHub answered it, and nothing written -- #28 by number;

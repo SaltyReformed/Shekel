@@ -35,13 +35,14 @@ Usage, from the repository root (``plan#N`` or ``N`` names a card)::
     python -m tools.quill.quill sync [--dry-run]
     python -m tools.quill.quill spec-history plan#N [--since BRANCH_OR_DATE]
     python -m tools.quill.quill spec-revert plan#N --to EDIT_ID
+    python -m tools.quill.quill export --to DIR
 
 Exit status: 0 done; 1 refused, with nothing written (or, for ``sync``, a
 REPORT a person must act on); 2 a call failed -- GitHub, git, the network, or
-a file the command reads (the App's credentials, a ``--body-file``) -- or the
-command line itself is not one of the forms above (argparse's usage error),
-before anything is read.  Every write is printed as it lands, so after a
-failure the output says what was written; ``file`` run again finishes a filing
+a file the command reads or writes (the App's credentials, a ``--body-file``,
+``export``'s file) -- or the command line itself is not one of the forms above
+(argparse's usage error), before anything is read.  Every write is printed as it
+lands, so after a failure the output says what was written; ``file`` run again finishes a filing
 a failure cut short (R-BAL186): every card it creates is marked ``filing``
 until its last write, and a marked card is never offered (R-BAL202).  Run
 again, it writes nothing over a card the earlier run filed that is still open,
@@ -80,6 +81,7 @@ from tools.quill._command import (
     _unfinished,
     with_closure,
 )
+from tools.quill._export import cmd_export
 from tools.quill._filing import cmd_file
 from tools.quill._github import CredentialsError, GitHubError
 from tools.quill._state import (
@@ -888,6 +890,8 @@ def parser() -> argparse.ArgumentParser:
     revert = commands.add_parser("spec-revert", help="restore an earlier body")
     revert.add_argument("card", type=card_number)
     revert.add_argument("--to", required=True, help="an edit id spec-history printed")
+    commands.add_parser("export", help="back up every card whole, to one file").add_argument(
+        "--to", type=Path, required=True, help="the directory the day's file is written in")
     return top
 
 
@@ -896,6 +900,7 @@ COMMANDS: dict[str, Callable[..., int]] = {
     "file": cmd_file, "edit": cmd_edit, "comment": cmd_comment, "block": cmd_block,
     "move": cmd_move, "drop": cmd_drop,
     "sync": cmd_sync, "spec-history": cmd_spec_history, "spec-revert": cmd_spec_revert,
+    "export": cmd_export,
 }
 
 
