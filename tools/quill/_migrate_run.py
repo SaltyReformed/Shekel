@@ -117,8 +117,9 @@ class Clock:
 @dataclass(frozen=True)
 class Filing:
     """What a run files: every item, as :func:`_migrate_source.read_source` orders them;
-    each one's card text, by key (:func:`_migrate_bodies.build`); and each outcome's
-    milestone, ``(title, description)``, as the input file gives it."""
+    each one's card text as filed, by key (``migrate.prepare``: built, then its bare
+    ``#N`` written); and each outcome's milestone, ``(title, description)``, as the input
+    file gives it."""
 
     items: tuple[Item, ...]
     built: Mapping[str, Built]

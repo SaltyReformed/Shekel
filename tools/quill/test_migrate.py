@@ -65,7 +65,7 @@ def test_a_clean_check_prints_what_moves_and_exits_0(corpus, code, tmp_path, cap
     assert "  salary: steps 1, findings 1, questions 1, rulings 1" in lines
     assert ("census balance: 16 lines -- on a card 11; a heading 2; a note, moving nowhere 2; "
             "a shipped step's pointer, moving nowhere 1") in lines
-    assert "cards holding a bare #N, which GitHub links to card N: none" in lines
+    assert "bare #N, which GitHub links to the tracker's card N: none" in lines
     assert lines[-2:] == [
         "writes if every card is new, not counting the links of a card filed already "
         "(`check --target` counts them): 4 filing the rulings, then 40 filing the rest and the "
@@ -752,3 +752,57 @@ def test_verify_lists_the_trackers_own_cards_and_a_link_still_to_make(
         "REFUSED: unmark balance:A-2b: still to make (`migrate open` makes it), or this read "
         "lags the run's writes",
         "2 refusal(s)"])
+
+
+def _numbered(corpus):
+    """The corpus with R-A's rule citing a tracker card, an app pull request and a rank."""
+    return _changed("rulings", "R-A",
+                    rule="Question: may card #8 cite PR #47 at rank #3? Answer: yes.")(corpus)
+
+
+def test_check_counts_each_number_by_its_treatment_and_refuses_an_undecided_card(
+        corpus, code, tmp_path, capsys):
+    """R-BAL277: R-A's three numbers decided card, pr and plain are counted so and check
+    passes; with R-A's entry gone, its three are undecided, refused naming each, and nothing
+    is counted as written."""
+    numbered = _numbered(corpus)
+    data = complete_input(numbered)
+    data["numbers"]["balance:R-A"]["each"] = [["#8", "card"], ["#47", "pr"], ["#3", "plain"]]
+    path = tmp_path / "input.json"
+    path.write_text(json.dumps(data))
+    status, out, _ = _run(numbered, code, path, capsys)
+    assert status == 0
+    assert "bare #N, which GitHub links to the tracker's card N: card 1, pr 1, plain 1" in (
+        out.splitlines())
+    del data["numbers"]["balance:R-A"]
+    path.write_text(json.dumps(data))
+    status, out, _ = _run(numbered, code, path, capsys)
+    lines = out.splitlines()
+    assert status == 1
+    assert "bare #N, which GitHub links to the tracker's card N: undecided 3" in lines
+    (refused,) = [line for line in lines if line.startswith("REFUSED")]
+    assert refused.startswith("REFUSED: numbers: balance:R-A: its card holds 3 bare #N, none "
+                              "decided: #8 at 'Question: may card #8 cite PR #47 at rank'; "
+                              "#47 at ")
+
+
+def test_verify_holds_a_cards_stored_text_to_its_numbers_as_decided(
+        corpus, code, tmp_path, capsys):
+    """Every phase files and grades the text with its numbers written: a finished filing
+    holds R-A's markers and passes; the same card holding its numbers bare, as a run that
+    skipped the transform would leave it, is refused as differing in its body."""
+    at_head = _at_head(_numbered(corpus), code)
+    tracker, numbers = filed_tracker(at_head)
+    tracker.gone.add(1)
+    number = numbers["balance:R-A"]
+    assert "card #<!-- -->8 cite PR #<!-- -->47 at rank #<!-- -->3" in tracker.bodies[number]
+    path = _input(at_head, tmp_path)
+    status, out, _ = _run(at_head, code, path, capsys, "verify", "--target", "plan",
+                          connect=lambda place: tracker)
+    assert (status, out.splitlines()[-1]) == (0, "0 refusal(s)")
+    tracker.bodies[number] = tracker.bodies[number].replace("#<!-- -->", "#")
+    status, out, _ = _run(at_head, code, path, capsys, "verify", "--target", "plan",
+                          connect=lambda place: tracker)
+    refused = [line for line in out.splitlines() if line.startswith("REFUSED")]
+    assert status == 1 and len(refused) == 1
+    assert "balance:R-A" in refused[0] and "it differs in its body" in refused[0]
