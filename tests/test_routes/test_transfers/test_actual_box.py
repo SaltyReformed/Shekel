@@ -587,8 +587,9 @@ class TestTransferActualBox:
             repair = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
-                    # The boxes as the popover renders them: the typed side
-                    # filled in, the other empty.
+                    # What the popover posts when the owner types the day
+                    # into ONE box and the figure into the Actual box: both
+                    # day boxes render empty, since neither side holds a day.
                     "settled_on_from": display_today().isoformat(),
                     "settled_on_to": "",
                     "settled_amount": "200.00",
@@ -673,11 +674,11 @@ class TestTransferActualBox:
 class TestTheTransferLockCoversTheShadowOnlyEdits:
     """A stale popover cannot silently overwrite a figure or a day.
 
-    **A transfer and its two shadows are ONE thing** (developer ruling,
-    2026-08-18).  Both full-edit popovers pin ``Transfer.version_id``, but the
-    two facts they can correct in place -- what the bank moved and the day it
-    moved -- live on the SHADOWS, and SQLAlchemy bumps a version counter only
-    for a row it actually UPDATEs.  So the pin protected everything on the form
+    **A transfer and its two shadows were ONE thing** (developer ruling,
+    2026-08-18).  Both full-edit popovers pinned ``Transfer.version_id``, but
+    the two facts they could correct in place -- what the bank moved and the
+    day it moved -- lived on the SHADOWS, and SQLAlchemy bumps a version
+    counter only for a row it actually UPDATEs.  So the pin protected everything on the form
     except the two money-adjacent fields the form exists to correct.
 
     Measured before the fix: parent ``version_id = 2``; tab A corrects the
@@ -735,7 +736,7 @@ class TestTheTransferLockCoversTheShadowOnlyEdits:
             assert first.status_code == 200, first.get_data(as_text=True)
             db.session.expire_all()
             assert db.session.get(Transfer, xfer.id).version_id > shared_pin, (
-                "a shadow-only write left the aggregate's counter behind"
+                "a side-record-only write left the transfer's counter behind"
             )
 
             second = auth_client.patch(
@@ -759,7 +760,8 @@ class TestTheTransferLockCoversTheShadowOnlyEdits:
         """The SAME hole one field over, closed by the same statement.
 
         The settle-day box (ruling **R-ED**) shipped before the Actual box and
-        writes only the shadows for the identical reason, so it carried the
+        writes only the sides' records (the shadows' days until plan step
+        ``balance:X-bi-6-4d-2``) for the identical reason, so it carried the
         identical defect.  Fixing the figure alone would have left it standing
         on the same form.
         """

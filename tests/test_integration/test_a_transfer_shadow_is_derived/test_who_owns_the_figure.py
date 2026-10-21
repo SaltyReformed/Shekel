@@ -608,8 +608,10 @@ class TestWhoOwnsTheFigureAfterAnEdit:
         ``loan_payment_settings`` is keyed by ``transfer_template_id``, so it
         can never be a derive-mode loan payment -- the arm where a leg's
         derivation differs from its parent's figure.  Both arms answer the
-        typed figure.  What changes is that three rows now STORE it where one
-        did, which is the shape X-au-m finishes.
+        typed figure.  What changed was that three rows STORED it where one
+        had: the copy ``X-au-m`` was to remove until ruling **R-BAL91**
+        dissolved that step into ``X-bi-6-4d``, which deleted the twin rows
+        and the loop that wrote them, so one row stores it again.
 
         Graded because an adversarial review found the paragraph documenting the
         old arm had been deleted along with the comparison it described, leaving

@@ -164,7 +164,7 @@ class TestSyncSettlePostsBalancedEntry:
     def test_settle_uses_effective_amount_not_transfer_amount(
         self, app, db, seed_user, savings,
     ):
-        """A settled shadow's RECORD overrides the transfer amount.
+        """A settled side's RECORD overrides the transfer amount.
 
         The transfer's nominal amount is $100, but the settled record is
         $97.50 (each side's covering movement carries it), so each side's
@@ -210,7 +210,7 @@ _A_RECORDED_SETTLE_DAY = date(2026, 3, 9)
 
 
 class TestSyncSettleEntryDate:
-    """``entry_date`` is the shadow's recorded settle DAY.
+    """``entry_date`` is each side's recorded settle DAY.
 
     ``test_a_settled_transfer_cannot_be_left_without_a_day`` was deleted by
     ruling **R-BAL342** (the developer, 2026-10-20, finding **BAL-581**): it
@@ -225,8 +225,8 @@ class TestSyncSettleEntryDate:
     ):
         """A settled transfer's postings are dated by its recorded settle day.
 
-        The entry date is the shadow's stored ``settled_on``, unmodified: no
-        conversion, no fallback.
+        The entry date is each side's record's stored ``settled_on``,
+        unmodified: no conversion, no fallback.
 
         **The rule it grades has moved twice.**  Ruling R-DH (b) inverted it in
         2026-07-31: ``entry_date`` had been ``paid_at``'s UTC civil date and
@@ -255,8 +255,8 @@ class TestSyncSettleEntryDate:
             _db.session.commit()
             # Commit-5 wiring: the settle auto-posted both sides; read them
             # back.  Each entry is dated by ITS movement's recorded day (plan
-            # step ``balance:X-bi-6-3``), which the pair applier mirrors onto
-            # both sides until ``X-bi-6-4`` lets them part.
+            # step ``balance:X-bi-6-3``); the helper presses Paid on the one
+            # day, which both sides then borrow, so the two entries share it.
             entries = _entries_for_transfer(transfer.id)
             assert len(entries) == 2
             # The recorded day, verbatim -- no conversion, no fallback.
@@ -470,17 +470,17 @@ class TestSyncReversal:
 
 
 class TestReconciliationHelpers:
-    """The per-account posting total equals the settled-shadow effect."""
+    """The per-account posting total equals the settled transfer effect."""
 
     def test_helpers_match_after_settle_both_accounts(
         self, app, db, seed_user, savings,
     ):
         """After a $100 settle, both helpers agree on both accounts.
 
-        Arithmetic: Savings (the to-account, income shadow) is +100; Checking
-        (the from-account, expense shadow) is -100.
-        ``settled_transfer_effect`` (sum over settled shadows) reports
-        exactly those; ``account_posting_total`` (sum over postings) reports
+        Arithmetic: Savings (the to-account, the income side) is +100;
+        Checking (the from-account, the expense side) is -100.
+        ``settled_transfer_effect`` (the sum over each side's dated record)
+        reports exactly those; ``account_posting_total`` (sum over postings) reports
         each on top of the account's opening -- Savings 100 + 100 = 200.00,
         Checking 1000 - 100 = 900.00 -- so the two independent tables agree
         on the transfer's contribution.
@@ -515,8 +515,8 @@ class TestReconciliationHelpers:
         """A settled-then-reverted transfer reconciles at zero on both sides.
 
         Arithmetic: the transfer's postings net to zero (+100 then -100); the
-        reverted income shadow is no longer settled, so the settled-shadow
-        effect drops it to zero too.  Each account's posting total lands back
+        revert un-dates each side's record (ruling **R-BAL61**), so the
+        settled transfer effect drops it to zero too.  Each account's posting total lands back
         exactly on its opening (Savings 100.00, Checking 1000.00) -- the
         transfer contributes nothing.
         """
@@ -552,7 +552,7 @@ class TestReconciliationHelpers:
     def test_settled_effect_uses_effective_amount(
         self, app, db, seed_user, savings,
     ):
-        """The settled-shadow effect honours a divergent ``actual_amount``.
+        """The settled transfer effect honours a divergent settled figure.
 
         Arithmetic: nominal $100, settled actual $97.50, so the effect
         reader reports +97.50 and the posting total carries it on top of

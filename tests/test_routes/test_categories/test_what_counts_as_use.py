@@ -483,12 +483,15 @@ class TestATransferAnswersForItsOwnCategoryAndAccounts:
     ``category_has_usage`` and ``account_has_history`` saw a transfer only
     through its shadow rows in ``budget.transactions`` -- the category a shadow
     carries, the account a shadow sits on -- and a recurring transfer
-    DEFINITION not at all.  ``X-bi-6-4d`` stops writing shadows for new
-    transfers and ``X-bi-6-5`` deletes the rest, so each predicate now asks
+    DEFINITION not at all.  ``X-bi-6-4d`` deleted every shadow (ruling
+    **R-BAL166**) and the database refuses a new one
+    (``ck_transactions_names_no_transfer``), so each predicate asks
     ``budget.transfers`` (and ``budget.transfer_templates``) itself.  The
-    shadows-away cases below PLANT the state 6-4d produces -- a live transfer
-    no shadow row speaks for -- by moving or hiding the shadows around the
-    service; each is red against the predicate as it stood.  The definition
+    shadows-away cases below were written to PLANT the state 6-4d produces --
+    a live transfer no shadow row speaks for -- by moving or hiding the
+    shadows around the service; since 6-4d the app produces it and no shadow
+    exists to move, and each was red against the predicate as it stood.  The
+    definition
     case is finding **BAL-545**'s declared change.
     """
 

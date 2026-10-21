@@ -681,8 +681,9 @@ class TestTransactionEntryDate:
     ):
         """A settled transaction's postings are dated by its recorded settle day.
 
-        The transaction twin of the transfer case above; see that docstring for
-        how the rule moved from a UTC derivation (pre-R-DH (b)) to a display-zone
+        The transaction twin of ``test_a_settled_transfer.py``'s
+        ``TestSyncSettleEntryDate::test_entry_date_is_the_rows_recorded_settle_day``;
+        see that docstring for how the rule moved from a UTC derivation (pre-R-DH (b)) to a display-zone
         one and then to a stored fact (plan step X-f1).
         """
         with app.app_context():
