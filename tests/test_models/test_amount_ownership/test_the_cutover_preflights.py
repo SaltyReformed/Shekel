@@ -267,9 +267,11 @@ class TestTheTransferCutoverRefusesRatherThanStrandingARow:
         carrying an extra: migrations auto-run in the deploy pipeline, so that
         is a failed deploy. Found by an adversarial review of this step.
 
-        What declaring the row DOES move is the PARENT's answer, from ``$100.00``
-        to ``$125.00`` -- the cash that leaves the bank (**R-BAL10**) -- while
-        its two legs already answered ``$125.00``, so the fold moves ``$0.00``.
+        What declaring the row moved, when this migration ran at plan step
+        ``X-au-f-2``, was the PARENT's answer, from ``$100.00`` to ``$125.00``
+        -- the cash that leaves the bank (**R-BAL10**) -- while its two legs,
+        then two shadow rows, already answered ``$125.00``, so the fold moved
+        ``$0.00``.
         """
         with app.app_context():
             data = seed_full_user_data

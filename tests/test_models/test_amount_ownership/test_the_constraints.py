@@ -111,9 +111,11 @@ class TestTransferAmountOwnership:
     ):
         """A transfer declaring a source while holding a figure is refused.
 
-        The writer this stands for is named in the constraint's own comment:
-        ``transfer_service`` copies the parent's figure onto both shadows and a
-        drift corrector repairs the copies that got away.
+        The same shape as the transaction case above, on the second table.
+        This application's mapping cannot say it
+        (``test_amount_ownership_attribute.py``: the pair is one attribute and
+        the illegal shape is unsayable), so the writer this grades is one
+        outside the application: a Core INSERT.
         """
         with app.app_context():
             with pytest.raises(
