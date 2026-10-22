@@ -835,7 +835,9 @@ def test_check_target_grades_the_numbers_by_githubs_renderer_before_it_plans(
     assert [line for line in lines if line.startswith("REFUSED")] == [
         "REFUSED: numbers: balance:R-A: GitHub links a card of the tracker from its body that "
         "no decision names card: '#1' after 'x' (every number named card 1 here, so each link "
-        "stands for one GitHub makes once its card is filed): reword its source, or decide it"]
+        "stands for one GitHub makes once its card is filed): reword its source, or decide it "
+        "(a number decided plain still links in a table cell, an alert or a paragraph holding "
+        "math)"]
 
 
 def test_a_writing_phase_writes_nothing_once_githubs_renderer_refuses(

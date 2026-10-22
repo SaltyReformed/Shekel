@@ -14,7 +14,10 @@ each decision into its card's text, which every phase then files and grades
 - ``pr``: ``[#N](https://github.com/<organization>/Shekel/pull/N)``, a link to the app's
   pull request N (:data:`APP_PULLS`), reading ``#N``;
 - ``plain``: ``#<!-- -->N``, which GitHub stores as sent and renders as ``#N``, linking
-  nothing (the rehearsal's probe M6-3, 2026-10-12).
+  nothing and leaving no "mentioned this" line, in a paragraph, a list or a quote (the
+  rehearsal's probe M6-3, 2026-10-12; card N's timeline, 2026-10-22).  In a table cell, an
+  alert and a paragraph holding inline math it links (measured 2026-10-22), and the grade
+  refuses it there.
 
 **What is decided** is each :data:`CANDIDATE` :func:`numbers` takes: a ``#N`` with no
 letter or digit beside it, outside the code spans and fences it reads on each line, a
@@ -24,8 +27,9 @@ line, say) and miss one GitHub does (after a code span that wraps a line).  So t
 only lists what the input file decides; the grade below refuses a card GitHub would read
 otherwise.  A card's decisions are written for its text as built (:func:`decided_from`,
 hashed), so a card whose text changed since has them refused until they are decided and
-reviewed again, as a stale name is.  A candidate in a card's TITLE is refused: a title is
-not Markdown and takes no marker, so the name is reworded.
+reviewed again, as a stale name is.  A card's TITLE holding a candidate, or any other form
+GitHub could link a card by (:data:`_LINKABLE`), is refused: a title is not Markdown and
+takes no marker, so the name is reworded.
 
 **The grade** (:func:`grade_rendered`): before ``check --target`` plans, or ``history`` or ``open``
 writes, anything, each part of a card (its body, its comment) where GitHub could link a
@@ -38,22 +42,26 @@ context; ``GH-N`` and ``owner/repo#N`` are no candidate).  Three checks, each re
 the card:
 
 1. **It reads as built.**  The part as filed must render as the part as built, once each
-   link to a card of the tracker or to one of the app's pull requests is unwrapped to its
-   text; the first difference is quoted.  A marker in code (a code block inside a quote, a
-   tilde fence, a code span across lines), a ``pr`` link inside a link's text, and a
-   rewrite inside an HTML comment or a link's target are refused this way.  GitHub shows a
-   linked number as it reads it (``#001`` as ``#1``, measured 2026-10-21), so a number
-   written with leading zeros and decided ``plain`` or ``pr`` is refused wherever its card
-   exists (no card holds one today, measured 2026-10-21).
-2. **No number links a card unasked.**  GitHub links a number only to a card that EXISTS,
-   and most cards the numbers name are not filed yet, so the part is rendered with every
-   number made to name :data:`SWAPPED_TO`, a card filed already (:func:`_named`), and each
-   number decided ``card`` written as ``plain``: it must hold no link to a card of the
-   tracker.  GitHub links one only where a number no decision names ``card`` stands, and
-   each is refused, quoting it and the text before it.  ``GH-N``, ``owner/repo#N`` naming
-   the tracker, a number written with character references, one the scanner took for code,
-   and ``#2`` after a ``pr`` link in ``#1#2`` are refused this way, and so is a URL to a
-   tracker card, which no decision can name (write ``#N`` and decide it ``card``).
+   link to a card of the tracker, and each link a ``pr`` decision writes, is unwrapped to
+   its text, and what GitHub draws afresh on each render (a footnote's ids, inline math's
+   and a diagram's, measured 2026-10-22) is read as one; the first difference is quoted.
+   A marker in code (a code block inside a quote, a tilde fence, a code span across lines),
+   a ``pr`` link inside a link's text (the author's own link to a pull request among them),
+   and a rewrite inside an HTML comment or a link's target are refused this way.  GitHub
+   shows a linked number as it reads it (``#001`` as ``#1``, measured 2026-10-21), so a
+   number written with leading zeros and decided ``plain`` or ``pr`` is refused wherever
+   its card exists: by the first phase that finds that card filed, which is ``open`` for a
+   card ``history`` files, before ``open`` writes (no card holds one, measured 2026-10-22).
+2. **No number links a card unasked.**  GitHub links a number only to a card that EXISTS, and
+   most cards the numbers name are not filed yet, so the part is rendered with every number
+   made to name :data:`SWAPPED_TO`, a card filed already (:func:`_named`), and each number
+   decided ``card`` written as a letter and its digits (:data:`_UNLINKED`), which links in
+   no container: it must hold no link to a card of the tracker.  GitHub links one only where
+   a number no decision names ``card`` stands, and each is refused, quoting it and the text
+   before it.  ``GH-N``, ``owner/repo#N`` naming the tracker, a number written with character
+   references, one the scanner took for code, and ``#2`` after a ``pr`` link in ``#1#2`` are
+   refused this way, and so is a URL to a tracker card, which no decision can name (write
+   ``#N`` and decide it ``card``).
 3. **The renderer links.**  Once a grade, before any part, :data:`SWAPPED_TO`'s number
    written at each length a card's number has (:data:`_CARD_DIGITS`) must link that card,
    or the grade is refused whole and nothing is graded: a token or a context that linked
@@ -66,14 +74,17 @@ leading zeros as nothing: ``#000000000000000000001``, 21 digits, linked card 1, 
 2026-10-21).  A run at a line's start, after spaces and ``>``, is left as written, as no
 card's number can start a line and an ordered list's number there decides whether the list
 interrupts a paragraph (only one starting at 1 does).  A digit is otherwise no Markdown mark
-but in a label: two footnote or link labels told apart by their digits alone (``[^1]``,
-``[^2]``) read as one in that text, so a definition the second names is not rendered there.
-No card holds a footnote or a link reference definition today (measured 2026-10-21).
+but in a label, where two labels told apart by their digits alone (``[^1]``, ``[^2]``) would
+read as one: so a part defining a link or footnote label that holds a digit or a character
+reference is refused before it is rendered (no card holds one, measured 2026-10-22).
 
 **What it does not grade**: whether a decision is RIGHT (``card #149`` linking whatever card
 ends up numbered 149, say); the input file's reviewer grades that, as it grades a name.  A
 link the author wrote relative to the card's own page (``[x](./1)``) is read by the
-browser, not by GitHub's renderer, and nothing here reads it.
+browser, not by GitHub's renderer, and nothing here reads it.  A reference to another
+repository's issue or pull request (``owner/name#N``, or its URL) is GitHub's link to that
+repository, which no decision is for: the grade reads only links to the tracker's cards
+(none stands on a card, measured 2026-10-22).
 """
 from __future__ import annotations
 
@@ -96,19 +107,31 @@ CARD, PR, PLAIN = TREATMENTS
 #: its number group 1, with no letter or digit beside it.  An ``_`` beside it is no letter
 #: here, as Markdown may take it as a mark.
 CANDIDATE = re.compile(rf"(?<![A-Za-z0-9]){NUMBER.pattern}(?![A-Za-z0-9])")
-#: A character reference, decimal, hex or named, as CommonMark bounds it (seven decimal
-#: digits, six hex), which GitHub reads as the character it stands for.
-_REFERENCE = re.compile(r"&(?:#\d{1,7}|#[xX][0-9A-Fa-f]{1,6}|[A-Za-z][A-Za-z0-9]*);")
+#: The most digits GitHub reads in a decimal or a hex character reference, where CommonMark
+#: says seven and six: ``#&#00000055;`` and ``#&#x00000037;`` linked card 7, and with one
+#: more zero each linked nothing (measured 2026-10-22).  The one bound :func:`numbers` and
+#: the grade's swap read references by.
+_REFERENCE_DIGITS = 8
+#: A character reference, decimal, hex or named, within :data:`_REFERENCE_DIGITS`, which
+#: GitHub reads as the character it stands for.
+_REFERENCE = re.compile(rf"&(?:#\d{{1,{_REFERENCE_DIGITS}}}"
+                        rf"|#[xX][0-9A-Fa-f]{{1,{_REFERENCE_DIGITS}}}|[A-Za-z][A-Za-z0-9]*);")
 #: An inline code span: a run of backticks, then text, then a run of as many.
 _CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)")
 #: Where a ``pr`` number links: the app's pull requests, in the organization it moved into
 #: at L5 (PR #583), by its own name, so no link leans on GitHub's redirect from the old one.
 APP_PULLS = f"https://github.com/{ORG}/Shekel/pull/"
-#: What each treatment writes in place of ``#N``, given N's digits.
+#: The grade's own writing of a number decided ``card``, in its second check: a letter for
+#: its ``#``, which links in no container, where the ``plain`` marker links in a table
+#: cell, an alert and a paragraph holding inline math (measured 2026-10-22).
+_UNLINKED = "unlinked"
+#: What each treatment writes in place of ``#N``, given N's digits, and what the grade
+#: writes for a number decided ``card`` (:data:`_UNLINKED`).
 _WRITES = {
     CARD: lambda digits: f"#{digits}",
     PR: lambda digits: f"[#{digits}]({APP_PULLS}{int(digits)})",
     PLAIN: lambda digits: f"#<!-- -->{digits}",
+    _UNLINKED: lambda digits: f"N{digits}",
 }
 #: The parts of a card's text a candidate may sit in and be rewritten.
 _PARTS = ("body", "comment")
@@ -118,8 +141,9 @@ UNDECIDED = "undecided"
 #: with its character references read.
 _LINKABLE = re.compile(r"#\d|gh-\d|/(?:issues|pull)/\d", re.IGNORECASE)
 #: One digit as GitHub reads it: itself, or a decimal or hex character reference standing
-#: for it, with any leading zeros.
-_DIGIT = re.compile(r"[0-9]|&#0*(?:4[89]|5[0-7]);|&#[xX]0*3[0-9];")
+#: for it, its leading zeros within :data:`_REFERENCE`'s bound.
+_DIGIT = re.compile(rf"[0-9]|&#(?=\d{{1,{_REFERENCE_DIGITS}}};)0*(?:4[89]|5[0-7]);"
+                    rf"|&#[xX](?=[0-9A-Fa-f]{{1,{_REFERENCE_DIGITS}}};)0*3[0-9];")
 #: A run of digits (:data:`_DIGIT`), or a character reference standing for anything else,
 #: matched first so that its own digits are no run.
 _RUN = re.compile(rf"(?P<run>(?:{_DIGIT.pattern})+)|{_REFERENCE.pattern}")
@@ -129,14 +153,27 @@ _LINE_START = " \t>"
 #: (:data:`_migrate_source.MAPPED`), so GitHub links it while the cards are not yet filed.
 #: Of one digit, so a run of any length can name it (a test holds it to one).
 SWAPPED_TO = min(MAPPED.values())
-#: The most digits a card's number has: about 2,000 cards once the migration and the
-#: history cards after it are filed, so no number of five digits names a card, and the
-#: grade's control need not show that one links.
+#: The lengths the grade's control writes its card's number at, 1 to this: a card number's
+#: own lengths, as about 2,000 cards stand once the migration and the history cards after it
+#: are filed.  A longer run the swap writes is that number with more leading zeros, which
+#: GitHub links as it links these (to 21 digits, measured 2026-10-21).
 _CARD_DIGITS = 4
 #: A link in GitHub's HTML: its attributes and its text.
 _ANCHOR = re.compile(r"<a\b(?P<attributes>[^>]*)>(?P<text>.*?)</a>", re.DOTALL)
-#: The attribute of a link to one of the app's pull requests, as a ``pr`` write makes one.
-_APP_PULL = re.compile(rf'\bhref="{re.escape(APP_PULLS)}\d+"')
+#: The attribute of a link to one of the app's pull requests, its number group 1.
+_APP_PULL = re.compile(rf'\bhref="{re.escape(APP_PULLS)}(\d+)"')
+#: The text of the link a ``pr`` decision writes: ``#`` and the number, group 1.
+_PR_TEXT = re.compile(r"#(\d+)")
+#: What GitHub draws afresh on each render of one text (measured 2026-10-22): inline
+#: math's run id and a diagram's identity (group 1, the attribute), and the hash ending a
+#: footnote's ids (group 2, the id before it).
+_FRESH = re.compile(r'\b(data-run-id|data-identity)="[^"]*"'
+                    r'|(user-content-fn(?:ref)?-[^"]*?)-[0-9a-f]{32}(?=")')
+#: A link or footnote label's definition, its label group 1: a label may hold an escaped
+#: bracket, and is read wherever it stands, so none is missed.
+_DEFINITION = re.compile(r"\[((?:\\.|[^\\\]])*)\]:")
+#: What in a label the swap may rewrite: a digit, or a character reference.
+_SWAPPABLE = re.compile(r"\d|&#")
 #: An HTML tag, which a quote of rendered text leaves out.
 _TAG = re.compile(r"<[^>]*>")
 #: How much of the text around a difference or before a link a refusal quotes.
@@ -249,10 +286,14 @@ def link(built: Mapping[str, Built], decided: Mapping[str, Numbered]) -> Linked:
 
 def _problems(card: Built, found: Sequence[Number], decision: Numbered | None) -> list[str]:
     """Why ``card``'s candidates ``found`` cannot be written as ``decision`` (None: the input
-    file decides none of them): its title's candidates first, then the decision against
-    the text."""
+    file decides none of them): its title's candidates, or any other form GitHub could
+    link a card in (:func:`_linkable`), first, then the decision against the text."""
     problems = [f"its title holds {match.group(0)}, which no marker can stop in a title: "
                 "reword its name" for match in CANDIDATE.finditer(card.title)]
+    if not problems and _linkable(card.title):
+        problems.append("its title holds a number GitHub could link a card by (GH-N, "
+                        "owner/name#N, a card's URL, or one written with character "
+                        "references), which no marker can stop in a title: reword its name")
     if decision is None:
         return problems + ([
             f"its card holds {len(found)} bare #N, none decided: "
@@ -314,8 +355,8 @@ def grade_rendered(built: Mapping[str, Built], filed: Mapping[str, Built],
         tracker: The tracker's ``owner/name``, whose cards a link names.
 
     Returns:
-        Each refusal: none when every part renders as built and no number links a card
-        unasked; the control's alone when it fails.
+        Each refusal: none when every part renders as built, no number links a card
+        unasked and no label holds a digit; the control's alone when it fails.
     """
     graded = {key: parts for key, card in built.items()
               if (parts := [part for part in _PARTS if _linkable(getattr(card, part))])}
@@ -327,18 +368,34 @@ def grade_rendered(built: Mapping[str, Built], filed: Mapping[str, Built],
     for key, parts in graded.items():
         treatments = [treatment for _, treatment in decided[key].each] if key in decided else []
         named = _named(built[key])
-        unasked = _written(named, numbers(named),
-                           [PLAIN if treatment == CARD else treatment for treatment in treatments])
+        unasked = _written(named, numbers(named), [_UNLINKED if treatment == CARD else treatment
+                                                   for treatment in treatments])
         for part in parts:
+            if labels := _swappable_labels(getattr(built[key], part)):
+                refusals.append(
+                    f"numbers: {key}: its {part} defines the label(s) {labels}, holding a digit: "
+                    f"the grade names every number card {SWAPPED_TO}, so two labels told apart "
+                    "by their digits would read as one, and a link through either is not "
+                    "graded: reword each label without digits")
+                continue
             if getattr(built[key], part) != getattr(filed[key], part):
                 refusals += _differs(key, part, render(getattr(built[key], part)),
                                      render(getattr(filed[key], part)), tracker)
             refusals += [f"numbers: {key}: GitHub links a card of the tracker from its {part} "
                          f"that no decision names card: {text!r} after {before!r} (every "
                          f"number named card {SWAPPED_TO} here, so each link stands for one "
-                         "GitHub makes once its card is filed): reword its source, or decide it"
+                         "GitHub makes once its card is filed): reword its source, or decide it "
+                         "(a number decided plain still links in a table cell, an alert or a "
+                         "paragraph holding math)"
                          for _, text, before in _links(render(getattr(unasked, part)), tracker)]
     return tuple(refusals)
+
+
+def _swappable_labels(text: str) -> list[str]:
+    """Each link or footnote label ``text`` defines that holds what the swap rewrites
+    (:data:`_SWAPPABLE`), so that two of them told apart by it alone would read as one."""
+    return [found.group(1) for found in _DEFINITION.finditer(text)
+            if _SWAPPABLE.search(found.group(1))]
 
 
 def _linkable(text: str | None) -> bool:
@@ -414,22 +471,34 @@ def _seen(rendered: str) -> str:
 
 
 def _unwrapped(rendered: str, tracker: str) -> str:
-    """``rendered`` with each link to a card of ``tracker`` or to one of the app's pull
-    requests (:data:`_APP_PULL`) unwrapped to its text: what a decision may change."""
+    """``rendered`` with each link to a card of ``tracker``, and each link a ``pr`` decision
+    writes (``#N`` to the app's pull request N, :data:`_APP_PULL`), unwrapped to its text:
+    what a decision may change.  A link the author wrote to one of the app's pull requests
+    stays whole, so a ``pr`` link that splits it reads otherwise."""
     names = _names(tracker)
 
     def text(anchor: re.Match) -> str:
         """``anchor`` unwrapped to its text if it is such a link, else whole."""
-        attributes = anchor.group("attributes")
-        return (anchor.group("text") if names.search(attributes) or _APP_PULL.search(attributes)
-                else anchor.group(0))
+        attributes, shown = anchor.group("attributes"), anchor.group("text")
+        pull, number = _APP_PULL.search(attributes), _PR_TEXT.fullmatch(shown)
+        written = pull is not None and number is not None and int(number.group(1)) == int(
+            pull.group(1))
+        return shown if names.search(attributes) or written else anchor.group(0)
     return _ANCHOR.sub(text, rendered)
+
+
+def _drawn(found: re.Match) -> str:
+    """What GitHub drew afresh in ``found`` (:data:`_FRESH`), read as one: the attribute
+    emptied, or the id without its hash."""
+    return f'{found.group(1)}=""' if found.group(1) else found.group(2)
 
 
 def _differs(key: str, part: str, before: str, after: str, tracker: str) -> list[str]:
     """The refusal of ``key``'s ``part`` when GitHub renders it ``before`` as built and
-    ``after`` as filed otherwise than :func:`_unwrapped` allows; none when they are alike."""
-    before, after = _unwrapped(before, tracker), _unwrapped(after, tracker)
+    ``after`` as filed otherwise than :func:`_unwrapped` allows, once what GitHub draws
+    afresh on each render is read as one (:func:`_drawn`); none when they are alike."""
+    before, after = (_FRESH.sub(_drawn, _unwrapped(rendered, tracker))
+                     for rendered in (before, after))
     if before == after:
         return []
     at = next((index for index, (one, other) in enumerate(zip(before, after)) if one != other),
