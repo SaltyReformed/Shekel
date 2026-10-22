@@ -642,8 +642,8 @@ def _items(
     shadow filed in period B while its transfer was in period A -- each read
     missed one of the two (0 of 358 shadows on the 2026-09-30 00:11
     production dump).  That step deleted the shadows, and
-    ``ck_transactions_names_no_transfer`` refuses a new one, so no row can
-    sit in a period its transfer is not in.
+    ``ck_transactions_names_no_transfer`` refuses a new one: no transaction
+    row names a transfer, so none can sit in a period its transfer is not in.
 
     Args:
         periods: The pay-period ids to look in -- a list or a query of ids.

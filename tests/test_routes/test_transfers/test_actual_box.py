@@ -57,8 +57,9 @@ class TestThePatchGradesEachBoxOnItsOwn:
         """Return ``(from side, to side)`` recorded days, freshly read.
 
         Each off the side's payment RECORD, which hangs off the transfer since
-        plan step ``balance:X-bi-6-4d-2``; it read the twins, which keep no
-        day since (ruling R-BAL167 class 4, plan step balance:X-bi-6-4d-2).
+        plan step ``balance:X-bi-6-4d-2``; it read the twins until then, which
+        held no day from that step until plan step balance:X-bi-6-4d-3 deleted
+        them (ruling R-BAL167 class 4, plan step balance:X-bi-6-4d-2).
         """
         db.session.expire_all()
         return tuple(
@@ -265,8 +266,9 @@ class TestTransferActualBox:
         """$200.00 settled, the statement says $214.37: both legs record it.
 
         Transfer Invariant 3 for the settlement record: a transfer's money moves
-        on its two legs and the two record the same figure, exactly as they
-        carry the same day.  The ledger follows in the same request, because the
+        on its two legs and the two record the same figure, while each side's
+        day is its own (ruling **R-BAL108**, plan step ``balance:X-bi-6-4c-3``;
+        the fixture dates both sides alike).  The ledger follows in the same request, because the
         figure IS the pair's confirmed cash effect -- a correction that changed
         the record without moving the books would leave the two disagreeing.
 
@@ -420,7 +422,8 @@ class TestTransferActualBox:
 
         "Written anyway" is read off each side's payment record, which hangs
         off the transfer since plan step ``balance:X-bi-6-4d-2``, not off
-        the twins, which hold none since (ruling R-BAL167 class 1, plan step
+        the twins, which held none from that step until plan step
+        balance:X-bi-6-4d-3 deleted them (ruling R-BAL167 class 1, plan step
         balance:X-bi-6-4d-2).
         """
         with app.app_context():
@@ -523,8 +526,9 @@ class TestTransferActualBox:
         draw cannot repair the row it is the only repair path for.  The
         ``$0.00`` close is built through the app -- a typed ``$0.00``
         correction, which takes both sides' records off -- where it was
-        staged behind the seam's back on the twins, which hold no record
-        since that step (ruling R-BAL167, plan step balance:X-bi-6-4d-2; the
+        staged behind the seam's back on the twins, which held no record
+        from that step until plan step balance:X-bi-6-4d-3 deleted them
+        (ruling R-BAL167, plan step balance:X-bi-6-4d-2; the
         refused second save follows R-BAL230, a rule-5 re-expression the
         developer approved 2026-10-09).  Each save is graded on the side
         records it leaves.
@@ -562,9 +566,9 @@ class TestTransferActualBox:
             day_only = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
-                    # What the popover posts when the owner types the day
-                    # into ONE box: the other is empty (neither side holds a
-                    # day).
+                    # The day boxes as the popover posts them when the owner
+                    # types the day into ONE box: the other is empty (neither
+                    # side holds a day).
                     "settled_on_from": display_today().isoformat(),
                     "settled_on_to": "",
                     "version_id": str(version),
@@ -587,9 +591,10 @@ class TestTransferActualBox:
             repair = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
-                    # What the popover posts when the owner types the day
-                    # into ONE box and the figure into the Actual box: both
-                    # day boxes render empty, since neither side holds a day.
+                    # The day and figure boxes as the popover posts them when
+                    # the owner types the day into ONE box and the figure into
+                    # the Actual box: both day boxes render empty, since
+                    # neither side holds a day.
                     "settled_on_from": display_today().isoformat(),
                     "settled_on_to": "",
                     "settled_amount": "200.00",
@@ -687,10 +692,10 @@ class TestTheTransferLockCoversTheShadowOnlyEdits:
     `$200.00`.  The statement figure gone, reported as success.
 
     Since plan step ``balance:X-bi-6-4d-2`` the two facts live on each
-    side's payment RECORD, which hangs off the transfer, and not on the
-    shadows -- still rows other than the transfer's own -- so the cases read
-    each side's figure there (ruling R-BAL167 class 4, plan step
-    balance:X-bi-6-4d-2).
+    side's payment RECORD -- still a row other than the transfer's own --
+    which hangs off the transfer, where they lived on the shadows until then,
+    so the cases read each side's figure there (ruling R-BAL167 class 4, plan
+    step balance:X-bi-6-4d-2).
     """
 
     @staticmethod

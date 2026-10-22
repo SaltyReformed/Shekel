@@ -384,7 +384,8 @@ def resolve_transfer_amount(xfer, basis: AmountBasis) -> Decimal:
     event, held as three rows until plan step ``balance:X-bi-6-4d-3`` deleted
     its two shadows (ruling **R-BAL166**) and as one since; the two legs are
     its PROJECTION, so the value's home is the parent and each leg reads it
-    (:func:`leg_amounts_by_key`).
+    through this function (the grid's :func:`leg_amounts_by_key` and the cash
+    fold's :func:`~._amounts.planned_leg_contribution` among its callers).
 
     **The OWN arm is asked FIRST, and on a loan payment that is the whole of
     R-JM.**  A transfer carrying a figure owns it whatever its template says, so
@@ -777,7 +778,9 @@ def _transfer_answer(txn, basis: AmountBasis) -> Decimal:
     CHECK and is stored with no transfer to load: the refusal below answers
     it, and the arm goes with the ``transfer_id`` column at plan step
     ``balance:X-bi-6-5``.  A leg reads its parent through
-    :func:`leg_amounts_by_key` now.
+    :func:`resolve_transfer_amount` now (the grid's :func:`leg_amounts_by_key`
+    and the cash fold's :func:`~._amounts.planned_leg_contribution` among its
+    callers).
 
     It passes the basis on rather than ignoring it, because the parent it
     delegates to can reach a live producer: a derive-mode loan payment

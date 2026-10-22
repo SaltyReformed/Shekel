@@ -19,7 +19,7 @@ arithmetic.  **A settled transfer is TWO entries since plan step
 covering movement, on that movement's own day, each against the owner's
 Transfers-in-transit account -- ``{from -amount, transit +amount}`` and
 ``{to +amount, transit -amount}`` -- so every figure a real account's ledger
-carries in ``test_a_settled_transfer.py`` is what it was under the one-entry
+carries in this package's transfer cases is what it was under the one-entry
 shape, and the transit account nets to zero per transfer.  The cases that read "the transfer's entry" were
 re-expressed for the pair when the shape moved (each docstring says how);
 every per-real-account figure is unchanged:
@@ -60,13 +60,13 @@ with hand-computed worked examples (plain income/expense, the debit-only
 envelope effect, the all-credit no-op), the correct-by-construction reconcile
 (idempotency; reversal; the 2.8 CRITICAL revert -> recategorize -> re-settle,
 proven at the service layer), counter-leg routing into the per-category /
-Uncategorized-fallback account, a transfer shadow's row posting nothing of its
-own (no shadow is born since plan step ``balance:X-bi-6-4d-3``), and
-fail-loud.  The doors that write a transaction call
-``sync_transaction_postings`` themselves (``routes/transactions/mutations.py``,
-``credit_workflow``, ``carry_forward_service``), but these tests build settled
-rows through the test helpers and the status seam, which post nothing, and
-invoke it directly.
+Uncategorized-fallback account, and fail-loud.  The doors that write a
+transaction call ``sync_transaction_postings`` themselves -- the settle verb
+(``transaction_service.settle_transaction``) and every other door that settles
+or edits a row (``routes/transactions/mutations.py``, ``credit_workflow`` and
+``carry_forward_service`` among them) -- but these tests build settled rows
+through the test helpers and the status seam's settle arm, neither of which
+posts, and invoke it directly.
 
 **Absolute totals since Build-Order Step 5 (C6).**  ``create_account`` posts
 each fixture account's OPENING anchor correction at create time (the seed

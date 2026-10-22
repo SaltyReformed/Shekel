@@ -37,7 +37,7 @@ reused as they are:
   so that value keeps its one meaning (**R-BAL11**) -- and
   :func:`restate_definition_price` corrects the version the transfer's FINAL
   due date reads (after the re-placing, the twin of ``one_off.restate_price``),
-  declares all three rows definition-priced and clears the flag (**R-BAL37**'s
+  declares the transfer definition-priced and clears the flag (**R-BAL37**'s
   heal), all BEFORE the settle dispatch.  As first built the popover restated
   after the door had run, and a figure typed beside Status = Paid booked the
   pre-restate price on both legs, `$50.00` wrong on each account in the
@@ -201,8 +201,8 @@ def restate_definition_price(
     figure (``template_amount_service.restate_in_effect``; the re-placing
     has already written that date into *updates* when the same save moves
     the transfer), the pair is declared priced by the definition (which
-    ``_amount.apply_amount_ownership`` lands on the parent and both legs,
-    re-attaching a transfer the pre-X-ci flip left OWN), and the flag comes
+    ``_amount.apply_amount_ownership`` lands on the transfer, whose legs read
+    it, re-attaching a transfer the pre-X-ci flip left OWN), and the flag comes
     off -- idempotent on a transfer never detached.  The ordering that makes
     this the door's act and not the popover's: it runs after every refusal
     and BEFORE the settle dispatch, so a figure typed beside Status = Paid is

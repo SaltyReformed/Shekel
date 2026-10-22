@@ -44,11 +44,11 @@ class TestTransferNegativePaths:
             savings = _create_savings_account(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
 
-            # Set to done first, through the service door so all three rows
-            # move together and each shadow records what moved (plan step
-            # X-au-c3): a bare status assign on the parent leaves the pair's
-            # legs Projected, and the seam then refuses to enter the settled
-            # band with no settlement record.
+            # Set to done first, through the service door so each side
+            # records what moved (plan step X-au-c3), on the transfer since
+            # plan step balance:X-bi-6-4d-2: a bare status assign on the
+            # transfer writes neither side's record, so the repeat below
+            # would start from a settle that recorded nothing.
             done_status = db.session.query(Status).filter_by(name="Paid").one()
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id, status_id=done_status.id,

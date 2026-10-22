@@ -212,7 +212,7 @@ def _reject_finalised_transfer_edit(xfer, data):
 @transfers_bp.route("/transfers/instance/<int:xfer_id>", methods=["PATCH"])
 @require_owner
 def update_transfer(xfer_id):
-    """Update a transfer and its shadow transactions (inline edit save).
+    """Update a transfer (inline edit save).
 
     Route-boundary FK ownership checks (commit C-27 / F-043 of the
     2026-04-15 security remediation plan): when the schema accepts
@@ -290,7 +290,7 @@ def update_transfer(xfer_id):
         if value is not None and not _user_owns(model, value):
             return "Not found", 404
 
-    # A period move relocates the transfer (and both shadows) to another
+    # A period move relocates the transfer, and both its legs, to another
     # period in the grid, which an in-place cell swap cannot express --
     # the response triggers a full grid refresh instead.  Computed before
     # the service call, while xfer.pay_period_id still holds the old value.
@@ -406,7 +406,7 @@ def update_transfer(xfer_id):
 @transfers_bp.route("/transfers/ad-hoc", methods=["POST"])
 @require_owner
 def create_ad_hoc():
-    """Create an ad-hoc (one-time) transfer with shadow transactions.
+    """Create an ad-hoc (one-time) transfer.
 
     Route-boundary FK ownership checks (commit C-27 / F-043 of the
     2026-04-15 security remediation plan): every FK accepted from
@@ -474,15 +474,15 @@ def create_ad_hoc():
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
     # ``transfer_service.create_transfer`` calls ``db.session.flush()``
-    # internally to obtain the transfer's primary key for the shadow
-    # rows, so the ``uq_transfers_adhoc_dedupe`` IntegrityError can fire
-    # either during the service call (the flush) or at the subsequent
-    # ``db.session.commit()``.  A single ``try`` spans both so the
-    # constraint hit is translated into idempotent success (or a 400)
-    # from whichever statement trips it.  ``NotFoundError`` /
-    # ``ShekelValidationError`` originate only in the service call and
-    # never at commit, so folding the commit into the same ``try``
-    # changes no behavior.
+    # internally to obtain the transfer's primary key, which its log event
+    # names (as a born-settled one's side records do), so the
+    # ``uq_transfers_adhoc_dedupe`` IntegrityError can fire either during
+    # the service call (the flush) or at the subsequent ``db.session.commit()``.
+    # A single ``try`` spans both so the constraint hit is translated into
+    # idempotent success (or a 400) from whichever statement trips it.
+    # ``NotFoundError`` / ``ShekelValidationError`` originate only in the
+    # service call and never at commit, so folding the commit into the same
+    # ``try`` changes no behavior.
     try:
         xfer = transfer_service.create_transfer(
             transfer_service.TransferSpec(
@@ -521,8 +521,8 @@ def create_ad_hoc():
 def delete_transfer(xfer_id):
     """Soft-delete a template transfer or hard-delete an ad-hoc transfer.
 
-    Routes through transfer_service to ensure shadow transactions are
-    also deleted (soft or hard) alongside the parent transfer.
+    Routes through ``transfer_service`` so the delete meets the service's
+    refusals (the matched bank line's, answered below, among them).
 
     Optimistic locking (commit C-18 / F-010): the soft-delete UPDATE
     and hard-delete DELETE are both version-pinned by SQLAlchemy.
@@ -560,7 +560,7 @@ def delete_transfer(xfer_id):
 @transfers_bp.route("/transfers/instance/<int:xfer_id>/mark-done", methods=["POST"])
 @require_owner
 def mark_done(xfer_id):
-    """Mark a transfer and its shadows as 'done' (settled).
+    """Mark a transfer as 'done' (settled).
 
     Optimistic locking (commit C-18 / F-010): no form-side
     ``version_id`` is shipped with the button click; the SQLAlchemy
@@ -641,7 +641,7 @@ def mark_done(xfer_id):
 @transfers_bp.route("/transfers/instance/<int:xfer_id>/cancel", methods=["POST"])
 @require_owner
 def cancel_transfer(xfer_id):
-    """Mark a transfer and its shadows as 'cancelled'.
+    """Mark a transfer as 'cancelled'.
 
     Optimistic locking: see :func:`mark_done`.
     """
@@ -766,12 +766,12 @@ def _grade_submitted_side_days(xfer, data):
 def _execute_transfer_update(xfer, data, *, amount_authored):
     """Apply an inline transfer edit via the service and commit it.
 
-    Runs ``transfer_service.update_transfer`` (which propagates the change to
-    both shadow transactions) and commits, translating each failure mode into
-    the HTTP response :func:`update_transfer` would otherwise inline: a
-    stale-form/flush race to a 409 conflict cell, a missing or unowned
-    reference to 404, and a domain validation error or foreign-key
-    ``IntegrityError`` to a designed 400 error fragment.
+    Runs ``transfer_service.update_transfer`` (which writes the transfer, and
+    its sides' records where the edit reaches them) and commits, translating
+    each failure mode into the HTTP response :func:`update_transfer` would
+    otherwise inline: a stale-form/flush race to a 409 conflict cell, a
+    missing or unowned reference to 404, and a domain validation error or
+    foreign-key ``IntegrityError`` to a designed 400 error fragment.
 
     Args:
         xfer: The owned Transfer being edited.
@@ -824,7 +824,7 @@ def _execute_transfer_update(xfer, data, *, amount_authored):
     # (OWN, ``is_override``) and this one never does.  The door says so with
     # the figure -- ``definition_price``, an explicit act the service performs
     # (``_placed.restate_definition_price``: the version the transfer's FINAL
-    # due date reads is corrected, all three rows are declared priced by the
+    # due date reads is corrected, the transfer is declared priced by the
     # definition, the flag comes off) -- rather than a ``derived_ownership``
     # beside a restate of its own, because the service both RE-PLACES the
     # date the restate reads and SETTLES the pair on the price it reads, and
