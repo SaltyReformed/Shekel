@@ -444,7 +444,7 @@ class TestResolveConflictsShadowGuard:
     can show without a twin, so it goes unchecked until ``balance:X-bi-6-5``
     deletes the guard.  The deleted case read no access event; the warning is
     logged before the ``continue``, so dropping it leaves
-    ``tests/test_services/test_service_log_events.py``'s
+    ``tests/test_services/test_service_log_events/test_the_period_and_recurrence_events.py``'s
     ``test_resolve_conflicts_cross_user_emits_access_event`` passing (measured).
     The control below stays.
     """

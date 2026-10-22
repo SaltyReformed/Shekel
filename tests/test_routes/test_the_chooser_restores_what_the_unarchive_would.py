@@ -48,7 +48,7 @@ from tests.test_routes.test_definition_edit_strands_no_row import (
 from tests.test_services.test_opening_restatement_planned_rows import (
     _account_with_projected_rows,
 )
-from tests.test_services.test_service_log_events import _LogCapture
+from tests.test_services.test_service_log_events._helpers import _LogCapture
 
 #: The marker the chooser's Apply form carries, which tells it from the page's other forms.
 _APPLY_MARKER = "conflict_apply"

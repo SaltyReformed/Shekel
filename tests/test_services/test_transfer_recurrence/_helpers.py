@@ -64,7 +64,7 @@ def make_template_with_rule(seed_user, cadence, **rule_kwargs):
 class _LogCapture:
     """Capture log records emitted by ``logger_name`` with propagation off.
 
-    Mirrors the helper in ``tests/test_services/test_service_log_events.py``;
+    Mirrors the helper in ``tests/test_services/test_service_log_events/_helpers.py``;
     duplicated here rather than imported so the Commit 34 test class has
     no cross-file dependency on another test module's private helper.
     """

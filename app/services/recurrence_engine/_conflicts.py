@@ -88,7 +88,7 @@ class ConflictReporting(NamedTuple):
 
     Attributes:
         logger: The ENGINE's own logger: the structured-log controls capture
-            by logger NAME (``tests/test_services/test_service_log_events.py``).
+            by logger NAME (``tests/test_services/test_service_log_events/_helpers.py``).
         event: The ``EVT_*`` constant the engine's resolution emits.
         message: The human sentence beside it.
     """
