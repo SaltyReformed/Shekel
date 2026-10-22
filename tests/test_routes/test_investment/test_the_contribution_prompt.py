@@ -206,9 +206,11 @@ class TestContributionPrompt:
         arrives on the investment account as transfers whose to-side it is:
         one in each period, each from the savings account the case posts
         from, at the $269.23 it posts.  The source is a second account the
-        case creates, never the seeded checking: the seed's owner and its
-        checking account are both id 1, so a from-side written as the owner's
-        id would read as checking and pass.
+        case creates, not the seeded checking, so the read tells the account
+        posted from the owner's checking.  It was chosen when the seed's owner
+        and its checking were both id 1, so a from-side written as the owner's
+        id read as checking and passed; since ruling R-BAL356 each non-ref
+        table's ids start in a range of their own, and the two differ.
 
         **Re-expressed onto the TRANSFER at plan step balance:X-bi-6-4d-3**
         (ruling **R-BAL167** class 1).  It counted the live income SHADOW
@@ -346,7 +348,7 @@ class TestContributionPrompt:
         ``is_active``) but inactive, so the guard redirects with the
         ``Source account is inactive.`` flash.  The load-bearing assertion
         is the money-routing guard: NO ``TransferTemplate`` is created, so
-        no shadow transactions are generated against the destination.
+        no transfer is generated into the destination.
         """
         acct = _create_investment_account(
             seed_user, db.session, type_name="Roth IRA",
@@ -374,7 +376,7 @@ class TestContributionPrompt:
 
         # Money-routing guard: an inactive source gets no transfer wired
         # up -- no TransferTemplate against the destination, hence no
-        # shadow transactions move money into it.
+        # transfer moves money into it.
         tpl = (
             db.session.query(TransferTemplate)
             .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)

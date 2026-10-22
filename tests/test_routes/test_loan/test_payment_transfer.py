@@ -188,9 +188,12 @@ class TestTransferPrompt:
         periods (``generate_transfers_for_all_periods``), so each installment
         the schedule holds becomes a transfer into the loan from the savings
         account the case posts from, in the pay period holding its due date.
-        The source is a second account the case creates, never the seeded
-        checking: the seed's owner and its checking account are both id 1, so
-        a from-side written as the owner's id would read as checking and pass.
+        The source is a second account the case creates, not the seeded
+        checking, so the read tells the account posted from the owner's
+        checking.  It was chosen when the seed's owner and its checking were
+        both id 1, so a from-side written as the owner's id read as checking
+        and passed; since ruling R-BAL356 each non-ref table's ids start in a
+        range of their own, and the two differ.
 
         **Re-expressed onto the TRANSFER at plan step balance:X-bi-6-4d-3**
         (ruling **R-BAL167** class 1).  It counted the live income SHADOW
@@ -377,8 +380,8 @@ class TestTransferPrompt:
     ):
         """The per-definition settings door updates that payment's extra in place.
 
-        No shadow regeneration is needed (the extra is a live parameter): the
-        settings row's ``extra_principal`` is set to the new value.  The 302
+        The door writes the settings row alone (the extra is a live
+        parameter): its ``extra_principal`` is set to the new value.  The 302
         is also the proof that the moved door still ROUTES: the ownership 404s
         below are only meaningful beside it.
         """
