@@ -161,7 +161,7 @@ class TestTheRowDelegates:
         still reaches it since the cutover minted every legacy one-off a
         definition; the live one-off arm is the rule-less definition's case
         above.  The envelope it repays recurs, so the payback's ``False`` is
-        the rule's and not its envelope's.  The card cutover
+        not a copy of its envelope's answer.  The card cutover
         (``credit_card:CC-7``, rulings **R-CC17** / **R-CC20**) deletes the
         payback, and this case goes with the arm.
         """

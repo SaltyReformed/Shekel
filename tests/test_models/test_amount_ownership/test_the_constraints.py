@@ -95,7 +95,7 @@ class TestTransactionAmountOwnership:
     def test_a_row_that_owns_its_amount_is_accepted(
         self, app, db, seed_user, seed_periods
     ):
-        """The state every production row is in today: a figure and no source."""
+        """A row that owns its amount -- a figure and no source -- is accepted."""
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods)
             db.session.add(txn)
@@ -233,9 +233,10 @@ class TestAdHocTransferOwnsItsAmount:
 
 
 class TestOnePricingLink:
-    """``ck_transactions_one_pricing_link``: a row is priced through at most one relation.
+    """``ck_transactions_one_pricing_link``: a row is priced through exactly one relation.
 
-    Measured before it was imposed, on a 2026-08-12 production clone at
+    It read "at most one" until plan step ``balance:X-bi-7d-2`` re-cut it to
+    ``= 1``.  Measured before it was imposed, on a 2026-08-12 production clone at
     ``a9d3c15e7f42``: 997 rows -- 606 template-linked, 342 transfer shadows, 21
     CC paybacks, 28 with no link -- and 0 holding two of the three.
     """

@@ -133,8 +133,8 @@ class TestTracksPurchasesResolution:
 
         There is no definition to ask and no cell of the row's own, so the
         answer is stated without either.  The envelope it repays tracks
-        purchases, so the payback's ``False`` is the rule's and not its
-        envelope's.
+        purchases, so the payback's ``False`` is not a copy of its envelope's
+        answer.
         """
         with app.app_context():
             envelope, payback = _payback(seed_user, seed_periods_today[0])
@@ -184,8 +184,8 @@ class TestVisibleToCompanionResolution:
 
         A SECURITY predicate answered ``False`` where nothing states
         otherwise: no definition, no cell.  The envelope it repays IS
-        visible, so the payback's ``False`` is the rule's and not its
-        envelope's.
+        visible, so the payback's ``False`` is not a copy of its envelope's
+        answer.
         """
         with app.app_context():
             envelope, payback = _payback(seed_user, seed_periods_today[0])

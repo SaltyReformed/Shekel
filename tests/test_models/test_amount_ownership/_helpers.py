@@ -47,7 +47,7 @@ def _make_transaction(seed_user, seed_periods, **overrides):
         **overrides: Column values to set or replace.  The amount-ownership
             pair is one of them -- ``amount_ownership`` -- and since plan step
             X-au-k it is the ONLY way an ORM caller can state it; the two
-            unpaired shapes this module grades are written by
+            unpaired shapes ``test_the_constraints.py`` grades are written by
             :func:`_insert_transaction_row` instead.
 
     Returns:
@@ -286,7 +286,7 @@ def _make_transfer(data, **overrides):
       ``pay_period_id`` picks the paycheck and is not restated afterwards.
     * **An AD-HOC transfer** (``transfer_template_id=None``) is constructed
       bare and returned UNFLUSHED, as before, with no legs; the two ad-hoc
-      controls below pass it explicitly and say why.
+      controls in ``test_the_constraints.py`` pass it explicitly and say why.
 
     Args:
         data: The ``seed_full_user_data`` fixture payload (it carries the second
@@ -323,7 +323,7 @@ def _transfer_of_definition(data, template_id, overrides):
         data: The ``seed_full_user_data`` fixture payload.
         template_id: The definition whose transfer is wanted.
         overrides: The caller's remaining column values, laid onto the
-            generated PARENT bare after ``pay_period_id`` has chosen the
+            generated transfer bare after ``pay_period_id`` has chosen the
             paycheck.
 
     Returns:

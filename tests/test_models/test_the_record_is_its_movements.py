@@ -256,9 +256,10 @@ class TestTheRoundTrip:
         transfer's status and its side record's day and basis, and both
         records are re-parented under their twins in one statement (the shape
         the band rule admits as a ``$0.00`` close), which that downgrade does
-        not do: it leaves each record under the transfer.  Setup only,
-        approved by the developer 2026-10-09 (rule 5, ruling R-BAL167): no
-        assertion changed.
+        not do: it leaves each record under the transfer.  The re-parent is
+        the setup the developer approved 2026-10-09 (rule 5, ruling R-BAL167);
+        the twins come from ``82f7b7ed4332``'s downgrade, the release's own way
+        down, which is no R-BAL167 class.  No assertion changed.
         """
         period = seed_periods[0]
         resolved = _bill(seed_user, period, name="Resolved bill")

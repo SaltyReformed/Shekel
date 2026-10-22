@@ -43,12 +43,14 @@ class TestTheDowngradeRefusesToInventAFigure:
     exercises is a guard nobody has seen work, and this one stands between a
     downgrade and a ``NOT NULL`` restore it cannot satisfy honestly.
 
-    Definition of Done item 7 asks for both directions.  The DDL halves are
+    Definition of Done item 7 asks for both directions.  The upgrade's DDL is
     exercised on every test-template rebuild -- ``scripts/build_test_template.py``
-    replays the whole Alembic chain rather than calling ``create_all`` -- and the
-    upgrade/downgrade round trip was run against a production clone (997
+    replays the Alembic chain's upgrades rather than calling ``create_all`` --
+    and the upgrade/downgrade round trip was run against a production clone (997
     transactions, 171 transfers) before this leaf shipped.  What no rebuild can
-    reach is the refusal, because the chain never leaves a NULL figure behind.
+    reach is the refusal: a template build replays the upgrades over an empty
+    database, and the cutovers that empty a figure (plan steps X-au-d..X-au-i,
+    from ``d7b2e6c1a483``) come after this revision in the chain.
     """
 
     def test_it_passes_when_every_row_owns_its_figure(
@@ -103,27 +105,17 @@ class TestTheDowngradeRefusesToInventAFigure:
         and one transfer does not.
 
         **No transfer has a shadow since plan step balance:X-bi-6-4d-3**
-        (``82f7b7ed4332``), so the case first runs that revision's downgrade,
-        which builds the transfer's two: the rows this guard's first arm read
-        at the revision it ran on.  Run in the ``db`` fixture's own app
-        context rather than a nested one: that downgrade alters
-        ``budget.transactions``, and a nested context scopes a SECOND session,
-        so the fixture's session, having read its own transaction, would sit
-        idle-in-transaction holding ``ACCESS SHARE`` on that table while the
-        DDL waits for ``ACCESS EXCLUSIVE``.
+        (``82f7b7ed4332``), and the engine's transfer is derived already, so
+        the re-price alone leaves it the ONE row with no figure.  Until 4d-3
+        each of its two shadows was given a figure of its own first, since
+        they declared their parent and the guard reads transactions first;
+        4d-3's leaf rebuilt them by that revision's downgrade only to hide them
+        the same way, and its review measured the case grading its name
+        identically without them, so they went.
         """
         fixture_row = seed_full_user_data["transaction"]
         repriced_by_the_owner(fixture_row, "1200.00")
-        # The engine's transfer is derived already; the two LEGS
-        # ``82f7b7ed4332``'s downgrade builds for it are too (they declare
-        # their parent), and the guard reads transactions first -- so each
-        # leg is given a figure of its own, bare, the pre-X-au-g-2c-2
-        # shape, leaving the parent as the ONE row with no figure.
-        xfer = _make_transfer(seed_full_user_data)
-        run_migration_callable(_TWINS_DELETED.downgrade, db.session)
-        for leg in _legs_of(xfer):
-            leg.amount_ownership = AmountOwnership.own(Decimal("100.00"))
-        db.session.flush()
+        _make_transfer(seed_full_user_data)
 
         with pytest.raises(RuntimeError, match="budget.transfers.amount"):
             _MIGRATION.refuse_rows_without_a_figure(db.session.connection())

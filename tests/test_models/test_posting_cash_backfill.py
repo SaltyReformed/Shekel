@@ -301,17 +301,20 @@ class TestBackfillExclusions:
     ):
         """A settled transfer's shadows are excluded (Step 2 owns them).
 
-        The shadows carry ``transfer_id``, so the ``transfer_id IS NULL`` filter
-        excludes them; the transaction backfill posts nothing and writes no
-        transaction-sourced entry for either shadow (the transfer-sourced entry
-        the transfer service already wrote is untouched).
+        The shadows carry ``transfer_id``, so the existence check's
+        ``transfer_id IS NULL`` term excludes them and the backfill returns
+        early, posting nothing.
 
         No transfer has a shadow since plan step ``balance:X-bi-6-4d-3``
         (``82f7b7ed4332`` deletes them and refuses a new one), so the case
         first runs that revision's downgrade, which builds the transfer's two,
         each settled and live as the transfer is.  That is asserted: a
         Projected or hidden shadow is excluded by the status or ``is_deleted``
-        filter, which would answer in place of the ``transfer_id`` one.
+        filter, which would answer in place of the ``transfer_id`` one.  The
+        case also counted transaction-sourced journal entries naming either
+        shadow, and that read went at 4d-3's review: the shadows are built
+        after every act of the application, and the backfill's Pass B, the
+        one writer left, reads columns this schema dropped and raises first.
         """
         with app.app_context():
             transfer = create_settled_transfer(
@@ -324,15 +327,8 @@ class TestBackfillExclusions:
             assert [(s.status.is_settled, s.is_deleted) for s in shadows] == [
                 (True, False), (True, False),
             ]
-            shadow_ids = [s.id for s in shadows]
 
             assert _run_backfill() == []
-            txn_sourced = (
-                _db.session.query(JournalEntry)
-                .filter(JournalEntry.transaction_id.in_(shadow_ids))
-                .count()
-            )
-            assert txn_sourced == 0
 
 
 # ---------------------------------------------------------------------------

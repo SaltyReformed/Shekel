@@ -162,7 +162,8 @@ class TestArchiveHelpers:
     def test_account_has_history_false(self, app, db, seed_user):
         """C-5A.5-7: account_has_history returns False when account has zero transactions."""
         with app.app_context():
-            # seed_user["account"] has no transactions (tables truncated each test).
+            # seed_user["account"] has no transactions (each test gets a freshly
+            # cloned database).
             result = account_has_history(seed_user["account"].id)
             assert result is False
 
@@ -641,46 +642,29 @@ class TestATransferAnswersForItsOwnCategoryAndAccounts:
                 category.id, seed_user["user"].id,
             ) is False
 
+    @pytest.mark.parametrize(
+        "status", [StatusEnum.PROJECTED, StatusEnum.CANCELLED, StatusEnum.DONE],
+    )
     def test_a_live_transfer_is_its_accounts_history_without_its_shadows(
-        self, app, db, seed_user,
+        self, app, seed_user, status,
     ):
-        """BAL-539: both endpoints hold history while the transfer is live.
+        """BAL-539: both endpoints hold history while the transfer is live, whatever its status.
 
         The transfer itself is the history, on both of its accounts; its own
-        soft delete is what ends it, as a row's does.  Until plan step
-        balance:X-bi-6-4d-3 made a transfer one row, the case hid its shadows
-        around the service to plant the state a shadowless transfer presents.
+        soft delete is what ends it, as a row's does.  The status and the
+        delete each go through the transfer's own door and are asserted
+        before the predicate is asked, so a door that left the transfer
+        Projected, or live, cannot pass here.  It ran over a Projected
+        transfer only, hidden by hand, until an adversarial review of plan
+        step balance:X-bi-6-4d-3 found an arm narrowed to Projected passing
+        the whole suite; a Paid transfer cannot be hidden by hand, because the
+        database refuses a payment record under a deleted transfer.  Until
+        4d-3 made a transfer one row, the case hid its shadows around the
+        service to plant the state a shadowless transfer presents.
         """
         with app.app_context():
             transfer, source, destination = self._a_projected_transfer(
                 seed_user, "History",
-            )
-
-            assert account_has_history(source.id) is True
-            assert account_has_history(destination.id) is True
-
-            transfer.is_deleted = True
-            db.session.commit()
-
-            assert account_has_history(source.id) is False
-            assert account_has_history(destination.id) is False
-
-    @pytest.mark.parametrize("status", [StatusEnum.CANCELLED, StatusEnum.DONE])
-    def test_a_live_transfer_is_its_accounts_history_whatever_its_status(
-        self, app, seed_user, status,
-    ):
-        """BAL-539 on the status axis: a live Cancelled or Paid transfer is history too.
-
-        The arm counts every live transfer from or to the account, and the
-        two cases beside this one use a Projected transfer only, so an arm
-        narrowed to Projected passed the whole suite (found by an adversarial
-        review of plan step balance:X-bi-6-4d-3).  The status moves through
-        the transfer's own door and is asserted before the predicate is
-        asked, so a door that left the transfer Projected cannot pass here.
-        """
-        with app.app_context():
-            transfer, source, destination = self._a_projected_transfer(
-                seed_user, "Status",
             )
             transfer_service.update_transfer(
                 transfer.id, seed_user["user"].id,
@@ -693,6 +677,15 @@ class TestATransferAnswersForItsOwnCategoryAndAccounts:
 
             assert account_has_history(source.id) is True
             assert account_has_history(destination.id) is True
+
+            transfer_service.delete_transfer(
+                transfer.id, seed_user["user"].id, soft=True,
+            )
+            db.session.commit()
+            assert db.session.get(Transfer, transfer.id).is_deleted is True
+
+            assert account_has_history(source.id) is False
+            assert account_has_history(destination.id) is False
 
     def test_the_account_door_archives_an_account_a_live_transfer_names(
         self, app, auth_client, db, seed_user,
