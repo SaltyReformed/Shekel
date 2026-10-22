@@ -19,26 +19,22 @@ service stopped logging" -- a far more useful signal than a generic
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 
 import pytest
 
 from dataclasses import replace
 
-from app.extensions import db
 from app.utils.dates import display_today
-from app.enums import StatusEnum
 from app.models.category import Category
 from app.models.ref import Status
 from app.models.transaction import Transaction
-from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
     carry_forward_service,
     cash_ledger,
     credit_workflow,
-    entry_credit_workflow,
     entry_service,
     pay_period_write,
     reconcile_service,
@@ -197,7 +193,6 @@ def _transfer_setup(app, db, seed_user, seed_periods):
     account (Savings) and the Transfers: Outgoing/Incoming categories
     that the route layer normally seeds.
     """
-    from app.models.account import Account  # noqa: WPS433
     from app.models.ref import AccountType  # noqa: WPS433
 
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
