@@ -37,7 +37,6 @@ from app.enums import (
     AmountSourceEnum,
     LedgerAccountClassEnum,
     SettledDayBasisEnum,
-    StatusEnum,
     TxnTypeEnum,
 )
 from sqlalchemy.exc import IntegrityError
@@ -65,7 +64,7 @@ from app.services.statement_match import (
     review_set,
 )
 
-from ._builders import (
+from tests.test_services.test_statement_match._builders import (
     a_bank_line,
     a_later_period,
     a_rule,

@@ -19,6 +19,12 @@ budgeted on Checking, paid with the card, shown on the card's feed.  Every
 figure is asserted from the state re-read through the app's own readers --
 the offer set, the accept door, the register, the fold, the ledger, the
 claims -- never from the row the test wrote.
+
+The private producers are graded DIRECTLY here -- ``_valuation``'s
+constructor and pricer, and ``_candidates``' claims reader -- because the
+offer set's own clauses would otherwise mask them (measured by mutation, the
+class ``CC-5-3`` named).  The statement-match builders are the one way a
+test stages a bank line and a scope as the app does.
 """
 
 from __future__ import annotations
@@ -48,13 +54,6 @@ from app.services.cash_ledger import (
     settled_cash_facts,
 )
 from app.services.settle_day import SettleDay
-# Pylint: ``shekel-private-module-import`` -- the producers' contracts
-# (``_valuation``'s constructor and pricer, ``_candidates``' claims reader)
-# are graded DIRECTLY here, where the offer set's own clauses would otherwise
-# mask them (measured by mutation, the class ``CC-5-3`` named); and the
-# statement-match builders are the one way a test stages a bank line and a
-# scope as the app does.  The convention ``test_statement_reconcile`` keeps.
-# pylint: disable=shekel-private-module-import
 from app.services.statement_match import (
     RowKind,
     _valuation,

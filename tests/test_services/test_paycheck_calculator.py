@@ -29,8 +29,6 @@ from app.services.paycheck_calculator import (
     PeriodInfo,
     TaxLines,
 )
-# The private helpers come from their LEAF since the engine became a package
-# (plan step salary:C12, ledger row P64), as pay_calendar's do.
 from app.services.paycheck_calculator._calendar_questions import (
     _get_cumulative_wages,
     _is_third_paycheck,
