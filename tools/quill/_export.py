@@ -8,8 +8,7 @@ daily from a timer on the host, whose unit files live with the host's other time
 in this repository.
 
 **What a file holds.**  The cards and milestones as GitHub answered them, so no reader's
-idea of a card stands between the backup and the tracker; the board and the claims as
-quill reads them:
+idea of a card stands between the backup and the tracker; the board as quill reads it:
 
 - ``cards``: every card, open and closed, in number order (:func:`_queries.export_cards`):
   what quill reads of a card, its text, who filed it and when, when it closed, its
@@ -20,14 +19,14 @@ quill reads them:
 - ``milestones``: every milestone, open and closed, whole (:func:`_queries.milestones`).
 - ``board``: the tracker's cards on the board, in the developer's drag order (R-BAL177),
   which no card holds (:meth:`_tracker.Board.order`).
-- ``claims``: which branch is building which card, since when, and the claim's commit
-  (:meth:`_tracker.Tracker.claims`).
 - ``tracker`` and ``taken_at``: whose cards, and when the export began.
 
 **What it does not hold:** a card's timeline -- its title's renames, its labels and its
 state over time -- which each day's file shows as its difference from the day before's;
-a label's colour and description, which :mod:`setup_tracker` states in code; and an item
-on the board that is not one of the tracker's cards.
+a label's colour and description, which :mod:`setup_tracker` states in code; an item on
+the board that is not one of the tracker's cards; and the claims, which are no longer the
+tracker's: since the ship marker (ruling ``balance:R-BAL359``, X-cx's M1) a claim is the
+code repository's branch ``card/N``, which git and its backups hold.
 
 **A file under a day's name is always whole.**  It is written under a hidden temporary
 name beside it, synced, then renamed into place.  The temporary file is made before
@@ -50,7 +49,6 @@ import json
 import os
 import tempfile
 from collections.abc import Callable
-from dataclasses import asdict
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -109,8 +107,8 @@ def _whole(github: GitHub, place: Place, card: dict) -> dict:
 
 
 def snapshot(tracker: Tracker, taken_at: datetime) -> dict:
-    """Every card of ``tracker`` whole, its milestones, its board's order and its claims,
-    as one file holds them (the module docstring), the export having begun at
+    """Every card of ``tracker`` whole, its milestones and its board's order, as one file
+    holds them (the module docstring), the export having begun at
     ``taken_at``.
 
     Raises:
@@ -129,7 +127,6 @@ def snapshot(tracker: Tracker, taken_at: datetime) -> dict:
         "milestones": sorted(milestone_nodes(github, place),
                              key=lambda milestone: milestone["number"]),
         "board": [number for number, _ in tracker.board.order()],
-        "claims": [asdict(claim) for _, claim in sorted(tracker.claims().items())],
     }
 
 
@@ -169,5 +166,5 @@ def cmd_export(args, tracker: Tracker, _root: Path,
     taken_at = clock()
     path, held = write(args.to, tracker.place, taken_at, partial(snapshot, tracker, taken_at))
     print(f"wrote {path}: {len(held['cards'])} cards, {len(held['milestones'])} milestones, "
-          f"{len(held['board'])} on the board, {len(held['claims'])} claims")
+          f"{len(held['board'])} on the board")
     return 0

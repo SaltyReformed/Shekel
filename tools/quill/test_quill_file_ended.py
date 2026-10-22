@@ -12,8 +12,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from tools.ci.scratch import run as _run
+from tools.quill import _git
 from tools.quill._fake import (AnswerLostOnce, FailOnce, FakeTracker, leaf_filing, ruling_filing,
-                              run, ship)
+                              run, ship, unship)
 from tools.quill._github import GitHubError
 from tools.quill._tracker import Child
 from tools.quill.check import ruling_body
@@ -217,7 +219,7 @@ def test_a_person_closing_the_only_unfinished_leaf_leaves_a_plain_step(code, tmp
     capsys.readouterr()
     assert run(tracker, code, "next") == 0
     assert capsys.readouterr().out == "next: plan#1 [step, balance] card 1\n"
-    assert run(tracker, code, "claim", "plan#1", "--branch", "feat/x") == 0
+    assert run(tracker, code, "claim", "plan#1") == 0
 
 
 def test_a_read_that_lags_a_drops_unlink_never_drops_the_split_step(code, tmp_path,
@@ -250,12 +252,12 @@ def test_a_read_that_lags_a_drops_unlink_never_drops_the_split_step(code, tmp_pa
 
 def test_a_leaf_that_shipped_counts_however_it_was_closed_while_marked(code, tmp_path,
                                                                           capsys):
-    """Review rbal202b2 M-B(1): the unfinished leaf ships (a ``Ships:`` needs no claim) and
-    a person closes it, as `sync` asks; its work is done, so plan#1 is a split step whose
+    """Review rbal202b2 M-B(1): the unfinished leaf ships (its marker lands on dev) and a
+    person closes it, as `sync` asks; its work is done, so plan#1 is a split step whose
     leaves are done -- closed as completed by `sync`, never offered again."""
     tracker = FakeTracker()
     _split_by_an_unfinished_leaf(tracker, code, tmp_path)
-    ship(code, "Ships: plan#2")
+    ship(code, 2)
     _closed_by_hand(tracker, 2)
     assert run(tracker, code, "sync") == 0
     assert tracker.writes[-1] == ("close", 1, "completed")
@@ -477,7 +479,7 @@ def test_shipped_work_closed_while_marked_is_never_refused_nor_filed_again(code,
     tracker = FakeTracker()
     FailOnce(tracker, "unmark")
     assert run(tracker, code, *args) == 2
-    ship(code, "Ships: plan#1")
+    ship(code, 1)
     _closed_by_hand(tracker, 1)
     writes = list(tracker.writes)
     capsys.readouterr()
@@ -489,16 +491,17 @@ def test_shipped_work_closed_while_marked_is_never_refused_nor_filed_again(code,
 
 def test_a_drop_closes_a_split_step_the_tool_had_shown_completed(code, tmp_path):
     """Delta DM3 (D6): only a PERSON's close is kept.  The tool showed plan#1 completed
-    (its only leaf shipped); a ``Reopens:`` undid the leaf and a person reopened it; a
+    (its only leaf shipped); a revert deleting its marker undid the leaf and a person
+    reopened it; a
     drop of plan#1 skipped it as closed, and the next `sync` reopened it as a plain step,
     losing the drop."""
     tracker = FakeTracker()
     _split_by_an_unfinished_leaf(tracker, code, tmp_path)
-    ship(code, "Ships: plan#2")
+    ship(code, 2)
     _closed_by_hand(tracker, 2)
     assert run(tracker, code, "sync") == 0
     assert tracker.writes[-1] == ("close", 1, "completed")
-    ship(code, "Reopens: plan#2")
+    unship(code, 2)
     tracker.cards_by_number[2] = replace(tracker.cards_by_number[2], is_open=True,
                                          state_reason="REOPENED", touched_by_hand=True)
     assert run(tracker, code, "drop", "plan#1", "--why", "replanned") == 0
@@ -564,14 +567,14 @@ def test_a_lagging_listing_turns_a_new_filing_into_filed_already(code, monkeypat
 
 # -- the fourth round: leaf C's round 3 (plan-tracker-2026-10-05/leafc_review_r3.md) ------
 
-def test_a_stray_ships_trailer_never_decides_a_withdrawn_ruling(code, tmp_path, capsys):
-    """Round 3 RM1 (R1): a ruling is never shipped (R-BAL184: a ``Ships:`` naming one is not
-    acted on), so a stray trailer must not turn its withdrawal into "filed already"."""
+def test_a_stray_marker_never_decides_a_withdrawn_ruling(code, tmp_path, capsys):
+    """Round 3 RM1 (R1): a ruling is never shipped (R-BAL184: a ship marker naming one is not
+    acted on), so a stray marker must not turn its withdrawal into "filed already"."""
     tracker = FakeTracker()
     tracker.add(1)
     assert run(tracker, code, *ruling_filing(tmp_path, "plan#1")) == 0
     _closed_by_hand(tracker, 2, "NOT_PLANNED")
-    ship(code, "Ships: plan#2")
+    ship(code, 2)
     writes = list(tracker.writes)
     capsys.readouterr()
     assert run(tracker, code, *ruling_filing(tmp_path, "plan#1")) == 1
@@ -579,8 +582,8 @@ def test_a_stray_ships_trailer_never_decides_a_withdrawn_ruling(code, tmp_path, 
     assert tracker.writes == writes
 
 
-def test_a_stray_ships_trailer_never_decides_a_question_dropped_while_marked(code, tmp_path,
-                                                                              capsys):
+def test_a_stray_marker_never_decides_a_question_dropped_while_marked(code, tmp_path,
+                                                                     capsys):
     """Round 3 RM1 (R2): a question is never shipped either, so one closed while still
     marked is refused as dropped, never told it "shipped in git"."""
     spec = tmp_path / "q.md"
@@ -590,7 +593,7 @@ def test_a_stray_ships_trailer_never_decides_a_question_dropped_while_marked(cod
     FailOnce(tracker.board, "add")
     assert run(tracker, code, *args) == 2
     _closed_by_hand(tracker, 1, "NOT_PLANNED")
-    ship(code, "Ships: plan#1")
+    ship(code, 1)
     writes = list(tracker.writes)
     capsys.readouterr()
     assert run(tracker, code, *args) == 1
@@ -611,20 +614,20 @@ def _unlabelled_by_hand(tracker, number):
 def test_a_stale_label_removed_after_sync_never_drops_a_step_that_shipped(code, tmp_path,
                                                                            capsys):
     """Review M4 (probe P4): a person closed plan#1's only leaf while it was still being
-    filed; plan#1, a plain step again, was built and shipped.  At leaf C the link stayed and
-    the label was all that kept the leaf out, so removing it made `sync` re-close the
-    shipped plan#1 "not planned, every leaf dropped" and call its Ships trailer a stale
-    number.  `sync` unlinks the leaf at its first run, so the label decides nothing."""
+    filed; plan#1, a plain step again, was claimed, built and shipped -- its branch merged
+    into dev, which ends the claim.  At leaf C the link stayed and the label was all that
+    kept the leaf out, so removing it made `sync` re-close the shipped plan#1 "not planned,
+    every leaf dropped" and call its Ships trailer a stale number.  `sync` unlinks the leaf
+    at its first run, so the label decides nothing."""
     tracker = FakeTracker()
     _split_by_an_unfinished_leaf(tracker, code, tmp_path)
     _closed_by_hand(tracker, 2)
     assert run(tracker, code, "sync") == 0
     assert tracker.cards_by_number[2].parent is None
-    assert run(tracker, code, "claim", "plan#1", "--branch", "feat/s") == 0
-    sha = ship(code, "Ships: plan#1")
-    tracker.pulls[sha] = {"feat/s"}
+    assert run(tracker, code, "claim", "plan#1") == 0
+    _run(code, "push", "--quiet", "origin", "refs/heads/card/1:refs/heads/dev")
     assert run(tracker, code, "sync") == 0
-    assert tracker.writes[-2:] == [("close", 1, "completed"), ("release", 1)]
+    assert tracker.writes[-1] == ("close", 1, "completed") and not _git.read(code).claims
     _unlabelled_by_hand(tracker, 2)
     writes = list(tracker.writes)
     capsys.readouterr()

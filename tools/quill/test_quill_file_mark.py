@@ -10,10 +10,10 @@ from dataclasses import replace
 
 import pytest
 
-from tools.quill._fake import (AnswerLostOnce, FailOnce, FakeTracker, leaf_filing, ruling_filing,
-                              run, ship)
+from tools.quill._fake import (AnswerLostOnce, FailOnce, FakeTracker, claim, leaf_filing,
+                              ruling_filing, run, ship)
 from tools.quill._github import GitHubError
-from tools.quill._tracker import Child, Claim
+from tools.quill._tracker import Child
 from tools.quill.setup_tracker import FILING
 
 
@@ -103,7 +103,7 @@ def test_a_leaf_cut_short_after_its_create_is_never_offered_and_the_same_command
     out = capsys.readouterr().out
     assert out.startswith("next: nothing\n")
     assert "UNFINISHED FILING: plan#10's filing has not finished" in out
-    assert run(tracker, code, "claim", "plan#10", "--branch", "feat/x") == 1
+    assert run(tracker, code, "claim", "plan#10") == 1
     assert "its filing has not finished (R-BAL202)" in capsys.readouterr().err
     assert run(tracker, code, *args) == 0
     card = tracker.cards_by_number[10]
@@ -597,7 +597,7 @@ def test_a_lone_leaf_dropped_after_its_split_step_left_the_board_puts_it_back(co
     for number in (1, 2, 3):
         tracker.add(number)
     tracker.add(4, blocked_by=(2,), on_board=False)
-    tracker.held[1] = Claim(1, "feat/one", "2026-10-04T12:00:00Z", "s")
+    claim(code, 1)
     FailOnce(tracker, "unmark")
     assert run(tracker, code, *leaf_filing(tmp_path, "Half", "plan#2")) == 2
     assert tracker.board.items == [1, 5, 3]
@@ -641,7 +641,7 @@ def test_only_a_marked_leaf_is_unlinked_and_shipped_work_never(code, capsys):
     tracker.add(3, parent=1, labels=marked)
     assert run(tracker, code, "drop", "plan#2", "--why", "a duplicate") == 0
     assert not [write for write in tracker.writes if write[0] == "remove_child"]
-    ship(code, "Ships: plan#3")
+    ship(code, 3)
     writes = list(tracker.writes)
     capsys.readouterr()
     assert run(tracker, code, "drop", "plan#3", "--why", "late") == 1
@@ -677,7 +677,7 @@ def test_a_drop_whose_board_add_failed_unlinked_nothing_and_is_finished_by_the_s
     tracker = FakeTracker()
     for number in (1, 2, 3):
         tracker.add(number)
-    tracker.held[1] = Claim(1, "feat/one", "2026-10-04T12:00:00Z", "s")
+    claim(code, 1)
     FailOnce(tracker, "unmark")
     assert run(tracker, code, *leaf_filing(tmp_path, "Half", "plan#2")) == 2
     FailOnce(tracker.board, "add")

@@ -24,8 +24,9 @@ reported for a person to settle, so a re-run never destroys anyone's work.
 **One home per fact (rule 14) is why the board stores no field.**  A card's
 order is the board's own drag order (``items(orderBy: {field: POSITION})``),
 its kind is its issue type, its arc one label, whether it shipped is git's
-answer (``Ships: plan#N``).  A field holding any of those would be a second
-home, so every custom field that stores a value is a difference.  GitHub's
+answer (its ship marker ``plan/ships/N``, ruling ``balance:R-BAL359``).  A
+field holding any of those would be a second home, so every custom field that
+stores a value is a difference.  GitHub's
 built-in ``Status`` field is the one exception GitHub forces: it refuses to
 delete it ("Only custom fields can be deleted.") and silently ignores an
 update emptying its choices (both measured 2026-10-03).  So, by the
@@ -114,8 +115,9 @@ ISSUE_TYPES_URL = f"https://github.com/organizations/{ORG}/settings/issue-types"
 
 #: The repository's settings this module holds.  ``auto_init`` is a creation
 #: argument, not a setting: the README it commits gives the repository a first
-#: commit, without which GitHub refuses to create any git reference -- and a
-#: claim on a card is one (``claims/N``).
+#: commit, without which GitHub refuses to create any git reference.  Quill
+#: writes none there since the ship marker (R-BAL359): a card's claim is the
+#: code repository's branch ``card/N``.
 REPOSITORY = {
     "private": True,
     "description": "Shekel's plan: each step, finding, ruling and question is one card.",
@@ -157,11 +159,12 @@ LABELS = {
 }
 
 #: What quill's App may do, and nothing more: write cards (issues,
-#: their sub-issues and dependencies), create and delete the git references
-#: that are claims (contents), and place cards on the organization's board.
-#: ``metadata: read`` is mandatory for every App.
+#: their sub-issues and dependencies) and place cards on the organization's
+#: board.  ``metadata: read`` is mandatory for every App.  ``contents`` left it at
+#: X-cx's M1, with the tracker's claim references (R-BAL359: a claim is a branch
+#: of the code repository); the installation keeps it until the developer
+#: narrows it on the web, and this check reports it until then.
 APP_PERMISSIONS = {
-    "contents": "write",
     "issues": "write",
     "metadata": "read",
     "organization_projects": "write",

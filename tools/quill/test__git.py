@@ -30,19 +30,11 @@ def _repo(tmp_path):
     return scratch.repository(tmp_path)
 
 
-def _origin(tmp_path, work):
-    """A bare ``origin`` for ``work``, holding ``dev`` and ``main`` at one base commit that
-    ``work`` has fetched; the base's sha.  ``work``'s own configuration names its committer
-    and signs nothing, so a claim's commit is made alike on every machine."""
-    origin = tmp_path / "origin.git"
-    _run(tmp_path, "init", "--quiet", "--bare", str(origin))
-    _run(work, "remote", "add", "origin", str(origin))
-    for key, value in (("user.name", "Plan Test"), ("user.email", "plan-test@example.invalid"),
-                       ("commit.gpgsign", "false"), ("core.hooksPath", "/dev/null")):
-        _run(work, "config", key, value)
+def _origin(work):
+    """A bare ``origin`` for ``work`` (:func:`scratch.with_origin`), holding ``dev`` and
+    ``main`` at one base commit that ``work`` has fetched; the base's sha."""
     base = _files(work, _commit(work, "root"), "base", {"README": "base\n"})
-    _run(work, "push", "--quiet", "origin", f"{base}:refs/heads/dev", f"{base}:refs/heads/main")
-    _git.fetch(work)
+    scratch.with_origin(work, base)
     return base
 
 
@@ -56,11 +48,11 @@ def _marker(number, when="2026-10-19T13:00:00Z"):
     return {_git.marker(number): f"claimed {when}\n"}
 
 
-def test_what_shipped_is_the_merge_of_dev_and_main(repo, tmp_path):
+def test_what_shipped_is_the_merge_of_dev_and_main(repo):
     """R-BAL359: a hotfix's marker on ``main`` counts before ``main`` is merged into ``dev``; a
     marker ``dev`` deleted (a revert) is unshipped before the release; anything under
     ``plan/ships/`` that is no card's marker is a HISTORY line, never a card."""
-    base = _origin(tmp_path, repo)
+    base = _origin(repo)
     both = _files(repo, base, "five shipped", _marker(5))
     _push(repo, both, "dev")
     _push(repo, both, "main")
@@ -76,10 +68,24 @@ def test_what_shipped_is_the_merge_of_dev_and_main(repo, tmp_path):
                                                              "plan/ships/notes"]
 
 
-def test_a_conflict_on_a_marker_refuses_to_answer_and_one_elsewhere_does_not(repo, tmp_path):
+def test_every_card_a_marker_ever_named_is_read_after_its_revert(repo):
+    """``sync`` reopens a card the tool showed shipped once a revert deletes its marker, so
+    the cards whose marker any commit on ``dev`` or ``main`` ever touched are read: a
+    reverted one with them, an entry that is no card's marker never."""
+    base = _origin(repo)
+    shipped = _files(repo, base, "ship five and a stray", {**_marker(5),
+                                                           "plan/ships/notes": "x\n"})
+    _push(repo, _files(repo, shipped, "Revert five", {_git.marker(5): None}), "dev")
+    _push(repo, _files(repo, base, "hotfix nine", _marker(9)), "main")
+    _git.fetch(repo)
+    assert _git.shipped(repo).cards == {9}
+    assert _git.ever_marked(repo) == {5, 9}
+
+
+def test_a_conflict_on_a_marker_refuses_to_answer_and_one_elsewhere_does_not(repo):
     """Two claims' markers for one card meeting in the merge leave its record unknown, so
     ``shipped`` refuses; a conflict in code only leaves every marker readable."""
-    base = _origin(tmp_path, repo)
+    base = _origin(repo)
     _push(repo, _files(repo, base, "dev", {"README": "dev\n", **_marker(4)}), "dev")
     _push(repo, _files(repo, base, "main", {"README": "main\n", **_marker(6)}), "main")
     _git.fetch(repo)
@@ -90,11 +96,11 @@ def test_a_conflict_on_a_marker_refuses_to_answer_and_one_elsewhere_does_not(rep
         _git.shipped(repo)
 
 
-def test_a_claim_is_created_once_and_read_with_its_marker(repo, tmp_path):
+def test_a_claim_is_created_once_and_read_with_its_marker(repo):
     """The claim's push is create-only: a second claim, a fast-forward a plain push would take,
     is ClaimTaken; the claim read back names its tip, when it was committed and when its
     marker says it was claimed.  Its commit adds the marker and nothing else."""
-    base = _origin(tmp_path, repo)
+    base = _origin(repo)
     sha = _git.claim(repo, 12, _git.tracking(_git.DEV), _MON)
     assert _run(repo, "diff", "--name-status", base, sha) == "A\tplan/ships/12"
     assert _run(repo, "cat-file", "blob", f"{sha}:plan/ships/12") == "claimed 2026-10-19T13:00:00Z"
@@ -108,21 +114,21 @@ def test_a_claim_is_created_once_and_read_with_its_marker(repo, tmp_path):
     assert reads.shipped.cards == frozenset()
 
 
-def test_the_same_claim_pushed_again_is_the_claim_made(repo, tmp_path, monkeypatch):
+def test_the_same_claim_pushed_again_is_the_claim_made(repo, monkeypatch):
     """Session 8's row 2: git answers a push of the very commit the branch holds as up to date,
     exit 0, without testing the lease.  A claim repeated after a lost answer writes that same
     commit (same base, marker, author and committer instants), so it is the claim made."""
-    _origin(tmp_path, repo)
+    _origin(repo)
     for variable in ("GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"):
         monkeypatch.setenv(variable, "2026-10-19T13:00:00+00:00")
     first = _git.claim(repo, 3, _git.tracking(_git.DEV), _MON)
     assert _git.claim(repo, 3, _git.tracking(_git.DEV), _MON) == first
 
 
-def test_only_a_card_number_under_card_is_a_claim_and_merged_work_is_none(repo, tmp_path):
+def test_only_a_card_number_under_card_is_a_claim_and_merged_work_is_none(repo):
     """``card/x`` and ``card/007`` name no card; a ``card/N`` whose tip ``dev`` or ``main``
     holds is merged work whose branch outlived its merge, not a claim."""
-    base = _origin(tmp_path, repo)
+    base = _origin(repo)
     for branch in ("card/x", "card/007", "feat/y"):
         _push(repo, base, branch)
     merged = _git.claim(repo, 8, _git.tracking(_git.DEV), _MON)
@@ -134,18 +140,18 @@ def test_only_a_card_number_under_card_is_a_claim_and_merged_work_is_none(repo, 
     assert list(_git.read(repo).claims) == [10]
 
 
-def test_a_claim_tip_without_its_marker_reads_no_claim_instant(repo, tmp_path):
+def test_a_claim_tip_without_its_marker_reads_no_claim_instant(repo):
     """A ``card/N`` someone pushed by hand, holding no marker for N, is still a claim (origin
     holds the branch), with no instant to report."""
-    base = _origin(tmp_path, repo)
+    base = _origin(repo)
     _push(repo, _files(repo, base, "by hand", {"work": "x\n"}), "card/4")
     assert _git.read(repo).claims[4].claimed is None
 
 
-def test_check_out_writes_no_upstream(repo, tmp_path):
+def test_check_out_writes_no_upstream(repo):
     """The claim's local branch tracks nothing, so the shared configuration gains no
     ``branch.card/N`` section."""
-    _origin(tmp_path, repo)
+    _origin(repo)
     sha = _git.claim(repo, 5, _git.tracking(_git.DEV), _MON)
     assert _git.check_out(repo, 5, sha) is None
     assert _run(repo, "symbolic-ref", "--short", "HEAD") == "card/5"
@@ -153,10 +159,10 @@ def test_check_out_writes_no_upstream(repo, tmp_path):
     assert "branch.card/5" not in _run(repo, "config", "--list")
 
 
-def test_a_release_keeps_the_work_and_deletes_only_the_tip_it_read(repo, tmp_path):
+def test_a_release_keeps_the_work_and_deletes_only_the_tip_it_read(repo):
     """The work moves to ``released/N/<instant>`` first; the delete names the tip read, so a
     newer push survives a release read before it, and is named."""
-    _origin(tmp_path, repo)
+    _origin(repo)
     sha = _git.claim(repo, 6, _git.tracking(_git.DEV), _MON)
     newer = _files(repo, sha, "more work", {"work": "x\n"})
     _push(repo, newer, "card/6")
@@ -169,10 +175,10 @@ def test_a_release_keeps_the_work_and_deletes_only_the_tip_it_read(repo, tmp_pat
     assert _run(repo, "ls-remote", "origin", f"refs/heads/{kept}").split("\t")[0] == newer
 
 
-def test_history_lists_each_commit_that_touched_the_marker(repo, tmp_path):
+def test_history_lists_each_commit_that_touched_the_marker(repo):
     """``show``'s history: the claim's commit that added it, the revert that deleted it, newest
     first, on ``dev`` or ``main``."""
-    _origin(tmp_path, repo)
+    _origin(repo)
     sha = _git.claim(repo, 2, _git.tracking(_git.DEV), _MON)
     _push(repo, sha, "dev")
     revert = _files(repo, sha, "Revert claim plan#2", {_git.marker(2): None})
@@ -180,39 +186,6 @@ def test_history_lists_each_commit_that_touched_the_marker(repo, tmp_path):
     _git.fetch(repo)
     assert _git.history(repo, 2) == [("D", revert, "Revert claim plan#2"),
                                      ("A", sha, "claim plan#2")]
-
-
-def test_current_branch_and_a_detached_head(repo):
-    """A claim names a branch, so a detached HEAD has none to name."""
-    base = _commit(repo, "base")
-    _run(repo, "update-ref", "refs/heads/dev", base)
-    assert _git.current_branch(repo) == "dev"
-    _run(repo, "checkout", "--quiet", "--detach", base)
-    assert _git.current_branch(repo) is None
-    with pytest.raises(GitError):
-        _git.current_branch(repo / "no-such-directory")
-
-
-def test_pushed_asks_origin(repo, tmp_path):
-    """A branch is pushed when origin holds it, whatever this clone has fetched."""
-    origin = tmp_path / "origin.git"
-    _run(tmp_path, "init", "--quiet", "--bare", str(origin))
-    _run(repo, "remote", "add", "origin", str(origin))
-    _run(repo, "update-ref", "refs/heads/feat/x", _commit(repo, "base"))
-    assert not _git.pushed(repo, "feat/x")
-    _run(repo, "push", "--quiet", "origin", "feat/x")
-    assert _git.pushed(repo, "feat/x")
-
-
-@pytest.mark.parametrize("url", [
-    "https://github.com/SaltyReformed/Shekel.git",
-    "https://github.com/SaltyReformed/Shekel",
-    "git@github.com:SaltyReformed/Shekel.git",
-])
-def test_origin_repository_reads_either_url_form(repo, url):
-    """The pull-request lookup needs ``owner/name``; L5 changes the owner."""
-    _run(repo, "remote", "add", "origin", url)
-    assert _git.origin_repository(repo) == "SaltyReformed/Shekel"
 
 
 def test_a_branch_starts_at_the_commit_it_grew_from(repo, monkeypatch):
@@ -306,7 +279,7 @@ def test_a_bound_environment_reaches_no_repository_but_the_one_named(binding, tm
     ``tools/ci/test_trailers.py``."""
     sentinel, before = scratch.bound_sentinel(tmp_path, binding, monkeypatch.setenv)
     work = scratch.repository(tmp_path, "work")
-    _origin(tmp_path, work)
+    _origin(work)
     sha = _git.claim(work, 3, _git.tracking(_git.DEV), _MON)
     assert _git.check_out(work, 3, sha) is None
     reads = _git.read(work)
@@ -318,8 +291,6 @@ def test_a_bound_environment_reaches_no_repository_but_the_one_named(binding, tm
     assert _git.author_date(work, sha)
     assert _git.release(work, 3, sha, _TUE).startswith("released/3/")
     assert _git.has_branch(work, "card/3")
-    assert _git.current_branch(work) == "card/3"
-    assert _git.pushed(work, "dev") and not _git.pushed(work, "card/3")
 
     assert scratch.sentinel_state(sentinel) == before
 

@@ -14,7 +14,8 @@ bound by the one git call here that does not go through ``gitcmd``
 tool test against one builder; the repository the tests start from
 (:func:`repository`), the ``dev`` they read (:func:`point_dev`) and the
 sentinel's controls joined it for BAL-609, each once spelled in both suites; the
-``main`` read beside ``dev`` (:func:`point_main`) joined it at X-cx L9d's review fix.
+``main`` read beside ``dev`` (:func:`point_main`) joined it at X-cx L9d's review fix, and
+the bare ``origin`` quill's claims are pushed to (:func:`with_origin`) at X-cx's M1.
 """
 from __future__ import annotations
 
@@ -70,6 +71,21 @@ def repository(parent: Path, name: str = "code") -> Path:
     root.mkdir()
     run(root, "init", "--quiet", "--initial-branch=dev")
     return root
+
+
+def with_origin(work: Path, base: str) -> None:
+    """Give ``work`` a bare ``origin`` beside it holding ``dev`` and ``main`` at ``base``, and
+    fetch both.  ``work``'s own configuration is pinned to :data:`ISOLATED`'s settings, so a
+    git call the code under test makes there itself -- not through :func:`run` -- (a ship
+    marker's claim commit, ``tools/quill/_git.claim``) is made alike on every machine."""
+    origin = work.parent / f"{work.name}-origin.git"
+    run(work.parent, "init", "--quiet", "--bare", str(origin))
+    run(work, "remote", "add", "origin", str(origin))
+    for setting in ISOLATED[1::2]:
+        run(work, "config", *setting.split("=", 1))
+    run(work, "push", "--quiet", "origin", f"{base}:refs/heads/dev", f"{base}:refs/heads/main")
+    run(work, "fetch", "--quiet", "origin", f"+refs/heads/dev:{tracking(DEV)}",
+        f"+refs/heads/main:{tracking(MAIN)}")
 
 
 def point_dev(root: Path, sha: str) -> None:

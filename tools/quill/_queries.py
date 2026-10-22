@@ -9,9 +9,9 @@ lookup, less its board items, by ``test__tracker_card_reader.py``).
 
 Split out of :mod:`_tracker`, which sends them and reads their answers, at X-cx L9d's
 card-only reader, whose change would otherwise take that module past the 1,000 lines
-``too-many-lines`` allows.  The lookups of cards and claims by number compose these fields
-there, and the board's writes stay there beside :meth:`_tracker.Board._write`, the one
-door they are sent through.
+``too-many-lines`` allows.  The lookups of cards by number compose these fields there,
+and the board's writes stay there beside :meth:`_tracker.Board._write`, the one door they
+are sent through.
 """
 from __future__ import annotations
 

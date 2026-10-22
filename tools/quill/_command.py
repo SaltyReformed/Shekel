@@ -1,5 +1,5 @@
-"""What every ``quill`` command shares: its refusal, its reads of the tracker and of git, and
-how it names a card.
+"""What every ``quill`` command shares: its refusal, its reads of the tracker, and how it
+names a card.  What a command reads of git is :func:`_git.read`, once.
 
 Split out of the command module at X-cx L2's leaf C, whose change would otherwise take
 that module past the 1,000 lines ``too-many-lines`` allows (it has been ``quill.py``
@@ -12,9 +12,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Protocol
 
-from tools.ci import trailers
 from tools.ci.arcs import ARCS
-from tools.quill import _git
 from tools.quill._state import filing_unfinished, missing
 from tools.quill._tracker import BareCard, Card, Tracker, TrackerError
 
@@ -57,14 +55,6 @@ def _one(tracker: Tracker, number: int) -> Card:
     if number not in found:
         raise Refused(f"plan#{number} does not exist")
     return found[number]
-
-
-def _shipped(root: Path) -> tuple[trailers.History, dict, tuple[trailers.Trailer, ...]]:
-    """``dev``'s card trailers, fetched fresh; the cards they say shipped; the stray
-    ``Reopens:`` trailers (R-BAL181)."""
-    _git.fetch(root)
-    found = trailers.history(root)
-    return (found, *trailers.shipped(root, found))
 
 
 def _read(path: str) -> str:

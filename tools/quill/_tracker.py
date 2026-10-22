@@ -1,4 +1,4 @@
-"""The tracker's cards, board order and claims, read and written by quill.
+"""The tracker's cards and board order, read and written by quill.
 
 Every card write goes through quill's GitHub App (ruling
 ``balance:R-BAL170``), a separate identity from the developer's login, so a
@@ -8,17 +8,11 @@ module is the only place quill speaks to the tracker -- the daily backup
 walk of a connection, :func:`_github.paged` -- and it decides nothing about the plan
 (``_state`` does), it only reads and writes.
 
+**No claim is the tracker's**: since the ship marker (ruling ``balance:R-BAL359``) a
+claim is the code repository's branch ``card/N``, read and written by ``_git``.
+
 **What each read can see, measured on the tracker 2026-10-04:**
 
-- A claim is the git reference ``refs/claims/<card>``.  REST
-  ``git/matching-refs/claims/`` lists claims; GraphQL ``refs()`` lists NONE of
-  them, but GraphQL reads a claim's commit by its id.  So two calls read every
-  claim, whatever their number.
-- A claim's commit is one the App makes with no parent and the default
-  branch's tree, whose message names the branch that will ship the card; its
-  author date is when the card was claimed.  GitHub refuses to create a
-  reference that exists (422 "Reference already exists"), so exactly one
-  session wins a claim -- the listing is display, the refusal is the lock.
 - A card's REST id (what the sub-issue and blocked-by calls take) is its
   GraphQL ``fullDatabaseId``.
 - The board's order is ``items(orderBy: {field: POSITION})``, and it LAGS a
@@ -69,7 +63,6 @@ reader that reads each card with its board item, a :class:`Card`.
 """
 from __future__ import annotations
 
-import re
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -97,7 +90,6 @@ from tools.quill.setup_tracker import (
     linked,
 )
 
-CLAIM_PREFIX = "refs/claims/"
 #: How long a write waits for the board to show what it placed: three times
 #: the ~20 seconds L1 measured, so a slow read is waited out and a stuck one
 #: is reported rather than waited on forever.
@@ -129,10 +121,6 @@ BOARD_AFTER = ("mutation($p: ID!, $i: ID!, $a: ID!) { updateProjectV2ItemPositio
 
 class TrackerError(RuntimeError):
     """The tracker refused a write or answered something quill cannot read."""
-
-
-class ClaimTaken(TrackerError):
-    """Another session already holds the claim (GitHub refused to create its reference)."""
 
 
 @dataclass(frozen=True)
@@ -205,16 +193,6 @@ class Card(BareCard):
     board does not hold it."""
 
     board_item: str | None
-
-
-@dataclass(frozen=True)
-class Claim:
-    """Who is building a card: the branch that will ship it, and since when."""
-
-    card: int
-    branch: str | None
-    made: str
-    sha: str
 
 
 @dataclass(frozen=True)
@@ -418,14 +396,6 @@ def card_from(node: dict, place: Place, board_id: str | None, app_login: str) ->
     return Card(**facts, board_item=items[0] if items else None)
 
 
-_CLAIM_BRANCH = re.compile(r"^branch: (.+)$", re.MULTILINE)
-
-
-def claim_message(card: int, branch: str) -> str:
-    """The message of a claim's commit: the card, and the branch that will ship it."""
-    return f"claim plan#{card}\n\nbranch: {branch}\n"
-
-
 def numbering(listed: Iterable[int], state_of: Callable[[int], NumberState]) -> Numbering:
     """Read by number every number from #1 that a listing of every card lacks, up to the
     first one above the highest listed that answers 404.
@@ -622,21 +592,20 @@ class CardReader:
 
 
 class Tracker(CardReader):  # pylint: disable=too-many-public-methods
-    """A tracker as the App sees it: its cards, each with its board item, its claims, and
-    its :class:`Board`.
+    """A tracker as the App sees it: its cards, each with its board item, and its
+    :class:`Board`.
 
-    Pylint: ``too-many-public-methods`` (30/20) -- ``connect``, then **one
+    Pylint: ``too-many-public-methods`` (26/20) -- ``connect``, then **one
     method per read or write quill makes of the tracker** (most one
-    request, ``claim`` four; this module is the one place it speaks to
-    GitHub), the board's own writes already apart in :class:`Board`.  Three
-    of them, the filing mark's read and its removal (R-BAL202) and a leaf's
-    unlink (R-BAL205), took it past 20; ``show``'s read of a card's comments
-    is the fourth; X-cx's migration (L7) reads every card whole and asks GitHub
-    what a number is, the fifth and sixth, and reads and makes milestones and
-    closes a ruling with its mark's removal in one write, the seventh to ninth;
-    its grade (R-BAL355) renders a card's Markdown as GitHub does here, the tenth.
-    The claims' three (``claims``, ``claim``, ``release``: git references, not
-    cards) could stand apart the same way; that split is not this change's.
+    request; this module is the one place it speaks to GitHub), the board's
+    own writes already apart in :class:`Board`.  The filing mark's read and its
+    removal (R-BAL202), a leaf's unlink (R-BAL205), ``show``'s read of a card's
+    comments, X-cx's migration's (L7) whole-card read, its question of what a
+    number is, its read and make of milestones and its close of a ruling with
+    its mark's removal in one write, and its grade's (R-BAL355) render of a
+    card's Markdown as GitHub does here took it past 20.  The claims' three
+    reads and writes and the read of a commit's pull requests left it at X-cx's
+    M1: a claim is a branch of the code repository since R-BAL359 (``_git``).
 
     ``github`` is any object with :class:`_github.GitHub`'s ``rest``,
     ``graphql`` and ``graphql_lookup``.  The tracker's :class:`setup_tracker.Place`
@@ -769,32 +738,6 @@ class Tracker(CardReader):  # pylint: disable=too-many-public-methods
         return self.github.rest_text("POST", "/markdown", {
             "text": text, "mode": "gfm", "context": self.place.full_name})
 
-    def claims(self) -> dict[int, Claim]:
-        """Every claim, by card: one REST listing, then one read of their commits."""
-        refs = self.github.rest("GET", f"{self.place.path}/git/matching-refs/claims/") or []
-        shas = {}
-        for ref in refs:
-            number = ref["ref"].removeprefix(CLAIM_PREFIX)
-            if number.isdigit():
-                shas[int(number)] = ref["object"]["sha"]
-        if not shas:
-            return {}
-        fields = " ".join(
-            f'c{n}: object(oid: "{sha}") {{ ... on Commit {{ message authoredDate }} }}'
-            for n, sha in shas.items()
-        )
-        answer = self.github.graphql_lookup(
-            f'query {{ repository(owner: "{self.place.owner}", name: "{self.place.name}") '
-            f'{{ {fields} }} }}'
-        )["repository"]
-        claims = {}
-        for number, sha in shas.items():
-            commit = answer[f"c{number}"] or {}
-            branch = _CLAIM_BRANCH.search(commit.get("message") or "")
-            claims[number] = Claim(number, branch.group(1).strip() if branch else None,
-                                   commit.get("authoredDate") or "", sha)
-        return claims
-
     def edits(self, number: int) -> tuple[str, list[Edit]]:
         """A card's body as it stands and every saved version of it, oldest first.
 
@@ -815,18 +758,6 @@ class Tracker(CardReader):  # pylint: disable=too-many-public-methods
         """Every comment on a card, oldest first, read page by page.  A number nobody
         filed is GitHub's NOT_FOUND error, which :meth:`_github.GitHub.graphql` raises."""
         return [_comment(node) for node in comment_nodes(self.github, self.place, number)]
-
-    def merged_into_dev(self, repository: str, sha: str) -> set[str]:
-        """The head branches of the merged pull requests into ``dev`` that carried
-        ``sha`` -- the branch that SHIPPED it, which git alone does not record.
-
-        ``repository`` is the code repository (``owner/name``); it is public, so
-        the App reads its pull requests (measured 2026-10-04; and through a token
-        narrowed to the tracker, 2026-10-09 08:00 EDT, X-cx L7 A2).
-        """
-        pulls = self.github.rest("GET", f"/repos/{repository}/commits/{sha}/pulls")
-        return {pull["head"]["ref"] for pull in pulls
-                if pull.get("merged_at") and pull["base"]["ref"] == "dev"}
 
     def find_titles(self, text: str) -> list[tuple[int, str]]:
         """Cards whose title holds ``text`` (GitHub's search: words, not characters), read
@@ -978,23 +909,3 @@ class Tracker(CardReader):  # pylint: disable=too-many-public-methods
         self.github.rest(
             "DELETE", f"{self.place.path}/issues/{number}/dependencies/blocked_by/{blocker.id}"
         )
-
-    def claim(self, number: int, branch: str) -> Claim:
-        """Claim a card for ``branch``; :class:`ClaimTaken` when another session holds it."""
-        main = self.github.rest("GET", f"{self.place.path}/git/ref/heads/main")["object"]["sha"]
-        tree = self.github.rest("GET", f"{self.place.path}/git/commits/{main}")["tree"]["sha"]
-        commit = self.github.rest("POST", f"{self.place.path}/git/commits", {
-            "message": claim_message(number, branch), "tree": tree, "parents": [],
-        })
-        try:
-            self.github.rest("POST", f"{self.place.path}/git/refs",
-                             {"ref": f"{CLAIM_PREFIX}{number}", "sha": commit["sha"]})
-        except GitHubError as error:
-            if error.status == 422 and "Reference already exists" in str(error):
-                raise ClaimTaken(f"plan#{number} is already claimed") from error
-            raise
-        return Claim(number, branch, commit["author"]["date"], commit["sha"])
-
-    def release(self, number: int) -> None:
-        """Delete a card's claim."""
-        self.github.rest("DELETE", f"{self.place.path}/git/refs/claims/{number}")

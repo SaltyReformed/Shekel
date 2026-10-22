@@ -207,10 +207,12 @@ def read(root: Path) -> Reads:
 
 
 def history(root: Path, number: int) -> list[tuple[str, str, str]]:
-    """Each commit on ``dev`` or ``main`` that added (``A``), changed (``M``) or deleted
-    (``D``) card ``number``'s marker, newest first: ``(status, sha, subject)``."""
-    out = git(root, "log", "--format=%x01%H%x02%s", "--name-status", tracking(DEV),
-              tracking(MAIN), "--", marker(number))
+    """Each commit on ``dev`` or ``main`` that added (``A``), changed (``M``), deleted
+    (``D``) or changed the type of (``T``) card ``number``'s marker, newest first: ``(status,
+    sha, subject)``.  Read with no rename detection, which a user's ``diff.renames`` would
+    otherwise turn on, so a marker moved to another name reads as deleted, never ``R``."""
+    out = git(root, "log", "--format=%x01%H%x02%s", "--name-status", "--no-renames",
+              tracking(DEV), tracking(MAIN), "--", marker(number))
     found = []
     for record in filter(None, out.split("\x01")):
         head, _, changes = record.partition("\n")
@@ -218,6 +220,18 @@ def history(root: Path, number: int) -> list[tuple[str, str, str]]:
         found += [(line.split("\t")[0], sha, subject)
                   for line in changes.splitlines() if line.strip()]
     return found
+
+
+def ever_marked(root: Path) -> frozenset[int]:
+    """Every card whose marker a commit on ``dev`` or ``main`` ever added, changed or
+    deleted: each card git ever said shipped.  A card the tool closed as shipped was read
+    shipped through such a commit (``dev`` and ``main`` are never rewritten), so this finds
+    every one a revert has since unshipped, which ``sync`` reopens; what shipped NOW is
+    :func:`shipped`'s answer.  Read with no rename detection (:func:`history`)."""
+    out = git(root, "log", "--format=", "--name-only", "--no-renames", tracking(DEV),
+              tracking(MAIN), "--", MARKERS)
+    names = {line.removeprefix(f"{MARKERS}/") for line in out.splitlines() if line.strip()}
+    return frozenset(int(name) for name in names if _NUMBER.fullmatch(name))
 
 
 def has_branch(root: Path, name: str) -> bool:
@@ -317,31 +331,6 @@ def release(root: Path, number: int, tip: str, when: datetime) -> str:
                        f"since it was read, so its newer work is kept; its tip as read is on "
                        f"{kept}")
     return kept
-
-
-def current_branch(root: Path) -> str | None:
-    """The branch checked out in ``root``; None when HEAD is detached."""
-    done = run(root, "symbolic-ref", "--quiet", "--short", "HEAD")
-    if done.returncode not in (0, 1):
-        raise GitError(f"git symbolic-ref HEAD in {root}: {done.stderr.strip()}")
-    return done.stdout.strip() if done.returncode == 0 else None
-
-
-def pushed(root: Path, branch: str) -> bool:
-    """Whether ``origin`` holds ``branch`` (asked of ``origin``, not the last fetch)."""
-    done = run(root, "ls-remote", "--exit-code", "--heads", "origin", f"refs/heads/{branch}")
-    if done.returncode not in (0, 2):
-        raise GitError(f"git ls-remote origin {branch}: {done.stderr.strip()}")
-    return done.returncode == 0
-
-
-def origin_repository(root: Path) -> str:
-    """``owner/name`` of the GitHub repository ``origin`` points at."""
-    url = git(root, "remote", "get-url", "origin").strip()
-    found = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url)
-    if not found:
-        raise GitError(f"origin is not a GitHub repository: {url}")
-    return found.group(1)
 
 
 def author_date(root: Path, ref: str) -> str:

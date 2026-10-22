@@ -1,43 +1,68 @@
 """The ``quill`` command's reads and decisions -- next, claim, release, show, block, move,
 drop, sync, spec-history and spec-revert -- over :class:`_fake.FakeTracker` and a
-throwaway git repository (the ``code`` fixture, ``conftest.py``).  ``file`` has its own
-module, ``test_quill_file.py``.  Nothing here calls GitHub.
+throwaway git repository with a real bare ``origin`` (the ``code`` fixture,
+``conftest.py``), where every ship marker and claim (ruling ``balance:R-BAL359``) is
+written and read as git writes and reads it.  ``file`` has its own module,
+``test_quill_file.py``.  Nothing here calls GitHub.
 """
 from __future__ import annotations
 
+import re
 from functools import partial
 
 import pytest
 import requests
 
 from tools.ci.gitcmd import GitError
-from tools.ci.scratch import point_dev
+from tools.ci.scratch import commit, commit_files, point_dev
 from tools.ci.scratch import run as _run
+from tools.ci.trailers import DEV, tracking
 from tools.quill import _git, _github, _tracker
 from tools.quill import quill
-from tools.quill._fake import FakeTracker, run, ship
+from tools.quill._fake import FakeTracker, claim, run, ship, unship
 from tools.quill._github import GitHubError
-from tools.quill._tracker import Child, Claim, Comment, Edit, OutsideLink
+from tools.quill._tracker import Child, Comment, Edit, OutsideLink
 from tools.quill.setup_tracker import FILING
 
 
 # -- next ----------------------------------------------------------------------------------
 
-def test_next_names_the_first_workable_step_and_what_the_order_cannot_place(code, capsys):
+def test_next_names_the_first_workable_step_and_what_the_order_cannot_place(code, capsys,
+                                                                            monkeypatch):
     """Board order; a step not on the board and a stale claim are named, never skipped."""
     tracker = FakeTracker()
     tracker.add(1)
     tracker.add(2)
     tracker.add(3, on_board=False)
     tracker.add(4)
-    tracker.held[1] = Claim(1, "feat/gone", "2026-09-01T00:00:00Z", "s1")
-    ship(code, "Ships: plan#2")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-09-01T00:00:00+00:00")
+    claim(code, 1)
+    ship(code, 2)
     assert run(tracker, code, "next") == 0
     out = capsys.readouterr().out
     assert out.splitlines()[0] == "next: plan#4 [step, balance] card 4"
     assert "NOT ON THE BOARD, so in no order: plan#3" in out
-    assert "STALE CLAIM: plan#1 by 'feat/gone'" in out
+    assert "STALE CLAIM: plan#1 on card/1 " in out
     assert not tracker.writes
+
+
+def test_next_names_a_claim_idle_three_days_stale_and_no_fresh_one(code, capsys, monkeypatch):
+    """Stale is the claim branch's LAST COMMIT, not its claim: plan#2's marker says it was
+    claimed 2026-10-04, but its tip was committed now, so it is not named."""
+    tracker = FakeTracker()
+    for number in (1, 2, 3):
+        tracker.add(number)
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-09-01T00:00:00-04:00")
+    claim(code, 1)
+    monkeypatch.delenv("GIT_COMMITTER_DATE")
+    claim(code, 2)
+    assert run(tracker, code, "next") == 0
+    out = capsys.readouterr().out
+    assert out.splitlines()[0] == "next: plan#3 [step, balance] card 3"
+    assert ("STALE CLAIM: plan#1 on card/1 (claimed 2026-10-04T12:00:00Z; last commit "
+            "2026-09-01T00:00:00-04:00): no commit for more than 3 days -- `quill release "
+            "plan#1` keeps its work and frees it") in out
+    assert "plan#2" not in out
 
 
 
@@ -50,7 +75,7 @@ def test_next_reads_a_closed_blocker_and_a_containers_leaves(code, capsys):
     tracker.add(2, blocked_by=(6,))
     assert run(tracker, code, "next") == 0
     assert capsys.readouterr().out.startswith("next: plan#2 ")
-    ship(code, "Ships: plan#5")
+    ship(code, 5)
     assert run(tracker, code, "next") == 0
     assert capsys.readouterr().out.startswith("next: plan#1 ")
 
@@ -58,15 +83,48 @@ def test_next_reads_a_closed_blocker_and_a_containers_leaves(code, capsys):
 
 # -- claim, release ------------------------------------------------------------------------
 
-def test_claim_names_the_branch_checked_out_and_refuses_a_held_card(code, capsys):
-    """Exactly one session wins: the second claim is refused with the holder named."""
+def test_claim_pushes_card_n_checks_it_out_and_refuses_a_held_card(code, capsys):
+    """R-BAL359: the claim is ``card/1`` on origin, a commit on origin/dev adding
+    plan/ships/1, checked out here with no upstream (no ``branch.card/1`` section in the
+    shared configuration).  Exactly one session wins: the second claim is refused with the
+    holder named."""
     tracker = FakeTracker()
     tracker.add(1)
     assert run(tracker, code, "claim", "plan#1") == 0
-    assert tracker.held[1].branch == "feat/work"
-    assert run(tracker, code, "claim", "1", "--branch", "feat/other") == 1
-    assert "already claimed by 'feat/work'" in capsys.readouterr().err
+    sha = _git.on_origin(code)[1]
+    held = _git.read(code).claims[1]
+    assert (held.sha, held.branch) == (sha, "card/1") and held.claimed is not None
+    assert _run(code, "diff", "--name-status", f"{sha}^", sha) == "A\tplan/ships/1"
+    assert _run(code, "rev-parse", f"{sha}^") == _run(code, "rev-parse", tracking(DEV))
+    assert _run(code, "symbolic-ref", "--short", "HEAD") == "card/1"
+    assert "branch.card/1" not in _run(code, "config", "--list")
+    assert run(tracker, code, "claim", "1") == 1
+    assert "plan#1 is already claimed: card/1 (claimed " in capsys.readouterr().err
+    assert _git.on_origin(code) == {1: sha}
+    assert not tracker.writes
 
+
+def test_claim_here_builds_on_the_commit_checked_out(code):
+    """``--here``, for work already started: the claim's commit sits on HEAD, not on
+    origin/dev."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    started = commit(code, "work started", parents=[_run(code, "rev-parse", "HEAD")])
+    _run(code, "update-ref", "refs/heads/feat/work", started)
+    assert run(tracker, code, "claim", "plan#1", "--here") == 0
+    sha = _git.on_origin(code)[1]
+    assert _run(code, "rev-parse", f"{sha}^") == started
+    assert _run(code, "symbolic-ref", "--short", "HEAD") == "card/1"
+
+
+def test_claim_refuses_a_card_branch_this_clone_has_already(code, capsys):
+    """The check-out would collide with it, so nothing is pushed."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    _run(code, "branch", "card/1")
+    assert run(tracker, code, "claim", "plan#1") == 1
+    assert "this clone already has a branch 'card/1'" in capsys.readouterr().err
+    assert not _git.on_origin(code)
 
 
 @pytest.mark.parametrize("fields", [
@@ -81,27 +139,26 @@ def test_claim_refuses_what_no_branch_ships(code, fields):
         tracker.add(child.number, parent=1)
     assert run(tracker, code, "claim", "plan#1") == 1
     assert not tracker.writes
+    assert not _git.on_origin(code)
 
 
 
-def test_claim_refuses_a_shared_branch(code, capsys):
-    """A claim names the branch that will ship the card, never dev or main."""
+def test_release_keeps_the_work_and_deletes_the_claim(code, capsys):
+    """Whoever made the claim: its tip is kept on ``released/1/<instant>``, ``card/1`` is
+    deleted from origin; a card with no claim is refused."""
     tracker = FakeTracker()
     tracker.add(1)
-    assert run(tracker, code, "claim", "plan#1", "--branch", "dev") == 1
-    assert "not 'dev'" in capsys.readouterr().err
-
-
-
-def test_release_deletes_only_the_claim_of_the_branch_named(code, capsys):
-    """Releasing another branch's claim takes naming that branch."""
-    tracker = FakeTracker()
-    tracker.add(1)
-    tracker.held[1] = Claim(1, "feat/other", "2026-10-04T00:00:00Z", "s")
+    sha = claim(code, 1)
+    assert run(tracker, code, "release", "plan#1") == 0
+    assert "released plan#1, card/1 (claimed 2026-10-04T12:00:00Z; last commit " in (
+        capsys.readouterr().out)
+    assert not _git.on_origin(code)
+    [kept] = _run(code, "ls-remote", "origin", "refs/heads/released/*").splitlines()
+    assert kept.split("\t")[0] == sha
+    assert re.fullmatch(r"refs/heads/released/1/[0-9]{8}T[0-9]{6}Z", kept.split("\t")[1])
     assert run(tracker, code, "release", "plan#1") == 1
-    assert "pass --branch feat/other" in capsys.readouterr().err
-    assert run(tracker, code, "release", "plan#1", "--branch", "feat/other") == 0
-    assert tracker.writes == [("release", 1)]
+    assert "plan#1 is not claimed" in capsys.readouterr().err
+    assert not tracker.writes
 
 
 
@@ -147,20 +204,22 @@ def test_drop_says_why_and_closes_as_not_planned(code):
 
 # -- sync ----------------------------------------------------------------------------------
 
-def test_sync_closes_and_releases_what_its_claimed_branch_shipped(code, capsys):
-    """And reports, without closing, a card shipped from a branch its claim does not name."""
+def test_sync_closes_shipped_work_with_no_claim_and_reports_a_persons_reopen(code, capsys):
+    """R-BAL359: the marker is git's answer, so open work it ships is closed with no claim
+    behind it; one a person reopened is reported and left as it is; and a revert deleting
+    the marker reopens the tool's close."""
     tracker = FakeTracker()
     tracker.add(1)
-    tracker.add(2)
-    tracker.held[1] = Claim(1, "feat/a", "2026-10-04T00:00:00Z", "s1")
-    tracker.held[2] = Claim(2, "feat/b", "2026-10-04T00:00:00Z", "s2")
-    sha = ship(code, "Ships: plan#1", "Ships: plan#2")
-    tracker.pulls[sha] = {"feat/a"}
+    tracker.add(2, touched_by_hand=True)
+    ship(code, 1, 2)
     assert run(tracker, code, "sync") == 1
-    assert ("close", 1, "completed") in tracker.writes and ("release", 1) in tracker.writes
-    assert not [w for w in tracker.writes if w[1] == 2]
-    assert "plan#2 shipped in git from ['feat/a'], but its claim names 'feat/b'" in (
-        capsys.readouterr().out)
+    assert tracker.writes == [("close", 1, "completed")]
+    assert ("REPORT: plan#2 shipped in git (plan/ships/2 is on origin/dev or origin/main) but "
+            "a person reopened it: close it by hand, or revert the change that shipped it"
+            ) in capsys.readouterr().out
+    unship(code, 1)
+    assert run(tracker, code, "sync") == 1
+    assert tracker.writes[1:] == [("reopen", 1)]
 
 
 
@@ -168,37 +227,40 @@ def test_sync_dry_run_writes_nothing(code, capsys):
     """``--dry-run`` says what it would do."""
     tracker = FakeTracker()
     tracker.add(1)
-    tracker.held[1] = Claim(1, "feat/a", "2026-10-04T00:00:00Z", "s1")
-    tracker.pulls[ship(code, "Ships: plan#1")] = {"feat/a"}
+    ship(code, 1)
     assert run(tracker, code, "sync", "--dry-run") == 0
     assert not tracker.writes
     assert "would close plan#1" in capsys.readouterr().out
 
 
 
-def test_sync_reopens_what_a_reopens_commit_takes_back(code):
+def test_sync_reopens_what_a_revert_of_its_marker_takes_back(code):
     """The tool's own COMPLETED close follows git."""
     tracker = FakeTracker()
     tracker.add(1, is_open=False, state_reason="COMPLETED", closed_by_tool=True)
-    ship(code, "Ships: plan#1")
-    ship(code, "Reopens: plan#1")
+    ship(code, 1)
+    unship(code, 1)
     assert run(tracker, code, "sync") == 0
     assert tracker.writes == [("reopen", 1)]
 
 
 
-def test_sync_prints_a_trailer_naming_no_card_and_a_malformed_one_as_history(code, capsys):
+def test_sync_prints_a_marker_naming_no_card_and_a_stray_entry_as_history(code, capsys):
     """BAL-544's class: a number nobody filed is reported, never silently passed -- and, as
-    history no tracker write can change, it never fails sync (R-BAL184)."""
+    history no tracker write can change, it never fails sync (R-BAL184); so is an entry
+    under plan/ships/ that is no card's marker."""
     tracker = FakeTracker()
-    ship(code, "Ships: plan#77")
+    ship(code, 77)
     assert run(tracker, code, "sync") == 0
-    assert ("HISTORY: a trailer on origin/dev names plan#77, which does not exist"
-            in capsys.readouterr().out)
-    ship(code, "Ships: plan #8")
+    assert ("HISTORY: the marker plan/ships/77 on origin/dev or origin/main names plan#77, "
+            "which does not exist" in capsys.readouterr().out)
+    stray = commit_files(code, _run(code, "rev-parse", tracking(DEV)), "notes",
+                         {"plan/ships/notes": "x\n"})
+    _run(code, "push", "--quiet", "origin", f"{stray}:refs/heads/dev")
     assert run(tracker, code, "sync") == 0
     out = capsys.readouterr().out
-    assert "HISTORY: " in out and "'plan #8' is not plan#<number>" in out
+    assert ("HISTORY: plan/ships/notes on origin/dev or origin/main is no card's marker"
+            in out)
     assert "REPORT" not in out
 
 
@@ -274,6 +336,32 @@ def test_show_resolves_an_old_id_by_its_title_alias(code, capsys):
     assert "names 2 cards" in capsys.readouterr().err
     assert run(tracker, code, "show", "bank_import:R-GU") == 0
     assert capsys.readouterr().out.startswith("plan#2 [ruling, bank_import] [R-GU] two")
+
+
+def test_show_prints_the_claim_and_the_markers_history(code, capsys):
+    """R-BAL359: the claim's branch, when it was claimed and last committed; whether git says
+    the card shipped; each commit on dev or main that added or deleted its marker, newest
+    first, or that none did."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    tracker.add(2)
+    claim(code, 1)
+    assert run(tracker, code, "show", "plan#1") == 0
+    out = capsys.readouterr().out
+    assert "\n  claim: card/1 (claimed 2026-10-04T12:00:00Z; last commit " in out
+    assert out.endswith("\nno commit on origin/dev or origin/main adds, changes or deletes "
+                        "plan/ships/1\n")
+    shipped = ship(code, 2)
+    assert run(tracker, code, "show", "plan#2") == 0
+    out = capsys.readouterr().out
+    assert "\n  shipped (git): yes\n" in out and "\n  claim: none\n" in out
+    assert out.endswith(f"\n\nadded plan/ships/2: {shipped[:12]} ship\n")
+    reverted = unship(code, 2)
+    assert run(tracker, code, "show", "plan#2") == 0
+    out = capsys.readouterr().out
+    assert "\n  shipped (git): no\n" in out
+    assert out.endswith(f"\n\ndeleted plan/ships/2: {reverted[:12]} Revert ship\n"
+                        f"added plan/ships/2: {shipped[:12]} ship\n")
 
 
 def test_show_names_each_links_title_and_prints_the_comments_after_the_text(code, capsys,
@@ -370,18 +458,20 @@ def test_a_github_failure_exits_2(code, capsys, monkeypatch):
 
 # -- the review of checkpoint 2 ------------------------------------------------------------
 
-def test_a_ships_naming_a_container_closes_nothing_and_unblocks_nothing(code, capsys):
+def test_a_marker_naming_a_container_closes_nothing_and_unblocks_nothing(code, capsys):
     """Review H2: a mistyped number closed the container with no claim and unblocked the
-    step waiting on it while its leaf was open."""
+    step waiting on it while its leaf was open; a marker names a container when the step
+    was split after it was claimed."""
     tracker = FakeTracker()
     tracker.add(1, children=(Child(2, "step", True),), on_board=False)
     tracker.add(2, parent=1)
     tracker.add(3, blocked_by=(1,))
-    tracker.held[2] = Claim(2, "feat/two", "2026-10-04T12:00:00Z", "s")
-    ship(code, "Ships: plan#1")
+    claim(code, 2)
+    ship(code, 1)
     assert run(tracker, code, "sync") == 0
     assert not tracker.writes
-    assert "HISTORY: a Ships trailer names plan#1, a container" in capsys.readouterr().out
+    assert ("HISTORY: the marker plan/ships/1 names plan#1, a container, which no change "
+            "ships") in capsys.readouterr().out
     assert run(tracker, code, "next") == 0
     assert capsys.readouterr().out.startswith("next: nothing")
 
@@ -472,82 +562,24 @@ def test_corrupt_app_credentials_exit_2_not_a_traceback(code, capsys, monkeypatc
     assert said in capsys.readouterr().err
 
 
-def test_a_claim_whose_branch_cannot_be_read_is_released_by_saying_so(code, capsys):
-    """Review L1: next printed ``--branch None``, and no release could match it."""
+def test_a_claim_refused_by_a_branch_pushed_by_hand_names_it(code, capsys, monkeypatch):
+    """Leaf C3, on the ship marker: a ``card/N`` someone pushed by hand holds no marker, so
+    the refusal says when it was claimed is unknown, and names its last commit, as every
+    other line names a claim."""
     tracker = FakeTracker()
     tracker.add(1)
-    tracker.add(2)
-    tracker.held[1] = Claim(1, None, "", "s1")
-    tracker.held[2] = Claim(2, "feat/x", "2026-10-04T11:00:00Z", "s2")
-    assert run(tracker, code, "next") == 0
-    out = capsys.readouterr().out
-    assert "`quill release plan#1 --unreadable`" in out and "--branch None" not in out
-    assert run(tracker, code, "release", "plan#1", "--branch", "feat/work") == 1
-    assert "pass --unreadable" in capsys.readouterr().err
-    assert run(tracker, code, "release", "plan#2", "--unreadable") == 1
-    assert run(tracker, code, "release", "plan#1", "--unreadable") == 0
-    assert tracker.writes == [("release", 1)]
-
-
-def test_a_claim_refused_by_one_whose_branch_cannot_be_read_says_so(code, capsys):
-    """Leaf C3: the refusal named such a holder 'None since ' (no branch, no date); it names
-    it as every other line does."""
-    tracker = FakeTracker()
-    tracker.add(1)
-    tracker.held[1] = Claim(1, None, "", "s1")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-10-05T08:00:00-04:00")
+    by_hand = commit(code, "by hand", parents=[_run(code, "rev-parse", tracking(DEV))])
+    _run(code, "push", "--quiet", "origin", f"{by_hand}:refs/heads/card/1")
     assert run(tracker, code, "claim", "plan#1") == 1
-    assert capsys.readouterr().err == ("refused: plan#1 is already claimed by a branch that "
-                                       "cannot be read since ?\n")
-
-
-
-def test_sync_and_show_print_a_stray_reopens_and_act_on_neither(code, capsys):
-    """R-BAL181 and R-BAL184 (review M2: both prints survived their deletion)."""
-    tracker = FakeTracker()
-    tracker.add(1)
-    ship(code, "Reopens: plan#1")
-    assert run(tracker, code, "sync") == 0
-    out = capsys.readouterr().out
-    assert "HISTORY: " in out and "'Reopens: plan#1' cancels no Ships" in out
-    assert run(tracker, code, "show", "plan#1") == 0
-    out = capsys.readouterr().out
-    assert "STRAY: " in out and "'Reopens: plan#1' cancels no Ships" in out
-    assert not tracker.writes
-
-
-def test_a_stray_beside_a_reopens_that_cancels_is_still_printed(code, capsys):
-    """BAL-608: one commit reopens plan#1, which shipped, and plan#2, which never did; the
-    first cancels plan#1's ship, and sync and show still print the second as a stray."""
-    tracker = FakeTracker()
-    tracker.add(1, is_open=False, state_reason="COMPLETED", closed_by_tool=True)
-    tracker.add(2)
-    ship(code, "Ships: plan#1")
-    ship(code, "Reopens: plan#1", "Reopens: plan#2")
-    assert run(tracker, code, "sync") == 0
-    out = capsys.readouterr().out
-    assert "'Reopens: plan#2' cancels no Ships" in out and "'Reopens: plan#1'" not in out
-    assert tracker.writes == [("reopen", 1)]
-    assert run(tracker, code, "show", "plan#2") == 0
-    assert "STRAY: " in capsys.readouterr().out
+    assert capsys.readouterr().err == (
+        "refused: plan#1 is already claimed: card/1 (its tip holds no plan/ships/1, so when it "
+        "was claimed is unknown; last commit 2026-10-05T08:00:00-04:00)\n")
+    assert _git.on_origin(code) == {1: by_hand}
 
 
 
 # -- the review of checkpoint 3 ------------------------------------------------------------
-
-def test_a_detached_head_releases_no_claim_without_naming_it(code, monkeypatch, capsys):
-    """Review cp3 L-a: with no branch checked out, a claim whose branch cannot be read matched
-    (None == None) and was released without --unreadable."""
-    tracker = FakeTracker()
-    tracker.add(1)
-    tracker.held[1] = Claim(1, None, "", "s1")
-    monkeypatch.setattr(_git, "current_branch", lambda _root: None)
-    assert run(tracker, code, "release", "plan#1") == 1
-    err = capsys.readouterr().err
-    assert "HEAD is detached" in err and "pass --unreadable" in err
-    assert not tracker.writes
-    assert run(tracker, code, "release", "plan#1", "--unreadable") == 0
-
-
 
 def test_a_container_is_never_moved_back_into_the_order(code, capsys):
     """Review cp3 L-f: ``move`` put a split step back on the board, where its leaves stand."""
@@ -697,6 +729,7 @@ def test_a_card_linked_outside_the_tracker_cannot_be_claimed(code, capsys):
     assert run(tracker, code, "claim", "plan#1") == 1
     assert "outside the tracker" in capsys.readouterr().err
     assert not tracker.writes
+    assert not _git.on_origin(code)
 
 
 def test_sync_dry_run_writes_no_close_as_not_planned(code, capsys):
@@ -713,28 +746,30 @@ def test_dropping_a_claimed_card_names_the_claim_it_leaves(code, capsys):
     """A drop writes no claim; the claim it leaves is named, with the command that releases it."""
     tracker = FakeTracker()
     tracker.add(1)
-    tracker.held[1] = Claim(1, "feat/one", "2026-10-04T12:00:00Z", "s1")
+    sha = claim(code, 1)
     assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
-    assert ("its claim by 'feat/one' stays: `quill release plan#1 --branch feat/one`"
-            in capsys.readouterr().out)
-    assert 1 in tracker.held
+    out = capsys.readouterr().out
+    assert "  its claim stays, card/1 (claimed 2026-10-04T12:00:00Z; last commit " in out
+    assert "): `quill release plan#1` keeps its work and frees it" in out
+    assert _git.on_origin(code) == {1: sha}
 
 
 def test_dropping_a_split_step_never_drops_a_leaf_git_shipped(code, capsys):
-    """Review cp4b L6: a leaf whose ``Ships:`` merged before sync closed it was dropped, and
+    """Review cp4b L6: a leaf whose marker merged before sync closed it was dropped, and
     no sync rule shows a shipped leaf the tool closed as not planned; git's answer wins, and
-    undoing shipped work is a ``Reopens:`` commit."""
+    undoing shipped work is a revert deleting its marker."""
     tracker = FakeTracker()
     tracker.add(1, children=(Child(2, "step", True), Child(3, "step", True)), on_board=False)
     tracker.add(2, parent=1)
     tracker.add(3, parent=1)
-    ship(code, "Ships: plan#2")
+    ship(code, 2)
     assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
     assert not [write for write in tracker.writes if write[1] == 2]
     assert ("close", 3, "not_planned") in tracker.writes
     capsys.readouterr()
     assert run(tracker, code, "drop", "plan#2", "--why", "superseded") == 1
-    assert "'Reopens: plan#2', not a drop" in capsys.readouterr().err
+    assert ("undo it by reverting the change that shipped it, which deletes plan/ships/2, not "
+            "by a drop") in capsys.readouterr().err
 
 
 class _FailOnComment:
@@ -779,11 +814,12 @@ def test_a_leaf_held_back_from_above_cannot_be_claimed(code, capsys):
     tracker.add(3, children=(Child(4, "step", True),), on_board=False, is_open=False,
                 state_reason="NOT_PLANNED", touched_by_hand=True)
     tracker.add(4, parent=3)
-    assert run(tracker, code, "claim", "plan#2", "--branch", "feat/a") == 1
+    assert run(tracker, code, "claim", "plan#2") == 1
     assert "plan#1 above it waits on saltyreformed-labs/Shekel#6" in capsys.readouterr().err
-    assert run(tracker, code, "claim", "plan#4", "--branch", "feat/b") == 1
+    assert run(tracker, code, "claim", "plan#4") == 1
     assert "plan#3 above it was dropped" in capsys.readouterr().err
     assert not tracker.writes
+    assert not _git.on_origin(code)
 
 
 def test_show_names_an_outside_parent_once(code, capsys):
@@ -816,35 +852,36 @@ def test_open_work_git_says_shipped_cannot_be_claimed(code, capsys):
     """Review cp4c L1: ``next`` never offers it; ``claim`` took it."""
     tracker = FakeTracker()
     tracker.add(1)
-    ship(code, "Ships: plan#1")
-    assert run(tracker, code, "claim", "plan#1", "--branch", "feat/again") == 1
+    ship(code, 1)
+    assert run(tracker, code, "claim", "plan#1") == 1
     assert "shipped in git" in capsys.readouterr().err
     assert not tracker.writes
+    assert not _git.on_origin(code)
 
 
 def test_dropping_a_split_step_drops_a_leaf_git_revived_whatever_its_card_shows(code, capsys):
     """Review cp4c L2 and L6: the leaves were picked by their display, so a leaf the tool
-    shows completed whose ``Reopens:`` merged was skipped, then reopened by sync and offered
-    under the dropped split step; and a shipped leaf left was not named."""
+    shows completed whose marker a revert deleted was skipped, then reopened by sync and
+    offered under the dropped split step; and a shipped leaf left was not named."""
     tracker = FakeTracker()
     tracker.add(1, children=(Child(2, "step", False), Child(3, "step", True),
                              Child(4, "step", False)), on_board=False)
     tracker.add(2, parent=1, is_open=False, state_reason="COMPLETED", closed_by_tool=True)
     tracker.add(3, parent=1)
     tracker.add(4, parent=1, is_open=False, state_reason="COMPLETED", closed_by_tool=True)
-    ship(code, "Ships: plan#2", "Ships: plan#4")
-    ship(code, "Reopens: plan#2")
+    ship(code, 2, 4)
+    unship(code, 2)
     assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
     assert ("close", 2, "not_planned") in tracker.writes
     assert "plan#4 shipped in git, so it is not dropped" in capsys.readouterr().out
     assert not [write for write in tracker.writes if write[1] == 4]
 
 
-def test_a_card_that_is_not_work_named_by_a_ships_trailer_can_still_be_dropped(code):
-    """Review cp4c P11: git's answer counts only for work; a question a mistyped ``Ships:``
-    names is still the developer's to withdraw."""
+def test_a_card_that_is_not_work_named_by_a_marker_can_still_be_dropped(code):
+    """Review cp4c P11: git's answer counts only for work; a question a marker names is
+    still the developer's to withdraw."""
     tracker = FakeTracker()
     tracker.add(1, "question")
-    ship(code, "Ships: plan#1")
+    ship(code, 1)
     assert run(tracker, code, "drop", "plan#1", "--why", "withdrawn") == 0
     assert ("close", 1, "not_planned") in tracker.writes
