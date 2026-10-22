@@ -91,6 +91,50 @@ class TestMovingATransferBetweenAccounts:
         db.session.flush()
         return account
 
+    def _entries_a_re_sync_writes_after_moving_off(self, td, vacated, endpoint):
+        """Move a settled transfer off *vacated*, then count what a re-sync writes.
+
+        The two vacated-account cases' one body: the basic transfer is
+        settled, an anchor is asserted on *vacated* AFTER the settle (the
+        destination case says why) and its corrections synced, the endpoint
+        named *endpoint* is moved to a new account, and *vacated*'s anchor
+        corrections are synced again.  That second sync writes nothing when
+        the move re-derived them, which is the oracle.
+
+        Args:
+            td: The ``transfer_data`` fixture.
+            vacated: The account the move leaves -- the basic transfer's
+                destination or its source.
+            endpoint: ``"to_account_id"`` or ``"from_account_id"``, the
+                ``update_transfer`` keyword that moves off *vacated*.
+
+        Returns:
+            The number of journal entries the second sync wrote.
+        """
+        elsewhere = self._other_savings(
+            td, name="Moved Onto", observed_on=_the_day_before_today(),
+        )
+        xfer = _create_basic_transfer(td)
+        transfer_service.settle_transfer(xfer.id, td["user"].id)
+        db.session.flush()
+        add_anchor_history(db.session, vacated, Decimal("900.00"))
+        account_posting_service.sync_account_anchor_postings(
+            vacated.id, td["scenario"].id,
+        )
+        db.session.flush()
+
+        transfer_service.update_transfer(
+            xfer.id, td["user"].id, **{endpoint: elsewhere.id},
+        )
+        db.session.flush()
+
+        before_entries = db.session.query(JournalEntry).count()
+        account_posting_service.sync_account_anchor_postings(
+            vacated.id, td["scenario"].id,
+        )
+        db.session.flush()
+        return db.session.query(JournalEntry).count() - before_entries
+
     def test_a_destination_move_writes_the_new_destination(
         self, app, transfer_data
     ):
@@ -646,7 +690,7 @@ class TestMovingATransferBetweenAccounts:
             )
 
     def test_a_vacated_ACCOUNT_s_anchor_corrections_are_re_derived(
-        self, app, db, transfer_data
+        self, app, transfer_data
     ):
         """An account the money stopped passing through re-bases its assertion.
 
@@ -663,36 +707,37 @@ class TestMovingATransferBetweenAccounts:
         """
         with app.app_context():
             td = transfer_data
-            savings = td["savings_account"]
-            elsewhere = self._other_savings(
-                td, name="Third Savings", observed_on=_the_day_before_today(),
-            )
-            xfer = _create_basic_transfer(td)
-            transfer_service.settle_transfer(
-                xfer.id, td["user"].id,
-            )
-            db.session.flush()
-            add_anchor_history(
-                db.session, savings, Decimal("900.00"),
-            )
-            account_posting_service.sync_account_anchor_postings(
-                savings.id, td["scenario"].id,
-            )
-            db.session.flush()
-
-            transfer_service.update_transfer(
-                xfer.id, td["user"].id, to_account_id=elsewhere.id,
-            )
-            db.session.flush()
-
-            before_entries = db.session.query(JournalEntry).count()
-            account_posting_service.sync_account_anchor_postings(
-                savings.id, td["scenario"].id,
-            )
-            db.session.flush()
-            assert db.session.query(JournalEntry).count() == before_entries, (
+            assert self._entries_a_re_sync_writes_after_moving_off(
+                td, td["savings_account"], "to_account_id",
+            ) == 0, (
                 "the vacated account's anchor correction still counts a "
                 "transfer that no longer passes through it"
+            )
+
+    def test_a_vacated_SOURCE_s_anchor_corrections_are_re_derived(
+        self, app, transfer_data
+    ):
+        """The case above on the other side: the account the money stopped LEAVING.
+
+        The door works out the vacated source and the vacated destination as
+        two separate expressions (``_endpoints._resolve_endpoints``), and the
+        case above moves only the destination.  So the source's expression had
+        no catcher: a mutant handing the walk the owner's id in place of the
+        vacated source's account id failed no case in the transfer, statement
+        match and reconcile families that passes without it (measured
+        2026-10-22, ruling ``balance:R-BAL356``'s site ``ID1-VACATED-SRC``).
+        That id names no account, so the walk re-derived nothing, and
+        checking's anchor correction kept counting a transfer that no longer
+        leaves it.  Both cases share one body,
+        :meth:`_entries_a_re_sync_writes_after_moving_off`.
+        """
+        with app.app_context():
+            td = transfer_data
+            assert self._entries_a_re_sync_writes_after_moving_off(
+                td, td["account"], "from_account_id",
+            ) == 0, (
+                "the vacated source's anchor correction still counts a "
+                "transfer that no longer leaves it"
             )
 
     def test_a_move_and_a_settle_in_ONE_call_settle_against_the_new_loan(

@@ -144,11 +144,22 @@ class TestThePaymentIsTheCardScreensCandidate:
     ):
         """A SETTLEMENT's ``row_id`` is a MOVEMENT id; the door reads the row through it.
 
-        **The ids are made to diverge first**, because on a fresh fixture the
-        first movement and the first row are both ``1`` and a door that
-        looked a row up by the movement's id would settle the right row by
-        coincidence -- measured: that mutation survived every case in this
-        module until this one.
+        **A Projected row is BUILT to share the payment movement's id**, the
+        state production reaches wherever the two tables' counters cross.  A
+        door that looked a row up by the movement's id then FINDS a row here,
+        where elsewhere in this package it finds none (eight other cases fail
+        on that).  Here it is asked to settle that Projected row with a settle
+        day, and the accept refuses with a ``ValidationError`` -- measured by
+        the review of ruling ``balance:R-BAL356``, with ``_moving.py`` reading
+        ``row.row_id`` where it reads ``row.transaction_id``.  The restart is
+        needed because rows and movements are numbered from ranges of their
+        own in the test database (that ruling): no row holds a movement's id
+        unless a case makes one.  Before the ranges both tables started at 1,
+        the first movement and the first row coincided, and the same mutation
+        settled the right row by coincidence -- measured: it survived every
+        case in this module until this one.  The tail reads that neither the
+        sharing row nor the three decoys (which made the ids diverge then) was
+        settled; no mutant is known to fail those reads.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -166,8 +177,15 @@ class TestThePaymentIsTheCardScreensCandidate:
             db.session.commit()
             movement = _movement(txn)
             assert movement.id != txn.id
-            sharing = db.session.get(type(txn), movement.id)
-            assert sharing is not None and sharing.id != txn.id
+            # The next row takes the movement's id (``setval`` with
+            # ``is_called`` false hands out the given value next).
+            db.session.execute(
+                db.text("SELECT setval(CAST(:seq AS regclass), :v, false)"),
+                {"seq": "budget.transactions_id_seq", "v": movement.id},
+            )
+            sharing = a_transaction(seed_user, name="Sharing", amount="10.00")
+            db.session.commit()
+            assert sharing.id == movement.id and sharing.id != txn.id
             assert sharing.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
             line = a_bank_line(
                 seed_user, an_import(seed_user, card), amount="-120.00",

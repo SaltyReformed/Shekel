@@ -11,7 +11,7 @@ No single row and no SUM of positive rows could equal one, the create door
 refused EVERY inflow by name then, and a match refuses an empty side: the two
 refusals pointed at each other and the badge could never reach zero.
 
-**What the step promises, and what each class below pins:**
+**What the step promises, and what the classes in this package's parts pin:**
 
 * an inflow becomes an ordinary row with NO CATEGORY, settled on the bank's
   day, which books to the per-owner Uncategorized ledger account;

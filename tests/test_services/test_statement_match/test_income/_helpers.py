@@ -1,4 +1,4 @@
-"""The helpers and constants every part of this package shares: the module-level helpers of
+"""The helpers and constants two or more of this package's parts read: the module-level helpers of
 ``tests/test_services/test_statement_match/test_income.py``, moved verbatim by ``tools/split``.
 """
 

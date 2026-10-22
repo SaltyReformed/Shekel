@@ -1,4 +1,4 @@
-"""The helpers and constants every part of this package shares: the module-level helpers of
+"""The helpers and constants two or more of this package's parts read: the module-level helpers of
 ``tests/test_services/test_paycheck_calculator.py``, moved verbatim by ``tools/split``.
 """
 
@@ -89,6 +89,15 @@ class FakeCalcMethod:
         self.name = name
 
 
+#: The owner of every stand-in here by default: :class:`FakeRule`'s and
+#: :class:`FakeProfile`'s.  The two must agree, because the calendar the
+#: :func:`payroll_basis` helper derives belongs to the PROFILE's owner and the
+#: engine refuses a rule resolved against another owner's schedule.  No user
+#: row has this id, which is fine: nothing here reads the owner from the
+#: database, only compares the rule's owner with the calendar's.
+_STAND_IN_OWNER = 1
+
+
 class FakeRule:
     """Minimal stand-in for a deduction's ``RecurrenceRule`` row.
 
@@ -96,11 +105,12 @@ class FakeRule:
     .recurrence_spec` reads off a row (plan step salary:R15-b), so the engine
     resolves it against the basis's calendar as it would a stored rule.
     ``user_id`` is what the row's owning arc would answer; the calendar the
-    :func:`payroll_basis` helper derives belongs to user 1.
+    :func:`payroll_basis` helper derives belongs to the profile's owner, and
+    both default to :data:`_STAND_IN_OWNER`.
     """
 
     def __init__(self, *, unit, placement, starts_on, interval_n=1,
-                 max_per_month=None, user_id=1):
+                 max_per_month=None, user_id=_STAND_IN_OWNER):
         # pylint: disable=import-outside-toplevel
         from app import ref_cache
         self.user_id = user_id
@@ -237,13 +247,17 @@ class FakeProfile:
     **It holds no pay stub**, so every paycheck here is priced by the tax
     formulas alone; pricing from a stub (plan step salary:S11-c-2c) is
     ``test_paycheck_stub_pricing.py``'s, on real rows.
+
+    **It names an owner** (``user_id``, :data:`_STAND_IN_OWNER` by default),
+    because ``payroll_basis`` derives the calendar for the profile's owner.
     """
 
     def __init__(self, pay, raises=None, lines=None,
                  created_at=None, pay_from=date(2026, 1, 2),
                  additional_income=0, additional_deductions=0,
                  extra_withholding=0, qualifying_children=0,
-                 other_dependents=0):
+                 other_dependents=0, *, user_id=_STAND_IN_OWNER):
+        self.user_id = user_id
         self.pay_entries = [FakePayEntry(pay_from, Decimal(str(pay)))]
         self.raises = raises or []
         self.lines = lines or []

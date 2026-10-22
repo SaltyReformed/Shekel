@@ -409,7 +409,13 @@ class TestTheMintedRowIsAMemberOfTheMatch:
 
         row = _minted(seed_user)[0]
         review = statement_match.review_set(a_scope(seed_user))
-        assert not [r for r in review.unmatched_rows if r.row_id == row.id]
+        # ``transaction_id``, not ``row_id``: the minted row is SETTLED, and a
+        # settled row is offered as its payment, whose ``row_id`` is the
+        # movement's.  Compared with ``row.id`` that could never match, so the
+        # assertion would hold whether or not the row came back.
+        assert not [
+            r for r in review.unmatched_rows if r.transaction_id == row.id
+        ]
 
     def test_releasing_the_match_REMOVES_the_row_it_created(
         self, app, db, seed_user,
@@ -530,5 +536,7 @@ class TestTheMintedRowIsAMemberOfTheMatch:
         assert db.session.get(Transaction, allowance.id) is not None
         # ...and the question is restored: both are matchable again.
         review = statement_match.review_set(a_scope(seed_user))
-        offered = {row.row_id for row in review.unmatched_rows}
+        # By ROW: the settle day survives the undo, so each is offered as its
+        # payment, whose ``row_id`` is the movement's.
+        offered = {row.transaction_id for row in review.unmatched_rows}
         assert {salary.id, allowance.id} <= offered

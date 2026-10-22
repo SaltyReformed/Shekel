@@ -356,7 +356,7 @@ class TestTheLineStopsBeingUnexplained:
         assert definition_id is not None
 
         statement_match.release_match(
-            seed_user["user"].id, seed_user["account"].id, recorded.match_id,
+            recorded.match_id, seed_user["user"].id, seed_user["account"].id,
         )
         db.session.commit()
 
