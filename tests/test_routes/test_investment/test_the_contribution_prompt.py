@@ -481,14 +481,26 @@ class TestContributionPrompt:
         )
 
     def test_create_transfer_idor(
-        self, auth_client, second_user, db, seed_periods_today,
+        self, auth_client, seed_user, second_user, db, seed_periods_today,
     ):
-        """POST to other user's investment account returns 404 (security)."""
+        """POST to other user's investment account returns 404 (security).
+
+        The source posted is the owner's own checking, which this door
+        accepts (``test_create_transfer_success`` posts it and is redirected),
+        so the 404 is the destination's ownership check's.  The case posted a
+        literal ``"1"``, the seeded checking's id before ruling R-BAL356.
+        Since that ruling each non-ref table's ids start in a range of their
+        own, so ``1`` names no account, and with the destination's check
+        removed the source's own lookup answered the 404.
+        """
         other_acct = _create_other_investment(second_user, db.session)
 
         resp = auth_client.post(
             f"/accounts/{other_acct.id}/investment/create-contribution-transfer",
-            data={"source_account_id": "1", "amount": "100"},
+            data={
+                "source_account_id": str(seed_user["account"].id),
+                "amount": "100",
+            },
         )
         assert resp.status_code == 404
 
