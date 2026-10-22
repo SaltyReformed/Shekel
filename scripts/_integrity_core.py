@@ -17,8 +17,9 @@ elsewhere naming "``scripts/integrity_check.py``'s DC-11" names the tool's
 check by its id, which is how the report prints it.  The move itself changed
 no check and one name: the runner lost its leading underscore, because every
 family module now calls it.  What the same step then changed in the checks
-(FK-10, the transfer twins FK-14..16, OR-03, BA-06 and DC-11's join) is
-stated at each.
+(FK-10, the transfer twins FK-14..16, OR-03 and BA-06) is stated at each;
+its change to DC-11's join went with DC-11's leg arm at plan step
+``balance:X-bi-6-4d-3``.
 """
 
 from dataclasses import dataclass, field

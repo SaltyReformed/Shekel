@@ -97,9 +97,9 @@ class TransferLeg:  # pylint: disable=too-many-public-methods
         account_id: The account this leg is on -- the parent's
             ``from_account_id`` or ``to_account_id``.
         is_income: ``True`` on the to-side (money arrives), ``False`` on the
-            from-side (money leaves).  The same split the transfer service
-            writes as the two shadows' transaction TYPES, stated here from
-            the columns that decide it rather than copied.
+            from-side (money leaves).  The split the two shadows' transaction
+            TYPES carried until plan step ``balance:X-bi-6-4d-3`` deleted
+            them, stated here from the columns that decide it.
         record: The leg's COVERING MOVEMENT
             (:class:`~app.models.transaction_entry.TransactionEntry`,
             ``covers_settlement``) when one exists: what this side's money DID,
@@ -110,11 +110,13 @@ class TransferLeg:  # pylint: disable=too-many-public-methods
             movement does not exist and never loads one (ruling **R-BAL79**
             decides the relation by the movement in SQL), while the grid's
             :func:`grid_transfer_legs` loads every leg's through
-            :func:`covering_movements_by_leg`.  Also ``None`` on the leg
-            :func:`movement_parent` gives a movement that is NOT its leg's
-            record -- through the interval, one under a DEAD shadow, or an
-            entry under a live shadow that covers no settlement -- which is
-            how the ledger writer knows to post nothing for it.
+            :func:`covering_movements_by_leg`.  :func:`movement_parent` gave
+            a leg ``None`` for a movement that was NOT its leg's record (one
+            under a DEAD shadow, or an entry under a live shadow that covered
+            no settlement), which is how the ledger writer knew to post
+            nothing for it, until plan step ``balance:X-bi-6-4d-2``: it reads
+            a movement's side link now, and a side record is always its
+            leg's record.
     """
 
     transfer: Transfer
@@ -262,10 +264,9 @@ class TransferLeg:  # pylint: disable=too-many-public-methods
         So ``status_seam.covered_cash_leg`` values a row's payment and a leg's
         through ONE producer with no shape branch (leaf ``X-bi-6-4c-1``: the
         statement register values every member by what the movement's
-        parent moves on the act's account).  Empty for a leg carrying no
-        record -- a planned one, or the leg :func:`movement_parent` gives a
-        movement under a dead shadow, which is no leg's record and is worth
-        nothing there, as it is to the fold.
+        parent moves on the act's account).  Empty for a leg holding no
+        movement (one never settled, or closed at ``$0.00``) or one whose
+        loader did not ask (:attr:`record`).
         """
         return () if self.record is None else (self.record,)
 

@@ -89,13 +89,14 @@ answered its stored column through ONE arm.  That is what made X-au-c2's
 fifteen-module reader refactor byte-identical by construction rather than by
 measurement -- before it, a Projected template-linked row priced from the SERIES
 and agreed with its column only because X-au-b measured ``$0.00`` drift.  **The
-per-kind cutovers are what stamp a relation as each bucket stops being priced,
-and TWO have run**: X-au-g-2c-2 declared every transfer SHADOW (350 rows on
-production, 2026-09-01) and **X-au-d** declared every non-override SALARY row
-(59 rows, 2026-09-02).  *The sentence this replaces still said every production
-row was OWN; it went stale at the first of those and is corrected here rather
-than at the step that made it false a second time.*  X-au-e and X-au-f are what
-remain.  A CC payback is the kind carrying NEITHER link while its
+per-kind cutovers are what stamp a relation as each bucket stops being priced**:
+X-au-g-2c-2 declared every transfer SHADOW (350 rows on production, 2026-09-01;
+plan step ``balance:X-bi-6-4d-3`` deleted the shadows), **X-au-d** every
+non-override SALARY row (59 rows, 2026-09-02), **X-au-e** the non-override
+TEMPLATE rows and **X-au-f** a generated transfer's own amount.  *The sentence
+this replaces still said every production row was OWN; it went stale at the
+first of those and is corrected here rather than at the step that made it false
+a second time.*  A CC payback is the kind carrying NEITHER link while its
 amount is derived (``credit_workflow.create_cc_payback_transaction`` copies the
 source row's figure, ``entry_credit_workflow.sync_entry_payback`` re-states it as
 the sum of the source's credit entries), so it places as OWN here and needs a
@@ -177,9 +178,9 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
     **N-224** -- so the oracle grades the OVERRIDE-MAP answer, the one every
     balance surface folds.
 
-    **It is UNWIRED as of this step.**  Nothing in ``app/`` calls it yet; plan
-    step X-au-c2 routes the readers through it, and X-au-c3 makes a settled row
-    RECORD what moved so no settled row is priced here at all.
+    **It was UNWIRED at plan step X-au-b**: nothing in ``app/`` called it
+    until plan step X-au-c2 routed the readers through it, and X-au-c3 made a
+    settled row RECORD what moved.
 
     **A caller resolving many rows should apply
     :func:`~app.utils.amount_relationships.pricing_load_options`**, re-exported
@@ -378,11 +379,13 @@ def resolve_transfer_amount(xfer, basis: AmountBasis) -> Decimal:
     basis and had no loan arm: a derive-mode payment's parent reached the series
     arm and was REFUSED by ``template_amount_service.owns_its_amount``, which
     was correct while the parent still stored a figure and unpriceable the
-    moment ``X-au-f-3`` empties that column.  The occurrence is ONE economic
+    moment the cutover emptied that column (``X-au-f-3``, absorbed into
+    ``X-au-f-2``).  The occurrence is ONE economic
     event, held as three rows until plan step ``balance:X-bi-6-4d-3`` deleted
     its two shadows (ruling **R-BAL166**) and as one since; the two legs are
     its PROJECTION, so the value's home is the parent and each leg reads it
-    (:func:`leg_amounts_by_key`).
+    through this function (the grid's :func:`leg_amounts_by_key` and the cash
+    fold's :func:`~._amounts.planned_leg_contribution` among its callers).
 
     **The OWN arm is asked FIRST, and on a loan payment that is the whole of
     R-JM.**  A transfer carrying a figure owns it whatever its template says, so
@@ -435,9 +438,9 @@ def _own_figure(amount, kind: str, row_id: int) -> Decimal:
     The refusal in it is the amount model's TOTALITY contract rather than
     defensive padding: a resolver that can answer ``None`` for a row is not
     total, and every other rule beside it raises rather than returning one.  It
-    is unreachable on today's DATA -- no row's amount column is NULL yet -- and
-    what keeps it that way is ``ck_transactions_amount_ownership`` (plan step
-    X-au-c1): a row that owns its amount must store one.  A row that reaches
+    is unreachable on the DATA -- no row that owns its amount has a NULL column
+    -- and what keeps it that way is ``ck_transactions_amount_ownership`` (plan
+    step X-au-c1): a row that owns its amount must store one.  A row that reaches
     here with no figure has that CHECK broken, and substituting a zero would
     remove real money from a balance in silence.
 
@@ -775,7 +778,9 @@ def _transfer_answer(txn, basis: AmountBasis) -> Decimal:
     CHECK and is stored with no transfer to load: the refusal below answers
     it, and the arm goes with the ``transfer_id`` column at plan step
     ``balance:X-bi-6-5``.  A leg reads its parent through
-    :func:`leg_amounts_by_key` now.
+    :func:`resolve_transfer_amount` now (the grid's :func:`leg_amounts_by_key`
+    and the cash fold's :func:`~._amounts.planned_leg_contribution` among its
+    callers).
 
     It passes the basis on rather than ignoring it, because the parent it
     delegates to can reach a live producer: a derive-mode loan payment

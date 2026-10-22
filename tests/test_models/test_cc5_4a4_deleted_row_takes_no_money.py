@@ -45,6 +45,7 @@ from app.services import transaction_service
 from tests._test_helpers import (
     add_entry,
     create_account_of_type,
+    create_settled_cash_transaction,
     create_settled_transfer,
     generate_row_of,
     make_expense_template,
@@ -261,6 +262,31 @@ class TestARowCannotBeHiddenHoldingMoney:
         """The statement passes; the COMMIT refuses, and nothing is hidden."""
         with app.app_context():
             row, _entry = _holding(seed_user, "Home Improvement")
+            _hide(row.id)
+            with refused_by_database_rule(_HIDING_REFUSED) as caught:
+                db.session.commit()
+            assert f"transaction {row.id} " in str(caught.value)
+            db.session.rollback()
+            assert (_is_hidden(row.id), _held_by(row.id)) == (False, 1)
+
+    def test_hiding_a_row_holding_its_payment_record_is_refused_at_commit(
+        self, app, db, seed_user,
+    ):
+        """The PAYMENT half: a Paid $40.00 row's covering record, not a purchase.
+
+        The account door's archive arm for a hidden row holding a payment or
+        purchase went at plan step ``balance:X-bi-6-4d-3`` on this refusal, and
+        the case above holds a purchase only.
+        """
+        with app.app_context():
+            row = create_settled_cash_transaction(
+                seed_user, db.session, seed_user["bootstrap_period"],
+                Decimal("40.00"), settled_on=_day(seed_user),
+            )
+            db.session.commit()
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=row.id, covers_settlement=True,
+            ).count() == 1
             _hide(row.id)
             with refused_by_database_rule(_HIDING_REFUSED) as caught:
                 db.session.commit()

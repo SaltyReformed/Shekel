@@ -4258,9 +4258,12 @@ def payback_row_of(db_session, seed_user, envelope, amount, purchased_on):
     is not a one-off: it carries ``credit_payback_for_id`` as its ONE
     pricing link (``ck_transactions_one_pricing_link``) and is priced by
     the row it repays, and the application has exactly one constructor for
-    it -- ``entry_credit_workflow.sync_entry_payback``, run after every
-    entry mutation, which places it in the paycheck AFTER the envelope's.
-    Four cases built a row through a one-off builder and then set the link
+    it -- ``credit_workflow.create_cc_payback_transaction``, which writes it
+    into the paycheck AFTER its source's (the one each door hands it) --
+    reached by two doors:
+    ``credit_workflow.mark_as_credit`` and the one this calls,
+    ``entry_credit_workflow.sync_entry_payback``, run after every entry
+    mutation.  Four cases built a row through a one-off builder and then set the link
     on it, which the CHECK refuses once that row carries a definition; this
     records the credit purchase through :func:`add_entry` and lets the
     producer answer.
@@ -5482,9 +5485,9 @@ def one_off_row_of(  # pylint: disable=too-many-arguments
     door wrote; the sites whose SUBJECT was the legacy shape itself -- the
     accessors' own-cell arm, the frozen flag cells -- built it by hand on
     ``legacy_link_less_row_of`` until 7d-2 retired them with the arm.  The
-    link-less rows left are a transfer's shadows and a CC payback, which
-    have builders of their own (:func:`create_transfer`,
-    :func:`payback_row_of`).
+    one link-less row shape left is a CC payback, which has a builder of
+    its own (:func:`payback_row_of`): a transfer's shadows were the other
+    until plan step ``balance:X-bi-6-4d-3`` deleted them.
 
     Two consequences follow from getting the producer's row, each the point
     rather than a cost, exactly as for :func:`generate_row_of`:
@@ -5501,12 +5504,13 @@ def one_off_row_of(  # pylint: disable=too-many-arguments
       rulings **R-BAL22** / **R-BAL25**): the paycheck's start unless
       *due_date* says otherwise, so ``idx_transactions_template_scenario_
       occurrence`` holds over it.  A fixture that wants a row on the
-      "anytime this period" shelf wants a row no definition prices -- a
-      transfer shadow (:func:`create_transfer` with no ``due_date``) or a
-      CC payback (:func:`payback_row_of`; the producer dates none) -- the
-      two undated shapes left since the cutover.  On the 2026-09-18
-      production restore it is the paybacks that are undated (31 of 31) and
-      no shadow is.
+      "anytime this period" shelf wants a row no definition prices -- a CC
+      payback (:func:`payback_row_of`; the producer dates none), the one
+      undated row shape left since the cutover and plan step
+      ``balance:X-bi-6-4d-3``, which deleted the transfer shadows (a
+      transfer with no ``due_date`` is not a row).  On the 2026-09-18
+      production restore the paybacks were undated (31 of 31) and no
+      shadow was.
 
     The row is placed PROJECTED, which is the only state the producer
     writes.  A fixture wanting a SETTLED row settles this one as the app

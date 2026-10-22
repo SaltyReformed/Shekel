@@ -38,7 +38,9 @@ refuse such a delete now (``fk_transaction_entries_transaction_id``, NO
 ACTION), so these predicates are what turn the refusal into a designed one.
 **A TRANSFER is asked the one ``transfer_legs`` question** (plan step
 ``balance:X-bi-6-4a-3``, ruling **R-BAL125**), never through its shadow
-rows, so ``X-bi-6-4d`` moves the answer in one place.
+rows, so plan step ``balance:X-bi-6-4d-2`` moved the answer in one place: a
+side's record hangs off its transfer since that step, which moved the one
+join in ``transfer_legs``.
 """
 
 from dataclasses import dataclass

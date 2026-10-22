@@ -360,8 +360,10 @@ class Transaction(
     # plan row now names a definition, and the definition states both
     # (:attr:`~app.models.transaction_template.TransactionTemplate.is_envelope`
     # and ``companion_visible``); :attr:`tracks_purchases` and
-    # :attr:`visible_to_companion` read them there.  A transfer shadow and a
-    # CC payback name no definition and answer ``False`` (ruling **R-BAL73**).
+    # :attr:`visible_to_companion` read them there.  A CC payback names no
+    # definition and answers ``False`` (ruling **R-BAL73**); a transfer shadow
+    # did too until plan step ``balance:X-bi-6-4d-3`` deleted the shadows
+    # (ruling **R-BAL166**).
     # is_override and is_deleted are provided by SoftDeleteOverridableMixin.
     transfer_id = db.Column(
         db.Integer,
@@ -396,9 +398,10 @@ class Transaction(
     # at all; a one-off's row is due on its paycheck's start unless the owner
     # states a day (ruling **R-BAL22**; the cutover at ``X-bi-7d-2`` dated
     # every bare row so).  No other rule reads a transaction's own date: a
-    # transfer shadow and a credit payback are priced through their parent,
-    # so on those the field is the owner's optional note of when the bill
-    # falls and NULL means they gave none.
+    # credit payback is priced through its parent (as a transfer shadow was
+    # until plan step ``balance:X-bi-6-4d-3`` deleted the shadows), so on one
+    # the field is the owner's optional note of when the bill falls and NULL
+    # means they gave none.
     due_date = db.Column(db.Date, nullable=True)
     # WHICH OCCURRENCE this row is -- the date the template's cadence named
     # when the recurrence engine wrote it (plan step **R17**, the first leaf of
@@ -680,8 +683,9 @@ class Transaction(
         ``False`` here while its link is set, so those sites treat it as the
         one-off it is: it hard-deletes, takes a due date, moves whole and is
         counted unrecoverable.  What the link alone still tells apart is a
-        transfer shadow or a CC payback, which read ``transfer_id`` /
-        ``credit_payback_for_id`` directly.
+        CC payback, which reads ``credit_payback_for_id`` directly (a
+        transfer shadow, read off ``transfer_id``, was the other until plan
+        step ``balance:X-bi-6-4d-3`` deleted the shadows).
 
         Reads the template relationship only when ``template_id`` is set, so a
         link-less row costs no load; the rule rides on the template's own
@@ -703,9 +707,10 @@ class Transaction(
         ``balance:X-bi-7b``, ruling **R-BAL20**): a definition with no
         recurrence rule PLACES its rows -- a grid one-off's one, a bank-born
         envelope's one per paycheck (**R-BAL24**) -- where a definition with
-        a rule GENERATES them, and a link-less row (a transfer shadow or a
-        CC payback -- the only two shapes without a definition since the
-        family's cutover at leaf 7d-2) names no definition at all.  Five
+        a rule GENERATES them, and a link-less row (a CC payback, the only
+        shape without a definition since plan step ``balance:X-bi-6-4d-3``
+        deleted the transfer shadows; the two were the only such shapes
+        from the family's cutover at leaf 7d-2) names no definition at all.  Five
         doors fork on exactly this: the popover
         edits such a row's name, category, flags and price on its
         DEFINITION (**R-BAL23**) and restates its price in place
@@ -731,10 +736,11 @@ class Transaction(
         **R-JQ**, plan step ``balance:X-bi-1``): it DERIVES and is never
         stored.  The answer is the DEFINITION's ``is_envelope`` -- the
         definition owns the setting for every row it generates or places --
-        and a row that names no definition (a transfer shadow, a CC payback)
-        answers ``False`` (ruling **R-BAL73**): since plan step
-        ``balance:X-bi-7d-2`` those are the only two link-less shapes, no
-        cell of the row's own exists to ask, and ``False`` is what every
+        and a row that names no definition (a CC payback) answers ``False``
+        (ruling **R-BAL73**): since plan step ``balance:X-bi-6-4d-3``
+        deleted the transfer shadows it is the only link-less shape (the
+        two were, from plan step ``balance:X-bi-7d-2``), no cell of the
+        row's own exists to ask, and ``False`` is what every
         such row's cell held before the cutover dropped it (0 of 385 on the
         2026-09-18 production restore).  Reads the template relationship
         only when ``template_id`` is set, so a link-less row costs no load.
@@ -757,7 +763,8 @@ class Transaction(
         :attr:`tracks_purchases`'s mirror in every respect since plan step
         ``balance:X-bi-1b`` (ruling **R-BAL19**): the answer is the
         DEFINITION's ``companion_visible``, and a row that names no
-        definition (a transfer shadow, a CC payback) answers ``False``
+        definition (a CC payback, since plan step ``balance:X-bi-6-4d-3``
+        deleted the transfer shadows) answers ``False``
         (ruling **R-BAL73**, for the reason its twin states).  Reads the
         template relationship only when ``template_id`` is set.
 
@@ -811,15 +818,18 @@ class Transaction(
         onto every settled row -- including 8 legacy transfer shadows whose
         ``paid_at`` was NULL and which took their pay period's ``start_date``.
         Those 8 were EXCLUDED from
-        ``spending_analysis.payment_timeliness_from_txns`` and are now included,
-        dated by a day nothing observed: measured on production, the four
-        expense legs report 8 days early, on time, on time and 1 day late.  The
-        balance was always computed from that same fallback day, so no balance
-        moves; what moved is a timeliness metric that used the NULL as its
-        "unknown" signal.  Narrowing the backfill instead was REJECTED -- it
-        would leave 8 settled rows undated, which the balance walk now refuses,
-        trading a soft metric for a 500 on the grid.  The resolution is plan step
-        X-f1c's edit door, which lets those 8 legacy days be corrected.
+        ``spending_analysis.payment_timeliness_from_txns`` and were included
+        from then, dated by a day nothing observed: measured on production, the
+        four expense legs reported 8 days early, on time, on time and 1 day
+        late.  The balance was always computed from that same fallback day, so
+        no balance moved; what moved is a timeliness metric that used the NULL
+        as its "unknown" signal.  Narrowing the backfill instead was REJECTED --
+        it would have left 8 settled rows undated, which the balance walk then
+        refused, trading a soft metric for a 500 on the grid.  The resolution
+        named then was plan step X-f1c's edit door, which let those 8 legacy
+        days be corrected; the 8 rows themselves went at plan step
+        ``balance:X-bi-6-4d-3``, which deleted every shadow (ruling
+        **R-BAL166**).
         """
         return days_paid_before_due(self.due_date, self.settled_on)
 

@@ -46,8 +46,9 @@ def apply_amount_ownership(rows: TransferRows, ownership) -> None:
     caller is talking about, and since plan step X-au-f it is also the row that
     decides owner-or-contract for the whole pair (ruling **R-IO**): a figure
     here is the owner's, an absent one hands the pair to the definition that
-    generated it.  Each side's leg is priced off the transfer
-    (:class:`~app.services.transfer_legs.TransferLeg` stores no figure).
+    generated it.  Each side's leg is priced off the transfer while it is
+    planned (:class:`~app.services.transfer_legs.TransferLeg` stores no
+    figure); a settled side's figure is its record's.
 
     **A twin row's ownership FOLLOWED the parent's** until plan step
     ``balance:X-bi-6-4d-3`` deleted the twins (its leaf 3b deleted the loop
@@ -141,7 +142,7 @@ def grade_amount_ownership(updates: "dict[str, object]") -> None:
             "update_transfer was given amount_ownership=None. A save that "
             "says nothing about the amount OMITS the key (ruling R-BAL11); "
             "an explicit None is a half-written statement, and applying it "
-            "would leave all three rows owning neither a figure nor a "
+            "would leave the transfer owning neither a figure nor a "
             "relation -- the state ck_transfers_amount_ownership refuses."
         )
     if ownership.figure is not None:

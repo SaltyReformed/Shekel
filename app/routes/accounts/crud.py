@@ -817,6 +817,11 @@ def hard_delete_account(account_id):
     # payment or purchase: guard 4 archived the account on a live one, and
     # the database refuses a hidden one holding one (rulings R-CC89,
     # R-CC92), so step 1's removal act and these deletes take no movement.
+    # Only a state written past the database's triggers holds one, and the
+    # two halves meet it differently: step 1 deletes a hidden transfer for
+    # good through ``delete_transfer``, whose removal act takes its record
+    # off the books first (they stay balanced), while step 2's delete of a
+    # hidden row holding one meets ``fk_transaction_entries_transaction_id``.
     for definition in definitions:
         definition_delete.permanently_delete_definition(definition)
 

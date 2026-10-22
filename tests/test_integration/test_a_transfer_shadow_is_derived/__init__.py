@@ -2,13 +2,14 @@
 
 Plan step **X-au-g-2c-2**, rulings **R-FI**, **R-IN** and **R-IO**.
 
-**Transfer Invariant 3 was MAINTAINED and is now STRUCTURAL.**  A shadow held a
-COPY of its parent's figure, and two hand-written repairs kept the copy true --
-``transfer_service._update``'s propagation and ``_restore``'s drift corrector,
-which logged a warning and rewrote the copies that got away.  A shadow declares
-``PARENT_TRANSFER`` and stores no figure at all now, so the two cannot disagree:
-``ck_transactions_amount_ownership`` refuses a shadow that holds both, and the
-value is READ rather than copied.
+**Transfer Invariant 3 was MAINTAINED, and this step made it STRUCTURAL.**  A
+shadow held a COPY of its parent's figure, and two hand-written repairs kept the
+copy true -- ``transfer_service._update``'s propagation and ``_restore``'s drift
+corrector, which logged a warning and rewrote the copies that got away.  From
+X-au-g-2c-2 until plan step balance:X-bi-6-4d-3 deleted the shadows, a shadow
+DECLARED ``PARENT_TRANSFER`` and stored no figure at all, so the two could not
+disagree: ``ck_transactions_amount_ownership`` refused a shadow that held both,
+and the value was READ rather than copied.
 
 **Ruling R-IN (developer, 2026-09-01)** is why this covers EVERY transfer
 shadow rather than loan payments alone: a loan payment's shadow IS a transfer

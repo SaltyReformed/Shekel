@@ -186,6 +186,47 @@ class TestASettledTransferRecordsBothSidesOrNeither:
         _record(xfer, seed_user)
         _commit_refused(_SETTLED_REFUSED)
 
+    @pytest.mark.parametrize("sides", [2, 1], ids=["both-sides", "one-side"])
+    def test_a_paid_transfer_holding_no_dated_record_is_refused(
+        self, app, seed_user, sides,
+    ):
+        """The state DC-11's deleted leg arm reported: settled, un-dated records, NONE dated.
+
+        Refused by the rule's un-dated clause alone (``v_undated > 0``): with
+        no dated record, ``v_dated NOT IN (0, 2)`` holds nothing, so the two
+        cases above, which each hold one dated record, cannot grade it.  The
+        status and the records arrive in one transaction (the records' INSERT).
+        """
+        del app
+        xfer = _transfer(seed_user)
+        _set_status(xfer, StatusEnum.DONE)
+        _record(xfer, seed_user, dated=False)
+        if sides == 2:
+            _record(xfer, seed_user, income=True, dated=False)
+        _commit_refused(
+            rf"transfer \d+ is settled but its sides hold 0 dated and {sides} un-dated",
+        )
+
+    def test_a_reverted_pair_set_paid_around_the_seam_is_refused(
+        self, app, seed_user,
+    ):
+        """A revert's kept records, then the status alone set Paid by SQL (its UPDATE).
+
+        ``ck_side_record_band_on_status`` carrying the transfer INTO the band
+        over two kept un-dated records: refused by the un-dated clause alone, as
+        above.
+        """
+        del app
+        xfer = _transfer(seed_user)
+        _record(xfer, seed_user, dated=False)
+        _record(xfer, seed_user, income=True, dated=False)
+        _db.session.commit()
+
+        _set_status(xfer, StatusEnum.DONE)
+        _commit_refused(
+            r"transfer \d+ is settled but its sides hold 0 dated and 2 un-dated",
+        )
+
     def test_a_paid_transfer_with_no_records_commits(self, app, seed_user):
         """CONTROL: the $0.00 close stores no record on either side."""
         del app

@@ -41,7 +41,7 @@ class TestGetPaymentHistory:
     def test_returns_empty_for_no_transfers(
         self, app, db, seed_user, seed_periods,
     ):
-        """Account with no shadow transactions returns empty list."""
+        """A loan account no transfer pays into returns an empty list."""
         with app.app_context():
             loan = _create_loan_account(seed_user)
             db.session.commit()
@@ -54,9 +54,9 @@ class TestGetPaymentHistory:
     def test_returns_income_shadows_only(
         self, app, db, seed_user, seed_periods,
     ):
-        """Transfer creates expense + income shadows; only income returned.
+        """A transfer into the loan is ONE payment, its income side's.
 
-        The expense shadow is on the checking (source) account and should
+        Its expense side is on the checking (source) account and should
         not appear in the loan account's payment history.
         """
         with app.app_context():
@@ -77,8 +77,8 @@ class TestGetPaymentHistory:
     ):
         """Regular (non-transfer) income transactions are excluded.
 
-        Only transactions with transfer_id IS NOT NULL are considered
-        payment history.
+        The feed reads transfers into the loan (``budget.transfers``) and no
+        row, so a row on the loan account is not payment history.
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
@@ -100,7 +100,7 @@ class TestGetPaymentHistory:
             result = get_payment_history(
                 loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
-            # No transfer_id -> excluded.
+            # Not a transfer -> not in the feed.
             assert result == []
 
     @pytest.mark.parametrize("status_enum", [
@@ -157,7 +157,7 @@ class TestGetPaymentHistory:
     def test_excludes_cancelled_transactions(
         self, app, db, seed_user, seed_periods,
     ):
-        """Cancelled-status shadow transactions are excluded.
+        """A Cancelled payment is excluded.
 
         A cancelled transfer means the payment did not happen.  Including
         it would tell the engine a payment was made when it was not.
@@ -178,7 +178,7 @@ class TestGetPaymentHistory:
     def test_uses_effective_amount_with_actual(
         self, app, db, seed_user, seed_periods,
     ):
-        """A shadow with a CORRECTED figure: PaymentRecord uses the correction.
+        """A payment with a CORRECTED figure: PaymentRecord uses the correction.
 
         The record is the leg's covering movement (plan step
         ``balance:X-bi-4b-1``, ruling **R-BAL80**), so the correction is
@@ -205,16 +205,16 @@ class TestGetPaymentHistory:
                 loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert len(result) == 1
-            # effective_amount returns actual when populated.
+            # A settled payment is worth what its record says moved.
             assert result[0].amount == Decimal("1450.00")
 
     def test_uses_effective_amount_without_actual(
         self, app, db, seed_user, seed_periods,
     ):
-        """Shadow without actual_amount: PaymentRecord uses estimated.
+        """A Projected payment with no recorded figure: PaymentRecord uses its plan.
 
-        When actual_amount is None, effective_amount falls back to
-        estimated_amount.
+        Nothing has moved, so the feed answers the $1,500.00 the transfer
+        was created for.
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
@@ -232,7 +232,7 @@ class TestGetPaymentHistory:
     def test_is_confirmed_settled_statuses(
         self, app, db, seed_user, seed_periods,
     ):
-        """Paid/Settled shadow transactions produce is_confirmed=True.
+        """A Paid payment produces is_confirmed=True.
 
         Paid has is_settled=True on the Status model.
         """
@@ -253,7 +253,7 @@ class TestGetPaymentHistory:
     def test_is_confirmed_projected_status(
         self, app, db, seed_user, seed_periods,
     ):
-        """Projected shadow transactions produce is_confirmed=False.
+        """A Projected payment produces is_confirmed=False.
 
         Projected has is_settled=False on the Status model.
         """
@@ -291,12 +291,12 @@ class TestGetPaymentHistory:
     def test_settled_on_is_the_shadows_own_stored_day_not_its_pay_period(
         self, app, db, seed_user, seed_periods,
     ):
-        """``settled_on`` is the day the CASH moved, read off the shadow.
+        """``settled_on`` is the day the CASH moved, read off the payment's record.
 
         Plan step **X-an** / finding **N-187**: the resolver's
-        replay-vs-projection cut keys on this day, and it must be the row's own
-        stored fact rather than anything derived from the pay period funding
-        it.  Here the cash left three days BEFORE that period opened -- an
+        replay-vs-projection cut keys on this day, and it must be the loan
+        side's own stored fact rather than anything derived from the pay period
+        funding it.  Here the cash left three days BEFORE that period opened -- an
         ordinary early payment -- which is exactly the case the derived answer
         got wrong.
         """
