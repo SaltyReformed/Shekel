@@ -63,8 +63,9 @@ refusal leaves other items' writes leaning on it -- a container unmarked over a 
 was refused, a finding linked under a step with no card -- so every refusal is settled
 before any write.
 The registries' and the input file's own refusals (:func:`_migrate_source.read_source`,
-:func:`_migrate_input.grade`, :func:`_migrate_bodies.build` and its census) are the
-executor's to gate on: it runs no plan while any of them refuses.
+:func:`_migrate_input.grade`, :func:`_migrate_bodies.build` and its census,
+:func:`_migrate_numbers.link`) are the executor's to gate on: it runs no plan while any of
+them refuses.
 
 **A card filed already** (:data:`_migrate_source.MAPPED`, card #1) is graded on its kind,
 labels and links -- parent, blockers and links outside the tracker -- and on its state
@@ -197,8 +198,8 @@ def plan(items: Sequence[Item], built: Mapping[str, Built],
 
     Args:
         items: Every item, as :func:`_migrate_source.read_source` orders them.
-        built: Each item's card text, by key (:func:`_migrate_bodies.build`; a card filed
-            already has none).
+        built: Each item's card text as filed, by key (``migrate.prepare``: built, then its
+            bare ``#N`` written; a card filed already has none).
         milestones: Each outcome's milestone, ``(title, description)``, as the input file
             gives it (:attr:`_migrate_input.Decisions.milestones`).
         tracked: The tracker as this run read it.

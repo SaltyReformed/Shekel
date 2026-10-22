@@ -6,11 +6,14 @@
 item has exactly one card, by key, of its kind, labels and milestone; open, or for a ruling
 closed; its mark removed; under its parent, blocked by its blockers and no others; on the
 board where it has a place; its title equal, and its body and As filed comment equal under
-:func:`_migrate_bodies.masked`, which leaves out the As filed commit alone; a question
-holding exactly one such comment, and no other card any.  A card filed already is graded
-on its kind, labels, links and state, and every card no item claims must be the tracker's
-own.  Each difference is named in the words the plan's refusals use; a second grading here
-would be a second spelling of what a finished migration is (rule 14).
+:func:`_migrate_bodies.masked`, which leaves out the As filed commit alone, to the text a
+run files (``migrate.prepare``: built, then each bare ``#N`` written as the input file
+decides, R-BAL277), so a number left bare where a marker or a link was decided is a
+difference; a question holding exactly one such comment, and no other card any.  A card
+filed already is graded on its kind, labels, links and state, and every card no item
+claims must be the tracker's own.  Each difference is named in the words the plan's
+refusals use; a second grading here would be a second spelling of what a finished
+migration is (rule 14).
 
 **What no plan grades** is graded here, once the plan refuses nothing and leaves nothing to
 write:

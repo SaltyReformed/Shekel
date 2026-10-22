@@ -841,3 +841,27 @@ def test_show_over_the_recording_prints_its_links_titles_and_its_comments(code, 
     assert f"c{S}: issue" in queries[0] and f"c{C}: issue" not in queries[0]
     assert f"c{C}: issue" in queries[1] and f"c{B}: issue" in queries[1]
     assert "ProjectV2" in queries[3] and "comments(first" in queries[5]
+
+
+class _Markdown:
+    """GitHub's Markdown API: every text asked, answered as HTML."""
+
+    def __init__(self):
+        """Nothing asked yet."""
+        self.sent = []
+
+    def rest_text(self, method, path, body=None):
+        """Remember the request; answer it."""
+        self.sent.append((method, path, body))
+        return '<p dir="auto">rendered</p>'
+
+
+def test_a_render_asks_githubs_markdown_api_in_gfm_mode_in_the_trackers_context():
+    """R-BAL355's grade: the text goes to ``POST /markdown`` as a card's comment renders
+    (``gfm``), the tracker as context so ``#N`` links its card N, and GitHub's HTML comes
+    back as it is."""
+    github = _Markdown()
+    tracker = Tracker(github, Board(github, PLAN, "B"), APP)
+    assert tracker.render("see #2") == '<p dir="auto">rendered</p>'
+    assert github.sent == [("POST", "/markdown", {"text": "see #2", "mode": "gfm",
+                                                  "context": TRACKER})]
