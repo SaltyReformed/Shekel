@@ -478,8 +478,11 @@ def load_all_loan_account_ids() -> list[int]:
     (:func:`app.services.loan_posting_service.backfill_all_loan_postings`)
     iterates.  Deliberately NOT user-scoped: it is a system / deploy-time sweep
     over every owner's loans -- like the Step-2 / Step-3 settled-row backfills --
-    and each posted correction still carries its own owner (from the payment
-    shadow's pay period), so no row is mis-attributed.
+    and each posted correction still carries its own owner (its loan
+    account's, resolved per loan by ``_posting_reconcile.filing_calendar_for``;
+    a payment split's per-loan ledgers are its transfer's owner's, read
+    through its leg, which ``fk_transfers_owner_to_account`` holds equal), so
+    no row is mis-attributed.
 
     Returns:
         The loan account ids, ascending (``account_id`` is unique per
@@ -565,7 +568,7 @@ def installment_for(
     """Return a loan payment's DUE date in contract time, from PLAIN DATA.
 
     The arithmetic core of :func:`loan_payment_due_date`, over plain values
-    instead of a stored shadow: the payment's own ``due_date`` when it has one,
+    instead of a payment's leg: the payment's own ``due_date`` when it has one,
     else the contractual day reconstructed from its pay-period start
     (:func:`~app.services.installment_calendar.monthly_due_date`).  See that
     function for why the stored value is authoritative and when the fallback is
@@ -656,11 +659,13 @@ def loan_payment_due_date(
     payment is a :class:`~app.services.transfer_legs.TransferLeg` of its
     parent transfer, and the two facts this reads -- the ``due_date`` and the
     pay period's start -- are the PARENT's columns, which a leg exposes under
-    the same two names.  A shadow row carries both facts too
+    the same two names.  A shadow row carried both facts too
     (``16f83aa0`` recorded that neither producer's signature would accept a
-    transfer; this signature does), so the derivation is one function over
-    two row shapes rather than a second spelling per shape, and it keeps
-    accepting a shadow until ``X-bi-6-4d`` deletes the shadows.
+    transfer; this signature does), so the derivation was one function over
+    two row shapes rather than a second spelling per shape, until plan step
+    ``balance:X-bi-6-4d-3`` deleted the shadows.  Every caller hands it a
+    leg now; the annotation still admits a ``Transaction`` and the parameter
+    keeps the shadow era's name.
 
     The payment's OWN ``due_date`` is the answer: the recurrence engine stamps
     each generated instance with the date its rule produced
@@ -733,8 +738,8 @@ def loan_payment_due_date(
     than only on the fallback path.
 
     Args:
-        shadow: The payment's leg -- settled or projected -- or, until
-            ``X-bi-6-4d``, a shadow row.  Its ``pay_period`` must be loaded:
+        shadow: The payment's leg -- settled or projected.  Its
+            ``pay_period`` must be loaded:
             :func:`._legs.settled_income_legs` and
             :func:`._legs.projected_income_legs` each eager-load it (see
             the note above).  The name is the shadow era's.

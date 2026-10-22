@@ -293,8 +293,14 @@ class Transaction(
     # The row's OWN amount, and NULLABLE since plan step X-au-c1: a row whose
     # amount is DERIVED does not store one at all (ruling **R-FI**).  NULL here
     # means "ask ``cash_ledger.resolve_transaction_amount``".  No production row
-    # is NULL as of this step; the per-kind cutovers (plan steps X-au-d through
-    # X-au-f) are what empty it.
+    # was NULL at that step.  The cutovers emptied it: plan step X-au-g-2c-2
+    # for every transfer shadow (migration ``c9a4e7b21d58``), whose rows plan
+    # step ``balance:X-bi-6-4d-3`` later deleted; X-au-d for every paycheck its
+    # owner had not overridden, settled ones included (``d7b2e6c1a483``);
+    # X-au-e for every other row of a definition its owner had not overridden
+    # (``c8f3a5d2e714``); and ``balance:X-bi-7d-2`` for every bare one-off it
+    # minted a definition for, and the detached one-offs it re-attached
+    # (``596408fab6f1``, ruling **R-BAL37**).
     #
     # **PRIVATE since plan step X-au-k**, with the SQL name unchanged: the pair
     # this column belongs to is mapped as ONE attribute
@@ -403,9 +409,10 @@ class Transaction(
     # the field is the owner's optional note of when the bill falls and NULL
     # means they gave none.
     due_date = db.Column(db.Date, nullable=True)
-    # WHICH OCCURRENCE this row is -- the date the template's cadence named
-    # when the recurrence engine wrote it (plan step **R17**, the first leaf of
-    # **R5**).  It is the row's IDENTITY under its definition, which is why it
+    # WHICH OCCURRENCE this row is: a GENERATED row's is the date the
+    # template's cadence named when the recurrence engine wrote it (plan step
+    # **R17**, the first leaf of **R5**); a one-off's is its due date (ruling
+    # **R-BAL25**).  It is the row's IDENTITY under its definition, which is why it
     # sits here beside ``template_id`` / ``pay_period_id`` / ``scenario_id``
     # (what the row IS) and deliberately NOT in
     # ``recurrence_engine._amounts.DerivedRowFields`` (what the definition
@@ -418,15 +425,21 @@ class Transaction(
     # named and the next whole-schedule pass wrote a second one -- measured on
     # a production clone 2026-08-27 at **8 rows / $1,482.93 from ONE pass**,
     # seven of them already Paid.  ``pay_period_id`` is the FUNDING and the
-    # owner may move it; this column is the cadence and nothing moves it.
+    # owner may move it; this column is the cadence, and only re-placing a
+    # one-off's date rewrites it (``one_off.state_due_date``, and
+    # carry-forward's ``re_placed_ids`` pass, which states the same rule in
+    # SQL).
     #
     # **NULL means the row answers no occurrence**, and that is a real state
     # rather than a gap -- so this is nullable where plan step R5's
-    # specification said ``NOT NULL``.  Two live writers create a
-    # template-linked row that no cadence named: ``carry_forward_service``
-    # rolls an unspent envelope forward as an ``is_override`` row, and the
-    # one-time branch of ``routes/transfers/_instances.py`` materialises a
-    # transfer whose template has no rule at all.  **The envelope row is DATED
+    # specification said ``NOT NULL``.  One live writer creates a
+    # template-linked row that answers no occurrence: ``carry_forward_service``
+    # rolls an unspent envelope forward as an ``is_override`` row.  The
+    # one-time branch of ``routes/transfers/_instances.py``, named here as a
+    # second, writes a TRANSFER and no row of this table, and that transfer
+    # records its due date as the occurrence it answers (ruling **R-BAL94**,
+    # :attr:`app.models.transfer.Transfer.occurs_on`); a one-off's row does
+    # the same (ruling **R-BAL25**).  **The envelope row is DATED
     # since 2026-09-06** (``_execute._leftover_due_date``) and this column is
     # still NULL: a row priced by its definition resolves on its own due date,
     # but no occurrence names it.  On a production clone the backfill

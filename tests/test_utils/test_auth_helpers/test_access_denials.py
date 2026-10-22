@@ -42,12 +42,16 @@ def _the_next_row_takes_id(sequence, row_id):
 
     A denial's ``pk`` read grades a door only while the probed row's id differs from every
     other id the denying branch holds: the requester, the owner it acts for, the row's owner.
-    Left to the order the fixtures build in, ids of different kinds coincide: the first
-    transaction a case builds and ``seed_user`` are both id 1, and ``second_user``'s account
-    and ``second_user`` are both id 2, so a door logging one of those user ids as the ``pk``
-    passed.  The builders take no id, hence the restart.  A rollback does not undo
-    ``setval``, but the autouse ``db`` fixture re-clones the database before every test, so
-    the restart reaches no other case.  Each caller asserts its row took *row_id*, and that
+    Until the test template started each non-ref table's ids in a range of its own (ruling
+    ``balance:R-BAL356``, ``scripts/build_test_template.py``), ids of different kinds
+    coincided in the order the fixtures build in: the first transaction a case built and
+    ``seed_user`` were both id 1, and ``second_user``'s account and ``second_user`` were both
+    id 2, so a door logging one of those user ids as the ``pk`` passed.  The ranges keep them
+    apart now; the restart states the probed row's id rather than leaning on them, and every
+    caller's *row_id* (9,001) is below every range, so it differs from each user id with the
+    ranges or without them.  The builders take no id, hence the restart.  A rollback does not
+    undo ``setval``, but the autouse ``db`` fixture re-clones the database before every test,
+    so the restart reaches no other case.  Each caller asserts its row took *row_id*, and that
     the ids its denial could name are pairwise distinct.
 
     Args:
@@ -104,7 +108,8 @@ class TestAccessDeniedLogging:
         with app.test_request_context("/some/path"):
             # The probed account is built here, after a stated sequence restart
             # (``_the_next_row_takes_id`` says why), not taken from ``second_user``: the
-            # fixture's account and its owner are both id 2.
+            # fixture's account and its owner were both id 2 until the template's id ranges
+            # (ruling ``balance:R-BAL356``).
             probed_account_id = 9_001
             _the_next_row_takes_id("budget.accounts_id_seq", probed_account_id)
             theirs = create_account_of_type(
@@ -622,8 +627,9 @@ class TestAProbeOfAnotherOwnersDeletedRowIsADenial:
         """seed_user's companion names another owner's deleted $45.00 Pool, shown to companions."""
         with app.test_request_context("/some/path"):
             # The probed row's id is set by a stated sequence restart, not left to the
-            # order the fixtures build in (``_the_next_row_takes_id`` says why):
-            # left alone, the row and the owner this companion acts for are both id 1.
+            # order the fixtures build in (``_the_next_row_takes_id`` says why): until the
+            # template's id ranges (ruling ``balance:R-BAL356``), the row and the owner this
+            # companion acts for were both id 1.
             probed_row_id = 9_001
             _the_next_row_takes_id("budget.transactions_id_seq", probed_row_id)
             theirs = a_deleted_occurrence(

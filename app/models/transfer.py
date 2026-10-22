@@ -2,7 +2,8 @@
 Shekel Budget App -- Transfer Model (budget schema)
 
 Tracks transfers between accounts (checking ↔ savings) within pay periods.
-Supports both template-generated recurring transfers and ad-hoc one-time transfers.
+Supports the transfers a recurring definition generates, the one-time transfer a
+definition with no rule places, and ad-hoc transfers that name no definition.
 """
 
 
@@ -137,7 +138,8 @@ class Transfer(
         # transfers / $20,500 at the unarchive door.
         #
         # **The two predicates DIVERGED at plan step X-au-h**, exactly as the
-        # transaction twin did -- see ``models/transaction.py`` for the full
+        # transaction twin did -- see ``models/_transaction_table_args.py`` and
+        # migration ``e7c3a1f9b482`` for the full
         # argument, the measurement, and why the UNDATED index below keeps the
         # exemption this one drops.  In one line: the exemption guarded a
         # PAYCHECK-keyed collision, R17 re-keyed this index onto ``occurs_on``,
@@ -295,8 +297,16 @@ class Transfer(
     # whose amount is DERIVED does not store one (ruling **R-FI**).  NULL means
     # "ask ``cash_ledger.resolve_transfer_amount``", which for a generated
     # transfer is its definition's effective-dated price series as of the
-    # transfer's own due date.  No production row is NULL as of this step; plan
-    # step X-au-f is what empties it for generated transfers.
+    # transfer's own due date, and for a loan payment (a definition carrying
+    # loan-payment settings) amount rule 4: the contract's cash in derive mode
+    # or the series in manual mode, each plus the standing extra principal.
+    # No production row was NULL at that step.  Plan step X-au-f emptied it
+    # for every transfer of a definition its owner had not overridden
+    # (migration ``b7e4c1f38a20``), and both creators of a transfer of a
+    # definition write it derived since
+    # (``transfer_recurrence._create_from_definition``, from
+    # ``DerivedTransferFields``, and the one-time branch of
+    # ``routes/transfers/_instances``); an ad-hoc transfer owns its figure.
     #
     # **PRIVATE since plan step X-au-k**, with the SQL name unchanged: read it
     # through :attr:`amount`, write it through :attr:`amount_ownership`.  The
@@ -340,8 +350,8 @@ class Transfer(
     )
     notes = db.Column(db.Text)
     # Calendar date the transfer is due.  Nullable, matching
-    # ``Transaction.due_date`` (ad-hoc transfers may omit it; recurrence
-    # places it from the rule's ``day_of_month``).  Each side's leg reads
+    # ``Transaction.due_date`` (ad-hoc transfers may omit it; a generated
+    # transfer's is ``recurrence.compute_due_date``'s answer).  Each side's leg reads
     # it here (``TransferLeg.due_date``, :mod:`app.services.transfer_legs`).
     # Until plan step ``balance:X-bi-6-4d-3`` deleted the shadows, the
     # transfer service mirrored it to both shadow transactions, and the
@@ -357,12 +367,22 @@ class Transfer(
     # ``transfer_service._POSTING_RELEVANT_FIELDS`` and any other writer of this
     # column MUST follow it with a posting reconcile.
     due_date = db.Column(db.Date, nullable=True)
-    # WHICH OCCURRENCE this transfer is -- the date its template's cadence
-    # named when the transfer recurrence engine wrote it.  The parallel of
-    # ``Transaction.occurs_on``, which carries the full statement; both engines
-    # write it from the same ``PlannedOccurrence.occurrence`` and the shared
-    # skip predicate reads it identically, so a divergence here would be the
-    # drift ``_recurrence_common`` exists to prevent (plan step **R17**).
+    # WHICH OCCURRENCE this transfer is.  A GENERATED transfer's is the date
+    # its template's cadence named when the transfer recurrence engine wrote
+    # it: the parallel of ``Transaction.occurs_on``, which carries the full
+    # statement; both engines write it from the same
+    # ``PlannedOccurrence.occurrence`` and the shared skip predicate reads it
+    # identically, so a divergence here would be the drift
+    # ``_recurrence_common`` exists to prevent (plan step **R17**).  A transfer
+    # the one-time branch of ``routes/transfers/_instances`` PLACES answers its
+    # own due date: it writes the two equal at birth, and ``transfer_service``
+    # writes ``occurs_on`` beside a placed transfer's due date whenever that
+    # date moves (ruling **R-BAL94**).  Two placed shapes differ until their
+    # date first moves: a cleared cadence's survivor keeps the occurrence its
+    # cadence named (``transfer_service/_update.py``'s due-date arm), and the
+    # two one-time transfers born before plan step ``balance:X-ci-1`` answer
+    # none until ``X-ci-3``'s backfill.  An ad-hoc transfer answers no
+    # occurrence (NULL).
     #
     # **It was never mirrored onto the two shadow transactions** plan step
     # ``balance:X-bi-6-4d-3`` deleted: a shadow was not the rule's own row

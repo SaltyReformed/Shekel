@@ -5585,8 +5585,9 @@ def generate_transfer_of(template, period):
     pass's ``_new_row`` and from the maintain pass's create arm alike, which
     splats ``DerivedTransferFields`` (the two accounts, name, category, amount
     OWNERSHIP and due date the definition derives) into a
-    ``transfer_service.TransferSpec`` and so gets the parent AND its two
-    shadow legs from the one door that writes ``budget.transfers``.  This
+    ``transfer_service.TransferSpec`` and so gets the transfer from the one
+    door that writes ``budget.transfers`` (with its two shadow legs, until
+    plan step ``balance:X-bi-6-4d-3`` deleted the shadows).  This
     helper CALLS the generate pass, with a window of exactly one paycheck,
     and hands back what the engine wrote; every promise
     :func:`generate_row_of` makes and every refusal the shared private body
@@ -5601,7 +5602,7 @@ def generate_transfer_of(template, period):
 
     What follows from the engine's transfer, and each is the point:
 
-    * **It is DERIVED, parent and both legs.**  It stores no figure; its
+    * **It is DERIVED.**  It stores no figure; its
       definition's series answers for it on its own due date, so a fixture
       states the figure it expects on the template (:func:`state_template_price`;
       :func:`make_transfer_template` already does).  A reader that asks the
@@ -5615,8 +5616,9 @@ def generate_transfer_of(template, period):
       shape :func:`create_settled_transfer` uses), and one wanting the OWNER's
       transfer takes ownership through the same door with ``is_override=True``
       beside the figure -- the two acts ``routes/transfers/mutations``
-      performs -- because a transfer's three rows are kept equal by that
-      service and nothing else (Transfer Invariants 3 and 4).
+      performs -- because every write of a transfer goes through that service
+      (``CLAUDE.md``, Architecture), which also kept a transfer's three rows
+      equal while it had shadows.
 
     Args:
         template: The flushed
@@ -5629,7 +5631,7 @@ def generate_transfer_of(template, period):
 
     Returns:
         The :class:`~app.models.transfer.Transfer` the engine created,
-        flushed, with its two shadow transactions.
+        flushed.
 
     Raises:
         ValueError: As :func:`generate_row_of` -- no cadence; the engine
