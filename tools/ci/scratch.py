@@ -46,6 +46,23 @@ def commit(root: Path, *paragraphs: str, parents: tuple[str, ...] | list[str] = 
     return run(root, "commit-tree", tree, *args)
 
 
+def commit_files(root: Path, base: str, message: str, files: dict[str, str | None]) -> str:
+    """A commit on ``base`` whose tree is ``base``'s with each of ``files`` written (its text)
+    or deleted (None), made in ``root``'s working tree, which is left detached at it; its
+    sha.  The ship markers' tests write their ``plan/ships/<N>`` files through it."""
+    run(root, "checkout", "--quiet", "--detach", base)
+    for name, text in files.items():
+        path = root / name
+        if text is None:
+            path.unlink()
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+    run(root, "add", "--all", "--", *files)
+    run(root, "commit", "--quiet", "--allow-empty", "-m", message)
+    return run(root, "rev-parse", "HEAD")
+
+
 def repository(parent: Path, name: str = "code") -> Path:
     """An empty repository ``parent / name`` whose first branch is ``dev``, never a real
     checkout; its path."""

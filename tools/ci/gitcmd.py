@@ -46,26 +46,29 @@ def _binding_variables() -> frozenset[str]:
     return frozenset(done.stdout.split())
 
 
-def run(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def run(root: Path, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
     """Run one git command in ``root`` and in no other repository; the finished process.
 
     The environment it inherits loses :func:`_binding_variables`, so whatever
-    the caller is bound to, ``root`` is the repository touched.
+    the caller is bound to, ``root`` is the repository touched.  ``stdin`` is
+    the text the command reads (``git mktree``, ``git hash-object --stdin``);
+    None leaves it the caller's own, as every call was before ``stdin`` existed.
     """
     binding = _binding_variables()
     return subprocess.run(
         ["git", *_PLAIN, "-C", str(root), *args], capture_output=True, text=True, check=False,
+        input=stdin,
         env={name: value for name, value in os.environ.items() if name not in binding},
     )
 
 
-def git(root: Path, *args: str) -> str:
-    """Run one git command in ``root``; its standard output.
+def git(root: Path, *args: str, stdin: str | None = None) -> str:
+    """Run one git command in ``root``, reading ``stdin`` (:func:`run`); its standard output.
 
     Raises:
         GitError: when git exits non-zero, with its stderr.
     """
-    done = run(root, *args)
+    done = run(root, *args, stdin=stdin)
     if done.returncode:
         raise GitError(f"git {' '.join(args)}: {done.stderr.strip()}")
     return done.stdout
