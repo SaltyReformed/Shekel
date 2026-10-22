@@ -106,6 +106,7 @@ from tests._test_helpers import (
     inject_cash_backfill_kind_id,
     ledger_accounts_for_account,
     load_migration_module,
+    run_migration_callable,
 )
 
 
@@ -118,6 +119,11 @@ _MIGRATIONS_DIR = (
 )
 _MIGRATION_FILENAME = "7d63529e4300_backfill_historical_cash_postings.py"
 _MIGRATION = load_migration_module(_MIGRATION_FILENAME)
+
+#: Plan step ``balance:X-bi-6-4d-3``'s revision, which deletes every transfer
+#: shadow and refuses a new one; its downgrade builds a transfer's two, which
+#: the shadow exclusion case needs.
+_TWINS_DELETED = load_migration_module("82f7b7ed4332_a_transfer_is_one_row.py")
 
 
 @pytest.fixture(autouse=True)
@@ -299,6 +305,13 @@ class TestBackfillExclusions:
         excludes them; the transaction backfill posts nothing and writes no
         transaction-sourced entry for either shadow (the transfer-sourced entry
         the transfer service already wrote is untouched).
+
+        No transfer has a shadow since plan step ``balance:X-bi-6-4d-3``
+        (``82f7b7ed4332`` deletes them and refuses a new one), so the case
+        first runs that revision's downgrade, which builds the transfer's two,
+        each settled and live as the transfer is.  That is asserted: a
+        Projected or hidden shadow is excluded by the status or ``is_deleted``
+        filter, which would answer in place of the ``transfer_id`` one.
         """
         with app.app_context():
             transfer = create_settled_transfer(
@@ -306,8 +319,12 @@ class TestBackfillExclusions:
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
             )
             _db.session.commit()
-            shadow_ids = [s.id for s in transfer.shadow_transactions]
-            assert len(shadow_ids) == 2
+            run_migration_callable(_TWINS_DELETED.downgrade, _db.session)
+            shadows = transfer.shadow_transactions
+            assert [(s.status.is_settled, s.is_deleted) for s in shadows] == [
+                (True, False), (True, False),
+            ]
+            shadow_ids = [s.id for s in shadows]
 
             assert _run_backfill() == []
             txn_sourced = (

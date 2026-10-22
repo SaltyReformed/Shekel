@@ -64,6 +64,11 @@ _M = load_migration_module(
     "c4a4e7d1b9f2_a_row_s_delete_never_takes_its_movements.py",
 )
 
+#: Plan step ``balance:X-bi-6-4d-3``'s revision, which deletes every transfer
+#: shadow and refuses a new one; its downgrade builds a transfer's two, which
+#: the hidden-leg case below needs.
+_TWINS_DELETED = load_migration_module("82f7b7ed4332_a_transfer_is_one_row.py")
+
 #: The three keys this step flips, as ``pg_get_constraintdef`` prints them at
 #: head -- no ``ON DELETE`` clause is NO ACTION.
 _AT_HEAD = {
@@ -378,13 +383,17 @@ class TestTheMigration:
         the upgrade does not stop over it.  A settled $100.00 transfer, the
         transfer and both shadows flagged hidden with their payments in place.
 
-        **The payments are put back under the shadows first**, the shape this
-        revision ran against: since plan step ``balance:X-bi-6-4d-2`` each
-        side's record hangs off the TRANSFER (ruling **R-BAL88**), and a
-        shadow holds a movement only where it is planted -- both records
-        re-parented under their shadows in one statement, which the status
-        band allows as a ``$0.00`` close's shape (ruling **R-BAL167** class
-        3).  What is asserted is unchanged.
+        **The shadows are built and the payments put back under them first**,
+        the shape this revision ran against.  No transfer has a shadow since
+        plan step ``balance:X-bi-6-4d-3`` (``82f7b7ed4332`` deletes them and
+        refuses a new one), so the case runs that revision's downgrade, which
+        builds both, each settled like its transfer.  Since plan step
+        ``balance:X-bi-6-4d-2`` each side's record hangs off the TRANSFER
+        (ruling **R-BAL88**), and the downgrade leaves it there, so both
+        records are then re-parented under their shadows in one statement,
+        which the status band allows as a ``$0.00`` close's shape (the setup
+        ruling **R-BAL167** approved at that step).  What is asserted is
+        unchanged.
         """
         with app.app_context():
             savings = create_account_of_type(
@@ -396,6 +405,7 @@ class TestTheMigration:
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
             )
             db.session.commit()
+            _run(_TWINS_DELETED.downgrade, db.session)
             db.session.execute(
                 text("UPDATE budget.transaction_entries e "
                      "SET transaction_id = t.id, expense_transfer_id = NULL, "

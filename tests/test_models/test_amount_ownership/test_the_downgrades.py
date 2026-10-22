@@ -11,8 +11,11 @@ import pytest
 from app import ref_cache
 from app.enums import AmountSourceEnum
 from app.models.amount_ownership import AmountOwnership
-from app.models.transaction import Transaction
-from tests._test_helpers import load_migration_module, repriced_by_the_owner
+from tests._test_helpers import (
+    load_migration_module,
+    repriced_by_the_owner,
+    run_migration_callable,
+)
 
 from ._helpers import _make_transaction, _make_transfer, _legs_of
 
@@ -23,6 +26,13 @@ _MIGRATION = load_migration_module("b3f7c2a9d514_amount_ownership.py")
 _SHADOW_CUTOVER = load_migration_module(
     "c9a4e7b21d58_a_transfer_shadow_is_derived.py",
 )
+
+#: Plan step ``balance:X-bi-6-4d-3``'s revision, which deletes every transfer
+#: shadow and refuses a new one.  Its downgrade builds two for every transfer,
+#: each declared derived from its parent with no figure of its own
+#: (``_BUILT_SQL``): the shadows ``c9a4e7b21d58`` declared, which every case
+#: below that probes a shadow builds first.
+_TWINS_DELETED = load_migration_module("82f7b7ed4332_a_transfer_is_one_row.py")
 
 
 class TestTheDowngradeRefusesToInventAFigure:
@@ -77,7 +87,7 @@ class TestTheDowngradeRefusesToInventAFigure:
             with pytest.raises(RuntimeError, match=str(txn.id)):
                 _MIGRATION.refuse_rows_without_a_figure(db.session.connection())
 
-    def test_it_refuses_a_derived_transfer_too(self, app, db, seed_full_user_data):
+    def test_it_refuses_a_derived_transfer_too(self, db, seed_full_user_data):
         """The second table is probed, not just the first.
 
         Both columns are in the guard's loop, and a guard that checked only
@@ -91,26 +101,32 @@ class TestTheDowngradeRefusesToInventAFigure:
         first -- the two acts the re-price door performs -- and the world is
         then the one this case is about: every transaction owns its figure
         and one transfer does not.
-        """
-        with app.app_context():
-            # Re-fetched by key: the fixture committed, so its instance is
-            # expired and an attribute set on it may never reach a flush.
-            fixture_row = db.session.get(
-                Transaction, seed_full_user_data["transaction"].id,
-            )
-            repriced_by_the_owner(fixture_row, "1200.00")
-            # The engine's transfer is derived already; its two LEGS are too
-            # (they declare their parent), and the guard reads transactions
-            # first -- so each leg is given a figure of its own, bare, the
-            # pre-X-au-g-2c-2 shape, leaving the parent as the ONE row with no
-            # figure.
-            xfer = _make_transfer(seed_full_user_data)
-            for leg in _legs_of(xfer):
-                leg.amount_ownership = AmountOwnership.own(Decimal("100.00"))
-            db.session.flush()
 
-            with pytest.raises(RuntimeError, match="budget.transfers.amount"):
-                _MIGRATION.refuse_rows_without_a_figure(db.session.connection())
+        **No transfer has a shadow since plan step balance:X-bi-6-4d-3**
+        (``82f7b7ed4332``), so the case first runs that revision's downgrade,
+        which builds the transfer's two: the rows this guard's first arm read
+        at the revision it ran on.  Run in the ``db`` fixture's own app
+        context rather than a nested one: that downgrade alters
+        ``budget.transactions``, and a nested context scopes a SECOND session,
+        so the fixture's session, having read its own transaction, would sit
+        idle-in-transaction holding ``ACCESS SHARE`` on that table while the
+        DDL waits for ``ACCESS EXCLUSIVE``.
+        """
+        fixture_row = seed_full_user_data["transaction"]
+        repriced_by_the_owner(fixture_row, "1200.00")
+        # The engine's transfer is derived already; the two LEGS
+        # ``82f7b7ed4332``'s downgrade builds for it are too (they declare
+        # their parent), and the guard reads transactions first -- so each
+        # leg is given a figure of its own, bare, the pre-X-au-g-2c-2
+        # shape, leaving the parent as the ONE row with no figure.
+        xfer = _make_transfer(seed_full_user_data)
+        run_migration_callable(_TWINS_DELETED.downgrade, db.session)
+        for leg in _legs_of(xfer):
+            leg.amount_ownership = AmountOwnership.own(Decimal("100.00"))
+        db.session.flush()
+
+        with pytest.raises(RuntimeError, match="budget.transfers.amount"):
+            _MIGRATION.refuse_rows_without_a_figure(db.session.connection())
 
 
 class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
@@ -126,9 +142,17 @@ class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
     leaf shipped** (2026-09-01, stamp ``a4c6f1d92b73`` restored into a throwaway
     database and migrated to ``dev``'s head): the upgrade declared 350 shadows
     and touched no other row, and the downgrade was BYTE-IDENTICAL over all
-    1,028 transactions.  What no replay can reach is this refusal, because the
-    chain never leaves a parent transfer without a figure -- plan step X-au-f is
-    what creates that state, and it does not exist yet.
+    1,028 transactions.  What no replay can reach is this refusal: a template
+    build replays the chain's UPGRADES over an empty database, and the cutover
+    that derives a parent transfer's figure (plan step X-au-f,
+    ``b7e4c1f38a20``) comes after this revision in the chain.
+
+    **No transfer has a shadow since plan step balance:X-bi-6-4d-3**
+    (``82f7b7ed4332`` deletes them and refuses a new one), so every case here
+    first runs that revision's downgrade, which builds the engine transfer's
+    two, each DECLARED derived from its parent: the population this guard
+    probes, at the revision it ran on.  Setup only: no assertion changed, and
+    the accepting case gains one, its precondition that both are declared.
     """
 
     def test_it_passes_when_every_parent_states_a_figure(
@@ -137,15 +161,24 @@ class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
         """The state the chain leaves: every parent owns an amount.
 
         Returns ``None`` rather than raising, so the negative controls below
-        are what give this meaning.  The engine's transfer has two DECLARED
-        legs, exactly what this cutover writes; its parent is given a figure
-        of its own bare, the pre-X-au-f world the probe was written for.
+        are what give this meaning.  The engine's transfer's two legs, built
+        by ``82f7b7ed4332``'s downgrade, are DECLARED, exactly what this
+        cutover writes, and asserted so, since a probe over no shadow passes
+        whatever it asks; its parent is given a figure of its own bare, the
+        pre-X-au-f world the probe was written for.
         """
         with app.app_context():
             td = seed_full_user_data
-            _make_transfer(
+            xfer = _make_transfer(
                 td, amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
+            run_migration_callable(_TWINS_DELETED.downgrade, db.session)
+            parent_transfer = ref_cache.amount_source_id(
+                AmountSourceEnum.PARENT_TRANSFER,
+            )
+            assert [leg.amount_source_id for leg in _legs_of(xfer)] == [
+                parent_transfer, parent_transfer,
+            ]
 
             assert _SHADOW_CUTOVER.refuse_a_shadow_whose_parent_states_no_figure(
                 db.session.connection(),
@@ -162,9 +195,12 @@ class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
         """
         with app.app_context():
             td = seed_full_user_data
-            # The engine's transfer IS this state: a derived parent with two
-            # declared legs.  Both legs must be named.
-            expense, income = _legs_of(_make_transfer(td))
+            # The engine's transfer and the two legs ``82f7b7ed4332``'s
+            # downgrade builds for it ARE this state: a derived parent with
+            # two declared legs.  Both legs must be named.
+            xfer = _make_transfer(td)
+            run_migration_callable(_TWINS_DELETED.downgrade, db.session)
+            expense, income = _legs_of(xfer)
 
             # Anchored on the ids LIST rather than the bare digits.  The
             # message also carries the revision id ``c9a4e7b21d58``, whose
@@ -193,9 +229,12 @@ class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
         """
         with app.app_context():
             td = seed_full_user_data
-            # The engine's parent is derived; both legs are given a figure of
+            # The engine's parent is derived; ``82f7b7ed4332``'s downgrade
+            # builds its two legs declared, and both are given a figure of
             # their own, bare, so NO leg is declared.
-            for leg in _legs_of(_make_transfer(td)):
+            xfer = _make_transfer(td)
+            run_migration_callable(_TWINS_DELETED.downgrade, db.session)
+            for leg in _legs_of(xfer):
                 leg.amount_ownership = AmountOwnership.own(Decimal("25.00"))
             db.session.flush()
 

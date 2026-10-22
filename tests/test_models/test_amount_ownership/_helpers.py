@@ -276,12 +276,13 @@ def _make_transfer(data, **overrides):
     * **A transfer of a DEFINITION** (``transfer_template_id`` left at its
       default or set) is the ENGINE's transfer of that template in the named
       paycheck (:func:`generate_transfer_of`, plan step balance:X-ch): flushed,
-      with its two shadow legs, with every OTHER override then laid onto the
-      PARENT bare.  It arrives derived, dated and answering an occurrence, so
-      an override restating that is a no-op and one stating an OWN figure, a
-      status, a date or ``is_override`` is a pre-cutover shape laid onto the
-      engine's transfer for a frozen migration's probe -- the legs are not
-      touched, which is what the probes over the SHADOW cutover need.
+      with every OTHER override then laid onto it bare.  It arrives derived,
+      dated and answering an occurrence, so an override restating that is a
+      no-op and one stating an OWN figure, a status, a date or
+      ``is_override`` is a pre-cutover shape laid onto the engine's transfer
+      for a frozen migration's probe.  It has no shadow legs: none is stored
+      since plan step balance:X-bi-6-4d-3, so a probe that reads them first
+      runs ``82f7b7ed4332``'s downgrade, which builds them (:func:`_legs_of`).
       ``pay_period_id`` picks the paycheck and is not restated afterwards.
     * **An AD-HOC transfer** (``transfer_template_id=None``) is constructed
       bare and returned UNFLUSHED, as before, with no legs; the two ad-hoc
@@ -338,7 +339,12 @@ def _transfer_of_definition(data, template_id, overrides):
 
 
 def _legs_of(xfer):
-    """Return ``(expense leg, income leg)`` of the engine's transfer *xfer*."""
+    """Return ``(expense leg, income leg)``: the two shadow rows of *xfer*.
+
+    No transfer has one since plan step balance:X-bi-6-4d-3, so a caller
+    first runs ``82f7b7ed4332``'s downgrade, which builds two for every
+    transfer; on a transfer holding none this raises ``KeyError``.
+    """
     legs = {
         leg.transaction_type_id: leg
         for leg in db.session.query(Transaction).filter_by(transfer_id=xfer.id)
