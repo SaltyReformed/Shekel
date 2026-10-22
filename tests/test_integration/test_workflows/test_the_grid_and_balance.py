@@ -129,10 +129,10 @@ class TestTemplateRecurrenceToGrid:
 
 
 class TestTransferToBalance:
-    """Transfer shadow transactions affect balance calculator."""
+    """A transfer moves its source account's cash balance, read off its one row."""
 
     def test_transfer_reduces_source_balance(self, app, db, seed_user, seed_periods):
-        """Shadow expense transaction from a transfer reduces the source account balance."""
+        """A Projected transfer reduces its source account's balance by its amount."""
         with app.app_context():
             from app.services import transfer_service
 
@@ -150,8 +150,9 @@ class TestTransferToBalance:
 
             projected = db.session.query(Status).filter_by(name="Projected").one()
 
-            # Create a transfer via the service (creates shadow transactions).
-            xfer = transfer_service.create_transfer(
+            # Create a transfer via the service: one row, the money on both
+            # accounts read off it.
+            transfer_service.create_transfer(
                 transfer_service.TransferSpec(
                     user_id=seed_user["user"].id,
                     from_account_id=seed_user["account"].id,
@@ -166,21 +167,10 @@ class TestTransferToBalance:
             )
             db.session.commit()
 
-            # Load shadow transactions for the checking account.
-            shadow_txns = (
-                db.session.query(Transaction)
-                .filter_by(
-                    transfer_id=xfer.id,
-                    account_id=seed_user["account"].id,
-                )
-                .all()
-            )
-
             # What the app RENDERS (plan step X-g4b re-pointed this off the
             # deleted anchor-forward walk).  ``as_of`` is pinned inside period
-            # 0 so ruling R-G's clamp does not carry the still-Projected shadow
+            # 0 so ruling R-G's clamp does not carry the still-Projected transfer
             # past the window; the $1,000.00 anchor is the fixture's own.
-            assert shadow_txns
             balances = balance_at.cash_balance_map(
                 seed_user["account"],
                 BalanceContext.build(
@@ -188,7 +178,7 @@ class TestTransferToBalance:
                 ),
             )
 
-            # Shadow expense of $200 reduces balance: 1000 - 200 = 800.
+            # The $200 transfer reduces the balance: 1000 - 200 = 800.
             assert balances[seed_periods[0].id] == Decimal("800.00")
 
 
