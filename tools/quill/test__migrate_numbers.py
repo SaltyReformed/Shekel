@@ -228,7 +228,8 @@ def test_only_the_card_refused_is_left_as_built():
 
 def recording() -> dict:
     """GitHub's answers as captured (the module docstring): ``renders``, each text's HTML,
-    and ``unlinked_control``, the control rendered as plain Markdown, which links no card."""
+    and ``unlinked``, each text the control's test can render, rendered as plain Markdown,
+    which links no card."""
     return json.loads((Path(__file__).parent / "markdown_renders.json").read_text(
         encoding="utf-8"))
 
@@ -409,10 +410,10 @@ def test_a_number_at_a_lines_start_is_left_so_a_paragraph_stays_one():
 
 
 def test_a_control_that_links_nothing_refuses_the_grade_whole():
-    """A renderer that links no card (here GitHub's own plain-Markdown answer, which links no
-    issue) would pass every card: the control refuses, and nothing else is rendered."""
-    answers = {CONTROL: recording()["unlinked_control"]}
-    renderer = _Renderer(answers)
+    """A renderer that links no card (here GitHub's own plain-Markdown answers, which link no
+    issue, for the control and for the card as every number names card 1) would pass every
+    card: the control refuses, and nothing else is rendered."""
+    renderer = _Renderer(recording()["unlinked"])
     assert _graded(_card("see GH-2 here"), renderer=renderer) == (
         "numbers: GitHub's renderer, in saltyreformed-labs/shekel-plan's context, linked "
         f"{CONTROL!r} to card(s) [], where each must link card 1: nothing is graded (is card 1 "

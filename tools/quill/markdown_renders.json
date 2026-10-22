@@ -1,8 +1,11 @@
 {
  "context": "saltyreformed-labs/shekel-plan",
  "mode": "gfm",
- "captured": "2026-10-21, gh api markdown, the developer's token, by the X-cx L8 lane (plan-tracker-2026-10-21/l8a0_r355/capture_markdown.py)",
- "unlinked_control": "<p>#1 #01 #001 #0001</p>\n",
+ "captured": "2026-10-22, gh api markdown, the developer's token, by the X-cx L8 lane (plan-tracker-2026-10-21/l8a0_r355/capture_markdown.py)",
+ "unlinked": {
+  "#1 #01 #001 #0001": "<p>#1 #01 #001 #0001</p>\n",
+  "see GH-1 here": "<p>see GH-1 here</p>\n"
+ },
  "renders": {
   "    code #2": "<pre class=\"notranslate\"><code class=\"notranslate\">code #2\n</code></pre>",
   "    code #<!-- -->1": "<pre class=\"notranslate\"><code class=\"notranslate\">code #&lt;!-- --&gt;1\n</code></pre>",
