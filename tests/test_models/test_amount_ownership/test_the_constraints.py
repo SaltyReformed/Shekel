@@ -31,10 +31,12 @@ class TestTransactionAmountOwnership:
     ):
         """Declaring a source while keeping the figure is refused.
 
-        The forgetful-writer shape, and the one with money in it: every private
-        repair mechanism ruling R-FI names writes the amount column ALONE, so a
-        cutover that stamps the declaration without emptying the column would
-        leave a figure that no longer follows its own inputs.
+        The forgetful-writer shape, and the one with money in it: a write that
+        stamps the declaration without emptying the column leaves a figure
+        that no longer follows its own inputs, the stored derived amount
+        ruling R-FI forbids.  The mapping cannot say it
+        (``test_amount_ownership_attribute.py``), so the writer graded here is
+        a Core INSERT, refused by ``ck_transactions_amount_ownership``.
         """
         with app.app_context():
             with pytest.raises(
