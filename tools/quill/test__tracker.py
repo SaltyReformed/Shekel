@@ -13,7 +13,9 @@ text changes no longer matches its recording: re-record it, never edit an
 answer by hand.  A test that needs an answer no scratch card can give (a link
 to another repository, a pending release) starts from a recorded answer and
 changes the one field it is about, and says so.  The recorder's own guard and
-redaction are graded in ``test__recorded.py``.
+redaction are graded in ``test__recorded.py``.  The claims' exchanges were deleted
+from the recordings at X-cx's M1, when a claim left the tracker to become the code
+repository's branch ``card/N`` (ruling ``balance:R-BAL359``).
 """
 from __future__ import annotations
 
@@ -34,13 +36,11 @@ from tools.quill._state import filing_unfinished
 from tools.quill._tracker import (
     BOARD_WAIT_SECONDS,
     Board,
-    ClaimTaken,
     Comment,
     OutsideLink,
     Tracker,
     TrackerError,
     card_from,
-    claim_message,
 )
 from tools.quill.setup_tracker import FILING, PLAN, find_board
 
@@ -50,10 +50,6 @@ TRACKER = PLAN.full_name
 #: The App's login as these recordings hold it: they were kept 2026-10-04 and -05, before the
 #: App was renamed ``shekel-quill`` (R-BAL227), and a recording keeps GitHub's answer as given.
 APP = "shekel-plan-tool"
-#: The code repository's commits the recording asks about: PR #506's last commit (merged
-#: into dev, not yet on main) and PR #447's head (closed, never merged).
-ON_DEV_ONLY = "8540e8359a2649a3532379d68b3b9d7794913f52"
-NEVER_MERGED = "d3e1979040edc74086fcad98ddf432ef078c84cf"
 #: Card #22's REST id, the scratch finding the recording filed.
 FILED_ID = 5705455461
 #: A GraphQL lookup of a repository that does not exist (review cp3 L-c).
@@ -108,26 +104,6 @@ def test_the_board_reads_in_drag_order(recorded):
     assert [number for number, _ in tracker.board.order()] == [2, 3, 4, 5, 6, 9, 7, 8, 10]
 
 
-def test_a_claim_is_won_once_read_back_and_released(recorded):
-    """The second claim is GitHub's 422 "Reference already exists"; GraphQL reads the commit."""
-    tracker, _ = recorded
-    assert tracker.claims() == {}
-    won = tracker.claim(11, "feat/plan-recording")
-    assert (won.card, won.branch) == (11, "feat/plan-recording")
-    with pytest.raises(ClaimTaken):
-        tracker.claim(11, "feat/other")
-    held = tracker.claims()
-    assert list(held) == [11]
-    assert (held[11].branch, held[11].made, held[11].sha) == (won.branch, won.made, won.sha)
-    tracker.release(11)
-    assert tracker.claims() == {}
-
-
-def test_a_claims_commit_names_its_card_and_branch():
-    """The message ``claims()`` reads the branch back from."""
-    assert claim_message(12, "feat/x") == "claim plan#12\n\nbranch: feat/x\n"
-
-
 def test_edits_are_every_saved_version_oldest_first_each_in_full(recorded):
     """Measured: GitHub keeps the FULL body per edit, with its editor; a card never edited
     has none, so its body as filed is its one version."""
@@ -141,54 +117,20 @@ def test_edits_are_every_saved_version_oldest_first_each_in_full(recorded):
     assert len(versions) == 1 and versions[0].edit_id is None and versions[0].body == body
 
 
-def test_find_titles_and_the_branch_that_merged_a_commit(recorded):
-    """A title search as the App; the code repository's pull requests as the App.
-
-    Measured 2026-10-04: GitHub names the merged pull request into dev for a commit
-    not yet on main (the default branch) -- and, re-recorded at 22:13, an OPEN one into
-    dev whose branch holds it, which is not the branch that shipped it -- and NO pull
-    request for the head of one closed unmerged."""
+def test_find_titles_reads_a_title_search_as_the_app(recorded):
+    """A title search as the App."""
     tracker, _ = recorded
     assert [number for number, _ in tracker.find_titles("L2 measurement")] == [
         15, 14, 13, 11, 20, 19, 18, 17, 16, 21, 12]
-    assert tracker.merged_into_dev("SaltyReformed/Shekel", ON_DEV_ONLY) == {
-        "tick/balance-x-bi-6-4d-1"}
-    assert tracker.merged_into_dev("SaltyReformed/Shekel", NEVER_MERGED) == set()
-
-
-def _replay_claims(tracker):
-    """The claim reads and writes, a ref under claims/ that names no card, and a 422 that
-    is not "Reference already exists"."""
-    github, base = tracker.github, f"/repos/{TRACKER}"
-    tracker.claims()
-    tracker.claim(11, "feat/plan-recording")
-    with pytest.raises(ClaimTaken):
-        tracker.claim(11, "feat/other")
-    tracker.claims()
-    tracker.release(11)
-    tracker.claims()
-    main = github.rest("GET", f"{base}/git/ref/heads/main")["object"]["sha"]
-    tree = github.rest("GET", f"{base}/git/commits/{main}")["tree"]["sha"]
-    stray = github.rest("POST", f"{base}/git/commits", {
-        "message": "recording: a ref under claims/ that names no card\n", "tree": tree,
-        "parents": []})
-    github.rest("POST", f"{base}/git/refs",
-                {"ref": "refs/claims/recording-scratch", "sha": stray["sha"]})
-    assert tracker.claims() == {}, "a ref under claims/ naming no card is no claim"
-    github.rest("DELETE", f"{base}/git/refs/claims/recording-scratch")
-    with pytest.raises(GitHubError, match="Object does not exist"):
-        github.rest("POST", f"{base}/git/refs", {"ref": "refs/claims/13", "sha": "1" * 40})
-    with pytest.raises(GitHubError, match="Could not resolve to a Repository"):
-        github.graphql_lookup(MISSING_REPOSITORY)
 
 
 def _replay_reads(tracker):
-    """Edit histories, a title search, and the code repository's pull requests."""
+    """A repository GitHub cannot find, edit histories and a title search."""
+    with pytest.raises(GitHubError, match="Could not resolve to a Repository"):
+        tracker.github.graphql_lookup(MISSING_REPOSITORY)
     for number in (11, 12):
         tracker.edits(number)
     tracker.find_titles("L2 measurement")
-    tracker.merged_into_dev("SaltyReformed/Shekel", ON_DEV_ONLY)
-    tracker.merged_into_dev("SaltyReformed/Shekel", NEVER_MERGED)
 
 
 def _replay_filed_card(tracker):
@@ -322,17 +264,16 @@ def _replay_drop_of_an_unfinished_leaf(tracker, split, leaf, ruling):
 
 def test_the_recorded_session_replays_end_to_end(recorded):
     """Every write the tool makes, in the order recorded, each answered as GitHub answered;
-    with what checkpoint 2's review found unrecorded (review M2, M3): a ref under claims/
-    that names no card, GitHub refusing a second parent, and a board read that keeps
-    showing an item in the wrong place; checkpoint 3's (L-c, R-BAL187): a repository
-    GitHub cannot find, and a closed card's reason changed; and leaf B's of R-BAL202: the
-    filing mark's create, listing and removal, and a leaf's unlink (R-BAL205).  The board
-    ends in the order it began, with no scratch card on it."""
+    with what checkpoint 2's review found unrecorded (review M2, M3): GitHub refusing a
+    second parent, and a board read that keeps showing an item in the wrong place;
+    checkpoint 3's (L-c, R-BAL187): a repository GitHub cannot find, and a closed card's
+    reason changed; and leaf B's of R-BAL202: the filing mark's create, listing and
+    removal, and a leaf's unlink (R-BAL205).  The board ends in the order it began, with no
+    scratch card on it."""
     tracker, replay = recorded
     tracker.open_cards()
     tracker.cards([1, 2, 11, 12, 13, 99999])
     order = tracker.board.order()
-    _replay_claims(tracker)
     _replay_reads(tracker)
     parent = _replay_filed_card(tracker)
     _replay_board(tracker, order, parent)
@@ -585,25 +526,6 @@ def test_a_pull_request_a_title_search_finds_is_not_a_card():
         15, 14, 13, 11, 20, 19, 18, 17, 16, 21, 12]
 
 
-def test_only_a_pull_request_merged_into_dev_shipped_a_commit():
-    """Review M2: GitHub names an OPEN pull request holding a commit not yet on main, beside
-    the merged one into dev (and no closed unmerged one).  Recorded 2026-10-04 22:13: #506,
-    merged into dev, and #515, open into dev from a branch made on top of it.  No release
-    is pending today, so the rest start from #506's answer: open into main (a pending
-    release), and merged into main."""
-    merged, open_dev = _recorded_answer("GET", f"/commits/{ON_DEV_ONLY}/pulls")
-    assert (merged["merged_at"] is not None, open_dev["merged_at"], open_dev["state"],
-            open_dev["base"]["ref"]) == (True, None, "open", "dev")
-    release = {**merged, "number": 998, "merged_at": None, "base": {**merged["base"],
-                                                                   "ref": "main"},
-               "head": {**merged["head"], "ref": "release/pending"}}
-    released = {**release, "number": 999, "merged_at": merged["merged_at"],
-                "head": {**merged["head"], "ref": "release/done"}}
-    tracker = Tracker(_Answers([merged, open_dev, release, released]), Board(None, PLAN, "B"), APP)
-    assert tracker.merged_into_dev("SaltyReformed/Shekel", ON_DEV_ONLY) == {
-        "tick/balance-x-bi-6-4d-1"}
-
-
 @pytest.mark.parametrize("link", ["parent", "sub-issue", "blocker"])
 def test_a_link_to_an_issue_of_another_repository_is_carried_apart_not_read_as_a_card(link):
     """R-BAL188 (replacing review L4's refusal of the whole read): read by number alone, the
@@ -629,35 +551,6 @@ def test_a_link_to_an_issue_of_another_repository_is_carried_apart_not_read_as_a
         assert card.children == inside.children[1:]
     else:
         assert card.blocked_by == inside.blocked_by[1:]
-
-
-class _RefRefused:
-    """GitHub making a claim's commit, then refusing its ref with ``error``."""
-
-    def __init__(self, error):
-        """Hold the refusal."""
-        self.error = error
-
-    def rest(self, method, path, _body=None):
-        """A commit for the claim; ``error`` for its ref."""
-        if path.endswith("/git/refs"):
-            raise self.error
-        if method == "POST":
-            return {"sha": "c" * 40, "author": {"date": "2026-10-04T14:18:09Z"}}
-        return {"object": {"sha": "m" * 40}, "tree": {"sha": "t" * 40}}
-
-
-def test_a_ref_refused_for_another_reason_is_not_a_taken_claim(recorded):
-    """Review M2: only "Reference already exists" means another session holds the claim; the
-    recorded 422 for a ref to a missing object must not read as one."""
-    tracker, _ = recorded
-    with pytest.raises(GitHubError) as refused:
-        tracker.github.rest("POST", f"/repos/{TRACKER}/git/refs",
-                            {"ref": "refs/claims/13", "sha": "1" * 40})
-    assert refused.value.status == 422 and "Object does not exist" in str(refused.value)
-    claimer = Tracker(_RefRefused(refused.value), Board(None, PLAN, "B"), APP)
-    with pytest.raises(GitHubError, match="Object does not exist"):
-        claimer.claim(13, "feat/x")
 
 
 def test_a_repository_github_cannot_find_is_an_error_not_a_card_read_as_absent():
@@ -802,10 +695,11 @@ def test_edits_are_read_page_by_page_and_the_text_is_the_last_pages():
 
 
 def test_show_over_the_recording_prints_its_links_titles_and_its_comments(code, capsys):
-    """The ``quill show plan#28`` the recording session ran, replayed: every read show makes,
-    in its order, answered as GitHub answered it, and nothing written -- #28 by number;
-    its child #29 and its blocker #30 in ONE read by number, for their titles; the claims
-    (none were held); the board; its text; its comments."""
+    """The ``quill show plan#28`` the recording session ran, replayed: every read show makes
+    of the tracker, in its order, answered as GitHub answered it, and nothing written --
+    #28 by number; its child #29 and its blocker #30 in ONE read by number, for their
+    titles; the board; its text; its comments.  Whether it shipped, its claim and its
+    marker's history are git's (``code``: no marker, no ``card/28``), not the tracker's."""
     tracker, replay = _comments_recording()
     assert quill.main(["show", f"plan#{S}"], connect=lambda: tracker, root=code) == 0
     assert capsys.readouterr().out == (
@@ -829,18 +723,17 @@ def test_show_over_the_recording_prints_its_links_titles_and_its_comments(code, 
         "A second comment, on two lines:\n"
         "the recorder posts it too.\n"
         "\n"
-        f"no commit on origin/dev carries Ships: or Reopens: plan#{S}\n")
+        f"no commit on origin/dev or origin/main adds, changes or deletes plan/ships/{S}\n")
     repo = f"/repos/{TRACKER}"
     assert [(method, url.removeprefix("https://api.github.com"))
             for method, url, _ in replay.sent] == [
-        ("POST", "/graphql"), ("POST", "/graphql"),
-        ("GET", f"{repo}/git/matching-refs/claims/"), ("POST", "/graphql"),
+        ("POST", "/graphql"), ("POST", "/graphql"), ("POST", "/graphql"),
         ("GET", f"{repo}/issues/{S}"), ("POST", "/graphql")]
     queries = [str((body or {}).get("query", "")) for _, _, body in replay.sent]
     assert not any("mutation" in query for query in queries)
     assert f"c{S}: issue" in queries[0] and f"c{C}: issue" not in queries[0]
     assert f"c{C}: issue" in queries[1] and f"c{B}: issue" in queries[1]
-    assert "ProjectV2" in queries[3] and "comments(first" in queries[5]
+    assert "ProjectV2" in queries[2] and "comments(first" in queries[4]
 
 
 class _Markdown:

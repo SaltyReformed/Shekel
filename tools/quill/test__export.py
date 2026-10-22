@@ -6,10 +6,12 @@ live tracker.
 scratch, so every card's text in it is redacted), then three reads of card #2 the export
 did not need -- its saved versions, its comments read with the export's fields, and its
 first comment's saved versions -- which the tests of a connection longer than one page
-start from.  Every read went through ``_recorded.Recorder``, which sends no write.  A
-test that needs an answer no card on the tracker gives (a hundred saved versions or
-comments, an edited comment, a card cut short) starts from a recorded answer, changes the
-one field it is about, and says so.  Nothing here calls GitHub.
+start from.  Every read went through ``_recorded.Recorder``, which sends no write.  Its read
+of the claims was deleted from it at X-cx's M1, when a claim left the tracker to become the
+code repository's branch ``card/N`` (ruling ``balance:R-BAL359``).  A test that needs an
+answer no card on the tracker gives (a hundred saved versions or comments, an edited
+comment, a card cut short) starts from a recorded answer, changes the one field it is
+about, and says so.  Nothing here calls GitHub.
 """
 from __future__ import annotations
 
@@ -33,7 +35,7 @@ from tools.quill._queries import (
     export_cards,
 )
 from tools.quill._recorded import Replay, recording
-from tools.quill._tracker import Board, Claim, Tracker, board_of
+from tools.quill._tracker import Board, Tracker, board_of
 from tools.quill.setup_tracker import APP_LOGIN, PLAN
 
 #: The cards the tracker held when the recording was kept, and its board's drag order.
@@ -117,11 +119,13 @@ def test_the_recorded_export_holds_every_card_whole_in_number_order():
     """Over the recording: every card once, in number order, its saved versions and its
     comments each kept as every node the listing counted and no page cursor anywhere, card
     #2's seven saved versions and two comments, neither comment edited so neither carries
-    versions of its own; no milestones; the board in its drag order; no claims; and the
-    three reads of #2 the run had no need of left unread."""
+    versions of its own; no milestones; the board in its drag order; no claims, which are not
+    the tracker's (R-BAL359); and the three reads of #2 the run had no need of left
+    unread."""
     replay = Replay("export")
     held = snapshot(_tracker(replay), TAKEN)
     listed = _recorded_data(export_cards(PLAN), after=None)["repository"]["issues"]["nodes"]
+    assert sorted(held) == ["board", "cards", "milestones", "taken_at", "tracker"]
     assert held["tracker"] == PLAN.full_name and held["taken_at"] == TAKEN.isoformat()
     assert [card["number"] for card in held["cards"]] == CARDS
     for card in held["cards"]:
@@ -134,7 +138,7 @@ def test_the_recorded_export_holds_every_card_whole_in_number_order():
     assert (len(two["userContentEdits"]["nodes"]), len(two["comments"]["nodes"])) == (7, 2)
     assert all(comment["lastEditedAt"] is None and "userContentEdits" not in comment
                for comment in two["comments"]["nodes"])
-    assert held["milestones"] == [] and held["board"] == BOARD and held["claims"] == []
+    assert held["milestones"] == [] and held["board"] == BOARD
     assert replay.unused() == UNREAD
 
 
@@ -244,7 +248,7 @@ def test_the_days_file_is_written_whole_and_its_owners_only(tmp_path, capsys):
     assert [card["number"] for card in held["cards"]] == CARDS and held["board"] == BOARD
     assert os.stat(path).st_mode & 0o777 == 0o600
     assert capsys.readouterr().out == (
-        f"wrote {path}: 12 cards, 0 milestones, 11 on the board, 0 claims\n")
+        f"wrote {path}: 12 cards, 0 milestones, 11 on the board\n")
 
 
 def test_the_file_is_named_for_the_utc_day(tmp_path):
@@ -305,17 +309,6 @@ def test_a_connection_github_answers_null_is_refused_and_no_file_is_written(tmp_
         "failed: GitHub answered plan#3's saved versions as null, so the read holds none "
         "of them\n")
     assert not list(tmp_path.iterdir())
-
-
-def test_each_claim_is_kept_whole():
-    """No card was claimed when the recording was kept, so the tracker's read of its claims
-    (graded against its own recording in test__tracker.py) is given one: the file keeps
-    every fact of it."""
-    tracker = _tracker(Replay("export"))
-    claim = Claim(7, "feat/x-cx-l8", "2026-10-21T13:00:00Z", "a" * 40)
-    tracker.claims = lambda: {claim.card: claim}
-    assert snapshot(tracker, TAKEN)["claims"] == [
-        {"card": 7, "branch": "feat/x-cx-l8", "made": "2026-10-21T13:00:00Z", "sha": "a" * 40}]
 
 
 def test_the_file_sorts_its_keys_one_to_a_line(tmp_path):

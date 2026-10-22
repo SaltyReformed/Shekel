@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from tools.quill import _git
 from tools.quill._command import (
     ON_BOARD,
     Refused,
@@ -21,7 +22,6 @@ from tools.quill._command import (
     _one,
     _outside_parent,
     _read,
-    _shipped,
     with_closure,
 )
 from tools.quill._state import (
@@ -86,6 +86,10 @@ def _converted_body(asked: _Asked, answer: str) -> str:
     return ruling_body(asked.body if question is None else question, answer)
 
 
+#: What a filing with no parent holds of git, which it does not read (:func:`_filing_for`).
+_NOTHING_READ = _git.Reads(_git.Shipped(frozenset(), ()), {}, {})
+
+
 @dataclass(frozen=True)
 class _Filing:
     """What ``file`` writes, and what it read to write it.
@@ -93,15 +97,17 @@ class _Filing:
     ``draft``: the card.  ``parent``: its owner, or the step it splits, read by
     number; None for a top-level card.  ``cards``: every card a decision over
     that parent reads (:func:`with_closure`: the cards linked under it among
-    them, each read by number), and ``shipped``: the cards git says shipped --
-    both empty with no parent.  ``asked``: for a ruling converted from a
-    question, that question as read.
+    them, each read by number); ``shipped``: the cards git says shipped; and
+    ``claims``: every claim, by card, from the same read of git
+    (:func:`_git.read`) -- all three empty with no parent.  ``asked``: for a
+    ruling converted from a question, that question as read.
     """
 
     draft: Draft
     parent: Card | None
     cards: dict[int, Card]
     shipped: frozenset[int]
+    claims: dict[int, _git.Claim]
     asked: _Asked | None
 
 
@@ -118,12 +124,11 @@ def _filing_for(args, tracker: Tracker, root: Path) -> _Filing:
         raise Refused(f"{_label(parent)}'s own filing has not finished (R-BAL202): finish it "
                       "with the same `quill file` command first, then split it -- a leaf under "
                       "it would make it a split step its own filing puts on the board")
-    owner, cards, shipped = None, {}, frozenset()
+    owner, cards, reads = None, {}, _NOTHING_READ
     if parent is not None:
-        _, found, _ = _shipped(root)
-        shipped = frozenset(found)
+        reads = _git.read(root)
         cards = with_closure(tracker, {parent.number: parent})
-        owner = Owner(parent.kind, is_live(parent.number, cards, shipped))
+        owner = Owner(parent.kind, is_live(parent.number, cards, reads.shipped.cards))
     asked = None
     if args.kind in ("step", "question"):
         body = _read(args.body_file)
@@ -139,8 +144,8 @@ def _filing_for(args, tracker: Tracker, root: Path) -> _Filing:
     else:
         body = ruling_body(_read(args.question_file), _read(args.answer_file))
     labels = tuple(dict.fromkeys((args.arc, *(getattr(args, "label", None) or ()))))
-    return _Filing(Draft(args.kind, args.title, body, labels, owner), parent, cards, shipped,
-                   asked)
+    return _Filing(Draft(args.kind, args.title, body, labels, owner), parent, cards,
+                   reads.shipped.cards, reads.claims, asked)
 
 
 def _place_leaf(tracker: Tracker, leaf: Card, filing: _Filing) -> None:
@@ -259,7 +264,7 @@ def _refuse_beside_unfinished(filing: _Filing, leaf: Card | None) -> None:
                       "(`quill show` shows its parent and board place)")
 
 
-def _refuse_under_a_claim(tracker: Tracker, filing: _Filing, leaf: Card | None) -> None:
+def _refuse_under_a_claim(filing: _Filing, leaf: Card | None) -> None:
     """Refuse to file a leaf of ``filing``'s parent -- a new one, or ``leaf``'s filing again
     -- while a claim names that parent (C2 review M4): a branch is building it as one piece
     of work, and a step split into smaller steps is never shipped itself (R-BAL177), so a
@@ -272,7 +277,7 @@ def _refuse_under_a_claim(tracker: Tracker, filing: _Filing, leaf: Card | None) 
     earlier run created, git does not say it shipped, and no other leaf splits the step
     -- drop it, which keeps the step whole (R-BAL205).
 
-    The claims are read here, before any write of the leaf's.  A claim this refusal
+    The claims are ``filing``'s, read before any write of the leaf's.  A claim this refusal
     cannot see still lands on a split step: one made after this read and before the
     link lands (GitHub has no conditional sub-issue write); one made while a leaf closed
     while still being filed left the step plain, before a person reopened that leaf or
@@ -280,15 +285,15 @@ def _refuse_under_a_claim(tracker: Tracker, filing: _Filing, leaf: Card | None) 
     under a claimed step on the web.  ``sync`` reports every such claim
     (:func:`_state.sync_plan`)."""
     parent = filing.parent
-    claim = tracker.claims().get(parent.number)
+    claim = filing.claims.get(parent.number)
     if claim is None:
         return
     others = set(leaves(parent, filing.cards, filing.shipped)) - {getattr(leaf, "number", None)}
     keep = ("" if leaf is None or leaf.number in filing.shipped or others else
             f"; or, to keep plan#{parent.number} whole, `quill drop plan#{leaf.number}`: its "
             "filing never finished, so it was never part of the split (R-BAL205)")
-    raise Refused(f"plan#{parent.number} is claimed by {holder(claim)} since "
-                  f"{claim.made or '?'}: a branch is building it as one piece of work, and a step "
+    raise Refused(f"plan#{parent.number} is claimed, {holder(claim)}: a branch is "
+                  "building it as one piece of work, and a step "
                   "split into smaller steps is never shipped itself (R-BAL177), so no leaf is "
                   "filed under it while it is claimed.  Release the claim first "
                   f"({release_hint(claim)}, by the session that holds it, or once its work is "
@@ -342,8 +347,7 @@ def _shipped_for(filing: _Filing, card: Card, root: Path) -> frozenset[int]:
     when ``card`` was closed while still marked, the one card the answer decides."""
     if filing.parent is not None or card.is_open or FILING not in card.labels:
         return filing.shipped
-    _, found, _ = _shipped(root)
-    return frozenset(found)
+    return _git.read(root).shipped.cards
 
 
 def cmd_file(args, tracker: Tracker, root: Path) -> int:
@@ -386,7 +390,7 @@ def cmd_file(args, tracker: Tracker, root: Path) -> int:
         if not filing_unfinished(card):
             return _filed_already(card, filing.parent)
     if args.kind == "step" and filing.parent is not None:
-        _refuse_under_a_claim(tracker, filing, card)
+        _refuse_under_a_claim(filing, card)
         _refuse_beside_unfinished(filing, card)
     if card is None:
         card = _created(args.kind, tracker, filing.draft)

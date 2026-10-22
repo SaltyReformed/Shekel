@@ -156,7 +156,8 @@ def test_the_filing_mark_is_a_label_the_tracker_keeps():
 
 
 def test_a_missing_repository_is_created_private_with_a_first_commit():
-    """A git reference (a claim) needs a commit to point at; ``auto_init`` makes one."""
+    """GitHub refuses any git reference in a repository with no commit; ``auto_init`` makes
+    one."""
     path = "/repos/saltyreformed-labs/shekel-plan"
     created = {"node_id": "R", **REPOSITORY}
     github = _GitHub(rest={
@@ -621,6 +622,19 @@ def test_an_app_installed_as_declared_matches(monkeypatch):
     report = Report()
     setup_tracker.check_app(report)
     assert report.differences == 0
+
+
+def test_an_installation_still_holding_contents_write_is_a_difference(monkeypatch):
+    """X-cx's M1 (R-BAL359): the App writes no claim reference since a claim became the code
+    repository's branch ``card/N``, so ``contents`` left its declared permissions; an
+    installation that still holds it, until the developer narrows it, is reported."""
+    installation = _installation()
+    installation["permissions"]["contents"] = "write"
+    _app_setup(monkeypatch, installation=installation)
+    report = Report()
+    setup_tracker.check_app(report)
+    assert report.differences == 1
+    assert "DIFFERS App permission 'contents' is 'write', declared None" in report.lines
 
 
 def test_an_app_that_reaches_another_repository_is_a_difference(monkeypatch):

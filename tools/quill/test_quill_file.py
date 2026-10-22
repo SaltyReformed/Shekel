@@ -8,8 +8,8 @@ from __future__ import annotations
 import pytest
 import requests
 
-from tools.quill._fake import FailOnce, FakeTracker, leaf_filing, run, ship
-from tools.quill._tracker import Child, Claim, Edit, OutsideLink
+from tools.quill._fake import FailOnce, FakeTracker, claim, leaf_filing, run, ship
+from tools.quill._tracker import Child, Edit, OutsideLink
 from tools.quill.check import ruling_body
 from tools.quill.setup_tracker import FILING, MOVES_MONEY_LABEL
 
@@ -137,7 +137,7 @@ def test_a_step_waiting_on_a_question_is_released_once_it_is_answered(code, tmp_
     tracker.add(1)
     tracker.add(2, "question", body="Which day?", title="Day")
     tracker.add(3, blocked_by=(2,))
-    tracker.held[1] = Claim(1, "feat/one", "2026-10-04T12:00:00Z", "s")
+    claim(code, 1)
     assert run(tracker, code, "next") == 0
     assert capsys.readouterr().out.startswith("next: nothing")
     assert run(tracker, code, "file", "ruling", "--arc", "balance", "--title", "Day",
@@ -155,7 +155,7 @@ def test_a_leaf_is_never_filed_under_a_step_already_done_with(code, tmp_path, ca
     spec.write_text("Late work.")
     tracker = FakeTracker()
     tracker.add(1)
-    ship(code, "Ships: plan#1")
+    ship(code, 1)
     assert run(tracker, code, "file", "step", "--arc", "balance", "--title", "late",
                "--parent", "plan#1", "--body-file", str(spec)) == 1
     assert "the LIVE step it splits" in capsys.readouterr().err
@@ -169,14 +169,14 @@ def test_splitting_a_blocked_step_offers_no_leaf_until_its_wait_ends(code, tmp_p
     spec.write_text("The first half.")
     tracker = FakeTracker()
     tracker.add(2)
-    tracker.held[2] = Claim(2, "feat/l2", "2026-10-04T12:00:00Z", "s")
+    claim(code, 2)
     tracker.add(7, blocked_by=(2,))
     assert run(tracker, code, "file", "step", "--arc", "balance", "--title", "L7a",
                "--parent", "plan#7", "--body-file", str(spec)) == 0
     capsys.readouterr()
     assert run(tracker, code, "next") == 0
     assert capsys.readouterr().out.startswith("next: nothing")
-    ship(code, "Ships: plan#2")
+    ship(code, 2)
     assert run(tracker, code, "next") == 0
     assert capsys.readouterr().out.startswith("next: plan#8 ")
 
@@ -291,7 +291,7 @@ def test_a_finding_owner_open_on_the_tracker_but_shipped_in_git_is_refused(code,
     """Review M2: a live owner is git's answer, never the card's open state (display)."""
     tracker = FakeTracker()
     tracker.add(1)
-    ship(code, "Ships: plan#1")
+    ship(code, 1)
     assert run(tracker, code, "file", "finding", "--arc", "balance", "--title", "Late",
                "--owner", "plan#1", "--text", "The report counts a refund twice.") == 1
     assert "a step that is done" in capsys.readouterr().err

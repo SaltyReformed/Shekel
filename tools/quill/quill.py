@@ -6,21 +6,27 @@ issue, a "card", and one board holds the steps and questions in the order the
 developer drags them (``R-BAL177``).  Every write goes through quill's
 GitHub App, and every card a session files passes :mod:`check` first.
 
-Whether a card SHIPPED is git's answer, never the card's state: a commit on
-``dev`` carrying ``Ships: plan#N``, with no later ``Reopens: plan#N``
-(:mod:`_git`).  The card's open or closed state is display, which ``sync``
-writes from git.  So every command that asks git -- ``next``, ``show``,
-``claim``, ``move``, ``drop``, ``sync``, and ``file`` given an owner or a
-parent or finding a card of its own closed while still marked -- first runs
-``git fetch origin dev``, which moves this checkout's ``origin/dev``.  (``move``
-and ``drop`` ask it whether a step is split: a leaf dropped before its filing
-finished is no leaf unless git says it shipped, ``_state.leaves``.)
+Whether a card SHIPPED is git's answer, never the card's state: its ship
+marker ``plan/ships/N`` in the merge of ``dev`` and ``main`` (ruling
+``balance:R-BAL359``, :mod:`_git`).  The card's open or closed state is
+display, which ``sync`` writes from git.  A card is CLAIMED while the code
+repository's ``origin`` holds a branch ``card/N`` whose work neither ``dev``
+nor ``main`` holds: ``claim`` makes it, a commit adding the card's marker
+pushed create-only, and ``release`` keeps its work on ``released/N/<instant>``
+and deletes it.  So every command that asks git -- ``next``, ``show``,
+``claim``, ``release``, ``move``, ``drop``, ``sync``, and ``file`` given an
+owner or a parent or finding a card of its own closed while still marked --
+first reads it once (:func:`_git.read`): it lists the ``card/N`` branches
+``origin`` holds, then fetches ``dev``, ``main`` and each of them, which moves
+this checkout's ``origin/dev``, ``origin/main`` and ``origin/card/N``.
+(``move`` and ``drop`` ask it whether a step is split: a leaf dropped before
+its filing finished is no leaf unless git says it shipped, ``_state.leaves``.)
 
 Usage, from the repository root (``plan#N`` or ``N`` names a card)::
 
     python -m tools.quill.quill next [--arc ARC]
-    python -m tools.quill.quill claim plan#N [--branch BRANCH]
-    python -m tools.quill.quill release plan#N [--branch BRANCH | --unreadable]
+    python -m tools.quill.quill claim plan#N [--here]
+    python -m tools.quill.quill release plan#N
     python -m tools.quill.quill show plan#N | OLD-ID
     python -m tools.quill.quill file step --arc ARC --title NAME --body-file SPEC [--parent plan#P]
     python -m tools.quill.quill file finding --arc ARC --title NAME --owner plan#S --text SENTENCE
@@ -66,9 +72,9 @@ from pathlib import Path
 
 import requests
 
-from tools.ci import trailers
 from tools.ci.arcs import ARCS, REPO
 from tools.ci.gitcmd import GitError
+from tools.ci.trailers import DEV, MAIN, tracking
 from tools.quill import _git
 from tools.quill._command import (
     ON_BOARD,
@@ -77,7 +83,6 @@ from tools.quill._command import (
     _one,
     _outside_parent,
     _read,
-    _shipped,
     _unfinished,
     with_closure,
 )
@@ -85,6 +90,7 @@ from tools.quill._export import cmd_export
 from tools.quill._filing import cmd_file
 from tools.quill._github import CredentialsError, GitHubError
 from tools.quill._state import (
+    STALE_CLAIM,
     SyncPlan,
     Unsplit,
     drop_shows,
@@ -99,16 +105,16 @@ from tools.quill._state import (
     never_split,
     next_step,
     outside_reports,
-    release_flag,
     release_hint,
     resolved,
     stale_claims,
     sync_plan,
     sync_unsplits,
     unfinished_reports,
+    unshipped_shown_done,
     unsplit,
 )
-from tools.quill._tracker import Card, Claim, ClaimTaken, Tracker, TrackerError
+from tools.quill._tracker import Card, Tracker, TrackerError
 from tools.quill.check import (
     BODY,
     TITLE,
@@ -120,12 +126,12 @@ from tools.quill.check import (
 )
 from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, FILING, MOVES_MONEY_LABEL, PLAN
 
-#: Branches a claim may never name: nothing is built on them directly.
-_SHARED_BRANCHES = ("dev", "main")
 #: How a command reaches the plan's tracker: quill's App, narrowed to its repository.  The
 #: release tool's command line reaches it the same way (``tools/release/release.py``).
 CONNECT = partial(Tracker.connect, PLAN)
 _CARD_REF = re.compile(r"(?:plan#|#)?([1-9][0-9]*)")
+#: What a commit did to a ship marker, by its status in :func:`_git.history`.
+_MARKER_CHANGES = {"A": "added", "M": "changed", "D": "deleted", "T": "changed the type of"}
 
 
 def card_number(text: str) -> int:
@@ -136,33 +142,16 @@ def card_number(text: str) -> int:
     return int(found.group(1))
 
 
-def _stray(trailer: trailers.Trailer) -> str:
-    """A stray Reopens, as a report line."""
-    return (f"{trailer.sha[:12]} 'Reopens: plan#{trailer.card}' cancels no Ships in its own "
-            "history (R-BAL181): a mistyped number? It is not acted on")
-
-
-def _branch(root: Path, given: str | None) -> str:
-    """The branch a claim names: ``given``, or the one checked out; never a shared one."""
-    branch = given or _git.current_branch(root)
-    if branch is None:
-        raise Refused("HEAD is detached: check out the branch that will ship the card, or "
-                      "pass --branch")
-    if branch in _SHARED_BRANCHES:
-        raise Refused(f"a claim names the branch that will ship the card, not {branch!r}")
-    return branch
-
-
 # -- next, claim, release -----------------------------------------------------
 
 def cmd_next(args, tracker: Tracker, root: Path) -> int:
     """The first open step in the board's order that is unclaimed, unshipped and unblocked;
     then what it cannot offer that a person must act on."""
-    _, shipped, _ = _shipped(root)
+    reads = _git.read(root)
+    shipped = reads.shipped.cards
     cards = with_closure(tracker, {**tracker.open_cards(), **_unfinished(tracker)})
-    claims = tracker.claims()
     order = [number for number, _ in tracker.board.order()]
-    answer = next_step(order, cards, shipped, claims, args.arc)
+    answer = next_step(order, cards, shipped, reads.claims, args.arc)
     scope = f" in {args.arc}" if args.arc else ""
     print(f"next{scope}: {_label(answer.card)}" if answer.card else f"next{scope}: nothing")
     for card in answer.unplaced:
@@ -172,9 +161,9 @@ def cmd_next(args, tracker: Tracker, root: Path) -> int:
                  if never_split(card, cards, shipped) else
                  f"place it with `quill move plan#{card.number} --after plan#M` (or the board "
                  "lags a fresh write)"))
-    for claim in stale_claims(claims, datetime.now(UTC), lambda b: _git.pushed(root, b)):
-        print(f"STALE CLAIM: plan#{claim.card} by {holder(claim)} since {claim.made or '?'}, "
-              f"no pushed branch -- {release_hint(claim)}")
+    for claim in stale_claims(reads.claims, datetime.now(UTC)):
+        print(f"STALE CLAIM: plan#{claim.card} on {holder(claim)}: no commit for more than "
+              f"{STALE_CLAIM.days} days -- {release_hint(claim)} keeps its work and frees it")
     for line in outside_reports(cards):
         print(f"OUTSIDE LINK: {line}")
     for line in unfinished_reports(cards, shipped):
@@ -182,11 +171,25 @@ def cmd_next(args, tracker: Tracker, root: Path) -> int:
     return 0
 
 
-def cmd_claim(args, tracker: Tracker, root: Path) -> int:
-    """Claim a card for the branch that will ship it."""
+def cmd_claim(args, tracker: Tracker, root: Path,
+              clock: Callable[[], datetime] = lambda: datetime.now(UTC)) -> int:
+    """Claim a card (R-BAL359): a commit adding its ship marker, made on ``origin/dev`` --
+    or with ``--here`` on the commit checked out, for work already started -- and pushed
+    create-only as the branch ``card/N`` (:func:`_git.claim`), then checked out here as
+    that branch, with no upstream.  Refused, with nothing written, for what is no work to
+    claim (work shown done that a revert unshipped says to sync first); while ``card/N``
+    holds a claim; while ``origin`` holds a ``card/N`` already merged, which a create-only
+    push cannot replace; and while this clone already has a branch of that name, which the
+    check-out would collide with.  The claim line is printed once the push lands, so a
+    failed check-out after it says what to run."""
     card = _one(tracker, args.card)
-    _, shipped, _ = _shipped(root)
+    reads = _git.read(root)
+    shipped = reads.shipped.cards
     cards = with_closure(tracker, {card.number: card})
+    if is_work(card, cards, shipped) and unshipped_shown_done(card, shipped):
+        raise Refused(f"{_label(card)} is shown done, but git no longer says it shipped (a "
+                      f"revert deleted {_git.marker(card.number)}): `quill sync` reopens it, "
+                      "then claim it")
     if not card.is_open or not is_work(card, cards, shipped):
         raise Refused(f"{_label(card)} is not work a branch ships (open step or finding, "
                       "not a container)")
@@ -194,37 +197,49 @@ def cmd_claim(args, tracker: Tracker, root: Path) -> int:
         raise Refused(f"{_label(card)} is never offered as work: {why}")
     if card.number in shipped:
         raise Refused(f"{_label(card)} shipped in git: no work is left on it to claim")
-    branch = _branch(root, args.branch)
+    if held := reads.claims.get(card.number):
+        raise Refused(f"plan#{card.number} is already claimed: {holder(held)}")
+    branch = _git.card_branch(card.number)
+    if tip := reads.merged.get(card.number):
+        raise Refused(f"origin holds {branch} at {tip[:12]}, whose work {DEV} or {MAIN} already "
+                      "holds: a card branch that outlived its merge, which a claim cannot "
+                      "replace.  Delete it, with a lease on that tip, then claim again: "
+                      f"`git push --force-with-lease=refs/heads/{branch}:{tip} origin "
+                      f":refs/heads/{branch}`")
+    if _git.has_branch(root, branch):
+        raise Refused(f"this clone already has a branch {branch!r}, which a claim of "
+                      f"plan#{card.number} checks out: delete or rename it first")
+    base = "HEAD" if args.here else tracking(DEV)
     try:
-        claim = tracker.claim(card.number, branch)
-    except ClaimTaken:
-        held = tracker.claims().get(card.number)
-        taken = f"{holder(held)} since {held.made or '?'}" if held else "someone (just released?)"
-        raise Refused(f"plan#{card.number} is already claimed by {taken}") from None
-    print(f"claimed {_label(card)} for {claim.branch!r}")
+        sha = _git.claim(root, card.number, base, clock())
+    except _git.ClaimTaken:
+        raise Refused(f"origin holds {branch!r} already, though this command's read saw no "
+                      f"branch of that name: another session claimed plan#{card.number} since "
+                      f"(`quill show plan#{card.number}` names its claim)") from None
+    print(f"claimed {_label(card)}: {branch} at {sha[:12]} on origin, adding "
+          f"{_git.marker(card.number)} on {'the commit checked out' if args.here else DEV}")
+    if failed := _git.check_out(root, card.number, sha):
+        print(f"  not switched to {branch} ({failed}): the claim stands; run "
+              f"`git switch {branch}`")
+    else:
+        print(f"  switched to {branch}")
     return 0
 
 
-def cmd_release(args, tracker: Tracker, root: Path) -> int:
-    """Delete a card's claim: one naming the branch passed with ``--branch`` (else the one
-    checked out), or with ``--unreadable`` one whose branch cannot be read."""
-    claim = tracker.claims().get(args.card)
+def cmd_release(args, _tracker: Tracker, root: Path,
+                clock: Callable[[], datetime] = lambda: datetime.now(UTC)) -> int:
+    """Release a card's claim, whoever made it: its branch's work pushed to
+    ``released/N/<instant>``, then ``card/N`` deleted from origin with a lease on the tip
+    this command read (:func:`_git.release`), so neither that work nor a push made since
+    is lost.  This clone's own ``card/N`` is left as it is, and named."""
+    claim = _git.read(root).claims.get(args.card)
     if claim is None:
-        raise Refused(f"plan#{args.card} is not claimed")
-    if args.unreadable:
-        if claim.branch is not None:
-            raise Refused(f"plan#{args.card}'s claim names {claim.branch!r}; --unreadable "
-                          "releases only a claim whose branch cannot be read")
-    else:
-        branch = args.branch or _git.current_branch(root)
-        if branch is None:
-            raise Refused(f"HEAD is detached, so no branch names the claim to release; "
-                          f"pass {release_flag(claim)}")
-        if claim.branch != branch:
-            raise Refused(f"plan#{args.card}'s claim names {holder(claim)}, not {branch!r}; "
-                          f"to release another branch's claim, pass {release_flag(claim)}")
-    tracker.release(args.card)
-    print(f"released plan#{args.card} (claimed by {holder(claim)} since {claim.made or '?'})")
+        raise Refused(f"plan#{args.card} is not claimed: origin holds no "
+                      f"{_git.card_branch(args.card)} whose work neither {DEV} nor {MAIN} holds")
+    kept = _git.release(root, args.card, claim.sha, clock())
+    print(f"released plan#{args.card}, {holder(claim)}: its work is kept on {kept}")
+    if _git.has_branch(root, claim.branch):
+        print(f"  this clone's branch {claim.branch} is left as it is")
     return 0
 
 
@@ -250,24 +265,24 @@ def _resolve_reference(tracker: Tracker, text: str) -> int:
     return found[0]
 
 
-def _card_lines(card: Card, tracker: Tracker, cards: dict[int, Card],
-                shipped: dict, titles: dict[int, str]) -> list[str]:
-    """What the tracker and git say about a card, one fact a line.  ``cards`` holds every
-    step linked below it (:func:`_steps_below`), so a step linked under it that is no leaf
-    of it says so (:func:`_state.never_split`), as ``next`` reads it; ``titles`` holds the
-    title of each card it lists as a child or a blocker."""
-    claim = tracker.claims().get(card.number)
-    stale = set(never_split(card, cards, shipped))
+def _card_lines(card: Card, tracker: Tracker, cards: dict[int, Card], reads: _git.Reads,
+                titles: dict[int, str]) -> list[str]:
+    """What the tracker and git (``reads``) say about a card, one fact a line.  ``cards``
+    holds every step linked below it (:func:`_steps_below`), so a step linked under it that
+    is no leaf of it says so (:func:`_state.never_split`), as ``next`` reads it; ``titles``
+    holds the title of each card it lists as a child or a blocker."""
+    claim = reads.claims.get(card.number)
+    stale = set(never_split(card, cards, reads.shipped.cards))
     order = [n for n, _ in tracker.board.order()]
     state = "open" if card.is_open else f"closed ({card.state_reason})"
-    ship = f"yes, {shipped[card.number][0].sha[:12]}" if card.number in shipped else "no"
+    ship = "yes" if card.number in reads.shipped.cards else "no"
     place = f"#{order.index(card.number) + 1}" if card.number in order else "not on it"
     lines = [
         _label(card),
         f"  state: {state}",
         f"  shipped (git): {ship}",
         f"  board: {place}",
-        f"  claim: {holder(claim)} since {claim.made or '?'}" if claim else "  claim: none",
+        f"  claim: {holder(claim)}" if claim else "  claim: none",
         (f"  parent: plan#{card.parent}" if card.parent else
          f"  parent: {outside} (outside the tracker)" if (outside := _outside_parent(card))
          else "  parent: none"),
@@ -325,12 +340,14 @@ def _titles(tracker: Tracker, card: Card, read: dict[int, Card]) -> dict[int, st
 
 def cmd_show(args, tracker: Tracker, root: Path) -> int:
     """A card -- the title of each card linked below it or blocking it among its facts --
-    then its text, its comments oldest first, and the code repository's history for it."""
+    then its text, its comments oldest first, and the code repository's history for it:
+    each commit on ``dev`` or ``main`` that added, changed or deleted its ship marker
+    (:func:`_git.history`), newest first."""
     number = _resolve_reference(tracker, args.card)
     card = _one(tracker, number)
-    found, shipped, strays = _shipped(root)
+    reads = _git.read(root)
     steps = _steps_below(tracker, card)
-    print("\n".join(_card_lines(card, tracker, steps, shipped, _titles(tracker, card, steps))))
+    print("\n".join(_card_lines(card, tracker, steps, reads, _titles(tracker, card, steps))))
     print()
     print(tracker.body(number))
     print()
@@ -341,14 +358,11 @@ def cmd_show(args, tracker: Tracker, root: Path) -> int:
         print(f"== comment, {comment.created_at} by {comment.author or '?'}")
         print(comment.body.rstrip())
     print()
-    history = [t for t in found.trailers if t.card == number]
-    for trailer in history:
-        print(f"{trailer.key}: {trailer.sha[:12]} {trailer.subject}")
+    history = _git.history(root, number)
+    for status, sha, subject in history:
+        print(f"{_MARKER_CHANGES[status]} {_git.marker(number)}: {sha[:12]} {subject}")
     if not history:
-        print(f"no commit on {trailers.DEV} carries Ships: or Reopens: plan#{number}")
-    for trailer in strays:
-        if trailer.card == number:
-            print(f"STRAY: {_stray(trailer)}")
+        print(f"no commit on {DEV} or {MAIN} adds, changes or deletes {_git.marker(number)}")
     return 0
 
 
@@ -483,7 +497,7 @@ def cmd_block(args, tracker: Tracker, _root: Path) -> int:
 def cmd_move(args, tracker: Tracker, root: Path) -> int:
     """Put a step or question at a place in the board's order."""
     card = _one(tracker, args.card)
-    _, shipped, _ = _shipped(root)
+    shipped = _git.read(root).shipped.cards
     cards = with_closure(tracker, {card.number: card})
     if card.kind not in ON_BOARD or not card.is_open or is_container(card, cards, shipped):
         raise Refused(f"the board holds open steps and questions only, and no step split into "
@@ -513,22 +527,23 @@ def cmd_move(args, tracker: Tracker, root: Path) -> int:
     return 0
 
 
-def _drop(tracker: Tracker, card: Card, why: str) -> None:
+def _drop(tracker: Tracker, card: Card, why: str, claims: dict[int, _git.Claim]) -> None:
     """Drop one piece of work: the reason as a comment, then closed as not planned; each
-    write printed as it lands, and a claim on it named."""
+    write printed as it lands, and a claim on it (one of ``claims``) named."""
     tracker.comment(card.number, f"Dropped: {why}")
     print(f"  commented on plan#{card.number}: Dropped: {why}")
-    _close_dropped(tracker, card)
+    _close_dropped(tracker, card, claims)
 
 
-def _close_dropped(tracker: Tracker, card: Card) -> None:
+def _close_dropped(tracker: Tracker, card: Card, claims: dict[int, _git.Claim]) -> None:
     """Close a card whose reason is already on it as not planned, printed as it lands,
-    and name a claim on it."""
+    and name a claim on it (one of ``claims``), which a drop leaves: its branch holds a
+    person's work."""
     tracker.close(card.number, "not_planned")
     print(f"dropped {_label(card)}")
-    claim = tracker.claims().get(card.number)
-    if claim is not None:
-        print(f"  its claim by {holder(claim)} stays: {release_hint(claim)}")
+    if (claim := claims.get(card.number)) is not None:
+        print(f"  its claim stays, {holder(claim)}: {release_hint(claim)} keeps its work "
+              "and frees it")
 
 
 def _unsplit(tracker: Tracker, undo: Unsplit, cards: dict[int, Card],
@@ -557,7 +572,8 @@ def _unsplit(tracker: Tracker, undo: Unsplit, cards: dict[int, Card],
               "finished, so it was never part of that split (R-BAL205)")
 
 
-def _leave_split(tracker: Tracker, leaf: Card, cards: dict[int, Card], shipped: dict) -> None:
+def _leave_split(tracker: Tracker, leaf: Card, cards: dict[int, Card],
+                 shipped: frozenset[int]) -> None:
     """Take ``leaf``, dropped while its filing has not finished, out of the split it began,
     which it was never part of (R-BAL205), before its close: a split step the TOOL closed
     first shown as ``sync`` would show it once the drop is done
@@ -581,7 +597,8 @@ def _leave_split(tracker: Tracker, leaf: Card, cards: dict[int, Card], shipped: 
 def cmd_drop(args, tracker: Tracker, root: Path) -> int:
     """Retire work with no code: each card's reason as a comment, then closed as not planned.
 
-    Work git says shipped is never dropped: undoing it is a ``Reopens:`` commit.
+    Work git says shipped is never dropped: undoing it is a revert of the change that
+    shipped it, which deletes its marker.
     A leaf dropped while its filing has not finished is first taken out of the
     split it began, which it was never part of (R-BAL205, :func:`_leave_split`):
     unlinked, and its split step, if it was the only leaf and will be open, a
@@ -611,19 +628,21 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
     work (a leaf whose comment landed but not its close gets the reason twice).
     """
     card = _one(tracker, args.card)
-    _, shipped, _ = _shipped(root)
+    reads = _git.read(root)
+    shipped = reads.shipped.cards
     cards = with_closure(tracker, {card.number: card})
     if not is_container(card, cards, shipped):
         if not card.is_open:
             raise Refused(f"{_label(card)} is already closed")
         if is_work(card, cards, shipped) and card.number in shipped:
-            raise Refused(f"{_label(card)} shipped in git: undo it with a commit carrying "
-                          f"'Reopens: plan#{card.number}', not a drop")
+            raise Refused(f"{_label(card)} shipped in git: undo it by reverting the change "
+                          f"that shipped it, which deletes {_git.marker(card.number)}, not "
+                          "by a drop")
         if card.kind == "step" and card.parent is not None and filing_unfinished(card):
             _leave_split(tracker, card, cards, shipped)
         for undo in drop_unlinks(card, cards, shipped, set()):
             _unsplit(tracker, undo, cards)
-        _drop(tracker, card, args.why)
+        _drop(tracker, card, args.why, reads.claims)
         return 0
     below = leaves_below(card, cards, shipped)
     done = [leaf for leaf in below if leaf.number in shipped]
@@ -640,35 +659,23 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
     print(f"  commented on plan#{card.number}: dropping its leaves still work, {names}"
           + ("" if card in bare else "; it shows them at the next `quill sync`"))
     for leaf in below:
-        _drop(tracker, leaf, args.why)
+        _drop(tracker, leaf, args.why, reads.claims)
     for undo in drop_unlinks(card, cards, shipped, ending):
         _unsplit(tracker, undo, cards)
     for step in bare:
         print(f"  plan#{step.number}: every leaf of it was still being filed, so no leaf "
               "carries its drop (R-BAL190): it is closed itself")
         if step.number == card.number:
-            _close_dropped(tracker, step)
+            _close_dropped(tracker, step, reads.claims)
         else:
-            _drop(tracker, step, args.why)
+            _drop(tracker, step, args.why, reads.claims)
     return 0
 
 
 # -- sync -------------------------------------------------------------------------
 
-def _ship_branches(tracker: Tracker, root: Path, cards: dict[int, Card],
-                   shipped: dict) -> dict[int, set[str]]:
-    """For each open card git says shipped, the branches whose merged pull requests
-    into ``dev`` carried its standing ``Ships:`` commits."""
-    repository = _git.origin_repository(root)
-    return {
-        number: {branch for trailer in trailers
-                 for branch in tracker.merged_into_dev(repository, trailer.sha)}
-        for number, trailers in shipped.items() if number in cards and cards[number].is_open
-    }
-
-
-def _undo_splits(tracker: Tracker, cards: dict[int, Card], shipped: dict, changes: SyncPlan,
-                 dry_run: bool) -> None:
+def _undo_splits(tracker: Tracker, cards: dict[int, Card], shipped: frozenset[int],
+                 changes: SyncPlan, dry_run: bool) -> None:
     """``sync``'s undo of each split a leaf closed while still being filed is linked under
     (:func:`_state.sync_unsplits`, R-BAL205, which reads the board's order and ``changes``,
     the state writes ``sync`` makes): each named, then made by :func:`_unsplit` -- under
@@ -680,10 +687,11 @@ def _undo_splits(tracker: Tracker, cards: dict[int, Card], shipped: dict, change
         _unsplit(tracker, undo, cards, dry_run)
 
 
-def _sync_reads(tracker: Tracker, found: trailers.History) -> tuple[dict[int, Card],
-                                                                 dict[int, Claim], list[str]]:
-    """The cards ``sync`` decides over, every claim, and a HISTORY line for each card a
-    trailer in ``found`` names that does not exist.
+def _sync_reads(tracker: Tracker, reads: _git.Reads,
+                ever: frozenset[int]) -> tuple[dict[int, Card], list[str]]:
+    """The cards ``sync`` decides over, and a HISTORY line for each card a ship marker in
+    ``reads`` names that does not exist.  ``ever``: every card whose marker a commit on
+    ``dev`` or ``main`` ever touched (:func:`_git.ever_marked`).
 
     The listings of open cards and of EVERY card still marked (a filing unfinished, or
     one closed while still being filed, whose link under its split step ``sync``
@@ -691,22 +699,23 @@ def _sync_reads(tracker: Tracker, found: trailers.History) -> tuple[dict[int, Ca
     is then read by its number, which decides, since a listing may still show a card
     as it was before a write: a leaf's close the listing lagged made its split step,
     which ``quill drop`` had just closed, read as split again, and sync reopened it.
-    Every card a trailer names, and every claimed card, is read by its number too --
-    the claimed ones so that a claim on a split step is reported whatever that step's
+    Every card a marker ever named (``ever``, which holds every card git says shipped now
+    too), and every claimed card, is read by its number too -- the first so that a card
+    the tool closed as shipped is reopened once a revert has deleted its marker, which no
+    listing finds (it is closed, and carries no mark); the
+    claimed ones so that a claim on a split step is reported whatever that step's
     state (:func:`_state.sync_plan`) -- and then every card a decision over them reads
     (:func:`with_closure`).
     """
-    named = {trailer.card for trailer in found.trailers}
     listed = {**tracker.open_cards(), **tracker.marked()}
-    claims = tracker.claims()
-    cards = tracker.cards(named | set(listed) | set(claims))
+    cards = tracker.cards(ever | set(listed) | set(reads.claims))
     if unread := sorted(set(listed) - set(cards)):
         raise TrackerError(f"plan#{unread[0]} is listed, but a read by its number does not hold "
                            "it (that read has not caught up yet, or the card was deleted or "
                            "moved since): run sync again")
-    history = [f"a trailer on {trailers.DEV} names plan#{number}, which does not exist"
-               for number in sorted(named - set(cards))]
-    return with_closure(tracker, cards), claims, history
+    history = [f"the marker {_git.marker(number)} on {DEV} or {MAIN} names plan#{number}, "
+               "which does not exist" for number in sorted(reads.shipped.cards - set(cards))]
+    return with_closure(tracker, cards), history
 
 
 def cmd_sync(args, tracker: Tracker, root: Path) -> int:
@@ -716,14 +725,15 @@ def cmd_sync(args, tracker: Tracker, root: Path) -> int:
     line, so a failed undo costs none of them; run again, it finishes the undo.
 
     Prints a REPORT for each thing a person must fix in the tracker, which makes
-    it exit 1, and a HISTORY line for each thing a commit already on ``dev`` says
+    it exit 1, and a HISTORY line for each thing ``dev`` and ``main`` already hold
     wrongly, which no tracker write can change and so never fails it (R-BAL184).
 
     What it reads: :func:`_sync_reads`.
     """
-    found, shipped, strays = _shipped(root)
-    cards, claims, history = _sync_reads(tracker, found)
-    changes = sync_plan(cards, shipped, claims, _ship_branches(tracker, root, cards, shipped))
+    reads = _git.read(root)
+    shipped = reads.shipped.cards
+    cards, history = _sync_reads(tracker, reads, _git.ever_marked(root))
+    changes = sync_plan(cards, shipped, reads.claims)
     verb = "would " if args.dry_run else ""
     for number in changes.close:
         if not args.dry_run:
@@ -738,13 +748,9 @@ def cmd_sync(args, tracker: Tracker, root: Path) -> int:
         if not args.dry_run:
             tracker.reopen(number)
         print(f"{verb}reopen {_label(cards[number])}")
-    for number in changes.release:
-        if not args.dry_run:
-            tracker.release(number)
-        print(f"{verb}release plan#{number}'s claim")
     for line in changes.reports:
         print(f"REPORT: {line}")
-    history += changes.history + list(found.malformed) + [_stray(t) for t in strays]
+    history += changes.history + list(reads.shipped.history)
     for line in history:
         print(f"HISTORY: {line}")
     _undo_splits(tracker, cards, shipped, changes, args.dry_run)
@@ -850,15 +856,12 @@ def parser() -> argparse.ArgumentParser:
     commands = top.add_subparsers(dest="command", required=True)
     nxt = commands.add_parser("next", help="the next step to build")
     nxt.add_argument("--arc", choices=ARCS)
-    claim = commands.add_parser("claim", help="claim a card for this branch")
+    claim = commands.add_parser("claim", help="claim a card as the branch card/N, checked out")
     claim.add_argument("card", type=card_number)
-    claim.add_argument("--branch", help="default: the branch checked out")
-    release = commands.add_parser("release", help="delete a card's claim")
+    claim.add_argument("--here", action="store_true",
+                       help="on the commit checked out (work already started), not on origin/dev")
+    release = commands.add_parser("release", help="free a card's claim, keeping its work")
     release.add_argument("card", type=card_number)
-    whose = release.add_mutually_exclusive_group()
-    whose.add_argument("--branch", help="the branch the claim names; default: the one checked out")
-    whose.add_argument("--unreadable", action="store_true",
-                       help="release a claim whose branch cannot be read, and no other")
     commands.add_parser("show", help="a card, its comments and its git history").add_argument(
         "card")
     _file_parser(commands)

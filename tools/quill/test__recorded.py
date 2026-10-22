@@ -276,9 +276,6 @@ def test_a_write_that_is_not_a_known_write_to_a_scratch_card_is_refused(method, 
     ("POST", f"{_ISSUES}/11/sub_issues", {"sub_issue_id": 911}),
     ("POST", f"{_ISSUES}/11/dependencies/blocked_by", {"issue_id": 911}),
     ("DELETE", f"{_ISSUES}/11/dependencies/blocked_by/911", None),
-    ("POST", _REFS, {"ref": "refs/claims/11", "sha": "a" * 40}),
-    ("POST", _REFS, {"ref": "refs/claims/recording-scratch", "sha": "a" * 40}),
-    ("DELETE", f"{_REFS}/claims/11", None),
     ("DELETE", f"{_ISSUES}/11/labels/{FILING}", None),
     ("DELETE", f"{_ISSUES}/11/sub_issue", {"sub_issue_id": 911}),
     ("POST", "https://api.github.com/graphql",
@@ -290,6 +287,24 @@ def test_a_write_that_is_not_a_known_write_to_a_scratch_card_is_refused(method, 
 def test_a_known_write_to_a_scratch_card_or_any_read_is_sent(method, url, body):
     """Each route the recording sessions take, to a scratch card; and every read."""
     assert refusal(method, url, body, _scratch(11)) is None
+
+
+@pytest.mark.parametrize(("method", "url", "body"), [
+    ("POST", f"{_REFS[:-5]}/commits", {"message": "claim plan#11\n\nbranch: feat/x\n",
+                                       "tree": "t", "parents": []}),
+    ("POST", _REFS, {"ref": "refs/claims/11", "sha": "a" * 40}),
+    ("POST", _REFS, {"ref": "refs/claims/recording-scratch", "sha": "a" * 40}),
+    ("DELETE", f"{_REFS}/claims/11", None),
+])
+def test_a_claim_write_is_refused_even_for_a_scratch_card(method, url, body):
+    """X-cx's M1 (R-BAL359): a claim is the code repository's branch ``card/N``, so quill
+    writes no claim's commit or reference to the tracker, and the recorder no longer knows
+    those routes.  Each claim write it sent before -- a parentless commit, a scratch card's
+    claim reference, the recording's own stray one, a claim's delete -- is now refused."""
+    assert refusal(method, url, body, _scratch(11)) is not None
+    with pytest.raises(ValueError, match="only reads and known writes"):
+        redacted([{"method": method, "url": url, "body": body, "status": 201, "answer": None}],
+                 _scratch(11))
 
 
 def test_a_recorder_refuses_a_write_before_sending_it_and_counts_what_it_files_as_scratch():
