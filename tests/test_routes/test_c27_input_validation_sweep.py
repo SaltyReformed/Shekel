@@ -7,11 +7,12 @@ input or trusted FK IDs without route-boundary ownership checks
 now goes through a Marshmallow schema and/or a per-FK
 ``current_user.id`` probe.  The plan-cited tests live here:
 
-  * ``transactions.mark_done`` -- both branches (regular path and
-    transfer-shadow path) parse ``actual_amount`` via
+  * ``transactions.mark_done`` -- parses the figure via
     :class:`MarkDoneSchema`; a malformed or negative value is
     rejected at the schema tier instead of the route's old
-    ``InvalidOperation`` catch.
+    ``InvalidOperation`` catch.  Its transfer-shadow branch is gone
+    (plan step ``balance:X-bi-6-1``), and the transfer PATCH a grid
+    leg uses refuses the same figure.
 
   * ``transfers.create_ad_hoc`` -- route-boundary FK ownership for
     ``from_account_id``, ``to_account_id``, ``pay_period_id``,
@@ -41,7 +42,6 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.models.ref import AccountType
@@ -95,7 +95,7 @@ def _create_savings_account(seed_user):
 
 
 def _create_transfer(seed_user, period, savings):
-    """Create a transfer + 2 shadow transactions via the service."""
+    """Create a Projected $100.00 transfer, checking to *savings*, via the service."""
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     xfer = transfer_service.create_transfer(
         transfer_service.TransferSpec(
@@ -191,10 +191,12 @@ def _seed_second_user_transfer_assets():
 class TestTransactionsMarkDoneActualAmount:
     """``transactions.mark_done`` parses ``actual_amount`` via MarkDoneSchema.
 
-    F-042 / F-162 -- replaces two raw ``Decimal(...)`` calls (one in
+    F-042 / F-162 -- C-27 replaced two raw ``Decimal(...)`` calls (one in
     the regular branch, one in the transfer-shadow branch) with a
-    single schema parse run before the branches diverge.  All
-    behaviour aside from validation is unchanged.
+    single schema parse run before the branches diverged, and changed
+    nothing else.  The transfer-shadow branch is gone (plan step
+    ``balance:X-bi-6-1``); the case that graded it grades the transfer
+    PATCH a grid leg uses.
     """
 
     def test_negative_actual_amount_rejected(
@@ -259,23 +261,21 @@ class TestTransactionsMarkDoneActualAmount:
         raw ``Decimal(...)`` parse C-27 replaced with the schema; that branch
         is deleted, and the grid's figure door for a transfer is the transfer
         PATCH carrying ``leg_account_id``, whose schema refuses the same
-        figure with the same 422 and no transition.
+        figure with the same 422 and no transition.  The leg is the
+        checking side's, the transfer's own ``from_account_id``: it was
+        read off whichever of the transfer's two shadow rows came first
+        until plan step balance:X-bi-6-4d-3 made a transfer one row.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today[0], savings)
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .first()
-            )
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
                     "settled_amount": "-25.00",
                     "status_id": str(ref_cache.status_id(StatusEnum.DONE)),
-                    "leg_account_id": str(shadow.account_id),
+                    "leg_account_id": str(xfer.from_account_id),
                 },
             )
             assert resp.status_code == 422, resp.get_data(as_text=True)[:200]

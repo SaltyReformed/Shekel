@@ -14,7 +14,6 @@ from app.models.category import Category
 from app.models.ref import TransactionType
 from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
-from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
@@ -100,8 +99,9 @@ class TestArchiveHelpers:
         """C-5A.5-4: transfer_template_has_paid_history returns True when Paid transfer exists.
 
         The transfer is the engine's (:func:`generate_transfer_of`, plan step
-        balance:X-ch) and is SETTLED through ``transfer_service`` -- the door
-        that moves all three rows -- rather than born Paid by hand.
+        balance:X-ch) and is SETTLED through ``transfer_service`` -- the
+        transfer's own door, which records each side's payment as it settles
+        -- rather than born Paid by hand.
         """
         with app.app_context():
             savings_account = create_savings_account(
@@ -576,29 +576,24 @@ class TestATransferAnswersForItsOwnCategoryAndAccounts:
     def test_a_transfers_category_counts_without_its_shadows(
         self, app, db, seed_user,
     ):
-        """The Transfer arm answers when no shadow carries the category.
+        """The Transfer arm answers for a category only a transfer carries.
 
-        The category goes on through the transfer service, which mirrors it
-        to both shadows; the shadows are then re-categorised around it, the
-        state a shadowless transfer presents.  Soft-deleting the transfer
-        keeps the answer, as a soft-deleted ROW's category always has.
+        The category goes on through the transfer service and no row carries
+        it, so the transfer is the only thing that can answer.  Soft-deleting
+        the transfer keeps the answer, as a soft-deleted ROW's category always
+        has.  Until plan step balance:X-bi-6-4d-3 made a transfer one row, the
+        service mirrored the category to both shadows and the case
+        re-categorised them around it, to plant the state a shadowless
+        transfer presents.
         """
         with app.app_context():
             category = self._a_category(seed_user, "Only A Transfer")
-            elsewhere = seed_user["categories"]["Rent"]
             transfer, _source, _destination = self._a_projected_transfer(
                 seed_user, "Categorised",
             )
             transfer_service.update_transfer(
                 transfer.id, seed_user["user"].id, category_id=category.id,
             )
-            db.session.commit()
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=transfer.id,
-            ).all()
-            assert [s.category_id for s in shadows] == [category.id] * 2
-            for shadow in shadows:
-                shadow.category_id = elsewhere.id
             db.session.commit()
 
             assert category_has_usage(
@@ -651,19 +646,15 @@ class TestATransferAnswersForItsOwnCategoryAndAccounts:
     ):
         """BAL-539: both endpoints hold history while the transfer is live.
 
-        The shadows are hidden around the service, the state a shadowless
-        transfer presents; the transfer itself stays live.  Its own soft
-        delete is what ends the history, as a row's does.
+        The transfer itself is the history, on both of its accounts; its own
+        soft delete is what ends it, as a row's does.  Until plan step
+        balance:X-bi-6-4d-3 made a transfer one row, the case hid its shadows
+        around the service to plant the state a shadowless transfer presents.
         """
         with app.app_context():
             transfer, source, destination = self._a_projected_transfer(
                 seed_user, "History",
             )
-            for shadow in db.session.query(Transaction).filter_by(
-                transfer_id=transfer.id,
-            ):
-                shadow.is_deleted = True
-            db.session.commit()
 
             assert account_has_history(source.id) is True
             assert account_has_history(destination.id) is True
@@ -674,24 +665,49 @@ class TestATransferAnswersForItsOwnCategoryAndAccounts:
             assert account_has_history(source.id) is False
             assert account_has_history(destination.id) is False
 
+    @pytest.mark.parametrize("status", [StatusEnum.CANCELLED, StatusEnum.DONE])
+    def test_a_live_transfer_is_its_accounts_history_whatever_its_status(
+        self, app, seed_user, status,
+    ):
+        """BAL-539 on the status axis: a live Cancelled or Paid transfer is history too.
+
+        The arm counts every live transfer from or to the account, and the
+        two cases beside this one use a Projected transfer only, so an arm
+        narrowed to Projected passed the whole suite (found by an adversarial
+        review of plan step balance:X-bi-6-4d-3).  The status moves through
+        the transfer's own door and is asserted before the predicate is
+        asked, so a door that left the transfer Projected cannot pass here.
+        """
+        with app.app_context():
+            transfer, source, destination = self._a_projected_transfer(
+                seed_user, "Status",
+            )
+            transfer_service.update_transfer(
+                transfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(status),
+            )
+            db.session.commit()
+            assert db.session.get(Transfer, transfer.id).status_id == (
+                ref_cache.status_id(status)
+            )
+
+            assert account_has_history(source.id) is True
+            assert account_has_history(destination.id) is True
+
     def test_the_account_door_archives_an_account_a_live_transfer_names(
         self, app, auth_client, db, seed_user,
     ):
         """BAL-539's consequence, at the door: archived, the transfer kept.
 
-        With the shadows hidden and the predicate as it stood, the door found
-        no history, deleted the transfer in its cleanup and the account with
-        it.
+        Before the predicate asked the transfer itself (plan step
+        balance:X-bi-6-4c-4), a live transfer whose shadows were hidden left
+        the door finding no history: it deleted the transfer in its cleanup
+        and the account with it.
         """
         with app.app_context():
             transfer, _source, destination = self._a_projected_transfer(
                 seed_user, "Door",
             )
-            for shadow in db.session.query(Transaction).filter_by(
-                transfer_id=transfer.id,
-            ):
-                shadow.is_deleted = True
-            db.session.commit()
             transfer_id, destination_id = transfer.id, destination.id
 
             response = auth_client.post(
