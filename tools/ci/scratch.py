@@ -15,7 +15,9 @@ tool test against one builder; the repository the tests start from
 (:func:`repository`), the ``dev`` they read (:func:`point_dev`) and the
 sentinel's controls joined it for BAL-609, each once spelled in both suites; the
 ``main`` read beside ``dev`` (:func:`point_main`) joined it at X-cx L9d's review fix, and
-the bare ``origin`` quill's claims are pushed to (:func:`with_origin`) at X-cx's M1.
+the bare ``origin`` quill's claims are pushed to (:func:`with_origin`) at X-cx's M1, and the
+second clone of it that moves ``dev`` and claims as GitHub and other sessions do
+(:func:`elsewhere`) at M1's review.
 """
 from __future__ import annotations
 
@@ -78,7 +80,7 @@ def with_origin(work: Path, base: str) -> None:
     fetch both.  ``work``'s own configuration is pinned to :data:`ISOLATED`'s settings, so a
     git call the code under test makes there itself -- not through :func:`run` -- (a ship
     marker's claim commit, ``tools/quill/_git.claim``) is made alike on every machine."""
-    origin = work.parent / f"{work.name}-origin.git"
+    origin = _bare_origin(work)
     run(work.parent, "init", "--quiet", "--bare", str(origin))
     run(work, "remote", "add", "origin", str(origin))
     for setting in ISOLATED[1::2]:
@@ -86,6 +88,28 @@ def with_origin(work: Path, base: str) -> None:
     run(work, "push", "--quiet", "origin", f"{base}:refs/heads/dev", f"{base}:refs/heads/main")
     run(work, "fetch", "--quiet", "origin", f"+refs/heads/dev:{tracking(DEV)}",
         f"+refs/heads/main:{tracking(MAIN)}")
+
+
+def _bare_origin(work: Path) -> Path:
+    """The bare ``origin`` :func:`with_origin` gives ``work``, beside it."""
+    return work.parent / f"{work.name}-origin.git"
+
+
+def elsewhere(work: Path) -> Path:
+    """A second clone of ``work``'s bare ``origin`` (:func:`with_origin`), beside ``work``,
+    its ``dev`` and ``main`` fetched fresh: where a test moves ``dev`` as GitHub's merge queue
+    does and claims as a session in another clone does, so ``work`` sees either only
+    through a fetch of its own.  A push from ``work`` itself moves ``work``'s tracking refs
+    too, which hid quill's fetch from every test (M1's review M2).  Made on first use, then
+    reused; its path."""
+    other = work.parent / f"{work.name}-elsewhere"
+    if not other.exists():
+        run(work.parent, "clone", "--quiet", "--no-checkout", str(_bare_origin(work)), str(other))
+        for setting in ISOLATED[1::2]:
+            run(other, "config", *setting.split("=", 1))
+    run(other, "fetch", "--quiet", "origin", f"+refs/heads/dev:{tracking(DEV)}",
+        f"+refs/heads/main:{tracking(MAIN)}")
+    return other
 
 
 def point_dev(root: Path, sha: str) -> None:

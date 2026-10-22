@@ -111,6 +111,7 @@ from tools.quill._state import (
     sync_plan,
     sync_unsplits,
     unfinished_reports,
+    unshipped_shown_done,
     unsplit,
 )
 from tools.quill._tracker import Card, Tracker, TrackerError
@@ -176,13 +177,19 @@ def cmd_claim(args, tracker: Tracker, root: Path,
     or with ``--here`` on the commit checked out, for work already started -- and pushed
     create-only as the branch ``card/N`` (:func:`_git.claim`), then checked out here as
     that branch, with no upstream.  Refused, with nothing written, for what is no work to
-    claim; while ``card/N`` holds a claim; and while this clone already has a branch of
-    that name, which the check-out would collide with.  The claim line is printed once the
-    push lands, so a failed check-out after it says what to run."""
+    claim (work shown done that a revert unshipped says to sync first); while ``card/N``
+    holds a claim; while ``origin`` holds a ``card/N`` already merged, which a create-only
+    push cannot replace; and while this clone already has a branch of that name, which the
+    check-out would collide with.  The claim line is printed once the push lands, so a
+    failed check-out after it says what to run."""
     card = _one(tracker, args.card)
     reads = _git.read(root)
     shipped = reads.shipped.cards
     cards = with_closure(tracker, {card.number: card})
+    if is_work(card, cards, shipped) and unshipped_shown_done(card, shipped):
+        raise Refused(f"{_label(card)} is shown done, but git no longer says it shipped (a "
+                      f"revert deleted {_git.marker(card.number)}): `quill sync` reopens it, "
+                      "then claim it")
     if not card.is_open or not is_work(card, cards, shipped):
         raise Refused(f"{_label(card)} is not work a branch ships (open step or finding, "
                       "not a container)")
@@ -193,6 +200,12 @@ def cmd_claim(args, tracker: Tracker, root: Path,
     if held := reads.claims.get(card.number):
         raise Refused(f"plan#{card.number} is already claimed: {holder(held)}")
     branch = _git.card_branch(card.number)
+    if tip := reads.merged.get(card.number):
+        raise Refused(f"origin holds {branch} at {tip[:12]}, whose work {DEV} or {MAIN} already "
+                      "holds: a card branch that outlived its merge, which a claim cannot "
+                      "replace.  Delete it, with a lease on that tip, then claim again: "
+                      f"`git push --force-with-lease=refs/heads/{branch}:{tip} origin "
+                      f":refs/heads/{branch}`")
     if _git.has_branch(root, branch):
         raise Refused(f"this clone already has a branch {branch!r}, which a claim of "
                       f"plan#{card.number} checks out: delete or rename it first")
@@ -201,8 +214,8 @@ def cmd_claim(args, tracker: Tracker, root: Path,
         sha = _git.claim(root, card.number, base, clock())
     except _git.ClaimTaken:
         raise Refused(f"origin holds {branch!r} already, though this command's read saw no "
-                      f"claim on it: another session's claim made since, or a branch whose "
-                      f"work {DEV} or {MAIN} holds that was never deleted") from None
+                      f"branch of that name: another session claimed plan#{card.number} since "
+                      f"(`quill show plan#{card.number}` names its claim)") from None
     print(f"claimed {_label(card)}: {branch} at {sha[:12]} on origin, adding "
           f"{_git.marker(card.number)} on {'the commit checked out' if args.here else DEV}")
     if failed := _git.check_out(root, card.number, sha):
@@ -686,15 +699,16 @@ def _sync_reads(tracker: Tracker, reads: _git.Reads,
     is then read by its number, which decides, since a listing may still show a card
     as it was before a write: a leaf's close the listing lagged made its split step,
     which ``quill drop`` had just closed, read as split again, and sync reopened it.
-    Every card a marker ever named, and every claimed card, is read by its number too --
-    the first so that a card the tool closed as shipped is reopened once a revert has
-    deleted its marker, which no listing finds (it is closed, and carries no mark); the
+    Every card a marker ever named (``ever``, which holds every card git says shipped now
+    too), and every claimed card, is read by its number too -- the first so that a card
+    the tool closed as shipped is reopened once a revert has deleted its marker, which no
+    listing finds (it is closed, and carries no mark); the
     claimed ones so that a claim on a split step is reported whatever that step's
     state (:func:`_state.sync_plan`) -- and then every card a decision over them reads
     (:func:`with_closure`).
     """
     listed = {**tracker.open_cards(), **tracker.marked()}
-    cards = tracker.cards(ever | reads.shipped.cards | set(listed) | set(reads.claims))
+    cards = tracker.cards(ever | set(listed) | set(reads.claims))
     if unread := sorted(set(listed) - set(cards)):
         raise TrackerError(f"plan#{unread[0]} is listed, but a read by its number does not hold "
                            "it (that read has not caught up yet, or the card was deleted or "

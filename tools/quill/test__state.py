@@ -181,9 +181,9 @@ def test_a_claim_is_named_by_its_branch_its_markers_instant_and_its_last_commit(
 def test_sync_closes_an_open_card_git_says_shipped_claimed_or_not_but_never_a_persons():
     """R-BAL359: card N shipped when its marker ``plan/ships/N`` is on dev or main, which
     ``quill claim`` writes for the card it claims (no number is typed; which branch may add a
-    marker is CI's write rule, X-cx's M2), so sync checks no claim and no branch before the
-    close; a card a person reopened is reported, naming the marker that says it shipped and
-    the revert that undoes it."""
+    marker is CI's write rule, which X-cx's M2 builds), so sync checks no claim and no
+    branch before the close; a card a person reopened is reported, naming the marker that
+    says it shipped and the revert that undoes it."""
     cards = _cards(_card(1), _card(2), _card(3, "finding", parent=9), _card(9),
                    _card(4, touched_by_hand=True))
     plan = sync_plan(cards, shipped={1, 2, 3, 4}, claims={1: _claim(1), 4: _claim(4)})

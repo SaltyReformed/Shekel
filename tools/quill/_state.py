@@ -613,8 +613,9 @@ def _sync_shipped(card: Card, plan: SyncPlan) -> None:
     """An open card git says shipped: closed as completed, unless a PERSON reopened it,
     which is reported.  No check of the branch that shipped it stands between git and the
     close: a marker is written by ``quill claim`` for the card it claims, never typed, and
-    CI's one write rule (R-BAL359, X-cx's M2) refuses a marker added or changed by any
-    branch but that card's own."""
+    which change may add or change one is CI's one write rule (R-BAL359), which X-cx's M2
+    builds.  Until M2 lands, a marker any other change adds closes its card here all the
+    same; no card is claimed before the tracker switch, which waits for M2 (R-BAL360)."""
     if card.touched_by_hand:
         plan.reports.append(
             f"plan#{card.number} shipped in git ({MARKERS}/{card.number} is on {DEV} or "

@@ -10,6 +10,7 @@ A claim is the branch ``card/N`` on the ``code`` fixture's real ``origin`` (ruli
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 from tools.ci.scratch import commit as _commit
 from tools.ci.scratch import run as _run
@@ -36,10 +37,14 @@ def _refused(holder):
 def _holder(code, number=1):
     """plan#``number``'s claim as every line names it: ``card/N``, then the line its ship
     marker holds at that branch's tip on ``origin`` (``claimed`` and the instant) and that
-    tip's committer date -- each read from git here, not through quill."""
-    tip = _run(code, "ls-remote", "origin", f"refs/heads/card/{number}").split("\t")[0]
-    marker = _run(code, "show", f"{tip}:plan/ships/{number}")
-    return f"card/{number} ({marker}; last commit {_run(code, 'log', '-1', '--format=%cI', tip)})"
+    tip's committer date -- each read from git in ``origin`` itself, not through quill, so
+    nothing here fetches for the command under test (a claim another clone made, as
+    :func:`_fake.claim` makes one, is in ``origin`` and not yet here)."""
+    origin = Path(_run(code, "remote", "get-url", "origin"))
+    tip = _run(origin, "rev-parse", f"refs/heads/card/{number}")
+    marker = _run(origin, "show", f"{tip}:plan/ships/{number}")
+    committed = _run(origin, "log", "-1", "--format=%cI", tip)
+    return f"card/{number} ({marker}; last commit {committed})"
 
 
 def _claimed_by_a_race(code, number):

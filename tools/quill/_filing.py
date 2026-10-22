@@ -87,7 +87,7 @@ def _converted_body(asked: _Asked, answer: str) -> str:
 
 
 #: What a filing with no parent holds of git, which it does not read (:func:`_filing_for`).
-_NOTHING_READ = _git.Reads(_git.Shipped(frozenset(), ()), {})
+_NOTHING_READ = _git.Reads(_git.Shipped(frozenset(), ()), {}, {})
 
 
 @dataclass(frozen=True)

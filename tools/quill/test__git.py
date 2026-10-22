@@ -9,6 +9,7 @@ them.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -41,6 +42,23 @@ def _origin(work):
 def _push(work, sha, branch):
     """Point ``origin``'s ``branch`` at ``sha``, forced, as a merge or a push would."""
     _run(work, "push", "--quiet", "--force", "origin", f"{sha}:refs/heads/{branch}")
+
+
+def _merge(work, tree_of, *parents, message="merge"):
+    """A merge of ``parents`` whose tree is ``tree_of``'s, written as a resolution would
+    write it, whatever its parents hold; its sha."""
+    tree = _run(work, "rev-parse", f"{tree_of}^{{tree}}")
+    return _run(work, "commit-tree", tree, *[arg for parent in parents for arg in ("-p", parent)],
+                "-m", message)
+
+
+def _deny(work, refused):
+    """A ``pre-receive`` hook in ``work``'s bare ``origin`` refusing every push that writes
+    a ref the shell test ``refused`` (over ``$new`` and ``$ref``) holds for."""
+    hook = Path(_run(work, "remote", "get-url", "origin")) / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nwhile read old new ref; do\n"
+                    f"  if {refused}; then echo refused >&2; exit 1; fi\ndone\n")
+    hook.chmod(0o755)
 
 
 def _marker(number, when="2026-10-19T13:00:00Z"):
@@ -82,6 +100,119 @@ def test_every_card_a_marker_ever_named_is_read_after_its_revert(repo):
     assert _git.ever_marked(repo) == {5, 9}
 
 
+def _shipped_then_reverted_then_merged_in(work, base):
+    """M1's review H1 (a): card 5 lands on dev and is reverted there; card/9, which merged
+    dev in to update itself, lands after.  The landing merge matches card/9's side on
+    ``plan/ships/``, so git's default walk followed that side alone."""
+    five = _files(work, base, "claim plan#5", {**_marker(5), "five": "x\n"})
+    landed = _merge(work, five, base, five)
+    nine = _files(work, base, "claim plan#9", _marker(9))
+    reverted = _files(work, landed, "Revert plan#5", {_git.marker(5): None, "five": None})
+    updated = _files(work, reverted, "nine's tree", _marker(9))
+    side = _merge(work, updated, nine, reverted, message="Merge dev into card/9")
+    _push(work, _merge(work, updated, reverted, side, message="Merge card/9"), "dev")
+    return 5
+
+
+def _hotfix_reverted_on_main_then_released(work, base):
+    """H1 (b): hotfix 700 lands on main and is reverted there; a release of dev (shipping
+    12) merges after."""
+    hotfix = _files(work, base, "claim plan#700", _marker(700))
+    reverted = _files(work, hotfix, "Revert plan#700", {_git.marker(700): None})
+    dev = _files(work, base, "dev work", {"code": "d\n", **_marker(12)})
+    _push(work, dev, "dev")
+    _push(work, _merge(work, dev, reverted, dev, message="release"), "main")
+    return 700
+
+
+def _a_resolution_drops_a_side_marker(work, base):
+    """H1 (c): a merge resolution keeps none of the side that added card 5's marker."""
+    work_side = _files(work, base, "feature", {"code": "f\n"})
+    five = _files(work, base, "claim plan#5", _marker(5))
+    evil = _merge(work, work_side, work_side, five, message="merge dev into feature")
+    _push(work, _merge(work, work_side, five, evil, message="Merge feature"), "dev")
+    return 5
+
+
+def _a_resolution_alone_adds_and_another_deletes(work, base):
+    """A marker no commit of one parent ever held: one merge's resolution added card 6's,
+    another's deleted it -- the case ``--full-history`` alone misses (measured)."""
+    side = _files(work, base, "side", {"code": "s\n"})
+    added = _merge(work, _files(work, side, "tree", _marker(6)), base, side, message="add")
+    other = _files(work, base, "other", {"other": "o\n"})
+    dropped = _files(work, added, "tree", {_git.marker(6): None, "other": "o\n"})
+    _push(work, _merge(work, dropped, added, other, message="drop"), "dev")
+    return 6
+
+
+@pytest.mark.parametrize("history", [
+    _shipped_then_reverted_then_merged_in, _hotfix_reverted_on_main_then_released,
+    _a_resolution_drops_a_side_marker, _a_resolution_alone_adds_and_another_deletes])
+def test_every_marker_any_commit_held_is_read_however_the_merges_hide_it(repo, history):
+    """M1's review H1: ``sync`` reopens a card the tool closed as shipped only if the walk
+    of the markers' history names it, and git's default walk lost three of these.  The one
+    walk names the card in ``ever_marked`` and in ``history`` alike (one producer), and the
+    card is not shipped now."""
+    number = history(repo, _origin(repo))
+    _git.fetch(repo)
+    assert number not in _git.shipped(repo).cards
+    assert number in _git.ever_marked(repo)
+    assert _git.history(repo, number)
+
+
+def test_a_marker_moved_to_another_name_reads_deleted_and_added(repo):
+    """Read with no rename detection (git's own default finds one): card 5's marker moved to
+    card 6's name is 5 deleted and 6 added, so the walk names 6, which shipped only through
+    the move -- what lets ``sync`` read every card shipped now from the walk alone."""
+    five = _files(repo, _origin(repo), "claim plan#5", _marker(5))
+    moved = _files(repo, five, "move", {_git.marker(5): None, **_marker(6)})
+    _push(repo, moved, "dev")
+    _git.fetch(repo)
+    assert _git.shipped(repo).cards == {6}
+    assert _git.ever_marked(repo) == {5, 6}
+    assert _git.history(repo, 5) == [("D", moved, "move"), ("A", five, "claim plan#5")]
+    assert _git.history(repo, 6) == [("A", moved, "move")]
+
+
+def test_a_marker_named_with_a_leading_zero_is_no_cards(repo):
+    """``plan/ships/007`` names no card (a card's number has no leading zero): a HISTORY
+    line, never card 7, shipped or ever marked."""
+    _push(repo, _files(repo, _origin(repo), "zero", {"plan/ships/007": "claimed x\n"}), "dev")
+    _git.fetch(repo)
+    found = _git.shipped(repo)
+    assert (found.cards, [line.split(" ")[0] for line in found.history]) == (
+        frozenset(), ["plan/ships/007"])
+    assert not _git.ever_marked(repo)
+
+
+def test_a_read_brings_what_another_clone_pushed(repo):
+    """M1's review M2: dev and main move on GitHub and other sessions claim from other
+    clones, so what this clone reads is what its own fetch brings -- dev's marker, main's,
+    and a claim whose commit this clone has never held."""
+    _origin(repo)
+    other = scratch.elsewhere(repo)
+    base = _run(other, "rev-parse", _git.tracking(_git.DEV))
+    _run(other, "push", "--quiet", "origin", f"{_files(other, base, 'dev', _marker(5))}:dev",
+         f"{_files(other, base, 'hotfix', _marker(9))}:main")
+    claimed = _git.claim(other, 11, _git.tracking(_git.DEV), _MON)
+    assert _run(repo, "rev-parse", _git.tracking(_git.DEV)) == base
+    reads = _git.read(repo)
+    assert reads.shipped.cards == {5, 9}
+    assert {number: claim.sha for number, claim in reads.claims.items()} == {11: claimed}
+
+
+def test_a_marker_deleted_beside_an_identical_one_added_is_no_rename(repo):
+    """M1's review L1: two markers claimed in the same second hold the same line.  Dev
+    deleting 5 and adding 6 is no rename of 5, so main's change to 5 is the conflict it is,
+    never carried silently into 6."""
+    base = _files(repo, _origin(repo), "five", _marker(5))
+    _push(repo, _files(repo, base, "dev", {_git.marker(5): None, **_marker(6)}), "dev")
+    _push(repo, _files(repo, base, "main", _marker(5, "2026-10-20T09:30:00Z")), "main")
+    _git.fetch(repo)
+    with pytest.raises(GitError, match="conflict on plan/ships/5"):
+        _git.shipped(repo)
+
+
 def test_a_conflict_on_a_marker_refuses_to_answer_and_one_elsewhere_does_not(repo):
     """Two claims' markers for one card meeting in the merge leave its record unknown, so
     ``shipped`` refuses; a conflict in code only leaves every marker readable."""
@@ -114,15 +245,32 @@ def test_a_claim_is_created_once_and_read_with_its_marker(repo):
     assert reads.shipped.cards == frozenset()
 
 
-def test_the_same_claim_pushed_again_is_the_claim_made(repo, monkeypatch):
-    """Session 8's row 2: git answers a push of the very commit the branch holds as up to date,
-    exit 0, without testing the lease.  A claim repeated after a lost answer writes that same
-    commit (same base, marker, author and committer instants), so it is the claim made."""
+def test_the_same_claim_pushed_again_is_taken(repo, monkeypatch):
+    """Session 8's row 2: git answers a push of the very commit the branch holds as up to date
+    (``=``), exit 0, without testing the lease.  Two sessions of one machine claiming the same
+    card on the same base in the same second write that same commit (same base, marker,
+    identity and instants), so the second is refused as taken, never handed the first's claim
+    (M1's review L7).  The expected answer changed on the developer's approval, CLAUDE.md rule
+    5's exception (``plan-tracker-2026-10-22/m1_rule5_identical_claim.md``)."""
     _origin(repo)
     for variable in ("GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"):
         monkeypatch.setenv(variable, "2026-10-19T13:00:00+00:00")
     first = _git.claim(repo, 3, _git.tracking(_git.DEV), _MON)
-    assert _git.claim(repo, 3, _git.tracking(_git.DEV), _MON) == first
+    with pytest.raises(_git.ClaimTaken):
+        _git.claim(repo, 3, _git.tracking(_git.DEV), _MON)
+    assert _git.on_origin(repo) == {3: first}
+
+
+def test_a_claim_push_origin_refuses_is_a_failure_not_a_claim_taken(repo):
+    """M1's review L2: only a lease's ``stale info`` (or this very commit there already)
+    means another session holds the card; origin refusing the push (a hook, a ruleset) is
+    a failed call, and no claim stands."""
+    _origin(repo)
+    _deny(repo, 'case "$ref" in refs/heads/card/*) true;; *) false;; esac')
+    with pytest.raises(GitError, match="pre-receive hook declined") as failed:
+        _git.claim(repo, 2, _git.tracking(_git.DEV), _MON)
+    assert not isinstance(failed.value, _git.ClaimTaken)
+    assert not _git.on_origin(repo)
 
 
 def test_only_a_card_number_under_card_is_a_claim_and_merged_work_is_none(repo):
@@ -145,6 +293,14 @@ def test_a_claim_tip_without_its_marker_reads_no_claim_instant(repo):
     holds the branch), with no instant to report."""
     base = _origin(repo)
     _push(repo, _files(repo, base, "by hand", {"work": "x\n"}), "card/4")
+    assert _git.read(repo).claims[4].claimed is None
+
+
+def test_a_claim_tip_holding_a_directory_for_its_marker_reads_no_claim_instant(repo):
+    """M1's review L9: the marker is read only as the file it is; a ``plan/ships/4``
+    directory at the tip of a ``card/4`` pushed by hand is no marker, so no instant."""
+    base = _origin(repo)
+    _push(repo, _files(repo, base, "by hand", {"plan/ships/4/inner": "claimed x\n"}), "card/4")
     assert _git.read(repo).claims[4].claimed is None
 
 
@@ -173,6 +329,20 @@ def test_a_release_keeps_the_work_and_deletes_only_the_tip_it_read(repo):
     assert kept == "released/6/20261020T093000Z"
     assert not _git.on_origin(repo)
     assert _run(repo, "ls-remote", "origin", f"refs/heads/{kept}").split("\t")[0] == newer
+
+
+def test_a_release_origin_refuses_to_delete_says_so_not_that_it_moved(repo):
+    """M1's review L6: the delete refused by origin, not by the lease, keeps the claim and
+    names the refusal; "moved since it was read" is the lease's answer alone.  The work is
+    kept either way."""
+    _origin(repo)
+    sha = _git.claim(repo, 6, _git.tracking(_git.DEV), _MON)
+    _deny(repo, '[ "$new" = 0000000000000000000000000000000000000000 ]')
+    with pytest.raises(GitError, match="pre-receive hook declined") as failed:
+        _git.release(repo, 6, sha, _TUE)
+    assert "moved" not in str(failed.value)
+    assert _git.on_origin(repo) == {6: sha}
+    assert _run(repo, "ls-remote", "origin", "refs/heads/released/6/*").split("\t")[0] == sha
 
 
 def test_history_lists_each_commit_that_touched_the_marker(repo):
@@ -270,13 +440,13 @@ def test_author_date_is_when_the_commit_was_first_written(repo, monkeypatch):
 def test_a_bound_environment_reaches_no_repository_but_the_one_named(binding, tmp_path,
                                                                      monkeypatch):
     """The incident's mechanism replayed onto a sentinel: every write the tests' builder makes
-    and every git call this module makes -- the fetch, the record's merge, the claim's objects,
-    push and branch, the release's two pushes -- lands in the directory named, every answer
-    is that directory's, and the sentinel -- its refs, config, HEADs and indexes -- is
-    byte-identical afterwards.  The sentinel is proven bound, and its indexes not empty
-    (review cp3 M-1's control), before it is handed over (``scratch._prove_bound``).  The
-    trailer rules' own calls, ``is_ancestor`` among them, are held the same way in
-    ``tools/ci/test_trailers.py``."""
+    and every git call this module makes -- the fetch, the record's merge, the markers'
+    history, the claim's objects, push and branch, the release's two pushes -- lands in the
+    directory named, every answer is that directory's, and the sentinel -- its refs, config,
+    HEADs and indexes -- is byte-identical afterwards.  The sentinel is proven bound, and its
+    indexes not empty (review cp3 M-1's control), before it is handed over
+    (``scratch._prove_bound``).  The trailer rules' own calls, ``is_ancestor`` among them,
+    are held the same way in ``tools/ci/test_trailers.py``."""
     sentinel, before = scratch.bound_sentinel(tmp_path, binding, monkeypatch.setenv)
     work = scratch.repository(tmp_path, "work")
     _origin(work)
@@ -288,6 +458,7 @@ def test_a_bound_environment_reaches_no_repository_but_the_one_named(binding, tm
     _git.fetch(work)
     assert _git.shipped(work).cards == {3}
     assert _git.history(work, 3) == [("A", sha, "claim plan#3")]
+    assert _git.ever_marked(work) == {3}
     assert _git.author_date(work, sha)
     assert _git.release(work, 3, sha, _TUE).startswith("released/3/")
     assert _git.has_branch(work, "card/3")

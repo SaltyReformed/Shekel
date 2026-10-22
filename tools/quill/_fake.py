@@ -31,7 +31,7 @@ import dataclasses
 import json
 from datetime import UTC, datetime
 
-from tools.ci.scratch import commit_files
+from tools.ci.scratch import commit_files, elsewhere
 from tools.ci.scratch import run as _run
 from tools.ci.trailers import DEV, tracking
 from tools.quill import _git, quill
@@ -389,12 +389,13 @@ CLAIMED = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
 
 
 def _onto_dev(root, message, files):
-    """A commit on ``origin``'s ``dev`` writing or deleting ``files``
-    (:func:`scratch.commit_files`, which leaves ``root`` detached at it), pushed there as a
-    merge would move it -- the push moves ``root``'s ``origin/dev`` too (git's update of a
-    pushed branch's tracking ref), so the next commit lands on this one; its sha."""
-    sha = commit_files(root, _run(root, "rev-parse", tracking(DEV)), message, files)
-    _run(root, "push", "--quiet", "origin", f"{sha}:refs/heads/dev")
+    """A commit on ``origin``'s ``dev`` writing or deleting ``files``, made on the ``dev``
+    ``origin`` holds and pushed there from another clone (:func:`scratch.elsewhere`), as
+    GitHub's merge of a ``card/N`` moves ``dev``: ``root`` sees it only through a fetch of
+    its own; its sha."""
+    other = elsewhere(root)
+    sha = commit_files(other, _run(other, "rev-parse", tracking(DEV)), message, files)
+    _run(other, "push", "--quiet", "origin", f"{sha}:refs/heads/dev")
     return sha
 
 
@@ -412,10 +413,11 @@ def unship(root, *numbers):
 
 
 def claim(root, number, when=CLAIMED):
-    """Claim card ``number`` on ``origin`` as another session's ``quill claim`` would
-    (:func:`_git.claim` on ``origin/dev``), with ``root``'s HEAD and branches left as they
-    were; the claim's sha."""
-    return _git.claim(root, number, tracking(DEV), when)
+    """Claim card ``number`` on ``origin`` as a session in another clone would
+    (:func:`_git.claim` on the ``dev`` ``origin`` holds, from :func:`scratch.elsewhere`):
+    ``root`` learns of it only through a read of its own, and its HEAD and branches are left
+    as they were; the claim's sha."""
+    return _git.claim(elsewhere(root), number, tracking(DEV), when)
 
 
 

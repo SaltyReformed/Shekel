@@ -14,12 +14,12 @@ import pytest
 import requests
 
 from tools.ci.gitcmd import GitError
-from tools.ci.scratch import commit, commit_files, point_dev
+from tools.ci.scratch import commit, commit_files, elsewhere, point_dev
 from tools.ci.scratch import run as _run
 from tools.ci.trailers import DEV, tracking
 from tools.quill import _git, _github, _tracker
 from tools.quill import quill
-from tools.quill._fake import FakeTracker, claim, run, ship, unship
+from tools.quill._fake import CLAIMED, FakeTracker, claim, run, ship, unship
 from tools.quill._github import GitHubError
 from tools.quill._tracker import Child, Comment, Edit, OutsideLink
 from tools.quill.setup_tracker import FILING
@@ -142,6 +142,80 @@ def test_claim_refuses_what_no_branch_ships(code, fields):
     assert not _git.on_origin(code)
 
 
+def test_claim_builds_on_dev_where_dev_and_main_differ(code):
+    """M1's review L3: the claim's commit sits on the dev origin holds, not on main."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    on_dev = ship(code, 5)
+    assert run(tracker, code, "claim", "plan#1") == 0
+    assert _run(code, "rev-parse", f"{_git.on_origin(code)[1]}^") == on_dev
+
+
+def test_claim_lost_to_a_claim_made_since_its_read_is_refused(code, capsys, monkeypatch):
+    """M1's review L2: another clone's claim lands between this command's read and its
+    create-only push; the lease refuses it, exit 1, and nothing here moves."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    made = _git.claim
+
+    def raced(root, number, base, when):
+        made(elsewhere(root), number, tracking(DEV), CLAIMED)
+        return made(root, number, base, when)
+
+    monkeypatch.setattr(_git, "claim", raced)
+    assert run(tracker, code, "claim", "plan#1") == 1
+    assert "another session claimed plan#1 since" in capsys.readouterr().err
+    assert _run(code, "symbolic-ref", "--short", "HEAD") == "feat/work"
+    assert list(_git.on_origin(code)) == [1] and not _git.has_branch(code, "card/1")
+
+
+def test_a_claim_whose_switch_fails_stands_and_says_what_to_run(code, capsys):
+    """M1's review L2: the claim is printed once its push lands, so a check-out git refuses
+    (here an untracked file the claim's commit would overwrite) leaves it standing, exit 0,
+    with the command to finish it."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    (code / "plan" / "ships").mkdir(parents=True)
+    (code / "plan" / "ships" / "1").write_text("mine\n")
+    assert run(tracker, code, "claim", "plan#1") == 0
+    out = capsys.readouterr().out
+    assert "\n  not switched to card/1 (" in out and "run `git switch card/1`" in out
+    assert list(_git.on_origin(code)) == [1]
+    assert _run(code, "symbolic-ref", "--short", "HEAD") == "feat/work"
+
+
+def test_claim_refuses_a_card_branch_that_outlived_its_merge_naming_the_delete(code, capsys):
+    """M1's review L4: ``card/1`` whose tip dev holds is no claim, and a create-only push
+    cannot replace it; the refusal names the leased delete, and once it runs the claim is
+    made."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    merged = ship(code, 7)
+    _run(elsewhere(code), "push", "--quiet", "origin", f"{merged}:refs/heads/card/1")
+    assert run(tracker, code, "claim", "plan#1") == 1
+    err = capsys.readouterr().err
+    assert f"origin holds card/1 at {merged[:12]}, whose work origin/dev or origin/main" in err
+    delete = re.search(r"`git (push [^`]+)`", err)[1]
+    assert delete == (f"push --force-with-lease=refs/heads/card/1:{merged} origin "
+                      ":refs/heads/card/1")
+    assert _git.on_origin(code) == {1: merged}
+    _run(code, *delete.split())
+    assert run(tracker, code, "claim", "plan#1") == 0
+
+
+def test_claim_of_work_a_revert_unshipped_says_to_sync_first(code, capsys):
+    """M1's review L5: the tool closed plan#1 as shipped and a revert took its marker back;
+    claim refuses until sync reopens it, and says so."""
+    tracker = FakeTracker()
+    tracker.add(1, is_open=False, state_reason="COMPLETED", closed_by_tool=True)
+    ship(code, 1)
+    unship(code, 1)
+    assert run(tracker, code, "claim", "plan#1") == 1
+    assert ("git no longer says it shipped (a revert deleted plan/ships/1): `quill sync` "
+            "reopens it, then claim it") in capsys.readouterr().err
+    assert run(tracker, code, "sync") == 0
+    assert run(tracker, code, "claim", "plan#1") == 0
+
 
 def test_release_keeps_the_work_and_deletes_the_claim(code, capsys):
     """Whoever made the claim: its tip is kept on ``released/1/<instant>``, ``card/1`` is
@@ -159,6 +233,17 @@ def test_release_keeps_the_work_and_deletes_the_claim(code, capsys):
     assert run(tracker, code, "release", "plan#1") == 1
     assert "plan#1 is not claimed" in capsys.readouterr().err
     assert not tracker.writes
+
+
+def test_release_leaves_this_clones_card_branch_and_names_it(code, capsys):
+    """The claim this clone made and checked out: its branch here keeps the work, and the
+    release says so."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    assert run(tracker, code, "claim", "plan#1") == 0
+    assert run(tracker, code, "release", "plan#1") == 0
+    assert "\n  this clone's branch card/1 is left as it is\n" in capsys.readouterr().out
+    assert _git.has_branch(code, "card/1") and not _git.on_origin(code)
 
 
 

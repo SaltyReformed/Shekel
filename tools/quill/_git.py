@@ -7,8 +7,10 @@ the file ``plan/ships/N`` (:func:`marker`) is in the tree of the merge of ``dev`
 ``main`` (:func:`shipped`): a hotfix on ``main`` counts before ``main`` is merged back into
 ``dev``, and a revert on ``dev`` counts before the release.  A marker's one line is the
 instant its card was claimed, so every claim writes different content.  Which change may add
-or change a marker -- only the one from the card's own branch -- is CI's one write rule (step
-X-cx's M2); this module only reads the markers.
+or change a marker -- only the one from the card's own branch -- is CI's one write rule,
+which step X-cx's M2 builds: until it lands, nothing refuses a marker any other change adds,
+and every reader here takes the markers ``dev`` and ``main`` hold as they are.  This module
+writes a marker only in :func:`claim`'s commit.
 
 **A claim is the branch ``card/N`` on ``origin``** (:func:`card_branch`) whose tip neither
 ``dev`` nor ``main`` holds (:func:`claims`).  ``quill claim`` makes it (:func:`claim`): a
@@ -86,10 +88,15 @@ class Reads:
 
     shipped: Shipped
     claims: dict[int, Claim]
+    #: Each ``card/N`` ``origin`` holds whose tip ``dev`` or ``main`` already holds, with
+    #: that tip: merged work whose branch outlived its merge, which no session is building
+    #: and over which no claim can be pushed (:func:`claim` creates only).
+    merged: dict[int, str]
 
 
 class ClaimTaken(GitError):
-    """``origin`` already holds the branch a claim would create: another session claimed it."""
+    """``origin`` already holds the branch a claim would create: another session claimed it,
+    or wrote this very commit first (:func:`claim`)."""
 
 
 def card_branch(number: int) -> str:
@@ -134,13 +141,17 @@ def fetch(root: Path, cards: Iterable[int] = ()) -> None:
 def _merged_tree(root: Path) -> str:
     """The tree of the merge of :data:`DEV` and :data:`MAIN`, as git's three-way merge writes
     it.  A conflict outside :data:`MARKERS` is no record's, and the tree still holds every
-    marker; a conflict on a marker leaves that card's record unknown, so it is refused.
+    marker; a conflict on a marker leaves that card's record unknown, so it is refused.  The
+    merge detects no rename (``-X no-renames``, which no setting can turn back on): two
+    markers hold the same line when claimed in the same second, so a marker deleted beside
+    another added reads as a rename, and the other side's change to the deleted one would
+    land silently in the added one, never the conflict it is (M1's review L1, measured).
 
     Raises:
         GitError: When a path under :data:`MARKERS` conflicts, or the merge fails.
     """
-    done = run(root, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z",
-               tracking(DEV), tracking(MAIN))
+    done = run(root, "merge-tree", "--write-tree", "-X", "no-renames", "--name-only",
+               "--no-messages", "-z", tracking(DEV), tracking(MAIN))
     if done.returncode not in (0, 1):
         raise GitError(f"git merge-tree {DEV} {MAIN}: {done.stderr.strip()}")
     tree, *conflicted = [name for name in done.stdout.split("\0") if name]
@@ -175,11 +186,15 @@ def shipped(root: Path) -> Shipped:
 
 def _claimed_at(root: Path, sha: str, number: int) -> str | None:
     """The instant card ``number``'s marker at commit ``sha`` says it was claimed (its line,
-    less :data:`_CLAIMED`); None when ``sha`` holds no such marker."""
-    done = run(root, "cat-file", "blob", f"{sha}:{marker(number)}")
-    if done.returncode:
+    less :data:`_CLAIMED`); None when ``sha`` holds no such marker file.
+
+    Raises:
+        GitError: When git cannot read ``sha``'s tree or the marker.
+    """
+    entry = git(root, "ls-tree", "-z", sha, "--", marker(number)).rstrip("\0")
+    if not entry or entry.split(" ")[1] != "blob":
         return None
-    line = done.stdout.strip()
+    line = git(root, "cat-file", "blob", entry.split(" ")[2].partition("\t")[0]).strip()
     return line.removeprefix(_CLAIMED) if line.startswith(_CLAIMED) else line
 
 
@@ -200,37 +215,63 @@ def claims(root: Path, cards: Iterable[int]) -> dict[int, Claim]:
 def read(root: Path) -> Reads:
     """What a command reads of git, once: the claim branches ``origin`` lists
     (:func:`on_origin`), ONE fetch of ``dev``, ``main`` and each of them (:func:`fetch`),
-    then what shipped (:func:`shipped`) and every claim (:func:`claims`)."""
+    then what shipped (:func:`shipped`), every claim (:func:`claims`) and every listed
+    branch that is none, merged."""
     listed = on_origin(root)
     fetch(root, listed)
-    return Reads(shipped(root), claims(root, listed))
+    found = claims(root, listed)
+    merged = {number: git(root, "rev-parse", f"refs/remotes/origin/{card_branch(number)}").strip()
+              for number in sorted(set(listed) - set(found))}
+    return Reads(shipped(root), found, merged)
+
+
+def _marker_changes(root: Path) -> list[tuple[str, str, str, str]]:
+    """Every change a commit on ``dev`` or ``main`` made to an entry under :data:`MARKERS`,
+    newest first: ``(status, sha, subject, path)``, the status ``A`` added, ``M`` changed,
+    ``D`` deleted or ``T`` its type changed.  The ONE walk of the markers' history:
+    :func:`history` and :func:`ever_marked` both read it.
+
+    **It lists a commit for every marker any commit of ``dev``'s or ``main``'s history ever
+    held.**  Such a marker arrived through a commit holding it whose parents do not: a
+    commit of one parent, which ``--full-history`` lists wherever it sits -- git's default
+    walk follows a merge through one parent alone when the merge matches it on the path, and
+    so lost a ship and its revert on the side it pruned (M1's review H1: three histories,
+    measured) -- or a merge none of whose parents holds it, whose change against its FIRST
+    parent (``--diff-merges=first-parent``) lists it, as it lists every marker a merge
+    brought into ``dev`` or ``main``.  Measured 2026-10-22 (git 2.56) on seven histories,
+    one a marker a merge's resolution alone added and another's alone deleted, which
+    ``--full-history`` without the merge's change missed.  (Git 2.56 also walked all seven
+    fully with the merge's change and no ``--full-history``; nothing in git's manual says
+    the one implies the other, so the walk states the flag its argument rests on.)  Read with
+    no rename detection, which git turns on by default, so a marker moved to another name
+    reads as deleted and added, never ``R``."""
+    out = git(root, "log", "--format=%x01%H%x02%s", "--name-status", "--no-renames",
+              "--full-history", "--diff-merges=first-parent", tracking(DEV), tracking(MAIN),
+              "--", MARKERS)
+    found = []
+    for record in filter(None, out.split("\x01")):
+        head, _, changes = record.partition("\n")
+        sha, _, subject = head.partition("\x02")
+        found += [(status, sha, subject, path) for status, _, path in
+                  (line.partition("\t") for line in changes.splitlines() if line.strip())]
+    return found
 
 
 def history(root: Path, number: int) -> list[tuple[str, str, str]]:
     """Each commit on ``dev`` or ``main`` that added (``A``), changed (``M``), deleted
     (``D``) or changed the type of (``T``) card ``number``'s marker, newest first: ``(status,
-    sha, subject)``.  Read with no rename detection, which a user's ``diff.renames`` would
-    otherwise turn on, so a marker moved to another name reads as deleted, never ``R``."""
-    out = git(root, "log", "--format=%x01%H%x02%s", "--name-status", "--no-renames",
-              tracking(DEV), tracking(MAIN), "--", marker(number))
-    found = []
-    for record in filter(None, out.split("\x01")):
-        head, _, changes = record.partition("\n")
-        sha, _, subject = head.partition("\x02")
-        found += [(line.split("\t")[0], sha, subject)
-                  for line in changes.splitlines() if line.strip()]
-    return found
+    sha, subject)``, a merge that brought it in among them (:func:`_marker_changes`)."""
+    return [(status, sha, subject) for status, sha, subject, path in _marker_changes(root)
+            if path == marker(number)]
 
 
 def ever_marked(root: Path) -> frozenset[int]:
-    """Every card whose marker a commit on ``dev`` or ``main`` ever added, changed or
-    deleted: each card git ever said shipped.  A card the tool closed as shipped was read
-    shipped through such a commit (``dev`` and ``main`` are never rewritten), so this finds
-    every one a revert has since unshipped, which ``sync`` reopens; what shipped NOW is
-    :func:`shipped`'s answer.  Read with no rename detection (:func:`history`)."""
-    out = git(root, "log", "--format=", "--name-only", "--no-renames", tracking(DEV),
-              tracking(MAIN), "--", MARKERS)
-    names = {line.removeprefix(f"{MARKERS}/") for line in out.splitlines() if line.strip()}
+    """Every card whose marker a commit on ``dev`` or ``main`` ever held
+    (:func:`_marker_changes`): each card git ever said shipped, since "shipped" is a marker
+    in the merge of the two, which holds no marker neither side does (no rename is
+    detected).  So it holds every card the tool closed as shipped that a revert has since
+    unshipped, which ``sync`` reopens, and every card :func:`shipped` names NOW."""
+    names = {path.removeprefix(f"{MARKERS}/") for _, _, _, path in _marker_changes(root)}
     return frozenset(int(name) for name in names if _NUMBER.fullmatch(name))
 
 
@@ -262,7 +303,8 @@ def _put(root: Path, tree: str | None, path: list[str], blob: str) -> str:
 
 def _pushed(root: Path, *args: str) -> tuple[str, str]:
     """One ``git push --porcelain`` of one ref to ``origin``: its flag (``*`` made, ``=``
-    already there, ``-`` deleted, ``!`` refused, ...) and its summary, as git prints them.
+    already there, ``-`` deleted, ``!`` refused -- by a lease as ``stale info``, ...) and
+    its summary, as git prints them.
 
     Raises:
         GitError: When git printed no line for the ref (it failed before pushing).
@@ -278,9 +320,12 @@ def _pushed(root: Path, *args: str) -> tuple[str, str]:
 def claim(root: Path, number: int, base: str, when: datetime) -> str:
     """Claim card ``number``: a commit on ``base`` adding its marker, ``claimed <when>``
     (:func:`instant`), made from objects alone -- no index, no hook, no working tree -- and
-    pushed CREATE-ONLY to ``card/<number>``; its sha.  An answer that the branch already holds
-    this very commit is the claim made (a push repeated after a lost answer): no other claim
-    writes the same commit.
+    pushed CREATE-ONLY to ``card/<number>``; its sha.  Only a push that MADE the branch
+    (``*``) claims it.  An answer that ``origin`` already holds this very commit (``=``,
+    which git gives without testing the lease, measured 2026-10-22) is another session's
+    claim: two sessions of one machine, one identity, claiming the same card on the same base
+    in the same second write the same commit, and this one pushed second (M1's review L7;
+    quill never pushes its own claim twice).
 
     Raises:
         ClaimTaken: When ``origin`` already holds the branch.
@@ -293,9 +338,9 @@ def claim(root: Path, number: int, base: str, when: datetime) -> str:
     sha = git(root, "commit-tree", tree, "-p", base, "-m", f"claim plan#{number}").strip()
     ref = f"refs/heads/{card_branch(number)}"
     flag, summary = _pushed(root, f"--force-with-lease={ref}:", "origin", f"{sha}:{ref}")
-    if flag == "!" and "stale info" in summary:
+    if flag == "=" or (flag == "!" and "stale info" in summary):
         raise ClaimTaken(f"{card_branch(number)} is on origin already")
-    if flag not in ("*", "="):
+    if flag != "*":
         raise GitError(f"the push of {card_branch(number)} answered {flag} {summary}")
     return sha
 
@@ -316,8 +361,9 @@ def release(root: Path, number: int, tip: str, when: datetime) -> str:
     then ``card/<number>`` deleted with a lease on ``tip``; the branch the work is kept on.
 
     Raises:
-        GitError: When either push is refused or fails -- the delete's when the branch moved
-            since it was read, which keeps that newer work.
+        GitError: When either push is refused or fails -- the delete's lease (``stale
+            info``) when the branch moved since it was read, which keeps that newer work, or
+            was deleted since.
     """
     kept = f"{RELEASED}{number}/{when.astimezone(UTC).strftime('%Y%m%dT%H%M%SZ')}"
     flag, summary = _pushed(root, f"--force-with-lease=refs/heads/{kept}:", "origin",
@@ -326,10 +372,13 @@ def release(root: Path, number: int, tip: str, when: datetime) -> str:
         raise GitError(f"the push of {kept} answered {flag} {summary}")
     ref = f"refs/heads/{card_branch(number)}"
     flag, summary = _pushed(root, f"--force-with-lease={ref}:{tip}", "origin", f":{ref}")
-    if flag != "-":
+    if flag == "!" and "stale info" in summary:
         raise GitError(f"{card_branch(number)} was not deleted ({flag} {summary}): it moved "
-                       f"since it was read, so its newer work is kept; its tip as read is on "
-                       f"{kept}")
+                       f"since it was read (or was deleted since), so any newer work is kept; "
+                       f"its tip as read is on {kept}")
+    if flag != "-":
+        raise GitError(f"{card_branch(number)} was not deleted ({flag} {summary}); its tip as "
+                       f"read is on {kept}")
     return kept
 
 
