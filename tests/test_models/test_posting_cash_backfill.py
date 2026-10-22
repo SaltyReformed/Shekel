@@ -91,27 +91,20 @@ from decimal import Decimal
 
 import pytest
 
-from app import ref_cache
 from app.enums import (
     StatusEnum,
 )
 from app.extensions import db as _db
-from app.models.journal_entry import JournalEntry, Posting
-from app.models.ledger_account import LedgerAccount
+from app.models.journal_entry import JournalEntry
 from app.services import match_withdrawal, movement_removal
 from tests._test_helpers import (
     add_txn,
     create_account_of_type,
     create_settled_transfer,
     inject_cash_backfill_kind_id,
-    ledger_accounts_for_account,
     load_migration_module,
     run_migration_callable,
 )
-
-
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
 
 
 _MIGRATIONS_DIR = (
@@ -161,47 +154,6 @@ def _entry_for_transaction(transaction_id):
     )
 
 
-def _legs_by_ledger(entry_id):
-    """Return ``{ledger_account_id: amount}`` for an entry's legs."""
-    return {
-        leg.ledger_account_id: leg.amount
-        for leg in _db.session.query(Posting).filter_by(
-            journal_entry_id=entry_id,
-        ).all()
-    }
-
-
-def _kinds_for_entry(entry_id):
-    """Return the set of posting-kind ids across an entry's legs."""
-    return {
-        leg.posting_kind_id
-        for leg in _db.session.query(Posting).filter_by(
-            journal_entry_id=entry_id,
-        ).all()
-    }
-
-
-def _cash_ledger_id(account):
-    """Return the linked (cash) ledger account id for *account*."""
-    return ledger_accounts_for_account(_db.session, account.id)[0].id
-
-
-def _counter_ledger(user_id, ledger_class, category_id=None):
-    """Return the category / fallback ledger account, mirroring the resolver.
-
-    Keys on ``(user_id, class_id)`` plus either ``category_id`` (a category
-    row) or ``is_owner_bucket`` (the Uncategorized fallback), exactly as
-    ``ledger_account_service._find_existing_category_ledger_account`` does.
-    """
-    class_id = ref_cache.ledger_account_class_id(ledger_class)
-    query = _db.session.query(LedgerAccount).filter_by(
-        user_id=user_id, class_id=class_id, account_id=None,
-    )
-    if category_id is None:
-        return query.filter_by(is_owner_bucket=True).one_or_none()
-    return query.filter_by(category_id=category_id).one_or_none()
-
-
 @pytest.fixture()
 def savings(app, db, seed_user):  # pylint: disable=unused-argument
     """A second (Savings) account so a transfer-shadow exclusion test has a target.
@@ -214,26 +166,6 @@ def savings(app, db, seed_user):  # pylint: disable=unused-argument
     )
     _db.session.commit()
     return acct
-
-
-# ---------------------------------------------------------------------------
-# Plain expense / income: one balanced entry, correct signs and accounts
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Envelope: the debit-only effect (effective - sum(credit))
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Uncategorized fallback
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# entry_date
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -329,16 +261,6 @@ class TestBackfillExclusions:
             ]
 
             assert _run_backfill() == []
-
-
-# ---------------------------------------------------------------------------
-# Chart-of-accounts creation and reuse
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Idempotency
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
