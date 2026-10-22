@@ -30,10 +30,11 @@ class Transfer(
     DELETE is narrowed to ``WHERE id = ? AND version_id = ?`` and
     the stored value is atomically incremented; concurrent
     mutations race for the bump and the loser raises
-    :class:`sqlalchemy.orm.exc.StaleDataError`.  The transfer
-    service propagates parent-transfer mutations to both shadow
-    transactions, so the parent's version pin protects the entire
-    three-row write set even though the shadow rows carry their
+    :class:`sqlalchemy.orm.exc.StaleDataError`.  Until plan step
+    ``balance:X-bi-6-4d-3`` deleted the transfer's two shadow
+    transactions, the transfer service propagated parent-transfer
+    mutations to both, so the parent's version pin protected the
+    three-row write set even though the shadow rows carried their
     own ``version_id`` columns.  See commit C-18 of the 2026-04-15
     security remediation plan.
     """
@@ -54,12 +55,13 @@ class Transfer(
         # covers (ruling **R-FI**, plan step X-au-c1).  Identical in form and in
         # purpose to ``ck_transactions_amount_ownership`` -- see that constraint
         # for why the pairing is written as two NULL tests rather than against a
-        # source value, and for the write-side teeth it buys.  On THIS table the
-        # writer it refuses is named: ``transfer_service`` copies the parent's
-        # figure onto both shadows and a drift corrector repairs the copies that
-        # got away, and plan step X-au-f deletes both by making a shadow READ its
-        # parent -- at which point Transfer Invariant 3 is structural rather than
-        # maintained.
+        # source value, and for the write-side teeth it buys.  On THIS table
+        # this comment named two writers: ``transfer_service`` copied the
+        # parent's figure onto both shadows, and a drift corrector repaired the
+        # copies that got away.  Plan step X-au-g-2c-2 deleted both by making a shadow READ
+        # its parent (``1f2b98a40``, ruling **R-IN**, which took in X-au-f's
+        # shadow half), and plan step ``balance:X-bi-6-4d-3`` deleted the
+        # shadows.
         #
         # ``ck_transfers_positive_amount`` (``amount > 0``) is UNCHANGED and
         # still admits the NULL (a comparison with NULL is UNKNOWN, which a CHECK
@@ -202,11 +204,13 @@ class Transfer(
         # Ad-hoc duplicate prevention (F-050 / C-22).  Without this index
         # a double-submit of the ad-hoc transfer form -- network retry,
         # double-click, browser back-and-resubmit -- creates two parent
-        # transfers in the same period.  Each duplicate transfer also
-        # produces two shadow transactions, so a single accidental
-        # double-click silently doubles the user's projected debit and
-        # credit by 4 rows total; balance projections drift by
-        # ``2 * amount`` until the user notices and manually reconciles.
+        # transfers in the same period.  Each duplicate transfer is a
+        # second debit and a second credit (with two more shadow
+        # transactions, until plan step ``balance:X-bi-6-4d-3`` deleted
+        # the shadows), so a single accidental double-click silently
+        # doubles the user's projected debit and credit; balance
+        # projections drift by ``2 * amount`` until the user notices and
+        # manually reconciles.
         # The composite key (user_id, from_account_id, to_account_id,
         # amount, pay_period_id, scenario_id) plus the
         # ``transfer_template_id IS NULL`` predicate scopes the
@@ -248,11 +252,12 @@ class Transfer(
     # DELETE in one pass, so a user-cascade that fans out into
     # ``pay_periods`` and ``transfers`` simultaneously would
     # previously have raised a RESTRICT error even though every
-    # row was destined for deletion.  CASCADE also keeps the
-    # transfer invariant intact: the transfer + its two shadow
-    # transactions + their pay period all disappear together
-    # rather than leaving the parent transfer orphaned after the
-    # shadows cascade away through ``transactions.pay_period_id``.
+    # row was destined for deletion.  Until plan step
+    # ``balance:X-bi-6-4d-3`` deleted the shadows, CASCADE also kept
+    # a transfer with its two shadow transactions: the three and
+    # their pay period disappeared together rather than leaving the
+    # parent transfer orphaned after the shadows cascaded away
+    # through ``transactions.pay_period_id``.
     # Name follows the SHEKEL_NAMING_CONVENTION (see
     # app/extensions.py).
     pay_period_id = db.Column(
@@ -267,10 +272,10 @@ class Transfer(
     # Pylint: ``duplicate-code`` -- Incidental scenario_id + status_id FK
     # pair, shared by structure (not by domain) with the transaction table
     # -- both are budget events living in a scenario with a status.  They
-    # are deliberately separate tables (the transfer owns the two-shadow
-    # invariant), so a shared base would couple them wrongly
-    # (coding-standards rule 13).  One-sided disable: the transaction block
-    # stays un-disabled.
+    # are deliberately separate tables (a transfer moves money between two
+    # accounts, a row is one account's), so a shared base would couple them
+    # wrongly (coding-standards rule 13).  One-sided disable: the transaction
+    # block stays un-disabled.
     # pylint: disable=duplicate-code
     scenario_id = db.Column(
         db.Integer,
@@ -336,14 +341,13 @@ class Transfer(
     notes = db.Column(db.Text)
     # Calendar date the transfer is due.  Nullable, matching
     # ``Transaction.due_date`` (ad-hoc transfers may omit it; recurrence
-    # places it from the rule's ``day_of_month``).  The parent is the
-    # canonical value: the transfer service mirrors it to both shadow
-    # transactions so the three stay equal (Transfer Invariant 3).
-    # Consumers of a due date (calendar, dashboard, year-end, spending-trend)
-    # read the shadow ``Transaction.due_date``; this column exists so the
-    # parent is a complete record and so edits/display have one source of truth.
+    # places it from the rule's ``day_of_month``).  Each side's leg reads
+    # it here (``TransferLeg.due_date``, :mod:`app.services.transfer_legs`).
+    # Until plan step ``balance:X-bi-6-4d-3`` deleted the shadows, the
+    # transfer service mirrored it to both shadow transactions, and the
+    # consumers of a due date read the shadow ``Transaction.due_date``.
     #
-    # On a LOAN PAYMENT the shadow's ``due_date`` is a POSTING INPUT, not
+    # On a LOAN PAYMENT the ``due_date`` is a POSTING INPUT, not
     # display metadata: it is the INSTALLMENT the payment satisfies (the loan
     # engine reads it via ``loan_loaders.loan_payment_due_date`` rather than
     # re-deriving it from the pay period, which is wrong for a payment settled
@@ -351,10 +355,7 @@ class Transfer(
     # strict ``anchor_date < due_date`` post-anchor boundary against it.  Moving
     # it therefore changes the POSTED balance, so ``due_date`` is in
     # ``transfer_service._POSTING_RELEVANT_FIELDS`` and any other writer of this
-    # column MUST follow it with a posting reconcile.  The three rows must be
-    # kept equal for the same reason: the full-edit form pre-fills its input from
-    # the PARENT, so a stale parent would be written back over a corrected shadow
-    # by a no-op save.
+    # column MUST follow it with a posting reconcile.
     due_date = db.Column(db.Date, nullable=True)
     # WHICH OCCURRENCE this transfer is -- the date its template's cadence
     # named when the transfer recurrence engine wrote it.  The parallel of
@@ -363,13 +364,11 @@ class Transfer(
     # skip predicate reads it identically, so a divergence here would be the
     # drift ``_recurrence_common`` exists to prevent (plan step **R17**).
     #
-    # **It is NOT mirrored onto the two shadow transactions.**  Transfer
-    # Invariant 3 makes the shadows equal to their parent in amount, status and
-    # period, and a shadow is not the rule's own row: it is created by
-    # ``transfer_service`` from the parent, never by the recurrence engine from
-    # an occurrence, and no generate pass ever asks a shadow whether an
-    # occurrence has been written.  Mirroring it would put a second writer on a
-    # column whose whole purpose is that only the engine writes it.
+    # **It was never mirrored onto the two shadow transactions** plan step
+    # ``balance:X-bi-6-4d-3`` deleted: a shadow was not the rule's own row
+    # (``transfer_service`` created it from the parent, never the recurrence
+    # engine from an occurrence), and no generate pass asked a shadow whether
+    # an occurrence had been written.
     occurs_on = db.Column(db.Date, nullable=True)
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 

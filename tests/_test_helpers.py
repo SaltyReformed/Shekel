@@ -9044,6 +9044,10 @@ def payroll_basis(profile, periods, cadence_days=14, history_opens_on=None):
 
     Args:
         profile: The ``SalaryProfile`` (or a duck-typed stand-in) to price.
+            Its ``user_id`` owns the calendar built here, because a rule is
+            refused against another owner's schedule
+            (``_require_owner`` in ``app/services/recurrence/_resolution.py``),
+            so a stand-in carries one too.
         periods: The owner's WHOLE schedule as
             :class:`~app.services.pay_calendar.DerivedPeriod` values, in any
             order.  Only their paydays are read; the calendar re-derives every
@@ -9076,7 +9080,7 @@ def payroll_basis(profile, periods, cadence_days=14, history_opens_on=None):
 
     return PayrollBasis(profile, derived_calendar(
         [period.start_date for period in periods], cadence_days=cadence_days,
-        history_opens_on=history_opens_on,
+        user_id=profile.user_id, history_opens_on=history_opens_on,
     ))
 
 

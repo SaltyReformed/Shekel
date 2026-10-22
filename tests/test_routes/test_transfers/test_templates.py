@@ -814,9 +814,13 @@ class TestUnarchiveUsesService:
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)
-            # An ad-hoc transfer FIRST, which the unarchive does not touch: it
-            # takes id 1, so the restored transfer's id is not its owner's
-            # (also 1), and a swapped (owner, transfer) call cannot pass.
+            # An ad-hoc transfer FIRST, which the unarchive does not touch.
+            # While every table counted from 1 it took id 1, so the restored
+            # transfer's id was not its owner's (also 1) and a swapped
+            # (owner, transfer) call could not pass.  The test database now
+            # numbers each table from a range of its own (ruling
+            # balance:R-BAL356), so the two ids differ without it, and the
+            # check below holds either way.
             _create_transfer(seed_user, seed_periods_today, savings)
             xfer = _create_transfer(seed_user, seed_periods_today, savings, template)
             xfer_id, owner_id = xfer.id, seed_user["user"].id

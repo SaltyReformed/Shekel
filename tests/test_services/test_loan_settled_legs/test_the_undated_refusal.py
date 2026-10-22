@@ -58,11 +58,14 @@ class TestASettledPaymentWithAnUndatedRecordFailsLoud:
         R-BAL167 class 1).  Until plan step balance:X-bi-6-4b the twin's
         status kept this payment out of the loan entirely.
 
-        Two unrelated transfers are built FIRST so the transfer's and the
-        movement's ids differ: in a fresh database each counts from 1, and a
-        message naming the twin's id where the movement's belongs passed the
-        leaf's first version of this case.  The twin's id joined the check
-        until plan step ``balance:X-bi-6-4d-3`` made a transfer one row
+        Two unrelated transfers are built FIRST, which is how this case made
+        the transfer's and the movement's ids differ while each table counted
+        from 1 in a fresh database; a message naming the twin's id where the
+        movement's belongs passed the leaf's first version of this case.  The
+        test database now numbers each table from a range of its own (ruling
+        ``balance:R-BAL356``), so the two ids differ without the decoys.  The
+        twin's id joined the check until plan step ``balance:X-bi-6-4d-3``
+        made a transfer one row
         (ruling **R-BAL258**; ruling **R-BAL167** class 4, through the
         helper :func:`_stage_an_undated_loan_side`).
 
