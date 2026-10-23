@@ -1,6 +1,6 @@
 # O7's fence census (balance:R-BAL263) and the record of the fences ruled KEEP (R-BAL268)
 
-A LIVE record. `docs/plans/steps.md` names it as outcome O7's record. No step deletes a fence on its
+A LIVE record, outcome O7's (a milestone in the tracker). No step deletes a fence on its
 KEEP list unless its row names the step that may (`balance:R-BAL268`): a step that would delete one
 asks the developer first.
 
@@ -59,7 +59,7 @@ for a fence, the kind is this record's reading.
 | T-18 | `scripts/hooks/post-edit-deps.sh` | a `requirements*.txt` edit nobody approved (it asks) | a developer-approval rule |
 | T-21 | `scripts/hooks/session-start.sh` | nothing; it prints the session's context | process |
 | T-22 | `scripts/hooks/guard-pr-actions.sh` | a pull request opened or merged outside the coordinator (it asks) | an advisory process control |
-| T-56 | `tools/ci/commit_trailers.py`, `tools/ci/trailers.py` | a malformed `Ships:` trailer, a revert git would answer wrongly | git is the truth of what shipped (`balance:R-BAL170`) |
+| T-56 | `tools/ci/commit_trailers.py`, `tools/ci/trailers.py` | a malformed `Ships:` trailer, a revert git would answer wrongly | git is the truth of what shipped (`balance:R-BAL170`); deleted by the tracker switch (`balance:X-cx`, L8), the done file `plan/ships/N` replacing the trailer (`balance:R-BAL359`) |
 | T-97 | `tests/test_models/test_books_boundary_arms.py:387`, `:499` | a revision that rewrites frozen function bodies | an applied migration is immutable history |
 | T-213 | `tests/test_models/test_posting_ref_seed_parity.py:388` | an enum member no migration seeds | migrations are frozen history; `X-dl` may retire its migration leg |
 | T-215 | five revision tests asserting `Review:`, e.g. `tests/test_models/test_pay_entries_migration.py:616` | a destructive migration with no recorded review | a developer-approval rule |
