@@ -35,7 +35,6 @@ these pass identically under ``TZ=Pacific/Kiritimati``.
 """
 
 import logging
-import pathlib
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -52,7 +51,6 @@ from app.models.transfer import Transfer
 from app.services import (
     pay_calendar,
     pay_period_admin,
-    pay_period_gates,
     pay_period_rolling,
     pay_period_write,
     pay_schedule_service,
@@ -60,6 +58,7 @@ from app.services import (
 )
 from app.schemas.validation import PayPeriodGenerateSchema
 from app.services.pay_calendar import calendar_for
+from tests._repo_root import REPO_ROOT
 from tests._test_helpers import (
     rhythm_of,
     add_txn,
@@ -86,13 +85,6 @@ FROZEN_TODAY = date(2025, 12, 1)
 def _freeze(monkeypatch):
     """Pin ``date.today()`` for every test in this module."""
     freeze_today(monkeypatch, FROZEN_TODAY)
-
-
-#: The repository root, derived from THIS file rather than from the working
-#: directory: ``TestThereIsOneWriter`` walks ``app/`` on disk, and a relative
-#: path would make that census silently empty -- and so vacuously green -- for
-#: any invocation whose cwd is not the checkout root.
-_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def _paydays(user_id):
@@ -2175,8 +2167,8 @@ class TestThereIsOneWriter:
             return False
 
         writes = set()
-        for path in sorted((_REPO_ROOT / "app").rglob("*.py")):
-            relative = path.relative_to(_REPO_ROOT).as_posix()
+        for path in sorted((REPO_ROOT / "app").rglob("*.py")):
+            relative = path.relative_to(REPO_ROOT).as_posix()
             for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
                 if not isinstance(node, ast.Call):
                     continue
@@ -2208,7 +2200,7 @@ class TestThereIsOneWriter:
     def test_the_readers_module_writes_nothing(self):
         """``pay_period_service`` holds no write of any kind after the split."""
         source = (
-            _REPO_ROOT / "app" / "services" / "pay_period_service.py"
+            REPO_ROOT / "app" / "services" / "pay_period_service.py"
         ).read_text()
         for forbidden in ("db.session.add", "db.session.delete", ".delete("):
             assert forbidden not in source, (
