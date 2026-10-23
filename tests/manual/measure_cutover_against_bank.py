@@ -2,7 +2,7 @@
 
 The instrument behind ruling **balance:R-GW** (``docs/audits/balance_architecture/README.md``
 Section 4), and it exists as a committed script rather than as a number in a
-planning document because ``conventions.md`` rule 6 says a measurement is named
+planning document because the planning conventions' rule 6 said a measurement is named
 by its COMMAND: a figure copied into prose goes stale invisibly, and the four
 places that ruling's evidence appears would each have gone stale separately.
 **Cited with its ARC** because `bank_import:R-GW` was minted the same day on

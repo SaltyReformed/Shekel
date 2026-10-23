@@ -29,8 +29,8 @@ shape of ledger row **P68**, CLOSED by plan step C2-f3c: one owner's calendar
 derived twice in one render, with nothing holding the two answers equal.  Its
 still-open sibling is **P69**.  *An adversarial review read the first draft's
 bare "is ledger row P68" as a citation of a live row and reported the id as a
-phantom; it is neither.  ``ledger.md`` carries OPEN findings only -- "a row
-leaves when its fix SHIPS" -- so a closed row is absent from it BY DESIGN, and
+phantom; it is neither.  The planning ledger carried OPEN findings only -- "a row
+leaves when its fix SHIPS" -- so a closed row was absent from it BY DESIGN, and
 seven other sites in ``app/`` cite P68 for this shape.  What the first draft
 got wrong was the TENSE, not the id.*  The two TRANSFER branches
 (``transactions/forms`` for a grid shadow cell, ``transfers/forms`` for the

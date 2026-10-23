@@ -256,7 +256,7 @@ def cash_outstanding_difference(
 
     **THREE figures name that leg across the corpus and they do not contradict
     each other -- they are one quantity measured on three dates.**
-    ``ledger.md``'s N-171 row says ``$15,065.08`` gross / ``-$1,495.10`` net
+    Finding N-171's card says ``$15,065.08`` gross / ``-$1,495.10`` net
     "over four months"; the balance README's X-f3c-4 entry says ``$1,776.88``;
     this says ``$2,370.02`` on 2026-09-01.  The plug is the NET of every
     assertion's correction, so it moves every time the owner declares a
