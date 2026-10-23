@@ -276,7 +276,7 @@ def _capture_cash_detail_context(app, auth_client, account_id, *, setup=False):
     context contract (the Decimals, the horizons list, the chart JSON,
     ``anchor_as_of``) WITHOUT parsing HTML -- the established chart / net-
     worth route-test pattern (see
-    ``tests/test_routes/test_savings.py::_capture_dashboard_context``).
+    ``tests/test_routes/test_savings/test_the_dashboard.py::_capture_dashboard_context``).
     Asserts the cash-detail template rendered (a 200 page), so the helper
     fails loud on a redirect / 404 rather than reading a wrong context.
     """
