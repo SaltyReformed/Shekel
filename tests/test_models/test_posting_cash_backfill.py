@@ -26,11 +26,14 @@ and the Step-4 migration then backfilled each row's ``kind_id`` from its shape
 (category rows -> ``category``, fallback rows -> ``fallback``); at HEAD the two
 are fused because ``kind_id`` is already NOT NULL.  The ``_inject_kind_into_pass_a``
 autouse fixture reproduces exactly that fusion by swapping the two frozen,
-immutable Pass-A SQL constants for kind-injected equivalents, so the migration's
-REAL :func:`_backfill_settled_transactions` orchestration (the settled-cash
-guard, ref-id resolution, and all of Pass B) still runs unchanged -- only Pass
-A's INSERT carries the ``kind_id`` the Step-4 backfill would assign.  The
-injection reuses the frozen mapping SQL as its single source.
+immutable Pass-A SQL constants for kind-injected equivalents.  Since plan step
+``balance:X-bi-6-3`` renamed ``is_fallback`` to ``is_owner_bucket`` (ruling
+R-BAL99), the same swap also re-homes Pass A's column list, the fallback
+INSERT's ``ON CONFLICT`` target and Pass B's fallback join onto that name.  The
+rest of the migration's REAL :func:`_backfill_settled_transactions`
+orchestration (the settled-cash guard, ref-id resolution, and the rest of Pass
+B's text) runs as shipped.  The injection reuses the frozen mapping SQL as its
+single source.
 
 **THE PASS-B HALF OF THIS SUITE WAS DELETED AT PLAN STEP X-f1** (developer
 ruling, 2026-08-03).  What survives is the set of tests that never reach the
@@ -121,14 +124,13 @@ _TWINS_DELETED = load_migration_module("82f7b7ed4332_a_transfer_is_one_row.py")
 
 @pytest.fixture(autouse=True)
 def _inject_kind_into_pass_a(monkeypatch):
-    """Swap the frozen Pass-A SQL for kind-injected SQL for every test.
+    """Re-home the frozen 7d63 SQL onto the head chart schema for every test.
 
     Autouse so every ``_run_backfill()`` runs the migration's real orchestration
-    with Pass A carrying the Step-4 ``kind_id`` (see the module docstring's
-    "Post-Step-4 adaptation").  Delegates to the shared
-    :func:`inject_cash_backfill_kind_id` helper, which the cash reconciliation
-    oracle reuses; ``monkeypatch`` auto-reverts the module constants after each
-    test.
+    with Pass A carrying the Step-4 ``kind_id`` and the owner-bucket flag under
+    its head name (see the module docstring's "Post-Step-4 adaptation").
+    Delegates to the shared :func:`inject_cash_backfill_kind_id` helper;
+    ``monkeypatch`` auto-reverts the module constants after each test.
     """
     inject_cash_backfill_kind_id(monkeypatch, _MIGRATION)
 
@@ -203,8 +205,8 @@ class TestBackfillExclusions:
     def test_soft_deleted_settled_not_backfilled(self, app, db, seed_user):
         """A settled-but-soft-deleted transaction produces no entry.
 
-        Its effective amount is zero (the balance calculator drops a deleted
-        row), and the backfill's ``is_deleted = FALSE`` filter excludes it.
+        Its payment is off the books and it is hidden, so it moves no money,
+        and the backfill's ``is_deleted = FALSE`` filter excludes it.
         Built as the delete door leaves it (ruling R-CC75): settled, its
         payment taken off through the one removal act, then hidden -- the
         database refuses a payment under a hidden row (R-CC89) and a row
@@ -235,18 +237,17 @@ class TestBackfillExclusions:
 
         The shadows carry ``transfer_id``, so the existence check's
         ``transfer_id IS NULL`` term excludes them and the backfill returns
-        early, posting nothing.
+        early, posting nothing.  Past that check, Pass B, the one writer
+        left, reads columns this schema dropped and raises inside the frozen
+        SQL, so a regression in the term fails here as that crash, not as a
+        read naming the exclusion.
 
         No transfer has a shadow since plan step ``balance:X-bi-6-4d-3``
         (``82f7b7ed4332`` deletes them and refuses a new one), so the case
         first runs that revision's downgrade, which builds the transfer's two,
         each settled and live as the transfer is.  That is asserted: a
         Projected or hidden shadow is excluded by the status or ``is_deleted``
-        filter, which would answer in place of the ``transfer_id`` one.  The
-        case also counted transaction-sourced journal entries naming either
-        shadow, and that read went at 4d-3's review: the shadows are built
-        after every act of the application, and the backfill's Pass B, the
-        one writer left, reads columns this schema dropped and raises first.
+        filter, which would answer in place of the ``transfer_id`` one.
         """
         with app.app_context():
             transfer = create_settled_transfer(
@@ -280,12 +281,12 @@ class TestMigrationRevisionPair:
 class TestDowngradeReversible:
     """downgrade() removes Step-3 entries + counter accounts, keeps Step-2.
 
-    A behavioral check (``_remove_cash_postings`` is DELETE-based, so unlike the
-    Step-2 backfill's DROP-TABLE downgrade it runs cleanly on the shared test
-    session) plus a source-level guard against a future edit silently re-routing
-    the downgrade past one of the two artefacts it must remove.  The executable
-    up/down round-trip was also verified manually against the prod-clone dev DB
-    (see the module docstring).
+    A source-level guard against a future edit silently re-routing the
+    downgrade past one of the two artefacts it must remove.  The behavioral
+    case that EXECUTED the downgrade went with the Pass-B half at plan step
+    X-f1 (see the module docstring).  The executable up/down round-trip was
+    also verified manually against the prod-clone dev DB (see the module
+    docstring).
     """
 
     def test_downgrade_source_removes_entries_and_counter_accounts(self):

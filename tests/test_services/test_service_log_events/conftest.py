@@ -7,7 +7,6 @@ from decimal import Decimal
 
 import pytest
 
-from app.models.category import Category
 from app.models.ref import Status
 from app.models.transaction_template import TransactionTemplate
 from app.services import account_service
@@ -28,8 +27,7 @@ def _transfer_setup(app, db, seed_user, seed_periods):
     """Build the minimum state needed for a transfer.
 
     seed_user has a Checking account; the transfer needs a second
-    account (Savings) and the Transfers: Outgoing/Incoming categories
-    that the route layer normally seeds.
+    account (Savings), whose books open before the schedule (below).
     """
     from app.models.ref import AccountType  # noqa: WPS433
 
@@ -50,21 +48,6 @@ def _transfer_setup(app, db, seed_user, seed_periods):
     # generated into, and since ruling R-PC85 a definition's occurrences start
     # above the books of every account it moves money in.
     open_books_before_the_first_assertion(db.session, savings)
-
-    db.session.add_all([
-        Category(
-            user_id=seed_user["user"].id,
-            group_name="Transfers",
-            item_name="Outgoing",
-            sort_order=900,
-        ),
-        Category(
-            user_id=seed_user["user"].id,
-            group_name="Transfers",
-            item_name="Incoming",
-            sort_order=901,
-        ),
-    ])
     db.session.commit()
 
     projected = db.session.query(Status).filter_by(name="Projected").one()

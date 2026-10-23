@@ -33,6 +33,7 @@ from tests._test_helpers import (
     make_expense_template,
     make_transfer_template,
     one_off_row_of,
+    typed,
 )
 
 
@@ -657,8 +658,11 @@ class TestATransferAnswersForItsOwnCategoryAndAccounts:
         Projected, or live, cannot pass here.  It ran over a Projected
         transfer only, hidden by hand, until an adversarial review of plan
         step balance:X-bi-6-4d-3 found an arm narrowed to Projected passing
-        the whole suite; a Paid transfer cannot be hidden by hand, because the
-        database refuses a payment record under a deleted transfer.  Until
+        the whole suite; a Paid transfer holding its payment records cannot be
+        hidden by hand (``ck_hidden_transfer_holds_nothing``).  Its [DONE]
+        transfer holds them, so the delete takes them off and sets it back to
+        Projected (ruling R-BAL246): the hidden Paid state is the case below.
+        Until
         4d-3 made a transfer one row, the case hid its shadows around the
         service to plant the state a shadowless transfer presents.
         """
@@ -683,6 +687,46 @@ class TestATransferAnswersForItsOwnCategoryAndAccounts:
             )
             db.session.commit()
             assert db.session.get(Transfer, transfer.id).is_deleted is True
+
+            assert account_has_history(source.id) is False
+            assert account_has_history(destination.id) is False
+
+    def test_a_transfer_closed_at_zero_is_history_until_hidden_though_still_paid(
+        self, app, seed_user,
+    ):
+        """A ``$0.00`` close is its accounts' history while live, and none once hidden.
+
+        A ``$0.00`` close holds no payment record, so its own soft delete
+        keeps it Paid (ruling R-BAL246): a hidden transfer that is settled.
+        The status and the hide are asserted before the predicate is asked.
+        An arm that counted a hidden SETTLED transfer passed every module
+        that asks the predicate until an adversarial review of plan step
+        balance:X-bi-6-4d-2 found it.
+        """
+        with app.app_context():
+            transfer, source, destination = self._a_projected_transfer(
+                seed_user, "Zero Close",
+            )
+            transfer_service.settle_transfer(
+                transfer.id, seed_user["user"].id,
+                submitted=typed(Decimal("0.00")),
+            )
+            db.session.commit()
+            assert db.session.get(Transfer, transfer.id).status_id == (
+                ref_cache.status_id(StatusEnum.DONE)
+            )
+
+            assert account_has_history(source.id) is True
+            assert account_has_history(destination.id) is True
+
+            transfer_service.delete_transfer(
+                transfer.id, seed_user["user"].id, soft=True,
+            )
+            db.session.commit()
+            stored = db.session.get(Transfer, transfer.id)
+            assert (stored.is_deleted, stored.status_id) == (
+                True, ref_cache.status_id(StatusEnum.DONE),
+            )
 
             assert account_has_history(source.id) is False
             assert account_has_history(destination.id) is False

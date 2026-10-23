@@ -43,7 +43,11 @@ class TestTransferServiceLogging:
     """transfer_service emits one event per public mutation."""
 
     def test_create_transfer_emits_event(self, app, db, _transfer_setup):
-        """create_transfer emits ``transfer_created``, naming the transfer and no shadow."""
+        """create_transfer emits ``transfer_created``, naming the transfer.
+
+        The event no longer carries the two shadow-id fields it carried until
+        plan step ``balance:X-bi-6-4d-3``.
+        """
         td = _transfer_setup
         with app.app_context(), _LogCapture(
             "app.services.transfer_service",
@@ -61,8 +65,10 @@ class TestTransferServiceLogging:
         assert record.amount == "100.00"
         # A transfer is one row since plan step ``balance:X-bi-6-4d-3``
         # (ruling R-BAL166), so a forensic query pivots on ``transfer_id``
-        # alone: each side's payment records name it through their side
-        # link.  The two shadow ids the event carried until then are gone.
+        # alone (read above): each side's payment records name it through
+        # their side link.  The two reads below pin only that the shadow-id
+        # fields the event carried until then are not put back; no shadow can
+        # be stored to name (``ck_transactions_names_no_transfer``).
         assert not hasattr(record, "expense_shadow_id")
         assert not hasattr(record, "income_shadow_id")
 
@@ -102,8 +108,9 @@ class TestTransferServiceLogging:
         assert record is not None
         assert record.user_id == td["user"].id
         assert record.transfer_id == xfer.id
-        # The count of shadows the delete hid, which the event carried until
-        # plan step ``balance:X-bi-6-4d-3``: there is none to hide.
+        # The event no longer carries the count of shadows the delete hid,
+        # which it carried until plan step ``balance:X-bi-6-4d-3``: there is
+        # none to hide.  The read pins that field's absence only.
         assert not hasattr(record, "shadow_count")
 
     def test_hard_delete_transfer_emits_event(self, app, db, _transfer_setup):
@@ -134,8 +141,10 @@ class TestTransferServiceLogging:
         record = cap.find(EVT_TRANSFER_RESTORED)
         assert record is not None
         assert record.transfer_id == xfer.id
-        # The count of shadows the restore brought back, which the event
-        # carried until plan step ``balance:X-bi-6-4d-3``: there is none.
+        # The event no longer carries the count of shadows the restore
+        # brought back, which it carried until plan step
+        # ``balance:X-bi-6-4d-3``: there is none.  The read pins that field's
+        # absence only.
         assert not hasattr(record, "shadow_count")
 
 

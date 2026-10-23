@@ -67,10 +67,14 @@ class TestTransactionShadowFamily:
         **R-BAL258**): ``ck_transactions_names_no_transfer`` refuses the
         income shadow the door was handed, so it is staged as
         :func:`~tests._test_helpers.assert_a_twin_is_refused` builds it and
-        that refusal asserted.  What stands is the guard's money, which only
-        the transfer's own door posts and reverses: from the settle, its
-        teardown leaves Savings on its ``$100.00`` opening, transit at
-        ``0.00`` and Checking on its ``$1,000.00`` opening.
+        that refusal asserted.  The guard the 10-09 answer kept is that CHECK
+        now, pinned by ``test_a_transfer_is_one_row.py``'s
+        ``test_the_database_refuses_a_twin``; no row door is reached here.  The
+        money read is the transfer's own teardown: Savings back on its
+        ``$100.00`` opening, transit at ``0.00`` and Checking on its
+        ``$1,000.00`` opening.  Those are also the figures of a settle that
+        posted nothing, so they grade only a teardown that leaves a side
+        posted.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -181,9 +185,11 @@ class TestTheWriterBooksATransferMovementUnderItsLeg:
     ):  # pylint: disable=unused-argument
         """A paid transfer hidden around the service is REFUSED at commit.
 
-        ``$100.00`` Checking -> Savings settled; the TRANSFER row alone is
-        flagged deleted by SQL, its two shadows left live (Transfer Invariant
-        4 drift).  Until plan step ``balance:X-bi-6-4d-2`` the state committed
+        ``$100.00`` Checking -> Savings settled; the TRANSFER row is flagged
+        deleted by SQL while both its sides hold their records (Transfer
+        Invariant 4 drift; until plan step ``balance:X-bi-6-4d-2`` its two
+        shadows stayed live beside it).
+        Until plan step ``balance:X-bi-6-4d-2`` the state committed
         and this asked the writer about it: the pair's door reversed both
         legs (Checking back on its ``$1,000.00`` opening, Savings on its
         ``$100.00``) and the cash fold named no fact, both gating on the
@@ -245,10 +251,11 @@ class TestTheWriterBooksATransferMovementUnderItsLeg:
         **R-BAL258**): the Savings shadow the teardown was handed is refused
         (:func:`~tests._test_helpers.assert_a_twin_is_refused`), the SAME
         planted shape as the income shadow of
-        ``TestTransactionShadowFamily``'s case.
-        What stands is the guard's money: both sides stay posted by the
-        transfer's own record -- Savings ``200.00`` (``$100.00`` opening +
-        ``100.00``), Checking ``900.00`` -- the transfer's money counted once.
+        ``TestTransactionShadowFamily``'s case.  The guard the 10-09 answer
+        kept is that CHECK now; no row door is reached here.  The money read
+        is the settle's: both sides posted by the transfer's own records --
+        Savings ``200.00`` (``$100.00`` opening + ``100.00``), Checking
+        ``900.00`` -- which the settle's own cases grade too.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -300,9 +307,11 @@ class TestTheWriterBooksATransferMovementUnderItsLeg:
         transfer one row** (ruling **R-BAL258**): the Checking shadow is
         staged as :func:`~tests._test_helpers.a_twin_of` builds it, hidden,
         and ``ck_transactions_names_no_transfer`` refuses it at the write, so
-        no record can be re-parented under it.  What stands: the pair's door
-        finds the settled transfer at target (``[]``) and Savings reads
-        ``200.00``.
+        no record can be re-parented under it.  A HIDDEN twin is staged in no
+        other case, so this refusal is the one shape of its own here.  The
+        case then reads the pair's door at target (``[]``) and Savings at
+        ``200.00``, which the pair door's and the settle's own cases grade
+        too.
         """
         with app.app_context():
             checking = seed_user["account"]

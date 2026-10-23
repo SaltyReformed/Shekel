@@ -195,7 +195,7 @@ class TestMoneyDatedInsideTheHead:
                 xfer.id, user_id, submitted=typed(Decimal("0.00")),
             )
             db.session.commit()
-            # The plant's own tell: the shape is the $0.00 close this case is
+            # The setup's own tell: the shape is the $0.00 close this case is
             # about -- a Paid transfer holding no record on either side, its
             # due date inside the span -- or the admit below would pass for a
             # different reason.

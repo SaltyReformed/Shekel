@@ -15,9 +15,10 @@ now goes through a Marshmallow schema and/or a per-FK
     leg uses refuses the same figure.
 
   * ``transfers.create_ad_hoc`` -- route-boundary FK ownership for
-    ``from_account_id``, ``to_account_id``, ``pay_period_id``,
-    ``scenario_id``, ``category_id`` collapsed into a single loop
-    that returns 404 on the first failure.
+    ``from_account_id``, ``to_account_id``, ``scenario_id``,
+    ``category_id`` collapsed into a single loop that returns 404 on
+    the first failure (``pay_period_id``'s is the service's since plan
+    step ``pay_calendar:C13-b``).
 
   * ``transfers.update_transfer`` -- route-boundary ownership probe
     on ``category_id``, the one user-scoped FK of the two the schema
@@ -30,8 +31,12 @@ now goes through a Marshmallow schema and/or a per-FK
 
 The ad-hoc and update IDOR rejections return 404 (security response
 rule: "404 for both not found and not yours"); the two template
-routes are form posts and redirect (302) instead.  Each proves no
-row was created or mutated in the victim's namespace.
+routes are form posts and redirect (302) instead.  Each proves the
+request wrote nothing: a create made no row, and an update left the
+owner's row as it was.  On the
+ad-hoc and update doors the service refuses the same references with
+the same 404, so those cases grade the refusal whichever tier gives
+it.
 """
 
 from datetime import date
@@ -374,13 +379,16 @@ class TestTransactionsMarkDoneActualAmount:
 
 
 class TestTransfersAdHocFkOwnership:
-    """``transfers.create_ad_hoc`` rejects cross-user FKs at the route layer.
+    """``transfers.create_ad_hoc`` rejects cross-user FKs with a 404.
 
     Each test asserts (1) the response is 404 (security response
     rule), and (2) no transfer row was created in either user's
-    namespace -- the route's defense-in-depth check must short-
-    circuit before ``transfer_service.create_transfer`` reaches the
-    database.
+    namespace.  The route probes the two accounts, the scenario and
+    the category before it calls ``transfer_service.create_transfer``;
+    the period's 404 is the service's (``_get_owned_period``, plan
+    step ``pay_calendar:C13-b``), and the service refuses the other
+    four with the same 404 too, so a case cannot tell which tier
+    answered.
     """
 
     def _baseline_payload(self, seed_user, period, savings):
@@ -513,11 +521,12 @@ class TestUpdateTransferCategoryOwnership:
     def test_cross_user_category_returns_404(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """A cross-user category_id is rejected before the service is called.
+        """A cross-user category_id is rejected with 404 and the transfer keeps its category.
 
-        Asserts the transfer's category_id is unchanged after the
-        rejected request (proves the failure short-circuited
-        before the service mutation).
+        The route probes the category before it delegates, and the
+        service refuses it too (``_reject_unowned_references``), so the
+        case grades the 404 and the unchanged row whichever tier
+        answers.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)

@@ -50,7 +50,7 @@ class TestTheDowngradeRefusesToInventAFigure:
     transactions, 171 transfers) before this leaf shipped.  What no rebuild can
     reach is the refusal: a template build replays the upgrades over an empty
     database, and the cutovers that empty a figure (plan steps X-au-d..X-au-i,
-    from ``d7b2e6c1a483``) come after this revision in the chain.
+    the first in the chain ``c9a4e7b21d58``) come after this revision in it.
     """
 
     def test_it_passes_when_every_row_owns_its_figure(

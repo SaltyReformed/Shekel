@@ -546,16 +546,18 @@ class TestTransferPrompt:
     ):
         """Source accounts dropdown does not include the current debt account.
 
-        Scopes the assertion to the ``source_account_id`` select.  A
-        naive ``f'value="{acct.id}" not in html`` check would falsely
-        match the loan account's id when it appears in any unrelated
-        attribute on the page (e.g., the dashboard's hidden form
-        carrying ``value="N"`` for some other model whose id happens
-        to equal the loan account's id).  The OR with ``"No recurring
-        payment" not in html`` papered over collisions when the
-        prompt was hidden, but failed deterministically when the
-        prompt was shown AND ``acct.id`` collided with another
-        element's value.
+        Scopes the assertion to the ``source_account_id`` select, the
+        control the case is about.  While every table's ids started at
+        1, a naive ``f'value="{acct.id}" not in html`` check could match
+        the loan account's id in an unrelated attribute (e.g., the
+        dashboard's hidden form carrying ``value="N"`` for another model
+        whose id equalled the loan account's), and the OR with ``"No
+        recurring payment" not in html`` that papered over it failed
+        deterministically when the prompt was shown and the ids
+        collided.  Since ruling R-BAL356 each non-ref table's ids start
+        in a range of their own, so that collision cannot occur in the
+        test database; the scoping stays because the assertion is about
+        that one control.
         """
         acct = _create_mortgage(seed_user, db.session)
 

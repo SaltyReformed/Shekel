@@ -612,6 +612,17 @@ class TestBalanceWithTransfers:
         )
         db.session.commit()
 
+        # The case's premise, read back from the database: the transfer is
+        # still there, Cancelled, on Checking, in period 1.  The balance below
+        # is also the balance of NO transfer, so a cancel that also hid or
+        # moved the row would pass that read alone.
+        db.session.expire_all()
+        stored = db.session.get(Transfer, xfer.id)
+        assert (
+            stored.status_id, stored.is_deleted,
+            stored.from_account_id, stored.pay_period_id,
+        ) == (cancelled.id, False, account.id, seed_periods[1].id)
+
         # Read what the app RENDERS (plan step X-g4b re-pointed these off the
         # deleted anchor-forward walk).  The fold LOADS the account's rows
         # itself rather than being handed a hand-picked subset -- an argument a
