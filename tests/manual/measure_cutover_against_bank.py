@@ -1,7 +1,7 @@
 """Score the app's rendered cash balance against the BANK's own daily closing.
 
-The instrument behind ruling **balance:R-GW** (``docs/audits/balance_architecture/README.md``
-Section 4), and it exists as a committed script rather than as a number in a
+The instrument behind ruling **balance:R-GW** (its ruling card in the tracker),
+and it exists as a committed script rather than as a number in a
 planning document because the planning conventions' rule 6 said a measurement is named
 by its COMMAND: a figure copied into prose goes stale invisibly, and the four
 places that ruling's evidence appears would each have gone stale separately.

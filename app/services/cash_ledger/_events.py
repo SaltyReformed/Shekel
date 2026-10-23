@@ -98,7 +98,7 @@ Services-boundary discipline (``CLAUDE.md`` Architecture / B6-01).  Plain data
 in, frozen dataclasses out; no Flask symbol, no writes.  All money is
 :class:`~decimal.Decimal`.
 
-Plan of record: ``docs/audits/balance_architecture/README.md`` (step X-a).
+Plan step **X-a** (``docs/audits/balance_architecture/README.md``).
 """
 
 from __future__ import annotations

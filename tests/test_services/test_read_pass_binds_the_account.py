@@ -1,6 +1,6 @@
 """X-i4: a read pass BINDS the account it values, and memoizes what it derives.
 
-Plan step **X-i4** (``docs/audits/balance_architecture/README.md`` section 5),
+Plan step **X-i4** (``docs/audits/balance_architecture/README.md``),
 closing finding **N-354**.
 
 **What the defect was.**  ``_cash_fold.assemble`` and its four siblings took the
