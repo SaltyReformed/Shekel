@@ -2031,12 +2031,15 @@ def loan_correction_entries_at(
 ):
     """Return the loan_payment corrections at ONE key on a loan's chart rows.
 
-    The key form of :func:`loan_correction_entries`, for a test that holds the
-    payment's period and day but whose loan side no longer holds a dated
-    record -- after a revert (the side keeps its record and the record's day
-    is released; the correction stays at the day it was posted), after a hard
-    delete (the transfer is gone, its sides' records taken off before it), or
-    for a key the walk merged two payments into.  The ``loan_payment``
+    The key form of :func:`loan_correction_entries`, for a test that holds a
+    key's period and day but no dated loan-side record to read the key off --
+    after a revert (the side keeps its record with its day
+    released, and the correction and the reversal the next reconcile posts
+    both sit at the old key), after a hard delete (the transfer is gone, its
+    sides' records taken off before it), after a ``$0.00`` close or a
+    correction to ``$0.00`` (the side holds no record, and the split is dated
+    by the installment the payment skips, ruling **R-BAL139**), or at a key
+    the walk prices nothing (a residue planted there).  The ``loan_payment``
     journal entries in *period_id* dated *day* with a leg on any of the loan's
     own chart rows
     (:func:`app.services._posting_reconcile.account_chart_row_ids`: its linked
@@ -5748,7 +5751,7 @@ def transfer_repriced_by_the_owner(xfer, figure):
     ``routes/transfers/mutations`` performs on a typed figure for a recurring
     transfer go through ``transfer_service.update_transfer``: the figure as
     OWNERSHIP, and ``is_override=True`` beside it because the transfer is
-    the owner's now rather than the rule's.  The figure lives on the
+    the owner's now rather than the rule's.  The PLANNED figure lives on the
     transfer alone, and both legs are drawn off it: it lived on THREE rows
     -- the parent and its two shadow legs, which that door moved together
     -- until plan step ``balance:X-bi-6-4d-2`` made a transfer one row.
@@ -9763,9 +9766,10 @@ def transfer_amount(xfer):
     """What one parent TRANSFER is worth -- its amount, resolved.
 
     **Written when plan step X-au-f moved a generated transfer's figure from a
-    column to a value**, one step after X-au-g-2c-2 did the same for each
-    transfer shadow, which a helper of its own priced (deleted at plan step
-    ``balance:X-bi-6-4d-2``, which deleted the shadows).  A case
+    column to a value**, the last per-kind cutover: X-au-g-2c-2 had done the
+    same for each transfer shadow, which a helper of its own priced (deleted at
+    plan step ``balance:X-bi-6-4d-2``, which deleted the shadows), and X-au-d
+    (salary) and X-au-e (ordinary recurring rows) came between.  A case
     asserting ``xfer.amount == Decimal(...)`` on a generated transfer would
     compare a figure against ``None``; what those cases were ABOUT -- what the
     transfer is worth -- is asked of the amount model here.

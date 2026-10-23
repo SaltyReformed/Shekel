@@ -38,9 +38,10 @@ a conflict the moment the owner has records against it.
 Key differences from transaction recurrence:
   - No salary linkage.
   - Single amount column (no estimated/actual split).
-  - Simpler amount logic: nothing is priced from a paycheck, and a generated
-    transfer stores no figure -- it declares its TEMPLATE and its definition
-    prices it (plan step X-au-f; :class:`DerivedTransferFields`).
+  - Simpler amount logic: nothing is priced from a paycheck, and the engine
+    writes no figure on a transfer it generates -- it declares its TEMPLATE
+    and its definition prices it (plan step X-au-f;
+    :class:`DerivedTransferFields`).
   - EVERY write goes through ``transfer_service`` -- create, update and delete
     alike -- as ``CLAUDE.md`` (Architecture) requires of every write of a
     transfer: a write anywhere else skips its refusals and the copies it keeps
@@ -283,12 +284,20 @@ def propagate_to_unruled_template(template, transfers) -> "list[int]":
     was created UNDATED**: it answered no occurrence (``occurs_on`` was
     ``None``), and an undated row is retained rather than retired.  Plan step
     ``balance:X-ci-1`` (ruling **R-BAL94**) creates it answering the occurrence
-    its ``due_date`` names (the chosen paycheck's start), and a date MOVE gives
-    an older one its occurrence too (``transfer_service.update_transfer``), so
-    that second route now covers only a one-time transfer born before X-ci-1
-    whose date has not moved since, until ``X-ci-3`` backfills them; for every
-    other the gate is the one protection.
-    It would be needed even for an undated row, because a retained row still
+    its ``due_date`` names (the chosen paycheck's start), and a date MOVE since
+    then gives an older one its occurrence too
+    (``transfer_service.update_transfer``), so that second route now covers
+    only rows still undated (one-time transfers born before X-ci-1 and a
+    recurring definition's pre-R17 legacy rows among them, R-BAL94).  A dated
+    row is protected by every door that regenerates a definition declining
+    one that has no rule: the edit route's gate, which regenerates only when
+    the definition has a rule or had one before the edit
+    (:func:`~app.routes._recurrence_conflict_chooser.regenerate_or_conflict_chooser`;
+    the edit that clears a cadence sweeps once, and no later edit does), and
+    the unarchive door's and the loan-start sync's own ``template.recurs``
+    checks (``routes/transfers/lifecycle.unarchive_transfer_template``,
+    ``loan_recurrence_sync.sync_loan_payment_start``).
+    The gate would be needed even for an undated row, because a retained row still
     raises a conflict the owner would have no reason to see.  What is left is
     this: the row is never retired, and everything else is the same rule.
 
@@ -458,12 +467,16 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
       4. the transfer answers NO occurrence at all (``occurs_on`` is NULL) --
          it is left exactly as found and RETAINED as a conflict (finding
          **REC-516**).  This engine is where that matters most: its retire arm
-         hard-deletes the transfer, and the app's last writer of undated rows
-         was a transfer one
-         (``routes/transfers/_instances._materialize_one_time_transfer``,
-         until plan step ``balance:X-ci-1`` dated its birth, ruling
-         **R-BAL94**); a one-time transfer it wrote before then stays undated
-         until its date first moves, or until ``X-ci-3`` backfills it.
+         hard-deletes the transfer.  The app's last writer of an undated
+         transfer a definition links was
+         ``routes/transfers/_instances._materialize_one_time_transfer``,
+         until plan step ``balance:X-ci-1`` dated its birth (ruling
+         **R-BAL94**); its live writer of an undated row a definition links
+         is a TRANSACTION one, carry-forward's rolled-forward ``is_override``
+         row (``carry_forward_service._execute``).  Undated transfers still
+         stand -- one-time transfers born before X-ci-1 and a recurring
+         definition's pre-R17 legacy rows among them (R-BAL94) -- so the arm
+         is live.
 
     Overridden and soft-deleted rows are conflicts wherever they sit, as
     before; immutable rows are never touched.

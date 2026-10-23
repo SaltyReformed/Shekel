@@ -26,15 +26,19 @@ reused as they are:
   (ruling **R-BAL94**, the twin of **R-BAL25**): ``occurs_on = due_date``,
   written at birth (``routes/transfers/_instances``) and by
   :func:`~._update._apply_remaining_fields`' one due-date arm whenever the
-  date MOVES, so a moved transfer's two columns are equal.  Two placed shapes
-  hold them apart until their date first moves: a cleared cadence's survivor
-  answers the occurrence its cadence named (a monthly rule with a due day; a
-  first-of-month rule due on the payday), and a one-time transfer born before
-  this leaf answers none until ``X-ci-3`` backfills it.  A one-time transfer
-  answered NO occurrence until this
-  leaf -- the shape finding **REC-516** names the one-time branch as the
-  last writer of -- which is what ``recurrence:R19-b`` waited on for this
-  table.
+  date MOVES, so a date moved since this leaf leaves the two columns equal.
+  A placed transfer can hold them apart until an edit next moves its date:
+  a cleared cadence's survivor answers the occurrence its cadence named and
+  keeps the due date its cadence last gave it, which need not be that day (a
+  Monthly First rule's occurrence is the 1st, and its row is dated from the
+  paycheck it defers onto); a cleared cadence's pre-R17 legacy row answers
+  none (R-BAL94); and a one-time transfer born before this leaf answers
+  none, even one whose date moved before it (that move wrote no
+  ``occurs_on``), until an edit moves its date or ``X-ci-3`` backfills it.
+  A one-time transfer answered NO occurrence until this leaf -- the
+  undated, definition-linked shape finding **REC-516** names, whose last
+  writer on this table the one-time branch was -- which is what
+  ``recurrence:R19-b`` waited on for this table.
 * **A typed figure RESTATES the definition's price in place, inside the
   door** (ruling **R-BAL92**; **R-BAL96** as amended 2026-09-21 after this
   leaf's adversarial review): the popover sends the figure a human typed as

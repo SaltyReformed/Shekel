@@ -127,11 +127,13 @@ def _materialize_one_time_transfer(template, start_period):
     step ``balance:X-ci-1``, ruling **R-BAL94**: ``occurs_on = due_date`` on
     a one-time transfer, the twin of ``one_off.place_row_of``'s birth
     write).  It was born answering NO occurrence until then -- the one-time
-    branch was the last writer of the undated shape finding **REC-516**
-    names, and the rule ``recurrence:R19-b`` waited on for this table --
-    so a cadence added to the definition later that names this day adopts
-    the transfer as its occurrence, and one that does not retains it as
-    the conflict it is.  Every later writer of the date keeps the pair
+    branch was this table's last writer of the undated, definition-linked
+    shape finding **REC-516** names, and the rule ``recurrence:R19-b``
+    waited on for this table -- so a cadence added to the definition later
+    that names this day adopts the transfer as its occurrence, and one that
+    does not retains it when it holds the owner's records and retires
+    (hard-deletes) a record-free Projected one that is not overridden
+    (R-BAL94, REC-516's stated cost).  Every later writer of the date keeps the pair
     equal inside ``transfer_service.update_transfer`` (**R-BAL96**); the
     two transfers born before this leaf are backfilled at ``X-ci-3``.
 

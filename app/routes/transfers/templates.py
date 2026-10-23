@@ -550,11 +550,13 @@ def update_transfer_template(template_id):
     # door rather than a rule about transfers -- a RECURRING template with the
     # identical edit had it applied, by a sweep that destroyed and rebuilt every
     # generated row -- so one edit meant two different things depending on
-    # whether the transfer repeated.  ``transfer_service.update_transfer`` moves
-    # a transfer between accounts now (a moving side's payment record goes with
-    # it, ruling **R-BAL168**), so the refusal has no cause left and
-    # :func:`propagate_to_non_repeating_transfers` states the accounts with the
-    # rest of the definition.
+    # whether the transfer repeated.  ``transfer_service.update_transfer`` can
+    # move a transfer between accounts now (ruling **R-BAL168**: a moving
+    # side's payment record goes with it), so the refusal has no cause left
+    # and :func:`propagate_to_non_repeating_transfers` states the accounts with
+    # the rest of the definition; a transfer holding the owner's records (a
+    # note or a payment record) is retained there rather than moved
+    # (``transfer_recurrence.propagate_to_unruled_template``).
     edit_form = RedirectTarget(
         "transfers.edit_transfer_template", {"template_id": template_id},
     )

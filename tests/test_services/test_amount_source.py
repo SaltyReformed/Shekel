@@ -457,11 +457,13 @@ def _loan_payment(
     UNREPRESENTABLE rather than merely unused.**  Each shadow held ``$1,200.00``
     so that a manual-mode assertion could prove the rule did not read the
     shadow's own column -- which is exactly what the deleted
-    ``_manual_shadow_amount`` did read.  A shadow declares ``PARENT_TRANSFER``
-    from birth now and ``ck_transactions_amount_ownership`` refuses it a figure,
-    so the distinction the third number graded is made by the schema.  Writing
-    it here raises ``CheckViolation`` at the flush, which is the constraint
-    saying so.
+    ``_manual_shadow_amount`` did read.  From that step a shadow declared
+    ``PARENT_TRANSFER`` from birth and ``ck_transactions_amount_ownership``
+    refused it a figure, so the distinction the third number graded was made
+    by the schema while shadows were born.  None is born now, and
+    ``ck_transactions_names_no_transfer`` refuses a row naming a transfer, so
+    writing one here raises ``CheckViolation`` at the flush, which is the
+    constraint saying so.
 
     ``owns=True`` takes the transfer for the OWNER at ``stored`` through the
     transfer door (:func:`transfer_repriced_by_the_owner`).  It also took each
@@ -909,9 +911,10 @@ class TestTheDeclarationDecides:
         """A transfer has no parent transfer, so that relation names nothing.
 
         The totality of the transfer arm.  ``ref.amount_sources`` holds both
-        members and nothing at the storage tier scopes one of them to the
-        shadow table, so the refusal is the only thing that tells a writer which
-        of the two tables it confused.
+        members and nothing at the storage tier says which table may store
+        which -- the flush below stores ``PARENT_TRANSFER`` on a transfer -- so
+        the refusal is the only thing that tells a writer which of the two
+        tables it confused.
         """
         savings = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("5000.00"),

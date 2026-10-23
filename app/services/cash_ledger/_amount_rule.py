@@ -48,8 +48,10 @@ class AmountRule(Enum):
     """Which of ruling R-FI's five sources a row's amount comes from.
 
     The dispatch key.  An explicit enum rather than a pair of link tests, because
-    the rules are not a partition over the links -- see this module's docstring
-    for the two subset relations that make the refinement order load-bearing.
+    the rules are not a partition over the links -- see :mod:`._amount_source`'s
+    docstring for the two subset relations (rules 2 and 4 are each a subset of
+    rule 3) that make the refinement order load-bearing; they stayed there when
+    this module was split from it.
 
     **It is NOT what the ``amount_source_id`` column stores, and a first draft of
     this docstring said it was.**  That column names the RELATION that prices a
@@ -124,9 +126,10 @@ def amount_rule(txn) -> AmountRule:
 
     Args:
         txn: The :class:`~app.models.transaction.Transaction` to classify.  Its
-            ``template`` / ``transfer`` relationship is read only when it
-            DECLARES the matching relation, so an undeclared row costs no lazy
-            load at all.
+            ``template`` relationship is read only when it DECLARES that
+            relation, and its ``transfer`` relationship never is (the
+            parent-transfer refiner reads nothing), so an undeclared row costs
+            no lazy load at all.
 
     Returns:
         The :class:`AmountRule` that prices this row.
