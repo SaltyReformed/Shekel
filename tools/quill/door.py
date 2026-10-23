@@ -17,7 +17,7 @@ Each name, and who reads it:
 - ``Tracker``: the type of the tracker ``tools/release`` reads for a cut after the
   cutover (``_plan``'s and ``release``'s connection to it, ``_cards``' reads of it); the
   connection itself is ``quill.CONNECT``.
-- ``with_closure``: ``tools/release._cards``, for the cards a release's trailers name and
+- ``with_closure``: ``tools/release._cards``, for the cards a release's markers name and
   every card a decision over them reads, by quill's one closure read.
 - ``leaves_below`` and ``dropped``: ``tools/release._cards``, for a deploy-together
   group's leaves by quill's own leaf rule, less each one dropped.
@@ -25,9 +25,15 @@ Each name, and who reads it:
   groups a card a release names is under, by quill's one walk up the steps a card splits,
   and for a leaf no step above which was dropped (R-BAL185: a person's close of a split
   step is a drop its leaves inherit, never copied onto them).
-- ``SHIPPABLE``: ``tools/release._cards``, which refuses a trailer naming a card of a
+- ``SHIPPABLE``: ``tools/release._cards``, which refuses a marker naming a card of a
   kind no commit ships (a ruling, a question, a card of no type), by quill's one list
   of the kinds a commit ships.
+- ``MARKERS``, ``card_of``, ``marked``, ``merged_tree``, ``changes`` and
+  ``marker_changes``: ``tools/release._cards``, for what a release changes in the ship
+  markers (ruling ``balance:R-BAL359``; step X-cx's M3): the tree a release of a cut into
+  ``main`` leaves production running, the cards a tree's markers name, the entries under
+  :data:`MARKERS` that differ between two trees, and the commits of a range that changed
+  each marker, by quill's one reading of each.
 - ``GitHubError``, ``TrackerError`` and ``CredentialsError``: ``tools/release.release``,
   which reports a failed read of the tracker, or App credentials it cannot use, as a
   release judged on nothing.
@@ -40,12 +46,14 @@ from __future__ import annotations
 
 from tools.quill._command import with_closure
 from tools.quill._fake import FakeTracker
+from tools.quill._git import MARKERS, card_of, changes, marked, marker_changes, merged_tree
 from tools.quill._github import CredentialsError, GitHubError
 from tools.quill._migrate_source import step_labels
 from tools.quill._state import SHIPPABLE, above, dropped, dropped_above, leaves_below
 from tools.quill._tracker import Tracker, TrackerError
 
 __all__ = [
+    "MARKERS",
     "SHIPPABLE",
     "CredentialsError",
     "FakeTracker",
@@ -53,9 +61,14 @@ __all__ = [
     "Tracker",
     "TrackerError",
     "above",
+    "card_of",
+    "changes",
     "dropped",
     "dropped_above",
     "leaves_below",
+    "marked",
+    "marker_changes",
+    "merged_tree",
     "step_labels",
     "with_closure",
 ]

@@ -1,23 +1,32 @@
 """Which cards a release carries after the cutover, whether each moves money, and which
 deploy-together groups each is under: the release tool's card reader (step X-cx's
-L9a-1b, T-a a1; rulings ``balance:R-BAL287`` - ``R-BAL289``).
+L9a-1b, T-a a1; rulings ``balance:R-BAL287`` - ``R-BAL289``), read from the ship markers
+since step X-cx's M3 (ruling ``R-BAL359``).
 
-**What a release carries is git's answer**: every card a ``Ships: plan#N`` or a
-``Reopens: plan#N`` trailer on a commit in ``<base>..<cut>`` names, read by the one
-trailer walk (:func:`tools.ci.trailers.history`).  An undo is carried as a ship is and
-judged by the same rules, since it changes what production runs as much (R-BAL288).
-Whether a card is in production after a release is git's too: shipped at the cut it is
-judged at, by the one rule the tracker tool and CI ask (:func:`tools.ci.trailers.shipped`,
-ruling ``R-BAL181``); one the window names that is not is UNDONE.
+**What a release carries is git's answer, read from the ship markers**: card N shipped
+when its marker ``plan/ships/N`` is in the tree (``tools/quill/_git.py``).  A release of
+``cut`` into ``base`` leaves production running the tree of their merge, as the release's
+own merge into ``main`` writes it (:func:`tools.quill.door.merged_tree`: a marker that
+conflicts in it refuses to judge), and it carries each card whose marker that tree adds
+(shipped), changes (shipped again after an undo: every claim writes a new line) or deletes
+(UNDONE), against ``base``'s: the NET change, so a card shipped and undone inside one
+window was in production on neither side and is not carried, and one undone that
+production held is carried and judged by the same rules as a ship, since it changes what
+production runs as much (the report ruled as ``R-BAL359``, its s.10, refining
+``R-BAL288``).  Against the merge and not the cut alone, so a hotfix on ``main`` the cut
+lacks reads as no undo.  Production holds ``base``'s markers before the release and the
+merge's after it, by quill's one reading of a tree (:func:`tools.quill.door.marked`); a
+card's commits are those of ``<base>..<cut>`` that changed its marker, by quill's one walk
+(:func:`tools.quill.door.marker_changes`): its claim and the merge that landed it.
 
 **A card moves money when it carries the moves-money label**: its OWN label, as the
 tracker holds it when the release is judged, split or not (the coordinator, under
 R-BAL207, 2026-10-14).  A label is no sentence a tick rewrites, so a card keeps its flag
 after it ships (the registries' ``recurrence:R20`` shape, which the pre-cutover reader
-reads around, has no counterpart here).  A step split into leaves since its trailer
+reads around, has no counterpart here).  A step split into leaves since its marker
 landed is judged as the work it was, by its own label: a split writes the step only its
 sub-issue link, so its labels stay (``tools/quill/test_quill_file.py``), and each leaf is
-judged by its own when a trailer names it.  No card inherits a leaf's label: a label a
+judged by its own when the window names it.  No card inherits a leaf's label: a label a
 person moves by hand is an edit any card can take, split or not, and a step undone and
 re-planned into a money leaf would count as a second money change beside that leaf,
 refusing every release from then on (the full-leaf review of 2026-10-14, its E2).
@@ -62,7 +71,7 @@ nothing) is read below too, and a step hung or a walk parted there refuses the r
 although no verdict on members reads that group (the coordinator, under R-BAL207,
 2026-10-14: kept strict, the PR #565 delta review's M-1).  A card the release names
 under a group is a leaf, a step re-planned into leaves since its
-trailer landed (quill splits no step ``dev`` says shipped, so it was undone first, or
+marker landed (quill splits no step git says shipped, so it was undone first, or
 split before its ship merged; a person can split one on the web), a step that will never
 ship, a finding, or the group's own card (the coordinator, under R-BAL207, 2026-10-14).
 A card the release names that will never ship touches nothing unless production holds
@@ -73,38 +82,33 @@ every member or none: a release taking a whole group out is whole too.
 ``sync`` unlinks it (R-BAL205: it was never part of the split), so it is below no group,
 and a release keeping its siblings without it would pass.  No card production holds
 carries that mark by any tool's write: quill marks a card only when it creates it, and
-X-cx's piece L9d refuses a ``Ships:`` naming a card that still carries the mark when it
-lands ("still being filed: finish it with quill file, then land"); the cutover's freeze
-waits on L9d, and ``dev`` carried no ``plan#`` trailer on 2026-10-14 (the coordinator's
-fork 3 (a), under R-BAL207).  So this reader reads the links as the tracker holds them,
-and no history of them.
+CI's landing check refuses a marker a claim writes for a card that still carries the mark
+("still being filed: finish it with quill file, then land"; ``tools/quill/landing.py``,
+its rule 7), and neither ``dev`` nor ``main`` held a marker before that check existed
+(measured 2026-10-23).  So this reader reads the links as the tracker holds them, and no
+history of them.
 
 **No refusal of a group is permanent.**  A refusal names each member the release lacks
 (missing, or taken out by it) and, when a member will never ship, every member it would
 keep; the report's line for the group names every member, carried, released, missing
 and undone.  Two ways out stand:
 
-- **Take the group out**: the same release adds a ``Reopens:`` for each member it would
+- **Take the group out**: the same release deletes the marker of each member it would
   keep (the report's carried and released).  That leaves production holding none of the
-  group, in ONE
-  round by construction: every step below the group that production holds at a cut is a
-  member, so after those ``Reopens:`` production holds no step below it at the new cut.
-  quill's ``dropped`` and ``leaves`` read git's shipped set, so a ``Reopens:`` can turn
-  a live step dead or a container back into a leaf; the new cut is judged with its own
-  read, and no such change makes production hold a step below the group.  Where groups
-  nest, the outer group's way out takes the inner one out too.  A ``Reopens:`` can name
-  any card production holds: CI's trailer check refuses one only when it undoes no
-  ``Ships:`` in its own history (``tools/ci/commit_trailers.py``, rule 3), and one made
-  on the cut for a member production holds there undoes that member's ``Ships:``, which
-  the cut's history holds; and L9d's landing check refuses one only when the tracker
-  lacks its card (``tools/quill/landing.py``), so a step production holds, a split one
-  included, may be named and this way out lands.
+  group, in ONE round by construction: every step below the group that production holds
+  at a cut is a member, so with those markers deleted production holds no step below it
+  at the new cut.  quill's ``dropped`` and ``leaves`` read git's shipped set, so a deleted
+  marker can turn a live step dead or a container back into a leaf; the new cut is judged
+  with its own read, and no such change makes production hold a step below the group.
+  Where groups nest, the outer group's way out takes the inner one out too.  CI's landing
+  check passes a marker's delete from any branch (``tools/quill/landing.py``, its rule 2),
+  so a step production holds, a split one included, may be undone and this way out lands.
 - **Ship it whole**: a member named as missing or undone that can still ship can ship,
   or ship back.
 
 A member that will never ship leaves by the first way alone, whichever kind it is: no
 plan ships it.  After that release production holds it on neither side, so no later
-release counts it unless a trailer ships it again, and then the same way out stands.  No
+release counts it unless a claim ships it again, and then the same way out stands.  No
 card stands in for the leaves it was re-planned into: the delta review of 2026-10-14
 built three histories in which such a stand-in, a member never back in production,
 refused every later release.  The way out can meet the money rule's cap (a group holding
@@ -114,30 +118,37 @@ at X-cx's piece L9d.
 **What it cannot read refuses the release**, and nothing is declared after the cutover
 (R-BAL287, R-BAL289):
 
-- an old-form ``Ships: <arc>:<id>``: the cutover's freeze ends with a release, so
-  production held every one before the registries went (R-BAL287), and one here was
-  merged after the freeze or missed by it.  Only a cut holding ``steps.md`` can judge
-  it, so the refusal names the newest one in the window whose history holds the claim,
-  to release first with the release tool as that cut holds it (none, for a claim merged
-  after the cutover);
-- an old-form ``Reopens: <arc>:<id>``: it undoes a step that has no card, so no reader
-  judges what it takes out of production;
-- a trailer naming a card the tracker does not hold: R-BAL289 refuses one before it
-  lands, by a trailer check reading the tracker (X-cx's piece L9d, built after this
-  reader and before the cutover), so what reaches here is a card deleted after its
-  trailer landed (until that check exists, a mistyped number too);
-- a trailer naming a card of a kind no commit ships (a ruling, a question, a card of no
-  type; quill's ``SHIPPABLE``): read as work it would pass as moving no money.  L9d's
-  landing check refuses a trailer naming a card that is no work when it lands, so
-  a mistyped one never reaches here;
-- a value of neither form, which CI's trailer check refuses before it lands.
+- an old-form ``Ships: <arc>:<id>`` or ``Reopens: <arc>:<id>`` that a cut holding
+  ``steps.md`` on ``dev``'s line in the window holds: the cutover's freeze ends with a
+  release, so production held every one merged before the cutover (R-BAL287), and this
+  one the freeze missed.  Only such a cut can judge it, so the refusal names the newest
+  one, to release first with the release tool as that cut holds it.  Every other trailer
+  is prose -- an old-form one merged after the cutover, a ``plan#N`` one, a value of
+  neither form -- since a marker is the record and nothing after the cutover reads a
+  trailer: refusing one would wedge every release over it, once no check refuses a
+  trailer's shape before it lands (``R-BAL184``; X-cx's ``m2_plan.md`` s.3);
+- a marker naming a card the tracker does not hold: CI's landing check refuses one before
+  it lands (R-BAL289; ``tools/quill/landing.py``, its rule 7), so what reaches here is a
+  card deleted after its marker landed;
+- a marker naming a card of a kind no commit ships (a ruling, a question, a card of no
+  type; quill's ``SHIPPABLE``): read as work it would pass as moving no money.  The landing
+  check refuses one when it lands, so what reaches here was retyped since;
+- an entry under ``plan/ships/`` that is no card's marker (a name that is no card number,
+  a file in a directory below it), which the landing check refuses before it lands (its
+  rule 1);
+- a card an earlier cut's window names that the release's read does not hold (below).
 
 **The tracker is read once, at the release's cut** (:func:`read`), and every earlier cut
-offered in its place is judged with that read (:func:`carried`): each lies on the cut's
-first-parent line, so its window is part of the cut's and names no card the read does
-not hold.  The plan's shapes (which steps are leaves, which will never ship) are read
-with the cut's shipped set too, so an earlier cut is judged by the shapes the release's
-cut gives its steps.
+offered in its place is judged with that read (:func:`carried`).  The read names each card
+the cut's window names and each card whose marker any commit of ``<base>..<cut>`` changed
+(quill's one walk), so it holds a card an earlier cut on the cut's first-parent line
+shipped and the cut undid.  The walk lists a merge by its change against its first parent
+alone, so a window can name a card no commit's listed change touched; an earlier cut whose
+window names a card the read does not hold is refused, naming that card, and so never
+offered: it is never judged as a card the tracker lacks.  The plan's
+shapes (which steps are leaves, which will never ship) are read with what production
+holds after the cut too, so an earlier cut is judged by the shapes the release's cut gives
+its steps.
 """
 from __future__ import annotations
 
@@ -148,12 +159,18 @@ from pathlib import Path
 
 from tools.ci import trailers
 from tools.quill.door import (
+    MARKERS,
     SHIPPABLE,
     Tracker,
     above,
+    card_of,
+    changes,
     dropped,
     dropped_above,
     leaves_below,
+    marked,
+    marker_changes,
+    merged_tree,
     with_closure,
 )
 from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, MOVES_MONEY_LABEL
@@ -174,8 +191,9 @@ class Cards:
     it splits, that step's, ...); each deploy-together group the read holds that has a
     step below it, with every such step (those that can be its members, :func:`_member`),
     in card order; each such group's leaves by quill's rule, in any state; which of those
-    steps and named cards will never ship (dropped, or under a step that was); and what
-    each named card that is no work is."""
+    steps and named cards will never ship (dropped, or under a step that was); what each
+    named card that is no work is; and every card the read named (:func:`read`), held by
+    the tracker or not."""
 
     money: Mapping[int, bool]
     lines: Mapping[int, tuple[int, ...]]
@@ -183,6 +201,24 @@ class Cards:
     leaves: Mapping[int, frozenset[int]]
     dropped: frozenset[int]
     no_work: Mapping[int, str]
+    named: frozenset[int]
+
+
+@dataclass(frozen=True)
+class _Window:
+    """What a release of a cut into a base changes in the ship markers: the cards
+    production holds before it (``before``, the base's markers) and after it (``after``,
+    the markers of the two's merge); each card whose marker that merge adds, changes or
+    deletes against the base (``named``), with the commits of ``<base>..<cut>`` that
+    changed that marker, newest first; each other entry under :data:`MARKERS` it changes,
+    by path (``strays``); and every card whose marker a commit of ``<base>..<cut>``
+    changed (``touched``)."""
+
+    before: frozenset[int]
+    after: frozenset[int]
+    named: Mapping[int, tuple[str, ...]]
+    strays: tuple[str, ...]
+    touched: frozenset[int]
 
 
 def _what(kind: str | None) -> str:
@@ -191,23 +227,43 @@ def _what(kind: str | None) -> str:
 
 
 @cache
-def _window(root: Path, base: str, cut: str) -> trailers.History:
-    """The trailers on ``<base>..<cut>``, read once per range: the judge passes resolved
-    shas, which name commits that never change."""
-    return trailers.history(root, f"{base}..{cut}")
+def _held(root: Path, tree: str) -> frozenset[int]:
+    """The cards whose markers ``tree`` holds (a commit names its own), read once per
+    tree: the judge passes resolved shas, and a tree id names content that never changes."""
+    return marked(root, tree)[0]
 
 
 @cache
-def _standing(root: Path, cut: str) -> frozenset[int]:
-    """Every card shipped at ``cut``: what production runs once ``cut`` is released; read
-    once per cut, as :func:`_window` is."""
-    return frozenset(trailers.shipped(root, trailers.history(root, cut))[0])
+def _window(root: Path, base: str, cut: str) -> _Window:
+    """What releasing ``cut`` into ``base`` changes in the markers (:class:`_Window`), read
+    once per pair: the judge passes resolved shas, which name commits that never change.
+
+    Raises:
+        tools.ci.gitcmd.GitError: when a marker conflicts in the merge of the two, or git
+            cannot read the range.
+    """
+    tree = merged_tree(root, (base, cut))
+    commits: dict[int, list[str]] = {}
+    for change in marker_changes(root, (f"{base}..{cut}",)):
+        number = card_of(change.entry.path)
+        if number is not None and change.sha not in commits.setdefault(number, []):
+            commits[number].append(change.sha)
+    named, strays = {}, []
+    for entry in changes(root, base, tree, MARKERS):
+        number = card_of(entry.path)
+        if number is None:
+            strays.append(entry.path)
+        else:
+            named[number] = tuple(commits.get(number, ()))
+    return _Window(_held(root, base), _held(root, tree), named, tuple(strays),
+                   frozenset(commits))
 
 
 def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
-    """What ``cut`` knows of the release ``<base>..<cut>``: every card its trailers name,
-    read by number, and every card a decision over them reads, read once.  ``base`` and
-    ``cut`` are resolved shas: the window and the shipped sets are cached by them.
+    """What ``cut`` knows of the release ``<base>..<cut>``: every card its window names and
+    every card whose marker a commit of ``<base>..<cut>`` changed, read by number, and every
+    card a decision over them reads, read once.  ``base`` and ``cut`` are resolved shas:
+    the window and the shipped sets are cached by them.
 
     Raises:
         ReleaseError: when a step hangs below a deploy-together group under a card that
@@ -217,12 +273,14 @@ def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
         tools.quill.door.TrackerError: when a card one of them links to is not there.
         tools.quill.door.GitHubError: when GitHub answers a read with an error.
         requests.RequestException, OSError: when the tracker cannot be reached.
-        tools.ci.gitcmd.GitError: when git cannot read the range.
+        tools.ci.gitcmd.GitError: when a marker conflicts in the merge of ``base`` and
+            ``cut``, or git cannot read the range.
     """
-    named = {trailer.card for trailer in _window(root, base, cut).trailers}
+    window = _window(root, base, cut)
+    named = window.touched | set(window.named)
     held = tracker.cards(named)
     closure = with_closure(tracker, dict(held))
-    shipped = set(_standing(root, cut))
+    shipped = set(window.after)
     work = {number for number, card in held.items() if card.kind in SHIPPABLE}
     up = {number: tuple(step.number for step in above(card, closure))
           for number, card in closure.items()}
@@ -256,7 +314,8 @@ def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
         frozenset(number for number in {*work, *(step for steps in groups.values()
                                                  for step in steps)}
                   if never_ships(number)),
-        {number: _what(card.kind) for number, card in held.items() if number not in work})
+        {number: _what(card.kind) for number, card in held.items() if number not in work},
+        frozenset(named))
 
 
 def _one_walk(groups: Mapping[int, Collection[int]], lines: Mapping[int, tuple[int, ...]],
@@ -360,29 +419,53 @@ def _judgeable(root: Path, base: str, cut: str, claim: str) -> str | None:
                  and trailers.is_ancestor(root, claim, sha)), None)
 
 
-def _unreadable(root: Path, base: str, cut: str, found: trailers.History,
-                unread: Mapping[int, tuple[list[str], str | None]]) -> list[str]:
-    """Each thing this reader cannot read: an old-form claim; an old-form ``Reopens:``; a
-    card the tracker does not hold, or holds as no work; and a value of neither form."""
+@cache
+def _old_form(root: Path, base: str, cut: str) -> tuple[str, ...]:
+    """Each old-form ``Ships:`` or ``Reopens:`` in ``<base>..<cut>`` that only a cut before
+    the cutover can judge, naming the newest such cut to release first; read once per
+    range, as :func:`_window` is.  Every other trailer is prose (the module's docstring)."""
+    found = trailers.history(root, f"{base}..{cut}")
     lines = []
-    for claim in found.old_form:
+    for claim in (*found.old_form, *found.old_form_reopens):
         judgeable = _judgeable(root, base, cut, claim.sha)
-        first = (f"release {judgeable[:12]} first, with the release tool as that cut holds it"
-                 if judgeable else "no cut on dev's line in this window holds steps.md and "
-                 "this commit, so no release can judge it: it was merged after the cutover")
-        lines.append(f"{claim.sha[:12]} claims `{claim.key}` in the old form, which only a cut "
-                     "holding steps.md can judge (R-BAL287: the cutover's freeze ends with a "
-                     f"release of every one): {first}")
-    lines += [f"{undo.sha[:12]} carries `Reopens: {undo.key}` in the old form: it undoes a "
-              "step that has no card, so no reader judges what it takes out of production "
-              "(R-BAL287, R-BAL288)" for undo in found.old_form_reopens]
-    for number, (shas, what) in sorted(unread.items()):
-        named = f"plan#{number} (named at {', '.join(sha[:12] for sha in shas)})"
-        lines.append(f"{named} is a card the tracker does not hold, so whether it moves "
-                     "money cannot be read (R-BAL289)" if what is None else
-                     f"{named} is {what}, which no commit ships, so it names no work whose "
-                     "flag can be read")
-    return lines + list(found.malformed)
+        if judgeable is not None:
+            verb = "claims" if claim.trailer == trailers.SHIPS else "reopens"
+            lines.append(f"{claim.sha[:12]} {verb} `{claim.key}` in the old form, which only a "
+                         "cut holding steps.md can judge (R-BAL287: the cutover's freeze ends "
+                         f"with a release of every one): release {judgeable[:12]} first, with "
+                         "the release tool as that cut holds it")
+    return tuple(lines)
+
+
+def _at(shas: Collection[str]) -> str:
+    """Where a card's marker changed in the window, for a refusal; empty when no commit of
+    it changed the marker."""
+    return f" (its marker changed at {', '.join(sha[:12] for sha in shas)})" if shas else ""
+
+
+def _unreadable(root: Path, base: str, cut: str, window: _Window, known: Cards) -> list[str]:
+    """Each thing this reader cannot read in ``window``, the window of ``<base>..<cut>``:
+    an old-form trailer a cut before the cutover holds; a card the release's read did not
+    name, or the tracker does not hold, or holds as no work; and an entry under the markers'
+    directory that is no card's marker."""
+    lines = list(_old_form(root, base, cut))
+    for number, shas in sorted(window.named.items()):
+        if number in known.money:
+            continue
+        what = known.no_work.get(number)
+        if number not in known.named:
+            lines.append(f"plan#{number}'s marker changes at {cut[:12]}, and no commit of the "
+                         "release's window changed it, so the release's one read of the "
+                         f"tracker does not hold it: judge {cut[:12]} as a release of its own")
+        elif what is None:
+            lines.append(f"plan#{number}{_at(shas)} is a card the tracker does not hold, so "
+                         "whether it moves money cannot be read (R-BAL289)")
+        else:
+            lines.append(f"plan#{number}{_at(shas)} is {what}, which no commit ships, so it "
+                         "names no work whose flag can be read")
+    return lines + [f"{path} is no card's marker (a marker is the file {MARKERS}/<card "
+                    "number>), so what this release changes there cannot be read"
+                    for path in window.strays]
 
 
 def _counts(number: int, known: Cards, held: frozenset[int]) -> bool:
@@ -439,27 +522,21 @@ def carried(root: Path, base: str, cut: str, known: Cards) -> Carried:
     are resolved shas, as :func:`read` takes them).
 
     Raises:
-        tools.ci.gitcmd.GitError: when git cannot read the range.
+        tools.ci.gitcmd.GitError: when a marker conflicts in the merge of ``base`` and
+            ``cut``, or git cannot read the range.
     """
-    found = _window(root, base, cut)
-    named: dict[int, list[str]] = {}
-    for trailer in found.trailers:
-        shas = named.setdefault(trailer.card, [])
-        if trailer.sha not in shas:
-            shas.append(trailer.sha)
-    standing, before = _standing(root, cut), _standing(root, base)
+    window = _window(root, base, cut)
+    standing, before = window.after, window.before
     held = standing | before
     # The groups each named card touches, nearest first: none for one that does not count.
     touching = {number: tuple(step for step in known.lines.get(number, ())
                               if step in known.groups) if _counts(number, known, held) else ()
-                for number in named}
+                for number in window.named}
     steps = tuple(
-        Step(f"plan#{number}", tuple(shas), known.money[number],
+        Step(f"plan#{number}", shas, known.money[number],
              tuple(f"plan#{group}" for group in touching[number]),
              undone=number in before and number not in standing)
-        for number, shas in sorted(named.items()) if number in known.money)
+        for number, shas in sorted(window.named.items()) if number in known.money)
     groups = tuple(_group(group, known, touching, before, standing)
                    for group in sorted({group for each in touching.values() for group in each}))
-    unread = {number: (shas, known.no_work.get(number)) for number, shas in named.items()
-              if number not in known.money}
-    return Carried(steps, groups, tuple(_unreadable(root, base, cut, found, unread)))
+    return Carried(steps, groups, tuple(_unreadable(root, base, cut, window, known)))

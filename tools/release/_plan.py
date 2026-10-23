@@ -127,9 +127,9 @@ class Inputs:
 def _split(group: Group) -> str | None:
     """Why a cut leaves production holding part of ``group``; None when, released, it
     leaves production holding every member or none (R-BAL288).  A member the plan will
-    never ship is named with the way out no plan can block: a ``Reopens:`` for each member
-    the cut keeps, which leaves production holding none of the group (after the cutover,
-    every step below a group that production holds at a cut is a member of it)."""
+    never ship is named with the way out no plan can block: deleting the ship marker of
+    each member the cut keeps, which leaves production holding none of the group (after the
+    cutover, every step below a group that production holds at a cut is a member of it)."""
     held = group.carried + group.released
     if not held or not group.undone + group.missing:
         return None
@@ -143,13 +143,13 @@ def _split(group: Group) -> str | None:
                f"({', '.join(group.carried)}) without {', '.join(group.missing)}")
     else:
         why = (f"it leaves {', '.join(group.undone)} of the deploy-together group {group.key} "
-               f"out of production (a Reopens: names it) and keeps {', '.join(held)}"
+               f"out of production (its marker deleted) and keeps {', '.join(held)}"
                + (f", without {', '.join(group.missing)}" if group.missing else ""))
     if group.dead:
         why += (f"; a step the plan will never ship ({', '.join(group.dead)}) is a member "
                 "while production holds it, at the base or the cut: a release that leaves "
-                "production holding none of the group is whole (a Reopens: naming each of "
-                f"{', '.join(held)})")
+                "production holding none of the group is whole (deleting the marker of each "
+                f"of {', '.join(held)})")
     return why + "; the group ships whole"
 
 
