@@ -123,24 +123,19 @@ crash, which also exits 1: STOP and report it; it is never a refusal and never c
 
 Then, line by line:
 
-- A step reading `moves money: UNREADABLE` was written already ticked. Read its flag from the
-  lane's commit or handoff and re-run with `--declare <arc>:<id>=money@<source>` or
-  `--declare <arc>:<id>=none@<source>`, the source being the commit sha or handoff path you read.
-  Before the cutover only: after it, every step is a card whose flag is its label (R-BAL287).
-- For each step reading `moves money: yes` and each `ADDED` migration, find the rehearsal kit its
+- `plan` reads the cards through quill's App, so a failed tracker read exits 2. What it carries is
+  the change the release makes to the ship markers (`plan/ships/<N>`, R-BAL359), and whether a
+  card moves money is its moves-money label (R-BAL287). A card reading `UNDONE` is one whose
+  marker the release deletes, judged as a ship is (R-BAL288): a money mover's undo needs its kit
+  too. A group's way out is reverting the merge that landed each member it names, never deleting a
+  marker by hand (that leaves the code in production, unseen).
+- For each card reading `moves money: yes` and each `ADDED` migration, find the rehearsal kit its
   lane wrote (the lane's handoff names the kit's directory), and append each directory found to
   `current.sh` as `KITS="<dir> <dir> ..."`. For each with no kit, re-run with
-  `--unrehearsed <arc>:<id>` (a card after the cutover: `--unrehearsed plan#N`) or
-  `--unrehearsed <revision>`; `plan` then refuses the release for it.
-- After the cutover (the cut holds no `steps.md`), `plan` reads the cards through quill's App, so
-  a failed tracker read exits 2. What it carries is the change the release makes to the ship
-  markers (`plan/ships/<N>`, R-BAL359). A card reading `UNDONE` is one whose marker the release
-  deletes, judged as a ship is (R-BAL288): a money mover's undo needs its kit too. A group's way
-  out is reverting the merge that landed each member it names, never deleting a marker by hand
-  (that leaves the code in production, unseen). A refusal
-  naming an old-form `<arc>:<id>` trailer, a card the tracker does not hold, a card that is no
-  work, or an entry under `plan/ships/` that is no card's marker (R-BAL287, R-BAL289) is no
-  judgment for this run to make: STOP and report it to Josh.
+  `--unrehearsed plan#N` or `--unrehearsed <revision>`; `plan` then refuses the release for it.
+- A refusal naming a card the tracker does not hold, a card that is no work, or an entry under
+  `plan/ships/` that is no card's marker (R-BAL287, R-BAL289) is no judgment for this run to make:
+  STOP and report it to Josh.
 
 Re-run with every flag at once until nothing more changes; the last run is `plan.txt`.
 
@@ -148,8 +143,8 @@ Re-run with every flag at once until nothing more changes; the last run is `plan
 
 The answer moves the cut, so this comes before any rehearsal.
 
-- **Refused (exit 1):** name the rule and the steps in plain words, then offer the line
-  `newest earlier cut that passes`: "Release up to <its subject> (<its steps>); <the rest> goes in
+- **Refused (exit 1):** name the rule and the cards in plain words, then offer the line
+  `newest earlier cut that passes`: "Release up to <its subject> (<its cards>); <the rest> goes in
   the next release", or "Stop". When that line says `none`, say no earlier cut passes and the one
   option is to stop. On the offered cut, append `CUT="<its sha>"` to `current.sh` and go back to
   step 2.
@@ -212,10 +207,9 @@ grade to the lane.
 
 Header "Release ok". The question lists, in plain words with each id after its words:
 
-- each step the release carries, and which moves money;
+- each card the release carries, and which moves money;
 - each migration it adds, edits or deletes, and what it changes;
 - every `APPROVAL MUST NAME` line of `plan.txt`;
-- every declared step, the value declared and its source;
 - every OTHER change to what the image ships, named UNREHEARSED (R-BAL281's interim). Find them:
   `git log --first-parent --format='%h %s' "$BASE".."$CUT"` gives one merge per pull request;
   name each whose own diff (`git diff --stat <merge>^1 <merge> -- <paths>`) touches the paths
@@ -246,7 +240,7 @@ across worktrees: chain with `&&` (trap hh).
 ```bash
 . ~/projects/shekel-handoffs/releases/current.sh && cd "${W:?}" || exit 1
 : "${B:?}"
-gh pr create --base main --head "$B" --title "release: $(date +%F)" --body "<plan.txt's carried steps and migrations>"
+gh pr create --base main --head "$B" --title "release: $(date +%F)" --body "<plan.txt's carried cards and migrations>"
 echo "PR=\"<the number it printed>\"" >> ~/projects/shekel-handoffs/releases/current.sh
 ```
 
@@ -370,7 +364,9 @@ with `gh pr merge "$RS" --merge` (no `--match-head-commit`: whatever `main` hold
 what `dev` should get), find its queue run on the branch `gh-readonly-queue/dev/pr-<RS>-<sha>` and watch it into
 `$R/queue_<run>.txt`. A failed run is read as step 6 reads one: nothing reached `dev`; queue it
 again or STOP. Once it is merged, append `RM="<its merge sha>"` as step 6 appends `M`. Neither
-wait holds the deploy: go on to step 9, and read both before step 13.
+wait holds the deploy: go on to step 9, and read both before step 13. A resync that conflicts over
+a file the tracker switch deleted is settled by CLAUDE.md's resync rule (Git Workflow): it takes
+`dev`'s delete.
 
 ## 9. The dry run
 

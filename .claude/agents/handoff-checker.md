@@ -66,7 +66,11 @@ Each reads PASS, or what differs, quoting the line of s.0 and the output that sh
 7. **The first act and the next leaf.** s.0 gives the next session a FIRST act that checks `pwd`,
    `git rev-parse --show-toplevel`, the branch, HEAD and the tree against check 1's values and
    STOPs on a difference; then it names the next leaf and the first command its session runs.
-8. **Nothing for Josh in prose.** s.0 asks Josh for nothing: no decision, approval or act at a
+8. **The claim.** When s.0 names a card the lane works (`plan#N`), check 1's branch is `card/N`.
+9. **Each finished task's file.** For each task s.0 says this session finished (`plan#T`), `git -C
+   <worktree> ls-tree HEAD -- plan/tasks/<T>` prints one entry, a `blob`. With check 2's PASS, HEAD
+   is the pushed `card/N`, so the file is on it.
+10. **Nothing for Josh in prose.** s.0 asks Josh for nothing: no decision, approval or act at a
    terminal. Quote any line that does; what the lane needs from him is asked by AskUserQuestion
    before the stop.
 
