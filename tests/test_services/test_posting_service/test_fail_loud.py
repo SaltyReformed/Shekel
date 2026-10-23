@@ -115,7 +115,7 @@ class TestFailLoud:
     def test_a_half_pair_posts_its_half_into_transit(
         self, app, db, seed_user, savings,
     ):
-        """A transfer with only its from-side shadow posts that side, in transit.
+        """A transfer holding only its from-side record posts that side, in transit.
 
         **A declared behaviour change of plan step ``balance:X-bi-6-3``
         (rulings R-BAL45, R-BAL101), re-expressed from
@@ -123,14 +123,13 @@ class TestFailLoud:
         writer read the INCOME shadow's record for the pair and REFUSED when
         it was missing; shape C has no pair to read -- each side's movement
         posts on its own, against transit -- so a pair with one side is the
-        in-transit state: money left Checking and has not arrived.  Transfer
-        Invariant 1 (two shadows) is the transfer service's and the integrity
-        checks' to police, not the ledger writer's, which neither refuses nor
-        fabricates the missing side.
+        in-transit state: money left Checking and has not arrived.  The
+        ledger writer neither refuses nor fabricates the missing side; the
+        band rule polices the pair (below).
 
         Arithmetic: from a ledger the teardown brought to zero (both sides
-        posted and reversed: transit 0.00), the income shadow is removed and
-        the sync runs: it emits ONE entry, {Checking -100, transit +100}, and
+        posted and reversed: transit 0.00), the to-side's record is removed
+        and the sync runs: it emits ONE entry, {Checking -100, transit +100}, and
         nothing for the missing side; transit holds +100.00 -- the half in
         flight.  (The to-side's earlier entries survive as a net-zero pair
         whose links the raw delete SET-NULLed; the readers drop unlinked
@@ -139,11 +138,12 @@ class TestFailLoud:
 
         **The half pair is STAGED inside the save since plan step
         ``balance:X-bi-6-4d-2``** (ruling **R-BAL167** class 2): the to-side's
-        record hangs off the TRANSFER since that step, so removing the income
-        shadow no longer removes it, and a settled transfer holding ONE
-        side's record is refused at COMMIT (the band rule).  The record comes
-        off by its side link beside the shadow, the sync runs and is read
-        inside the save, and the commit is then refused.
+        record hangs off the TRANSFER since that step, and a settled transfer
+        holding ONE side's record is refused at COMMIT (the band rule).  The
+        record comes off by its side link, the sync runs and is read inside
+        the save, and the commit is then refused.  The income shadow was
+        deleted beside it until the same step made a transfer one row (ruling
+        **R-BAL258**); no shadow is stored to delete.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -158,21 +158,16 @@ class TestFailLoud:
             posting_service.reverse_transfer_postings_before_delete(transfer)
             _db.session.commit()
             assert _ledger_total(transit_ledger) == Decimal("0.00")
-            # Remove the income shadow (the income-type row on the to-account)
-            # via raw SQL.
-            # Its side's record first, in the same raw SQL: a record is no
-            # longer deleted with anything (R-CC54; rule-5 re-expression,
-            # developer-confirmed 2026-09-23), and it is the TRANSFER's, by
-            # its side link, since plan step balance:X-bi-6-4d-2 (the
-            # shadow's covering movement until then).  STAGED: not committed.
+            # Remove the to-side's record via raw SQL, around the service: a
+            # record is no longer deleted with anything (R-CC54; rule-5
+            # re-expression, developer-confirmed 2026-09-23), and it is the
+            # TRANSFER's, by its side link, since plan step
+            # balance:X-bi-6-4d-2 (the shadow's covering movement until
+            # then).  STAGED: not committed.
             _db.session.execute(_db.text(
                 "DELETE FROM budget.transaction_entries "
                 "WHERE income_transfer_id = :t"
             ), {"t": transfer.id})
-            _db.session.execute(_db.text(
-                "DELETE FROM budget.transactions "
-                "WHERE transfer_id = :t AND account_id = :a"
-            ), {"t": transfer.id, "a": savings.id})
             _db.session.expire_all()
 
             [posted] = posting_service.sync_transfer_postings(transfer)

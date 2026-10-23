@@ -9,11 +9,10 @@ door of :mod:`app.services.transfer_service` and grades the rows as STORED --
 every assertion reads after a commit and ``expire_all`` -- never the session's
 pending state.
 
-Covered here: a settle writes one record per side and none under a twin; a
+Covered here: a settle writes one record per side, filed under the transfer; a
 revert un-dates and keeps them (ruling **R-BAL61**); a ``$0.00`` close keeps
 none (rulings **R-BAL82**, **R-BAL141**); a corrected ``$0.00`` close is dated
-by its due date (ruling **R-BAL169**); the settle's figure is the transfer's,
-never a stale twin's (the scout's money item); the transfer's counter moves
+by its due date (ruling **R-BAL169**); the transfer's counter moves
 when a side's record or day does (developer ruling 2026-08-18, the
 ``$214.37`` two-tab lost update); the born-settled create (finding
 **BAL-583**); a statement link reaches one side's record (ruling **R-FL**);
@@ -29,7 +28,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import event, or_, text
+from sqlalchemy import event, or_
 
 from app import ref_cache
 from app.enums import MovementFigureSourceEnum, SettledDayBasisEnum, StatusEnum
@@ -38,7 +37,6 @@ from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.amount_ownership import AmountOwnership
 from app.models.statement_match import StatementMatch
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import (
@@ -47,7 +45,6 @@ from app.services import (
     transfer_legs,
     transfer_service,
 )
-from app.services.cash_ledger import derived_amount_basis
 from app.services.settle_day import SettleDay, recorded_settle_day
 from app.services.statement_match import accept_match
 from app.utils.dates import display_today
@@ -91,10 +88,14 @@ def _savings(seed_user, name="Arm Savings"):
 def _transfer(seed_user, *, due_date=None):
     """A Projected $500.00 Checking -> Savings transfer, committed, behind two decoys.
 
-    The two decoy transfers come FIRST, so the subject's transfer id, its two
-    shadow ids and its records' ids cannot coincide (lesson (a) of plan step
-    ``balance:X-bi-6-4d-1``): a test that reads one id where it meant another
-    then fails rather than passing by numbering.
+    The two decoy transfers come FIRST, so the subject is not its table's first
+    transfer: a read that reaches for the wrong transfer meets a decoy and fails
+    rather than passing by numbering (lesson (a) of plan step
+    ``balance:X-bi-6-4d-1``).  They also kept the subject's id apart from its
+    twins' and its records' until the test template gave every table an id
+    range of its own (ruling ``balance:R-BAL356``), which keeps those apart now;
+    no twin is stored since plan step ``balance:X-bi-6-4d-2`` (ruling
+    **R-BAL258**).
     """
     savings = _savings(seed_user)
     for decoy in (Decimal("7.00"), Decimal("8.00")):
@@ -126,22 +127,6 @@ def _records(xfer_id):
     income = [row for row in rows if row.income_transfer_id == xfer_id]
     assert len(expense) <= 1 and len(income) <= 1, rows
     return (expense[0] if expense else None, income[0] if income else None)
-
-
-def _shadow_ids(xfer_id):
-    """The ids of *xfer_id*'s twin rows."""
-    return [
-        row.id for row in db.session.query(Transaction).filter_by(
-            transfer_id=xfer_id,
-        )
-    ]
-
-
-def _entries_under_twins(xfer_id):
-    """Every entry still filed under one of *xfer_id*'s twin rows."""
-    return db.session.query(TransactionEntry).filter(
-        TransactionEntry.transaction_id.in_(_shadow_ids(xfer_id)),
-    ).all()
 
 
 def _status(name):
@@ -208,9 +193,6 @@ class TestASettleWritesOneRecordPerSide:
             assert expense.income_transfer_id is None
             assert income.income_transfer_id == xfer.id
             assert income.expense_transfer_id is None
-            assert _entries_under_twins(xfer.id) == []
-            ids = {xfer.id, expense.id, income.id, *_shadow_ids(xfer.id)}
-            assert len(ids) == 5, "the decoys failed to separate the ids"
 
 
 class TestARevertKeepsTheRecords:
@@ -338,45 +320,6 @@ class TestACorrectedZeroCloseIsDatedByItsDueDate:
             ]
 
 
-class TestTheSettlePricesTheTransferNeverAStaleTwin:
-    """The scout's money item 1: a twin's status is no longer kept, so it is no longer read."""
-
-    def test_a_twin_left_saying_paid_does_not_price_the_settle(self, app, seed_user):
-        """Settle, revert, plant the expense twin back at Paid, settle: $500.00, never $0.00."""
-        with app.app_context():
-            xfer = _transfer(seed_user)
-            owner = _owner(seed_user)
-            transfer_service.settle_transfer(xfer.id, owner)
-            db.session.commit()
-            transfer_service.update_transfer(
-                xfer.id, owner, status_id=_status(StatusEnum.PROJECTED),
-            )
-            db.session.commit()
-            # Planted in raw SQL, around the seam: no door keeps a twin's
-            # status since this step, so a stale one is a state, not an act.
-            db.session.execute(
-                text(
-                    "UPDATE budget.transactions SET status_id = :paid "
-                    "WHERE transfer_id = :xfer AND account_id = :checking"
-                ),
-                {
-                    "paid": _status(StatusEnum.DONE), "xfer": xfer.id,
-                    "checking": xfer.from_account_id,
-                },
-            )
-            db.session.commit()
-
-            leg = transfer_legs.leg_of(
-                db.session.get(Transfer, xfer.id), xfer.from_account_id,
-            )
-            basis = derived_amount_basis(owner, xfer.scenario_id)
-            assert transfer_service.leg_settle_amount(leg, basis) == _AMOUNT
-
-            transfer_service.settle_transfer(xfer.id, owner)
-            db.session.commit()
-            assert [r.amount for r in _records(xfer.id)] == [_AMOUNT, _AMOUNT]
-
-
 class TestTheTransfersCounterMovesWithItsSides:
     """Developer ruling 2026-08-18: a record or day correction moves the transfer's counter."""
 
@@ -453,7 +396,6 @@ class TestABornSettledTransferRecordsBothSides:
             assert None not in records
             assert [r.amount for r in records] == [_AMOUNT, _AMOUNT]
             assert [recorded_settle_day(r) for r in records] == [today, today]
-            assert _entries_under_twins(xfer.id) == []
 
 
 class TestAStatementLinksOneSidesRecord:
