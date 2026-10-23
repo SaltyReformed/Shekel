@@ -21,8 +21,9 @@ half has a transaction twin since plan step ``balance:X-bi-7a``
 holds -- a one-off's placed rows, a cleared cadence's survivors -- are
 reached by nothing else.  A
 transfer template with no rule still moves money exactly once: this module
-materialises that single Transfer (with its two shadow transactions,
-atomically) and then keeps it equal to the definition, because the
+materialises that single Transfer (one row since plan step
+``balance:X-bi-6-4d-2`` deleted its two shadow transactions) and then keeps it
+equal to the definition, because the
 regeneration path that does that job for every recurring template
 deliberately skips a rule-less one -- which is what stops a rename from
 destroying it (defect D16).
@@ -86,8 +87,8 @@ def _materialize_one_time_transfer(template, start_period):
     A transfer that does not repeat still moves money exactly once, so unlike
     a rule-less transaction template -- which generates nothing and waits for
     the user to add rows by hand -- this materializes one Transfer in the
-    chosen period, through ``transfer_service`` so its two shadow
-    transactions are created atomically (Transfer Invariants 1, 2 and 4).
+    chosen period, through ``transfer_service``, which every write of a
+    transfer goes through (``CLAUDE.md``, Architecture).
 
     **It TAKES the resolved period, and re-fetches nothing** (plan step
     ``pay_calendar:C13-b``).  This ran ``db.session.get(PayPeriod, ...)``
@@ -293,9 +294,9 @@ def propagate_to_non_repeating_transfers(template):
     template with no rule names none, so a regeneration would retire every row
     it has (that is defect **D16**).  Its already-materialised Transfer is
     therefore brought into line here instead -- through
-    ``transfer_service.update_transfer``, the single door that keeps the two
-    shadow transactions' amounts, statuses and periods equal to their parent's
-    (Transfer Invariants 3 and 4).
+    ``transfer_service.update_transfer``, the transfer service's edit door
+    (every write of a transfer goes through ``transfer_service``:
+    ``CLAUDE.md``, Architecture).
 
     **Without this the template and its Transfer diverge silently.**  Measured
     before it existed, on the transfer create form's DEFAULT selection: a

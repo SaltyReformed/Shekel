@@ -372,7 +372,7 @@ def create_transfer_template():
 
     # Open the amount's dated series at today (plan step X-au-a).  The
     # constructor above also carries the figure because the column is NOT NULL;
-    # this call is what makes the SERIES exist, and plan step X-au-e removes the
+    # this call is what makes the SERIES exist, and plan step X-bp removes the
     # redundancy by removing the column.
     template_amount_service.set_amount(
         template, template.default_amount, effective_on=display_today(),
@@ -551,9 +551,10 @@ def update_transfer_template(template_id):
     # identical edit had it applied, by a sweep that destroyed and rebuilt every
     # generated row -- so one edit meant two different things depending on
     # whether the transfer repeated.  ``transfer_service.update_transfer`` moves
-    # a transfer between accounts now, carrying both shadows, so the refusal has
-    # no cause left and :func:`propagate_to_non_repeating_transfers` states the
-    # accounts with the rest of the definition.
+    # a transfer between accounts now (a moving side's payment record goes with
+    # it, ruling **R-BAL168**), so the refusal has no cause left and
+    # :func:`propagate_to_non_repeating_transfers` states the accounts with the
+    # rest of the definition.
     edit_form = RedirectTarget(
         "transfers.edit_transfer_template", {"template_id": template_id},
     )
@@ -791,8 +792,8 @@ def _regenerate_and_commit_template(
         flash("A recurring transfer with that name already exists.", "warning")
         return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
     # An edit that ended the recurrence removed this template's upcoming
-    # projected transfers (and their shadow pairs); "updated." alone would
-    # report a destructive change as a routine one.
+    # projected transfers; "updated." alone would report a destructive change
+    # as a routine one.
     #
     # **"were removed" was unqualified until plan step R10-b**, and an
     # adversarial review of that step caught it: the maintain pass RETAINS a

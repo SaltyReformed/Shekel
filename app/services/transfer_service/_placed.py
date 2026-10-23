@@ -25,8 +25,13 @@ reused as they are:
 * **The transfer records its own due date as the occurrence it answers**
   (ruling **R-BAL94**, the twin of **R-BAL25**): ``occurs_on = due_date``,
   written at birth (``routes/transfers/_instances``) and by
-  :func:`~._update._apply_remaining_fields`' one due-date arm, so the two
-  columns cannot part.  A one-time transfer answered NO occurrence until this
+  :func:`~._update._apply_remaining_fields`' one due-date arm whenever the
+  date MOVES, so a moved transfer's two columns are equal.  Two placed shapes
+  hold them apart until their date first moves: a cleared cadence's survivor
+  answers the occurrence its cadence named (a monthly rule with a due day; a
+  first-of-month rule due on the payday), and a one-time transfer born before
+  this leaf answers none until ``X-ci-3`` backfills it.  A one-time transfer
+  answered NO occurrence until this
   leaf -- the shape finding **REC-516** names the one-time branch as the
   last writer of -- which is what ``recurrence:R19-b`` waited on for this
   table.
@@ -105,7 +110,7 @@ def re_place_and_grade_the_day(
       the one predicate under which the day is graded against the
       definition's siblings (:func:`reject_a_day_another_row_answers`) and,
       in the due-date arm, the occurrence follows the date (**R-BAL94**), so
-      the two cannot part.  A save that re-posts the day the transfer
+      a moved date leaves the two equal.  A save that re-posts the day the transfer
       already has (the form posts every control it renders) moves nothing
       and re-keys nothing -- the twin's guard, which this leaf's adversarial
       review found missing from a first cut.
@@ -151,9 +156,9 @@ def reject_a_day_another_row_answers(xfer: Transfer, day: date | None) -> None:
     occurs_on)`` over live rows, no status term, ``is_override`` not
     excluded.  Asked by :func:`re_place_and_grade_the_day` for a placed
     transfer whose due date this update CHANGES -- the one predicate under
-    which the occurrence also follows the date, decided there so the two
-    cannot part; a save that leaves the date alone collides with nothing and
-    is not asked.
+    which the occurrence also follows the date, decided there so a moved date
+    leaves the two equal; a save that leaves the date alone collides with
+    nothing and is not asked.
 
     Args:
         xfer: The placed transfer, before any write.

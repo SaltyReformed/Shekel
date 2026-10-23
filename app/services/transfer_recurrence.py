@@ -38,7 +38,9 @@ a conflict the moment the owner has records against it.
 Key differences from transaction recurrence:
   - No salary linkage.
   - Single amount column (no estimated/actual split).
-  - Simpler amount logic: always uses template.default_amount.
+  - Simpler amount logic: nothing is priced from a paycheck, and a generated
+    transfer stores no figure -- it declares its TEMPLATE and its definition
+    prices it (plan step X-au-f; :class:`DerivedTransferFields`).
   - EVERY write goes through ``transfer_service`` -- create, update and delete
     alike -- as ``CLAUDE.md`` (Architecture) requires of every write of a
     transfer: a write anywhere else skips its refusals and the copies it keeps
@@ -276,16 +278,19 @@ def propagate_to_unruled_template(template, transfers) -> "list[int]":
     money exactly once, and its single Transfer is materialised at create time
     rather than generated -- so a regeneration would find no rule, name no
     period, and RETIRE the row (that is defect **D16**, and why the route gates
-    the sweep on "the template IS or WAS recurring").  **Since finding
-    REC-516 that deletion is unreachable by a second route**: the one-time
-    transfer is created UNDATED -- it answers no occurrence (``occurs_on`` is
-    ``None``; it does carry a ``due_date``, the chosen paycheck's start, as
-    ``ck_transfers_template_row_needs_due_date`` requires of every linked
-    transfer) -- and an undated row is now retained rather than retired.  The
-    gate stays as defence in depth and because a retained
-    row still raises a conflict the owner would have no reason to see.  What is
-    left is this: the row is never retired, and everything else is the same
-    rule.
+    the sweep on "the template IS or WAS recurring").  **Finding REC-516 made
+    that deletion unreachable by a second route while the one-time transfer
+    was created UNDATED**: it answered no occurrence (``occurs_on`` was
+    ``None``), and an undated row is retained rather than retired.  Plan step
+    ``balance:X-ci-1`` (ruling **R-BAL94**) creates it answering the occurrence
+    its ``due_date`` names (the chosen paycheck's start), and a date MOVE gives
+    an older one its occurrence too (``transfer_service.update_transfer``), so
+    that second route now covers only a one-time transfer born before X-ci-1
+    whose date has not moved since, until ``X-ci-3`` backfills them; for every
+    other the gate is the one protection.
+    It would be needed even for an undated row, because a retained row still
+    raises a conflict the owner would have no reason to see.  What is left is
+    this: the row is never retired, and everything else is the same rule.
 
     **It exists because that "everything else" was NOT the same rule, and an
     adversarial review of plan step R10-b measured the gap.**  The route applied
@@ -453,9 +458,12 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
       4. the transfer answers NO occurrence at all (``occurs_on`` is NULL) --
          it is left exactly as found and RETAINED as a conflict (finding
          **REC-516**).  This engine is where that matters most: its retire arm
-         hard-deletes the transfer, and the app's one live writer of
-         undated rows is a transfer one
-         (``routes/transfers/_instances._materialize_one_time_transfer``).
+         hard-deletes the transfer, and the app's last writer of undated rows
+         was a transfer one
+         (``routes/transfers/_instances._materialize_one_time_transfer``,
+         until plan step ``balance:X-ci-1`` dated its birth, ruling
+         **R-BAL94**); a one-time transfer it wrote before then stays undated
+         until its date first moves, or until ``X-ci-3`` backfills it.
 
     Overridden and soft-deleted rows are conflicts wherever they sit, as
     before; immutable rows are never touched.
