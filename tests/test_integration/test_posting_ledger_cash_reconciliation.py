@@ -46,7 +46,7 @@ plan Section 6:
      zero-effect row (an envelope closed from card purchases alone) is
      correctly NOT required to post; so is a settled row the seam wrote no
      mirror for, whose family is empty (that the seam writes one is
-     ``test_covering_movement.py``'s pin, not this file's).
+     the ``test_covering_movement`` package's pin, not this file's).
   6. **Multi-scenario isolation** and **owner isolation** (via
      ``journal_entry.user_id``) -- a posting carries no ``user_id``; its owner is
      reached only through its journal entry, and one owner's / scenario's

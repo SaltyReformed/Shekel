@@ -55,7 +55,7 @@ whole, is a row the database refuses since plan step ``balance:X-bi-6-4d-3``
 test_the_database_refuses_a_twin``); a settled row recording nothing is the
 ``$0.00`` record (``test_settlement_record.py``); a movement disagreeing with
 its row is this module's second predicate; and the seam's own write per shape is
-``test_covering_movement.py`` -- and the ledger-net equality the resync case
+the ``test_covering_movement`` package -- and the ledger-net equality the resync case
 graded is the posting-ledger reconciliation oracles'
 (``test_posting_ledger_*_reconciliation.py``) and this step's clone rehearsal
 (the migration's docstring).  The per-class list is in the commit that

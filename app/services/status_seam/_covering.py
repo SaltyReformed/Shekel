@@ -413,8 +413,8 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
       members are separated by provenance and not ranked, so nothing else
       moves.  **The movement's own evidence is never lowered**, the contract
       ``TestTheMirrorNeverLowersEvidence``
-      (``tests/test_services/test_covering_movement.py``) holds the seam to
-      with a bank-observed movement planted under an ``entered`` row.  No
+      (``tests/test_services/test_covering_movement/test_who_wrote_the_figure.py``)
+      holds the seam to with a bank-observed movement planted under an ``entered`` row.  No
       door on this tree writes that state -- the statement matcher and the
       reconcile tick settle the ROW, a card tender only re-points its
       movement (:func:`_re_point`), and the entry doors refuse a payment
