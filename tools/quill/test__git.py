@@ -273,16 +273,17 @@ def test_changes_names_every_entry_at_any_path_with_its_blob_and_no_rename(repo)
         _git.Entry("D", "README", None),)
 
 
-def test_marked_reads_one_trees_markers_and_names_each_other_entry(repo):
+def test_markers_in_reads_one_trees_markers_and_names_each_other_entry(repo):
     """A tree's markers, a commit naming its own: each card whose marker file it holds, and
     the path of every other entry under the markers' directory, which no card is."""
     base = _origin(repo)
     one = _files(repo, base, "one", {**_marker(5), **_marker(12), "plan/ships/notes": "x\n",
                                      "plan/ships/8/inner": "y\n", "app.py": "a\n"})
-    assert _git.marked(repo, one) == (frozenset({5, 12}),
-                                      ("plan/ships/8/inner", "plan/ships/notes"))
-    assert _git.marked(repo, _run(repo, "rev-parse", f"{one}^{{tree}}")) == _git.marked(repo, one)
-    assert _git.marked(repo, base) == (frozenset(), ())
+    assert _git.markers_in(repo, one) == (frozenset({5, 12}),
+                                          ("plan/ships/8/inner", "plan/ships/notes"))
+    tree = _run(repo, "rev-parse", f"{one}^{{tree}}")
+    assert _git.markers_in(repo, tree) == _git.markers_in(repo, one)
+    assert _git.markers_in(repo, base) == (frozenset(), ())
 
 
 @pytest.mark.parametrize(("path", "card"), [

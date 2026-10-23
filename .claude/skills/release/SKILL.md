@@ -135,7 +135,9 @@ Then, line by line:
 - After the cutover (the cut holds no `steps.md`), `plan` reads the cards through quill's App, so
   a failed tracker read exits 2. What it carries is the change the release makes to the ship
   markers (`plan/ships/<N>`, R-BAL359). A card reading `UNDONE` is one whose marker the release
-  deletes, judged as a ship is (R-BAL288): a money mover's undo needs its kit too. A refusal
+  deletes, judged as a ship is (R-BAL288): a money mover's undo needs its kit too. A group's way
+  out is reverting the merge that landed each member it names, never deleting a marker by hand
+  (that leaves the code in production, unseen). A refusal
   naming an old-form `<arc>:<id>` trailer, a card the tracker does not hold, a card that is no
   work, or an entry under `plan/ships/` that is no card's marker (R-BAL287, R-BAL289) is no
   judgment for this run to make: STOP and report it to Josh.

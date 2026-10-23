@@ -52,11 +52,14 @@ class Repo:
                ships: tuple[str, ...] = (), trailers: tuple[str, ...] = (),
                parents: tuple[str, ...] = ()) -> str:
         """A commit whose message carries a ``Ships:`` trailer per key in ``ships`` and
-        each line of ``trailers``; its sha."""
+        each line of ``trailers``; its sha.  Deleting a file the first parent lacks is
+        refused: it changes nothing, so a test written so could not fail (M3's review, its
+        6: an undo of a marker that was never written)."""
         held = dict(self._files[parents[0]]) if parents else {}
         for path, text in (files or {}).items():
             if text is None:
-                held.pop(path, None)
+                assert path in held, f"{path} is not in the parent: deleting it changes nothing"
+                del held[path]
             else:
                 held[path] = text
         for child in self.root.iterdir():

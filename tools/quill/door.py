@@ -28,12 +28,14 @@ Each name, and who reads it:
 - ``SHIPPABLE``: ``tools/release._cards``, which refuses a marker naming a card of a
   kind no commit ships (a ruling, a question, a card of no type), by quill's one list
   of the kinds a commit ships.
-- ``MARKERS``, ``card_of``, ``marked``, ``merged_tree``, ``changes`` and
-  ``marker_changes``: ``tools/release._cards``, for what a release changes in the ship
-  markers (ruling ``balance:R-BAL359``; step X-cx's M3): the tree a release of a cut into
-  ``main`` leaves production running, the cards a tree's markers name, the entries under
-  :data:`MARKERS` that differ between two trees, and the commits of a range that changed
-  each marker, by quill's one reading of each.
+- ``MARKERS``, ``card_of``, ``markers_in``, ``merged_tree``, ``MarkerConflict``,
+  ``changes`` and ``marker_changes``: ``tools/release._cards``, for what a release changes
+  in the ship markers (ruling ``balance:R-BAL359``; step X-cx's M3): the tree a release of
+  a cut into ``main`` leaves production running, and the error saying it conflicts on a
+  marker (an earlier cut offered in the release's place is refused for one, never the
+  whole release judged on nothing: M3's review, its 1), the cards a tree's markers name,
+  the entries under :data:`MARKERS` that differ between two trees, and the commits of a
+  range that changed each marker, by quill's one reading of each.
 - ``GitHubError``, ``TrackerError`` and ``CredentialsError``: ``tools/release.release``,
   which reports a failed read of the tracker, or App credentials it cannot use, as a
   release judged on nothing.
@@ -46,7 +48,15 @@ from __future__ import annotations
 
 from tools.quill._command import with_closure
 from tools.quill._fake import FakeTracker
-from tools.quill._git import MARKERS, card_of, changes, marked, marker_changes, merged_tree
+from tools.quill._git import (
+    MARKERS,
+    MarkerConflict,
+    card_of,
+    changes,
+    marker_changes,
+    markers_in,
+    merged_tree,
+)
 from tools.quill._github import CredentialsError, GitHubError
 from tools.quill._migrate_source import step_labels
 from tools.quill._state import SHIPPABLE, above, dropped, dropped_above, leaves_below
@@ -58,6 +68,7 @@ __all__ = [
     "CredentialsError",
     "FakeTracker",
     "GitHubError",
+    "MarkerConflict",
     "Tracker",
     "TrackerError",
     "above",
@@ -66,8 +77,8 @@ __all__ = [
     "dropped",
     "dropped_above",
     "leaves_below",
-    "marked",
     "marker_changes",
+    "markers_in",
     "merged_tree",
     "step_labels",
     "with_closure",

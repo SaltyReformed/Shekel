@@ -213,19 +213,6 @@ def test_an_offered_cut_carries_a_card_the_cut_shipped_and_undid(repo):
     assert reached.times == 1
 
 
-def test_a_card_the_read_does_not_hold_is_refused_as_unread(repo):
-    """An earlier cut whose window names a card the release's one read never asked for is
-    refused naming it, never judged as a card the tracker lacks: reached here with a read
-    that named nothing."""
-    base, cutover = after_cutover(repo)
-    cut = pull_request(repo, cutover, ship(40))
-    unread = _cards.Cards({}, {}, {}, {}, frozenset(), {}, frozenset())
-    assert _cards.carried(repo.root, base, cut, unread).unreadable == (
-        f"plan#40's marker changes at {cut[:12]}, and no commit of the release's window "
-        "changed it, so the release's one read of the tracker does not hold it: judge "
-        f"{cut[:12]} as a release of its own",)
-
-
 def test_an_entry_under_the_markers_that_is_no_card_is_refused(repo):
     """CI's landing check refuses one before it lands (its rule 1); one that reaches a
     release names no card, so what the release changes there cannot be read."""
@@ -236,6 +223,54 @@ def test_an_entry_under_the_markers_that_is_no_card_is_refused(repo):
         f"{path} is no card's marker (a marker is the file plan/ships/<card number>), so "
         "what this release changes there cannot be read"
         for path in ("plan/ships/7/x", "plan/ships/notes"))
+
+
+def test_an_entry_under_the_markers_that_is_no_file_is_refused(repo):
+    """M3's review, its 7: a gitlink at a card's marker path is no marker by quill's one
+    reading of a tree (``markers_in``), so a release changing one is refused as a stray,
+    never carried as the card shipped."""
+    base, cutover = after_cutover(repo)
+    run(repo.root, "read-tree", cutover)
+    run(repo.root, "update-index", "--add", "--cacheinfo", f"160000,{cutover},plan/ships/5")
+    cut = run(repo.root, "commit-tree", run(repo.root, "write-tree"), "-p", cutover, "-m",
+              "a gitlink")
+    tracker = FakeTracker()
+    tracker.add(5)
+    assert judge(repo, base, cut, tracker).verdict.refusals == (
+        "plan/ships/5 is no card's marker (a marker is the file plan/ships/<card number>), so "
+        "what this release changes there cannot be read",)
+
+
+def test_an_earlier_cut_conflicting_on_a_marker_is_refused_and_the_release_judged(repo):
+    """M3's review, its 1: #40 shipped on dev and undone there, claimed afresh and landed as
+    a hotfix on main, and main merged back into dev, so dev and main merge cleanly; but each
+    cut from #40's ship to its undo merges with main with a conflict on #40's marker.  The
+    cut carries three money movers, the next two cuts two each, and each conflicting cut is
+    refused for its conflict, so the cut offered is the first, never the whole release
+    judged on nothing."""
+    _, cutover = after_cutover(repo)
+    first = pull_request(repo, cutover, ship(42), files={"a.py": "1"})
+    shipped = pull_request(repo, first, ship(40), files={"b.py": "1"})
+    both = pull_request(repo, shipped, ship(41), ship(44), files={"c.py": "1"})
+    undone = pull_request(repo, both, undo(40), files={"d.py": "1"})
+    hotfix = ship(40)
+    base = pull_request(repo, cutover, hotfix, files={"hotfix.py": "1"})
+    resync = repo.commit("Merge main into dev", {"hotfix.py": "1", **hotfix},
+                         parents=(undone, base))
+    cut = pull_request(repo, resync, ship(43), files={"e.py": "1"})
+    tracker = FakeTracker()
+    for number in (40, 41, 42, 43, 44):
+        tracker.add(number, labels=MONEY)
+    judged = plan(repo.root, base, cut, Inputs(connect=lambda: tracker))
+    assert judged.verdict.status == REFUSED
+    assert judged.passing.cut == first
+    assert [s.key for s in judged.passing.carried.steps] == ["plan#42"]
+    known = _cards.read(repo.root, base, cut, tracker)
+    for conflicting in (both, shipped):
+        assert _cards.carried(repo.root, base, conflicting, known).unreadable == (
+            f"{conflicting[:12]} and {base[:12]} merge with a conflict on plan/ships/40, so "
+            "what releasing this cut would leave production holding of that card cannot be "
+            "read: it is not offered",)
 
 
 def test_a_marker_conflicting_in_the_merge_of_base_and_cut_judges_nothing(repo, capsys):
@@ -287,9 +322,11 @@ def test_an_old_form_claim_merged_after_the_cutover_is_prose(repo):
     assert (verdict.carried.steps, verdict.refusals, verdict.status) == ((), (), CLEAN)
 
 
-def test_an_old_form_reopens_before_the_cutover_names_the_cut_to_release_first(repo):
+def test_an_old_form_reopens_before_the_cutover_is_refused_as_judged_by_no_reader(repo):
     """An undo of a step with no card, merged before the cutover and missed by its freeze:
-    only a cut holding steps.md can judge it, so the newest one holding it is named."""
+    no reader judges what it takes out of production, the release tool as a cut holding
+    steps.md holds it included (it reads no ``Reopens:``), so no cut is named to release
+    first (M3's review, its 2)."""
     base = repo.plan((("balance:A-1", "Did it.", "SHIPPED", "`0123abcd`"),), parents=())
     revert = repo.commit("revert", {"app.py": "0"}, trailers=("Reopens: balance:A-1",),
                          parents=(base,))
@@ -298,9 +335,9 @@ def test_an_old_form_reopens_before_the_cutover_names_the_cut_to_release_first(r
     tracker = FakeTracker()
     tracker.add(40)
     assert judge(repo, base, cut, tracker).verdict.refusals == (
-        f"{revert[:12]} reopens `balance:A-1` in the old form, which only a cut holding "
-        "steps.md can judge (R-BAL287: the cutover's freeze ends with a release of every "
-        f"one): release {revert[:12]} first, with the release tool as that cut holds it",)
+        f"{revert[:12]} carries `Reopens: balance:A-1` in the old form: it undoes a step "
+        "that has no card, so no reader judges what it takes out of production (R-BAL287, "
+        "R-BAL288)",)
 
 
 def test_an_old_form_reopens_merged_after_the_cutover_is_prose(repo):
@@ -441,8 +478,8 @@ def test_plan_prints_an_undone_card(repo, capsys):
     assert release.main(["plan", "--base", base, "--cut", cut], root=repo.root,
                         connect=lambda: tracker) == CLEAN
     out = capsys.readouterr().out.splitlines()
-    assert out[3].startswith("  plan#40  moves money: no  UNDONE: its marker deleted, it leaves "
-                             "production  (claimed at ")
+    assert out[3].startswith("  plan#40  moves money: no  UNDONE: its marker deleted  "
+                             "(deleted at ")
 
 
 def test_plan_given_no_connection_exits_2_on_a_cut_after_the_cutover(repo, capsys):

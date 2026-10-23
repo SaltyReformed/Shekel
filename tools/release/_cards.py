@@ -15,7 +15,8 @@ production held is carried and judged by the same rules as a ship, since it chan
 production runs as much (the report ruled as ``R-BAL359``, its s.10, refining
 ``R-BAL288``).  Against the merge and not the cut alone, so a hotfix on ``main`` the cut
 lacks reads as no undo.  Production holds ``base``'s markers before the release and the
-merge's after it, by quill's one reading of a tree (:func:`tools.quill.door.marked`); a
+merge's after it, by quill's one reading of a tree (:func:`tools.quill.door.markers_in`),
+which also says which changed entries are markers at all; a
 card's commits are those of ``<base>..<cut>`` that changed its marker, by quill's one walk
 (:func:`tools.quill.door.marker_changes`): its claim and the merge that landed it.
 
@@ -93,8 +94,11 @@ history of them.
 keep; the report's line for the group names every member, carried, released, missing
 and undone.  Two ways out stand:
 
-- **Take the group out**: the same release deletes the marker of each member it would
-  keep (the report's carried and released).  That leaves production holding none of the
+- **Take the group out**: the same release reverts the merge that landed each member it
+  would keep (the report's carried and released), and a revert deletes the card's marker
+  with its code.  A marker deleted by hand leaves the code in production, which no reader
+  here can see (the ruled report's residual 1), so the way out never says "delete the
+  marker" (M3's review, its 4).  That leaves production holding none of the
   group, in ONE round by construction: every step below the group that production holds
   at a cut is a member, so with those markers deleted production holds no step below it
   at the new cut.  quill's ``dropped`` and ``leaves`` read git's shipped set, so a deleted
@@ -118,15 +122,20 @@ at X-cx's piece L9d.
 **What it cannot read refuses the release**, and nothing is declared after the cutover
 (R-BAL287, R-BAL289):
 
-- an old-form ``Ships: <arc>:<id>`` or ``Reopens: <arc>:<id>`` that a cut holding
-  ``steps.md`` on ``dev``'s line in the window holds: the cutover's freeze ends with a
-  release, so production held every one merged before the cutover (R-BAL287), and this
-  one the freeze missed.  Only such a cut can judge it, so the refusal names the newest
-  one, to release first with the release tool as that cut holds it.  Every other trailer
-  is prose -- an old-form one merged after the cutover, a ``plan#N`` one, a value of
-  neither form -- since a marker is the record and nothing after the cutover reads a
-  trailer: refusing one would wedge every release over it, once no check refuses a
-  trailer's shape before it lands (``R-BAL184``; X-cx's ``m2_plan.md`` s.3);
+- an old-form ``Ships: <arc>:<id>`` that a cut holding ``steps.md`` on ``dev``'s line in
+  the window holds: the cutover's freeze ends with a release, so production held every
+  one merged before the cutover (R-BAL287), and this one the freeze missed.  Only such a
+  cut can judge it, so the refusal names the newest one, to release first with the
+  release tool as that cut holds it;
+- an old-form ``Reopens: <arc>:<id>`` such a cut holds: it undoes a step that has no
+  card, and no reader judges what it takes out of production, the release tool as that
+  cut holds it included (``tools/release/_carried.py`` reads no ``Reopens:``), so the
+  refusal names no cut to release first (M3's review, its 2).  None exists on ``dev`` or
+  ``main`` (measured 2026-10-23).  Every other trailer is prose -- an old-form one merged
+  after the cutover, a ``plan#N`` one, a value of neither form -- since a marker is the
+  record and nothing after the cutover reads a trailer: refusing one would wedge every
+  release over it, once no check refuses a trailer's shape before it lands
+  (``R-BAL184``; X-cx's ``m2_plan.md`` s.3);
 - a marker naming a card the tracker does not hold: CI's landing check refuses one before
   it lands (R-BAL289; ``tools/quill/landing.py``, its rule 7), so what reaches here is a
   card deleted after its marker landed;
@@ -134,18 +143,21 @@ at X-cx's piece L9d.
   type; quill's ``SHIPPABLE``): read as work it would pass as moving no money.  The landing
   check refuses one when it lands, so what reaches here was retyped since;
 - an entry under ``plan/ships/`` that is no card's marker (a name that is no card number,
-  a file in a directory below it), which the landing check refuses before it lands (its
-  rule 1);
-- a card an earlier cut's window names that the release's read does not hold (below).
+  a file in a directory below it, an entry that is no file), which the landing check
+  refuses before it lands (its rule 1);
+- an earlier cut whose merge with ``base`` conflicts on a marker: what releasing it would
+  leave production holding of that card cannot be read, so it is refused, never offered,
+  and the release's own cut is judged as ever (M3's review, its 1).  A conflict in the
+  merge of the release's own cut and ``base`` judges nothing (exit 2), since nothing
+  about that card can be read.
 
 **The tracker is read once, at the release's cut** (:func:`read`), and every earlier cut
-offered in its place is judged with that read (:func:`carried`).  The read names each card
-the cut's window names and each card whose marker any commit of ``<base>..<cut>`` changed
-(quill's one walk), so it holds a card an earlier cut on the cut's first-parent line
-shipped and the cut undid.  The walk lists a merge by its change against its first parent
-alone, so a window can name a card no commit's listed change touched; an earlier cut whose
-window names a card the read does not hold is refused, naming that card, and so never
-offered: it is never judged as a card the tracker lacks.  The plan's
+offered in its place is judged with that read (:func:`carried`).  The read names every
+card the window of ANY cut on the cut's first-parent line names: the cuts the release can
+offer (:func:`tools.release._model.first_parent_line`, the one list of them), so no
+offered cut names a card the read does not hold, by construction.  So it holds a card an
+earlier cut shipped and the cut undid, and one a merge's resolution alone put in an
+earlier cut's window.  The plan's
 shapes (which steps are leaves, which will never ship) are read with what production
 holds after the cut too, so an earlier cut is judged by the shapes the release's cut gives
 its steps.
@@ -161,6 +173,7 @@ from tools.ci import trailers
 from tools.quill.door import (
     MARKERS,
     SHIPPABLE,
+    MarkerConflict,
     Tracker,
     above,
     card_of,
@@ -168,8 +181,8 @@ from tools.quill.door import (
     dropped,
     dropped_above,
     leaves_below,
-    marked,
     marker_changes,
+    markers_in,
     merged_tree,
     with_closure,
 )
@@ -191,9 +204,8 @@ class Cards:
     it splits, that step's, ...); each deploy-together group the read holds that has a
     step below it, with every such step (those that can be its members, :func:`_member`),
     in card order; each such group's leaves by quill's rule, in any state; which of those
-    steps and named cards will never ship (dropped, or under a step that was); what each
-    named card that is no work is; and every card the read named (:func:`read`), held by
-    the tracker or not."""
+    steps and named cards will never ship (dropped, or under a step that was); and what each
+    named card that is no work is."""
 
     money: Mapping[int, bool]
     lines: Mapping[int, tuple[int, ...]]
@@ -201,7 +213,6 @@ class Cards:
     leaves: Mapping[int, frozenset[int]]
     dropped: frozenset[int]
     no_work: Mapping[int, str]
-    named: frozenset[int]
 
 
 @dataclass(frozen=True)
@@ -210,15 +221,14 @@ class _Window:
     production holds before it (``before``, the base's markers) and after it (``after``,
     the markers of the two's merge); each card whose marker that merge adds, changes or
     deletes against the base (``named``), with the commits of ``<base>..<cut>`` that
-    changed that marker, newest first; each other entry under :data:`MARKERS` it changes,
-    by path (``strays``); and every card whose marker a commit of ``<base>..<cut>``
-    changed (``touched``)."""
+    changed that marker, newest first; and each other entry under :data:`MARKERS` it
+    changes, by path (``strays``): one whose card's marker is a file on neither side, by
+    quill's one reading of a tree (:func:`tools.quill.door.markers_in`)."""
 
     before: frozenset[int]
     after: frozenset[int]
     named: Mapping[int, tuple[str, ...]]
     strays: tuple[str, ...]
-    touched: frozenset[int]
 
 
 def _what(kind: str | None) -> str:
@@ -230,7 +240,7 @@ def _what(kind: str | None) -> str:
 def _held(root: Path, tree: str) -> frozenset[int]:
     """The cards whose markers ``tree`` holds (a commit names its own), read once per
     tree: the judge passes resolved shas, and a tree id names content that never changes."""
-    return marked(root, tree)[0]
+    return markers_in(root, tree)[0]
 
 
 @cache
@@ -239,10 +249,11 @@ def _window(root: Path, base: str, cut: str) -> _Window:
     once per pair: the judge passes resolved shas, which name commits that never change.
 
     Raises:
-        tools.ci.gitcmd.GitError: when a marker conflicts in the merge of the two, or git
-            cannot read the range.
+        tools.quill.door.MarkerConflict: when a marker conflicts in the merge of the two.
+        tools.ci.gitcmd.GitError: when git cannot read the range.
     """
     tree = merged_tree(root, (base, cut))
+    before, after = _held(root, base), _held(root, tree)
     commits: dict[int, list[str]] = {}
     for change in marker_changes(root, (f"{base}..{cut}",)):
         number = card_of(change.entry.path)
@@ -251,19 +262,38 @@ def _window(root: Path, base: str, cut: str) -> _Window:
     named, strays = {}, []
     for entry in changes(root, base, tree, MARKERS):
         number = card_of(entry.path)
-        if number is None:
-            strays.append(entry.path)
-        else:
+        if number in before | after:
             named[number] = tuple(commits.get(number, ()))
-    return _Window(_held(root, base), _held(root, tree), named, tuple(strays),
-                   frozenset(commits))
+        else:
+            strays.append(entry.path)
+    return _Window(before, after, named, tuple(strays))
+
+
+def _offered(root: Path, base: str, cut: str) -> tuple[_Window, frozenset[int]]:
+    """The window of releasing ``cut`` into ``base``, and every card the window of any cut
+    on its first-parent line names: the cuts the release can offer.  An earlier cut whose
+    merge with ``base`` conflicts on a marker adds none, since it is refused for that
+    (:func:`carried`).
+
+    Raises:
+        tools.quill.door.MarkerConflict: when a marker conflicts in the merge of ``base``
+            and ``cut``.
+        tools.ci.gitcmd.GitError: when git cannot read the range.
+    """
+    window, named = _window(root, base, cut), set()
+    for sha, _ in first_parent_line(root, base, cut):
+        try:
+            named |= set(_window(root, base, sha).named)
+        except MarkerConflict:
+            continue
+    return window, frozenset(named)
 
 
 def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
-    """What ``cut`` knows of the release ``<base>..<cut>``: every card its window names and
-    every card whose marker a commit of ``<base>..<cut>`` changed, read by number, and every
-    card a decision over them reads, read once.  ``base`` and ``cut`` are resolved shas:
-    the window and the shipped sets are cached by them.
+    """What ``cut`` knows of the release ``<base>..<cut>``: every card the window of any cut
+    on its first-parent line names (the cuts the release can offer), read by number, and
+    every card a decision over them reads, read once.  ``base`` and ``cut`` are resolved
+    shas: the windows and the shipped sets are cached by them.
 
     Raises:
         ReleaseError: when a step hangs below a deploy-together group under a card that
@@ -273,11 +303,11 @@ def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
         tools.quill.door.TrackerError: when a card one of them links to is not there.
         tools.quill.door.GitHubError: when GitHub answers a read with an error.
         requests.RequestException, OSError: when the tracker cannot be reached.
-        tools.ci.gitcmd.GitError: when a marker conflicts in the merge of ``base`` and
-            ``cut``, or git cannot read the range.
+        tools.quill.door.MarkerConflict: when a marker conflicts in the merge of ``base``
+            and ``cut`` (an earlier cut's conflict refuses that cut alone: :func:`carried`).
+        tools.ci.gitcmd.GitError: when git cannot read the range.
     """
-    window = _window(root, base, cut)
-    named = window.touched | set(window.named)
+    window, named = _offered(root, base, cut)
     held = tracker.cards(named)
     closure = with_closure(tracker, dict(held))
     shipped = set(window.after)
@@ -314,8 +344,7 @@ def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
         frozenset(number for number in {*work, *(step for steps in groups.values()
                                                  for step in steps)}
                   if never_ships(number)),
-        {number: _what(card.kind) for number, card in held.items() if number not in work},
-        frozenset(named))
+        {number: _what(card.kind) for number, card in held.items() if number not in work})
 
 
 def _one_walk(groups: Mapping[int, Collection[int]], lines: Mapping[int, tuple[int, ...]],
@@ -421,19 +450,23 @@ def _judgeable(root: Path, base: str, cut: str, claim: str) -> str | None:
 
 @cache
 def _old_form(root: Path, base: str, cut: str) -> tuple[str, ...]:
-    """Each old-form ``Ships:`` or ``Reopens:`` in ``<base>..<cut>`` that only a cut before
-    the cutover can judge, naming the newest such cut to release first; read once per
-    range, as :func:`_window` is.  Every other trailer is prose (the module's docstring)."""
+    """Each old-form trailer in ``<base>..<cut>`` that a cut before the cutover holds: a
+    ``Ships:``, naming the newest such cut to release first, and a ``Reopens:``, which no
+    reader judges; read once per range, as :func:`_window` is.  Every other trailer is
+    prose (the module's docstring)."""
     found = trailers.history(root, f"{base}..{cut}")
     lines = []
-    for claim in (*found.old_form, *found.old_form_reopens):
+    for claim in found.old_form:
         judgeable = _judgeable(root, base, cut, claim.sha)
         if judgeable is not None:
-            verb = "claims" if claim.trailer == trailers.SHIPS else "reopens"
-            lines.append(f"{claim.sha[:12]} {verb} `{claim.key}` in the old form, which only a "
+            lines.append(f"{claim.sha[:12]} claims `{claim.key}` in the old form, which only a "
                          "cut holding steps.md can judge (R-BAL287: the cutover's freeze ends "
                          f"with a release of every one): release {judgeable[:12]} first, with "
                          "the release tool as that cut holds it")
+    lines += [f"{undo.sha[:12]} carries `Reopens: {undo.key}` in the old form: it undoes a "
+              "step that has no card, so no reader judges what it takes out of production "
+              "(R-BAL287, R-BAL288)" for undo in found.old_form_reopens
+              if _judgeable(root, base, cut, undo.sha) is not None]
     return tuple(lines)
 
 
@@ -445,19 +478,15 @@ def _at(shas: Collection[str]) -> str:
 
 def _unreadable(root: Path, base: str, cut: str, window: _Window, known: Cards) -> list[str]:
     """Each thing this reader cannot read in ``window``, the window of ``<base>..<cut>``:
-    an old-form trailer a cut before the cutover holds; a card the release's read did not
-    name, or the tracker does not hold, or holds as no work; and an entry under the markers'
-    directory that is no card's marker."""
+    an old-form trailer a cut before the cutover holds; a card the tracker does not hold,
+    or holds as no work; and an entry under the markers' directory that is no card's
+    marker."""
     lines = list(_old_form(root, base, cut))
     for number, shas in sorted(window.named.items()):
         if number in known.money:
             continue
         what = known.no_work.get(number)
-        if number not in known.named:
-            lines.append(f"plan#{number}'s marker changes at {cut[:12]}, and no commit of the "
-                         "release's window changed it, so the release's one read of the "
-                         f"tracker does not hold it: judge {cut[:12]} as a release of its own")
-        elif what is None:
+        if what is None:
             lines.append(f"plan#{number}{_at(shas)} is a card the tracker does not hold, so "
                          "whether it moves money cannot be read (R-BAL289)")
         else:
@@ -519,13 +548,20 @@ def _group(group: int, known: Cards, touching: Mapping[int, tuple[int, ...]],
 def carried(root: Path, base: str, cut: str, known: Cards) -> Carried:
     """What ``<base>..<cut>`` carries, judged with ``known``, the release's cut's
     :class:`Cards` (``cut`` is that cut or an earlier one on its first-parent line; both
-    are resolved shas, as :func:`read` takes them).
+    are resolved shas, as :func:`read` takes them).  A marker conflict in the merge of
+    ``base`` and ``cut`` is the one reason it is refused: only an earlier cut meets one
+    here, since :func:`read` raises for the release's own.
 
     Raises:
-        tools.ci.gitcmd.GitError: when a marker conflicts in the merge of ``base`` and
-            ``cut``, or git cannot read the range.
+        tools.ci.gitcmd.GitError: when git cannot read the range.
     """
-    window = _window(root, base, cut)
+    try:
+        window = _window(root, base, cut)
+    except MarkerConflict as conflict:
+        return Carried((), (), (
+            f"{cut[:12]} and {base[:12]} merge with a conflict on {', '.join(conflict.paths)}, "
+            "so what releasing this cut would leave production holding of that card cannot be "
+            "read: it is not offered",))
     standing, before = window.after, window.before
     held = standing | before
     # The groups each named card touches, nearest first: none for one that does not count.

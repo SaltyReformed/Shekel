@@ -181,13 +181,15 @@ def test_an_undo_of_a_marker_production_never_held_names_no_card(repo):
     held for a STRAY ``Reopens:`` naming a card production never held -- a leaf never
     shipped, a leaf dropped long ago, a finding dropped under the group -- is structural
     under the marker (R-BAL359; the ruled report's s.10 moots R-BAL309's stray): a marker
-    is deleted only where it is, so such an undo changes no marker, the window names no
-    such card, and the release is held to no group for it.  #51 and #52 released; #53 a
-    leaf never shipped and #56 a finding under #51, both dropped."""
+    is deleted only where it is, so a card production never held is undone only after a
+    ship in the same window, the net change names it on neither side, and the release is
+    held to no group for it.  (The half this replaces deleted markers never written, which
+    changes nothing and could not fail: M3's review, its 6.)  #51 and #52 released; #53 a
+    leaf and #56 a finding under #51, both dropped, each shipped and undone in the window."""
     _, cutover = after_cutover(repo)
     base = pull_request(repo, cutover, ship(51), ship(52))
-    cut = pull_request(repo, base, undo(53), undo(56))
-    fix = pull_request(repo, base, ship(51), undo(53))
+    cut = pull_request(repo, pull_request(repo, base, ship(53), ship(56)), undo(53), undo(56))
+    fix = pull_request(repo, base, ship(51))
     tracker = FakeTracker()
     deploy_group(tracker, leaves=(51, 52, 53))
     tracker.add(56, kind="finding")
@@ -400,7 +402,7 @@ def test_a_group_leaf_undone_replanned_and_dropped_is_still_a_member(repo):
         "it leaves plan#51 of the deploy-together group plan#50 out of production (its "
         "marker deleted) and keeps plan#52; a step the plan will never ship (plan#51) is "
         "a member while production holds it, at the base or the cut: a release that leaves "
-        "production holding none of the group is whole (deleting the marker of each of "
+        "production holding none of the group is whole (reverting the merge that landed each of "
         "plan#52); the group ships whole",)
 
 
@@ -433,7 +435,7 @@ def test_a_still_marked_leaf_shipped_and_undone_is_still_a_member(repo):
         "it leaves plan#53 of the deploy-together group plan#50 out of production (its "
         "marker deleted) and keeps plan#51; a step the plan will never ship (plan#53) is "
         "a member while production holds it, at the base or the cut: a release that leaves "
-        "production holding none of the group is whole (deleting the marker of each of "
+        "production holding none of the group is whole (reverting the merge that landed each of "
         "plan#51); the group ships whole",)
     out = pull_request(repo, base, undo(53), undo(51))
     assert judge(repo, base, out, tracker).verdict.status == CLEAN
@@ -456,7 +458,7 @@ def test_a_shipped_step_split_on_the_web_and_abandoned_stays_a_member(repo, aban
         "it leaves plan#52 of the deploy-together group plan#50 out of production (its "
         "marker deleted) and keeps plan#51; a step the plan will never ship (plan#51) is "
         "a member while production holds it, at the base or the cut: a release that leaves "
-        "production holding none of the group is whole (deleting the marker of each of "
+        "production holding none of the group is whole (reverting the merge that landed each of "
         "plan#51); the group ships whole",)
     out = pull_request(repo, base, undo(52), undo(51))
     assert judge(repo, base, out, tracker).verdict.status == CLEAN
@@ -495,13 +497,52 @@ def test_a_finding_under_a_group_undone_and_dropped_is_no_member(repo):
     assert verdict.carried.groups[0].through == ("plan#55 under plan#51",)
 
 
+def test_production_after_a_release_is_the_merge_not_the_cut(repo):
+    """M3's review, its 3: #51 and #52, the group #50, released; a hotfix on main undoes
+    #52; the cut, built on dev before it, ships finding #55 under #51.  Production after the
+    release is the merge, which keeps the hotfix's undo, so it holds #51 without #52 and the
+    release is refused; read off the cut alone it would hold both and pass."""
+    _, cutover = after_cutover(repo)
+    dev = pull_request(repo, cutover, ship(51), ship(52))
+    base = pull_request(repo, repo.merge(cutover, dev, "release"), undo(52),
+                        files={"hotfix.py": "1"})
+    cut = pull_request(repo, dev, ship(55))
+    tracker = FakeTracker()
+    deploy_group(tracker)
+    tracker.add(55, kind="finding")
+    tracker.add_child(51, tracker.cards_by_number[55])
+    assert judge(repo, base, cut, tracker).verdict.refusals == (
+        "it leaves production holding plan#51 of the deploy-together group plan#50 without "
+        "plan#52 (it names plan#55 under plan#51, under the group but no leaf of it); the "
+        "group ships whole",)
+
+
+def test_production_after_a_release_holds_a_member_a_hotfix_shipped(repo):
+    """The twin: #51 released alone, a hotfix on main ships #52, and the cut, built on dev
+    before it, ships finding #55 under #51.  The merge holds #51 and #52, the group whole,
+    so the release passes; read off the cut alone it would lack #52 and be refused."""
+    _, cutover = after_cutover(repo)
+    dev = pull_request(repo, cutover, ship(51))
+    base = pull_request(repo, repo.merge(cutover, dev, "release"), ship(52),
+                        files={"hotfix.py": "1"})
+    cut = pull_request(repo, dev, ship(55))
+    tracker = FakeTracker()
+    deploy_group(tracker)
+    tracker.add(55, kind="finding")
+    tracker.add_child(51, tracker.cards_by_number[55])
+    verdict = judge(repo, base, cut, tracker).verdict
+    assert [(group.key, group.released, group.missing) for group in verdict.carried.groups] == [
+        ("plan#50", ("plan#51", "plan#52"), ())]
+    assert verdict.status == CLEAN
+
+
 # -- every step below a group that production holds at the cut (C', 2026-10-14) -------------
 
 def _way_out(verdict):
-    """The marker deletes the way out ``verdict``'s one refusal names (:func:`undo`): one per
-    member it keeps, for the same release to make."""
+    """What reverting the merges the way out ``verdict``'s one refusal names writes to the
+    markers (:func:`undo`): one delete per member it keeps, for the same release to make."""
     (refusal,) = verdict.refusals
-    named = refusal.split("(deleting the marker of each of ", 1)[1].split(")", 1)[0]
+    named = refusal.split("(reverting the merge that landed each of ", 1)[1].split(")", 1)[0]
     return tuple(undo(int(key.removeprefix("plan#"))) for key in named.split(", "))
 
 
@@ -550,8 +591,8 @@ def test_the_way_out_a_refusal_names_is_whole_in_one_round(repo):
         "it leaves plan#52 of the deploy-together group plan#50 out of production (its "
         "marker deleted) and keeps plan#51, plan#511; a step the plan will never ship "
         "(plan#52) is a member while production holds it, at the base or the cut: a release "
-        "that leaves production holding none of the group is whole (deleting the marker of each "
-        "of plan#51, plan#511); the group ships whole",)
+        "that leaves production holding none of the group is whole (reverting the merge "
+        "that landed each of plan#51, plan#511); the group ships whole",)
     out = pull_request(repo, cut, *_way_out(verdict))
     verdict = judge(repo, base, out, tracker).verdict
     assert verdict.status == CLEAN
@@ -621,7 +662,7 @@ def test_a_dead_member_production_keeps_is_named_beside_a_missing_one(repo):
         "plan#52 (it names plan#55 under plan#51, under the group but no leaf of it); a step "
         "the plan will never ship (plan#51) is a member while production holds it, at the "
         "base or the cut: a release that leaves production holding none of the group is "
-        "whole (deleting the marker of each of plan#51); the group ships whole",)
+        "whole (reverting the merge that landed each of plan#51); the group ships whole",)
     assert judge(repo, base, pull_request(repo, cut, *_way_out(verdict)),
                   tracker).verdict.status == CLEAN
 
@@ -640,7 +681,7 @@ def test_a_step_that_will_never_ship_carried_in_by_the_release_is_a_member(repo)
         "it carries part of the deploy-together group plan#50 (plan#51) without plan#52; a "
         "step the plan will never ship (plan#51) is a member while production holds it, at "
         "the base or the cut: a release that leaves production holding none of the group is "
-        "whole (deleting the marker of each of plan#51); the group ships whole",)
+        "whole (reverting the merge that landed each of plan#51); the group ships whole",)
     assert judge(repo, base, pull_request(repo, cut, *_way_out(verdict)),
                   tracker).verdict.status == CLEAN
 
@@ -705,7 +746,8 @@ def test_the_way_out_names_every_member_kept_carried_or_released(repo):
         "it carries part of the deploy-together group plan#50 (plan#53) without plan#54; a "
         "step the plan will never ship (plan#51) is a member while production holds it, at "
         "the base or the cut: a release that leaves production holding none of the group is "
-        "whole (deleting the marker of each of plan#53, plan#51, plan#52); the group ships whole",)
+        "whole (reverting the merge that landed each of plan#53, plan#51, plan#52); the "
+        "group ships whole",)
     assert judge(repo, base, pull_request(repo, cut, *_way_out(verdict)),
                  tracker).verdict.status == CLEAN
 
