@@ -227,6 +227,36 @@ def test_a_conflict_on_a_marker_refuses_to_answer_and_one_elsewhere_does_not(rep
         _git.shipped(repo)
 
 
+def test_a_merge_names_each_marker_that_conflicts_and_only_merged_tree_refuses_it(repo):
+    """``merge`` answers every merge, naming each marker that conflicts and no other path:
+    dev changes card 7's line and main deletes it (each also changing the README), and the
+    tree holds dev's line where the two conflict, which is no settled record, so
+    ``merged_tree`` refuses it."""
+    base = _files(repo, _origin(repo), "seven", _marker(7))
+    dev = _files(repo, base, "dev", {"README": "dev\n", **_marker(7, "2026-10-20T09:30:00Z")})
+    main = _files(repo, base, "main", {"README": "main\n", _git.marker(7): None})
+    merged = _git.merge(repo, (dev, main))
+    assert (merged.tips, merged.conflicts) == ((dev, main), (_git.marker(7),))
+    assert _run(repo, "rev-parse", f"{merged.tree}:{_git.marker(7)}") == _run(
+        repo, "rev-parse", f"{dev}:{_git.marker(7)}")
+    with pytest.raises(_git.MarkerConflict, match="conflict on plan/ships/7") as raised:
+        _git.merged_tree(repo, (dev, main))
+    assert raised.value.paths == (_git.marker(7),)
+
+
+def test_blob_at_reads_a_file_and_nothing_else(repo):
+    """The blob of the file at a path; None where nothing is, where a directory is, and
+    where a submodule's commit (a gitlink) is."""
+    base = _files(repo, _origin(repo), "files", {**_marker(5), "plan/ships/6/inner": "x\n"})
+    _run(repo, "update-index", "--add", "--cacheinfo", f"160000,{base},{_git.marker(7)}")
+    _run(repo, "commit", "--quiet", "-m", "a gitlink")
+    tip = _run(repo, "rev-parse", "HEAD")
+    assert _git.blob_at(repo, tip, _git.marker(5)) == _run(repo, "rev-parse",
+                                                           f"{tip}:{_git.marker(5)}")
+    for path in (_git.marker(6), _git.marker(7), _git.marker(8)):
+        assert _git.blob_at(repo, tip, path) is None
+
+
 def test_landings_names_the_commit_on_the_branch_line_that_took_each_line_in(repo):
     """CI's write rule asks through which commit of its OWN line a branch took each marker's
     line in.  Card 212's claim and work land on dev by one merge, which a release brings to
