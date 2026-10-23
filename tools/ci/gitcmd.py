@@ -13,12 +13,16 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import subprocess
 from pathlib import Path
 
 #: What no user setting may add to git's output (``log.showSignature`` puts gpg
 #: lines into a formatted log, which would split a record).
 _PLAIN = ("-c", "log.showSignature=false")
+
+#: A full commit id, SHA-1 or SHA-256.
+FULL_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 class GitError(RuntimeError):

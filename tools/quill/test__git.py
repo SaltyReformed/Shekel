@@ -227,6 +227,96 @@ def test_a_conflict_on_a_marker_refuses_to_answer_and_one_elsewhere_does_not(rep
         _git.shipped(repo)
 
 
+def test_landings_names_the_commit_on_the_branch_line_that_took_each_line_in(repo):
+    """CI's write rule asks through which commit of its OWN line a branch took each marker's
+    line in.  Card 212's claim and work land on dev by one merge, which a release brings to
+    main by another; dev reverts the card and a fresh claim re-ships it with a new line.
+    dev took the first line in through its merge, never through the claim commit beside its
+    line (a change merging that commit alone would carry the line without the code); main
+    through the release; the card's own branch through its claim; and the revert leaves
+    the landing in dev's past, naming the revert as the commit that undid it."""
+    base = _origin(repo)
+    claimed = _files(repo, base, "claim plan#212", _marker(212))
+    work = _files(repo, claimed, "work", {"app.py": "212\n"})
+    landed = _merge(repo, work, base, work, message="Merge card/212")
+    released = _merge(repo, landed, base, landed, message="release")
+    reverted = _files(repo, landed, "Revert plan#212", {_git.marker(212): None, "app.py": None})
+    again = _files(repo, reverted, "claim plan#212 again", _marker(212, "2026-10-21T08:00:00Z"))
+    first, second = (_run(repo, "rev-parse", f"{sha}:{_git.marker(212)}")
+                     for sha in (claimed, again))
+    assert first != second
+    path = _git.marker(212)
+    assert _git.landings(repo, again) == {(path, second): (_git.Took(again, None),),
+                                          (path, first): (_git.Took(landed, reverted),)}
+    assert _git.landings(repo, released) == {(path, first): (_git.Took(released, None),)}
+    assert _git.landings(repo, work) == {(path, first): (_git.Took(claimed, None),)}
+    assert not _git.landings(repo, base)
+
+
+def test_changes_names_every_entry_at_any_path_with_its_blob_and_no_rename(repo):
+    """The change between two commits, at every path: a marker deleted beside an identical
+    one added reads as both (a rename read would name one entry), a changed file names its
+    new blob, a deleted one none; no change, no entry."""
+    base = _origin(repo)
+    one = _files(repo, base, "one", {**_marker(5), "app.py": "a\n"})
+    two = _files(repo, one, "two", {_git.marker(5): None, **_marker(6), "app.py": "b\n",
+                                    "README": None})
+    assert set(_git.changes(repo, one, two)) == {
+        _git.Entry("D", _git.marker(5), None), _git.Entry("D", "README", None),
+        _git.Entry("A", _git.marker(6), _run(repo, "rev-parse", f"{two}:{_git.marker(6)}")),
+        _git.Entry("M", "app.py", _run(repo, "rev-parse", f"{two}:app.py"))}
+    assert not _git.changes(repo, two, two)
+
+
+@pytest.mark.parametrize(("path", "card"), [
+    ("plan/ships/7", 7), ("plan/ships/1234", 1234), ("plan/ships/07", None),
+    ("plan/ships/0", None), ("plan/ships/notes", None), ("plan/ships/8/inner", None),
+    ("plan/ships", None), ("plan/shipsX/7", None), ("docs/plan/ships/7", None)])
+def test_a_path_names_a_cards_marker_only_as_plan_ships_and_its_number(path, card):
+    """A marker is the file ``plan/ships/<card number>``, and nothing else is one."""
+    assert _git.card_of(path) == card
+
+
+@pytest.mark.parametrize(("branch", "card"), [
+    ("card/12", 12), ("card/012", None), ("card/x", None), ("card/12/x", None),
+    ("card/", None), ("cards/12", None), ("feat/card/12", None)])
+def test_a_branch_is_a_cards_claim_only_as_card_and_its_number(branch, card):
+    """A claim is the branch ``card/<card number>``, and no other name is one."""
+    assert _git.claimed_card(branch) == card
+
+
+@pytest.mark.parametrize(("branch", "card"), [
+    ("released/12/20261019T130000Z", 12), ("released/012/x", None), ("released/12", None),
+    ("released/12/", None), ("released/x/y", None), ("card/12", None),
+    ("feat/released/12/x", None)])
+def test_a_branch_keeps_a_released_claim_only_as_released_its_number_and_when(branch, card):
+    """A released claim's work is kept on ``released/<card number>/<when>``, and no other
+    name is one."""
+    assert _git.released_card(branch) == card
+
+
+def test_ever_claimed_reads_every_claim_and_released_claim_the_tracking_refs_name(repo):
+    """A live claim and a released one each name their card; a branch of another shape, a
+    local branch and a tag name none."""
+    base = _origin(repo)
+    for ref in ("refs/remotes/origin/card/12", "refs/remotes/origin/released/13/20261019T1300Z",
+                "refs/remotes/origin/card/x", "refs/remotes/origin/released/14",
+                "refs/remotes/origin/cards/15", "refs/heads/card/16", "refs/tags/card/17"):
+        _run(repo, "update-ref", ref, base)
+    assert _git.ever_claimed(repo) == {12, 13}
+
+
+def test_shipped_reads_the_merge_of_the_two_tips_it_is_named(repo):
+    """The landing check reads what will have shipped once a pull request's merge and the
+    other branch meet: the merge of the commit and main it names, never dev and main."""
+    base = _origin(repo)
+    _push(repo, _files(repo, base, "hotfix", _marker(9)), "main")
+    change = _files(repo, base, "claim plan#5", _marker(5))
+    _git.fetch(repo)
+    assert _git.shipped(repo).cards == {9}
+    assert _git.shipped(repo, (change, _git.tracking(_git.MAIN))).cards == {5, 9}
+
+
 def test_a_claim_is_created_once_and_read_with_its_marker(repo):
     """The claim's push is create-only: a second claim, a fast-forward a plain push would take,
     is ClaimTaken; the claim read back names its tip, when it was committed and when its

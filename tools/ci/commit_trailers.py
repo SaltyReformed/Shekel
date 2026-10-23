@@ -130,9 +130,7 @@ line or git failed, ``dev`` or ``main`` cannot be read when rule 3 needs them,
 or the change set holds no commit, so nothing was checked.  What a command line
 must name is :func:`ends`, which of its commits have not landed is
 :func:`not_landed`, how a verdict is printed and exits is :func:`report`, and
-how a check that judged nothing says why is :func:`unjudged`: the rules and the
-reporters CI's landing check (``tools/quill/landing.py``) reads its change set
-by and prints its verdict with too.
+how a check that judged nothing says why is :func:`unjudged`.
 """
 from __future__ import annotations
 
@@ -143,10 +141,7 @@ from pathlib import Path
 
 from tools.ci import trailers
 from tools.ci.arcs import REPO
-from tools.ci.gitcmd import GitError, git, run
-
-#: A full commit id, SHA-1 or SHA-256; a change set's two ends must be one.
-_FULL_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+from tools.ci.gitcmd import FULL_ID, GitError, git, run
 
 #: Git's revert record, at the start of a line; the id may be shortened, and is
 #: followed by what git writes after it.
@@ -281,8 +276,8 @@ class LandedUnknown(GitError):
 def not_landed(root: Path, base: str, head: str) -> set[str]:
     """The commits of ``<base>..<head>`` that have not landed: neither
     :data:`tools.ci.trailers.DEV` nor :data:`tools.ci.trailers.MAIN` holds them yet.  They
-    are the commits a rule judged once, when it first lands, judges (rule 3 here; every rule
-    of CI's landing check).  Each branch is handed to git by its full name
+    are the commits a rule judged once, when it first lands, judges (rule 3).  Each branch
+    is handed to git by its full name
     (:func:`tools.ci.trailers.tracking`), so no tag or local branch named like it stands in,
     and whether it exists is asked of that exact reference (``show-ref --verify``): git
     would resolve even a full name that does not exist to a tag named like it.
@@ -344,7 +339,7 @@ def problems(root: Path, base: str, head: str) -> tuple[int, list[str]]:
 def ends(args: list[str]) -> tuple[str, str] | None:
     """A change set's two ends, ``(base, head)``, from a command line naming them: two full
     commit ids, neither all zeros; None for any other command line."""
-    if (len(args) != 2 or not all(_FULL_ID.fullmatch(a) for a in args)
+    if (len(args) != 2 or not all(FULL_ID.fullmatch(a) for a in args)
             or any(set(a) == {"0"} for a in args)):
         return None
     return args[0], args[1]
@@ -354,8 +349,7 @@ def report(check: str, base: str, head: str, count: int, reasons: list[str]) -> 
     """Print the verdict of the change-set check named ``check`` on ``<base>..<head>``, which
     holds ``count`` commits and broke a rule for each of ``reasons``; its exit status as the
     module says.  A change set holding no commit is refused: no pull request, merge group
-    or push has one, so it means the two ends are wrong.  CI's landing check
-    (``tools/quill/landing.py``) prints its verdict here too."""
+    or push has one, so it means the two ends are wrong."""
     if not count:
         print(f"{check}: {base[:12]}..{head[:12]} holds no commit, so nothing was "
               "checked; no pull request, merge group or push has an empty change set",
@@ -370,8 +364,7 @@ def report(check: str, base: str, head: str, count: int, reasons: list[str]) -> 
 def unjudged(check: str, base: str, head: str, error: GitError) -> int:
     """Print why the change-set check named ``check`` judged nothing of ``<base>..<head>``:
     git's ``error``, which names the ref when ``dev`` or ``main`` cannot be read
-    (:class:`LandedUnknown`) and the change set otherwise; exit status 2.  CI's landing
-    check (``tools/quill/landing.py``) prints its git failures here too."""
+    (:class:`LandedUnknown`) and the change set otherwise; exit status 2."""
     said = (str(error) if isinstance(error, LandedUnknown)
             else f"git could not read {base[:12]}..{head[:12]}: {error}")
     print(f"{check}: {said}", file=sys.stderr)
