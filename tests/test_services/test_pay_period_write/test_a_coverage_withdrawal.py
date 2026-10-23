@@ -9,7 +9,7 @@ from decimal import Decimal
 from sqlalchemy import text
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import StatusEnum
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
@@ -200,7 +200,7 @@ class TestACoverageWithdrawalIsAccepted:
     def test_a_stranded_TRANSFER_keeps_both_shadows_and_its_settle_day(
         self, app, db, seed_user, seed_periods,
     ):
-        """The transfer invariants survive a truncate that strands the pair.
+        """The transfer and its two sides' day survive a truncate that strands them.
 
         A transfer has no ``settled_on`` COLUMN -- the day lives on its two
         sides' payment records, which hang off the transfer since plan step
@@ -208,12 +208,16 @@ class TestACoverageWithdrawalIsAccepted:
         ``Transaction`` rows until then) -- so a shortening that puts that day
         outside every paycheck touches BOTH sides at once.  Graded here rather
         than left to the transaction case because the failure mode is
-        different: a writer that "repaired" a stranded row by moving or
-        deleting it would break Invariants 1 and 2 (exactly two shadows, never
-        orphaned) on this shape while looking correct on the other.  The writer
-        touches neither, which is what makes that unreachable.  The day is
-        planted on the two records and read back off them (ruling
-        **R-BAL167** class 1, where the shadows carried it).
+        different: a writer that "repaired" a stranded transfer by deleting
+        it, or by re-dating or deleting a side's record, would break this
+        shape while looking correct on the other.  The writer touches none of
+        them, which is what makes that unreachable.  The day is planted on the
+        two records and read back off each side's own, which fails on a side
+        holding none (ruling **R-BAL167** class 1, where the shadows carried
+        it).  The case also counted the shadows and their two types
+        (Invariants 1 and 2: exactly two shadows, never orphaned) until plan
+        step ``balance:X-bi-6-4d-2`` made a transfer one row (ruling
+        **R-BAL258**), so those reads went with them.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -257,17 +261,6 @@ class TestACoverageWithdrawalIsAccepted:
                 self._LAST_PAYDAY, self._LAST_COVERED, 9,
             )
             assert db.session.get(Transfer, xfer_id) is not None
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id,
-            ).all()
-            # Invariant 1 is "one EXPENSE and one INCOME", so the pair's SHAPE
-            # is asserted and not just its size -- two expense shadows would
-            # satisfy a bare count while breaking the invariant this names.
-            assert len(shadows) == 2
-            assert {shadow.transaction_type_id for shadow in shadows} == {
-                ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            }
             assert {
                 transfer_side_settle_day(db.session, xfer_id, account_id).day
                 for account_id in (seed_user["account"].id, savings.id)

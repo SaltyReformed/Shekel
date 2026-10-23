@@ -10,11 +10,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db as _db
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import pay_period_admin, transfer_service
 from tests._test_helpers import (
@@ -29,7 +27,6 @@ from tests._test_helpers import (
     on_both_sides,
     open_books_before_the_first_assertion,
     reassert_balance_on,
-    settle_day_columns,
     transfer_side_record,
     typed,
 )
@@ -97,11 +94,12 @@ class TestMoneyDatedInsideTheHead:
                 "The purchase Market is marked paid on",
             )
 
-    def _transfer_to_savings(self, seed_user, seed_periods):
+    def _transfer_to_savings(self, seed_user, seed_periods, *, due_date=None):
         """A Projected Checking -> Savings transfer in the 01-02 paycheck.
 
         Savings' books open before :attr:`DAY`, so the only thing that can
-        refuse a day there is the floor under test.
+        refuse a day there is the floor under test.  *due_date* is stored on
+        the transfer (``None``, the default, leaves it unset).
         """
         savings = create_savings_account(
             seed_user, _db.session, "Savings", Decimal("0.00"),
@@ -109,7 +107,7 @@ class TestMoneyDatedInsideTheHead:
         open_books_before_the_first_assertion(_db.session, savings)
         xfer = create_transfer(
             seed_user, _db.session, seed_user["account"], savings,
-            seed_periods[0], amount=Decimal("300.00"),
+            seed_periods[0], amount=Decimal("300.00"), due_date=due_date,
         )
         _db.session.commit()
         return xfer
@@ -155,23 +153,33 @@ class TestMoneyDatedInsideTheHead:
     ):
         """A ``$0.00`` close moved no money, so it dates nothing (ledger row BAL-568).
 
-        Its shadows carried :attr:`DAY`, and the gate read the shadows until
-        plan step ``balance:X-bi-6-4c-3`` -- so this removal was REFUSED then.
         It records no covering movement (ruling **R-BAL90**: a close of
         nothing has no day of money), and R-PC109 names money dated inside the
-        span, so it no longer holds the removal back.
+        span, so it does not hold the removal back -- though its DUE DATE,
+        :attr:`DAY`, is inside the span.  The due date is the day a later
+        correction of its figure dates it by (rulings **R-BAL169**,
+        **R-BAL231**), never a day the close itself records.
 
         The close was pressed with :attr:`DAY` typed on both sides until plan
         step ``balance:X-bi-6-4d-2``, whose door refuses a day beside a
         ``$0.00`` close (ruling **R-BAL230**), so that press is asserted
-        refused and the close is pressed with no day.  The shadows' day is
-        PLANTED, Paid on :attr:`DAY` as that press wrote them until then: no
-        reader reads a twin since (ruling **R-BAL167** classes 2 and 3).
+        refused and the close is pressed with no day.  Its two shadows carried
+        :attr:`DAY` (planted Paid on it, as that press wrote them), and the
+        gate read the shadows until plan step ``balance:X-bi-6-4c-3`` -- so
+        this removal was REFUSED then.  A transfer has no twin to plant since
+        plan step ``balance:X-bi-6-4d-2`` made it one row (ruling
+        **R-BAL258**; the plant updated no row, measured), so the day inside
+        the span is the transfer's due date instead (ruling **R-BAL167** class
+        1): a gate that dated a ``$0.00`` close by its due date refuses here,
+        and with no due date it would admit the removal as the right gate
+        does.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             _added_head(user_id, 2)
-            xfer = self._transfer_to_savings(seed_user, seed_periods)
+            xfer = self._transfer_to_savings(
+                seed_user, seed_periods, due_date=self.DAY,
+            )
             with pytest.raises(
                 ValidationError, match=r"A \$0\.00 close moved no money",
             ):
@@ -186,29 +194,12 @@ class TestMoneyDatedInsideTheHead:
             transfer_service.settle_transfer(
                 xfer.id, user_id, submitted=typed(Decimal("0.00")),
             )
-            db.session.execute(
-                _db.text(
-                    "UPDATE budget.transactions SET status_id = :done, "
-                    "settled_on = :settled_on, "
-                    "settled_day_basis_id = :settled_day_basis_id "
-                    "WHERE transfer_id = :t"
-                ),
-                {
-                    **settle_day_columns(self.DAY),
-                    "done": ref_cache.status_id(StatusEnum.DONE),
-                    "t": xfer.id,
-                },
-            )
             db.session.commit()
-            db.session.expire_all()
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id, is_deleted=False,
-            ).all()
             # The plant's own tell: the shape is the $0.00 close this case is
             # about -- a Paid transfer holding no record on either side, its
-            # shadows dated -- or the admit below would pass for a different
-            # reason.
-            assert {shadow.settled_on for shadow in shadows} == {self.DAY}
+            # due date inside the span -- or the admit below would pass for a
+            # different reason.
+            assert _db.session.get(Transfer, xfer.id).due_date == self.DAY
             assert _db.session.get(Transfer, xfer.id).status.is_settled
             assert [
                 transfer_side_record(db.session, xfer.id, account_id)

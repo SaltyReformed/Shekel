@@ -208,7 +208,7 @@ class TestWhatAPaycheckMayHold:
     def test_a_transfer_made_by_hand_is_refused(
         self, app, db, seed_user, seed_periods,
     ):
-        """A one-time transfer is named; its shadows are not counted twice."""
+        """A one-time transfer refuses the removal, counted as one item."""
         with app.app_context():
             user_id = seed_user["user"].id
             savings = create_savings_account(
@@ -315,11 +315,14 @@ class TestWhatAPaycheckMayHold:
         grid's delete did it (``delete_transfer(soft=True)``): its legs
         hidden and STILL holding their payments -- finding **BAL-532**.  That
         step ended it: the delete takes the payments off (ruling **R-CC75**)
-        and the database refuses a transfer hidden holding one, so that
-        state is asserted refused (class 2) and its storable remainder is
-        planted instead -- both twins hidden around the service over the
-        live transfer's two kept records -- which the refusal still names
-        once (no reader reads a twin, class 3).
+        and the database refuses a transfer hidden holding one, so the hide
+        is asserted refused (class 2) and rolled back, and the live transfer
+        it leaves, both records kept, is still named once.  The case also hid
+        both twins around the service, before the refused hide and again
+        after it, and read the legs' purchases and delete flags, until plan
+        step ``balance:X-bi-6-4d-2`` made a transfer one row (ruling
+        **R-BAL258**): each update touched no row and the legs were an empty
+        list on both params (measured), so they went.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -343,11 +346,6 @@ class TestWhatAPaycheckMayHold:
             )
             db.session.commit()
             if deleted:
-                hide_twins = _db.text(
-                    "UPDATE budget.transactions SET is_deleted = TRUE "
-                    "WHERE transfer_id = :t"
-                )
-                db.session.execute(hide_twins, {"t": transfer.id})
                 db.session.execute(
                     _db.text(
                         "UPDATE budget.transfers SET is_deleted = TRUE "
@@ -360,12 +358,6 @@ class TestWhatAPaycheckMayHold:
                 ):
                     db.session.commit()
                 db.session.rollback()
-                db.session.execute(hide_twins, {"t": transfer.id})
-                db.session.commit()
-                db.session.expire_all()
-            legs = db.session.query(Transaction).filter_by(
-                transfer_id=transfer.id,
-            ).all()
             assert [
                 transfer_side_record(db.session, transfer.id, account_id)
                 is not None
@@ -375,8 +367,6 @@ class TestWhatAPaycheckMayHold:
             ] == [True, True], (
                 "each side must keep its payment through the revert"
             )
-            assert not any(leg.purchases for leg in legs)
-            assert all(leg.is_deleted is deleted for leg in legs)
             paydays, eras = _paydays(user_id), _stored_eras(user_id)
 
             assert _held(user_id, seed_periods[0]) == (

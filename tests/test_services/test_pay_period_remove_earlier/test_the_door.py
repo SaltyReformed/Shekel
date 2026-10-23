@@ -311,11 +311,11 @@ class TestAStatedHistoryStaysBelowTheRecord:
 
 
 def _rows_by_period(user_id):
-    """Return every live row the owner holds as a sorted, comparable snapshot."""
+    """Return every row and transfer in the owner's paychecks, deleted or not, sorted."""
     periods = {period.id: period.start_date for period in all_periods(user_id)}
     transactions = sorted(
         (periods[row.pay_period_id], row.id, row.name, row.status_id,
-         row.transfer_id, row.is_deleted)
+         row.is_deleted)
         for row in _db.session.query(Transaction).filter(
             Transaction.pay_period_id.in_(list(periods)),
         )
@@ -335,8 +335,8 @@ class TestAnAddUndoneLeavesNothingBehind:
     The seeded owner (10 fortnightly paychecks from 2026-01-02, books open
     2024-01-04) with a monthly bill and a monthly transfer from 2025-11-24,
     both populated -- so the paychecks "Add earlier" records receive template
-    rows and a recurring transfer with both shadows, which the removal must
-    take with them (R-PC109's "template rows go").  Between the add and the
+    rows and a recurring transfer, which the removal must take with them
+    (R-PC109's "template rows go").  Between the add and the
     removal the ledger is re-synced, as any loan or balance door does, which
     files the books' opening (dated 2024-01-04, before every paycheck) in the
     earliest paycheck -- an added one (R-PC114's case).
@@ -347,11 +347,19 @@ class TestAnAddUndoneLeavesNothingBehind:
     ):
         """Add 3, re-sync, remove them.
 
-        Compared: the paydays, the stored eras, every live row's period,
-        id, name, status, transfer link and delete flag, and every posted
-        total per scenario and ledger account.  Not compared: journal entry
-        ROWS, which a re-sync appends to by design (a reversal and a
-        re-post), and amounts on rows, which no door here writes.
+        Compared: the paydays, the stored eras, every row's period, id,
+        name, status and delete flag, every transfer's period, id, status
+        and delete flag, and every posted total per scenario and ledger
+        account.  Not compared: journal entry ROWS, which a re-sync appends to
+        by design (a reversal and a re-post), and amounts on rows, which no
+        door here writes.
+
+        The rows compared carried their transfer link, and the template bill
+        was counted with ``transfer_id IS NULL``, until plan step
+        ``balance:X-bi-6-4d-2`` made a transfer one row (ruling
+        **R-BAL258**): no row holds a link since
+        (``ck_transactions_names_no_transfer``), so both went -- every link
+        was ``None`` and the count read 2 without the term (measured).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -383,7 +391,6 @@ class TestAnAddUndoneLeavesNothingBehind:
             ).count() == 2, "the added paychecks must hold the recurring transfer"
             assert _db.session.query(Transaction).filter(
                 Transaction.pay_period_id.in_(added),
-                Transaction.transfer_id.is_(None),
             ).count() == 2, "the added paychecks must hold the template bill"
 
             removed = pay_period_admin.remove_earlier_pay_periods(

@@ -12,9 +12,10 @@ shadows'.  Ruling **R-BAL126**: the reset refusal counts a transfer ONCE.
 Each door is graded where it already has a test that stays unchanged:
 ``test_cc5_4a4_history_doors`` (the recurring transfer's delete and archive,
 the account delete over a HIDDEN leg's kept payment) and
-``test_pay_period_remove_earlier``'s
-``test_a_transfer_done_then_set_back_is_refused_once`` (both legs live, and
-hidden).  What this module adds is what none of those grades: the clause's
+``test_pay_period_remove_earlier/test_what_a_paycheck_may_hold.py``'s
+``test_a_transfer_done_then_set_back_is_refused_once`` (each side holding its
+record, and again once the transfer's hide is refused).
+What this module adds is what none of those grades: the clause's
 own scope, the lock reading a transfer that no row in its period explains,
 and the two reset counts at their new unit.
 """
