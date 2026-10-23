@@ -143,10 +143,7 @@ from pathlib import Path
 
 from tools.ci import trailers
 from tools.ci.arcs import REPO
-from tools.ci.gitcmd import GitError, git, run
-
-#: A full commit id, SHA-1 or SHA-256; a change set's two ends must be one.
-_FULL_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+from tools.ci.gitcmd import FULL_ID, GitError, git, run
 
 #: Git's revert record, at the start of a line; the id may be shortened, and is
 #: followed by what git writes after it.
@@ -344,7 +341,7 @@ def problems(root: Path, base: str, head: str) -> tuple[int, list[str]]:
 def ends(args: list[str]) -> tuple[str, str] | None:
     """A change set's two ends, ``(base, head)``, from a command line naming them: two full
     commit ids, neither all zeros; None for any other command line."""
-    if (len(args) != 2 or not all(_FULL_ID.fullmatch(a) for a in args)
+    if (len(args) != 2 or not all(FULL_ID.fullmatch(a) for a in args)
             or any(set(a) == {"0"} for a in args)):
         return None
     return args[0], args[1]

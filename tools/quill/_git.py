@@ -9,8 +9,9 @@ the file ``plan/ships/N`` (:func:`marker`) is in the tree of the merge of ``dev`
 instant its card was claimed, so every claim writes different content.  Which change may add
 or change a marker is CI's one write rule, judged once where every change lands
 (``tools/quill/landing.py``, step X-cx's M2): the card's own branch, or a release or resync
-bringing one the other branch already judged.  Every reader here takes the markers ``dev``
-and ``main`` hold as they are.  This module writes a marker only in :func:`claim`'s commit.
+carrying the very commit through which the other branch took that marker in
+(:func:`landings`).  Every reader here takes the markers ``dev`` and ``main`` hold as they
+are.  This module writes a marker only in :func:`claim`'s commit.
 
 **A claim is the branch ``card/N`` on ``origin``** (:func:`card_branch`) whose tip neither
 ``dev`` nor ``main`` holds (:func:`claims`).  ``quill claim`` makes it (:func:`claim`): a
@@ -39,7 +40,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from tools.ci.gitcmd import GitError, git, run
+from tools.ci.gitcmd import FULL_ID, GitError, git, run
 from tools.ci.trailers import DEV, MAIN, is_ancestor, tracking
 
 #: The directory holding every card's ship marker, one file per card (R-BAL359).
@@ -83,17 +84,24 @@ class Shipped:
 
 
 @dataclass(frozen=True)
-class MarkerChange:
-    """One change a commit made to an entry under :data:`MARKERS` (:func:`_marker_changes`):
-    its ``status`` (``A`` added, ``M`` changed, ``D`` deleted, ``T`` its type changed), the
-    commit's ``sha`` and ``subject``, the entry's ``path``, and the ``blob`` it holds after
-    the change (None once deleted)."""
+class Entry:
+    """One entry a change adds, changes or deletes, read from git's raw diff (:func:`_entry`):
+    its ``status`` (``A`` added, ``M`` changed, ``D`` deleted, ``T`` its type changed), its
+    ``path``, and the ``blob`` it holds after the change (None once deleted)."""
 
     status: str
-    sha: str
-    subject: str
     path: str
     blob: str | None
+
+
+@dataclass(frozen=True)
+class MarkerChange:
+    """One change a commit made to an entry under :data:`MARKERS` (:func:`_marker_changes`):
+    the commit's ``sha`` and ``subject``, and the ``entry`` it changed."""
+
+    sha: str
+    subject: str
+    entry: Entry
 
 
 @dataclass(frozen=True)
@@ -123,6 +131,21 @@ def marker(number: int) -> str:
     return f"{MARKERS}/{number}"
 
 
+def card_of(path: str) -> int | None:
+    """The card whose marker the path ``path`` names (``plan/ships/<number>``, :func:`marker`);
+    None for any other path, under :data:`MARKERS` or not: a name that is no card number, a
+    file in a directory below it, or :data:`MARKERS` itself."""
+    name = path.removeprefix(f"{MARKERS}/")
+    return int(name) if path.startswith(f"{MARKERS}/") and _NUMBER.fullmatch(name) else None
+
+
+def claimed_card(branch: str) -> int | None:
+    """The card whose claim the branch ``branch`` is (``card/<number>``, :func:`card_branch`);
+    None for any other branch name."""
+    name = branch.removeprefix(CARD_BRANCH)
+    return int(name) if branch.startswith(CARD_BRANCH) and _NUMBER.fullmatch(name) else None
+
+
 def instant(when: datetime) -> str:
     """``when`` in UTC to the second, as a marker records a claim: ``2026-10-22T13:30:00Z``."""
     return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -135,9 +158,9 @@ def on_origin(root: Path) -> dict[int, str]:
     found = {}
     for line in git(root, "ls-remote", "origin", f"refs/heads/{CARD_BRANCH}*").splitlines():
         sha, _, ref = line.partition("\t")
-        name = ref.removeprefix(f"refs/heads/{CARD_BRANCH}")
-        if ref.startswith(f"refs/heads/{CARD_BRANCH}") and _NUMBER.fullmatch(name):
-            found[int(name)] = sha
+        number = claimed_card(ref.removeprefix("refs/heads/"))
+        if ref.startswith("refs/heads/") and number is not None:
+            found[number] = sha
     return found
 
 
@@ -159,8 +182,7 @@ TIPS = (tracking(DEV), tracking(MAIN))
 def _shown(ref: str) -> str:
     """``ref`` as a line names it: a remote-tracking branch by its short name, a commit id by
     its first twelve characters."""
-    return ref[:12] if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", ref) else ref.removeprefix(
-        "refs/remotes/")
+    return ref[:12] if FULL_ID.fullmatch(ref) else ref.removeprefix("refs/remotes/")
 
 
 def _merged_tree(root: Path, tips: tuple[str, str]) -> str:
@@ -203,9 +225,8 @@ def shipped(root: Path, tips: tuple[str, str] = TIPS) -> Shipped:
     out = git(root, "ls-tree", "-r", "-z", _merged_tree(root, tips), "--", MARKERS)
     for entry in filter(None, out.split("\0")):
         kind, path = entry.split(" ")[1], entry.partition("\t")[2]
-        name = path.removeprefix(f"{MARKERS}/")
-        if kind == "blob" and path.startswith(f"{MARKERS}/") and _NUMBER.fullmatch(name):
-            cards.add(int(name))
+        if kind == "blob" and (number := card_of(path)) is not None:
+            cards.add(number)
         else:
             strays.append(f"{path} on {DEV} or {MAIN} is no card's marker (a marker is a file "
                            f"{MARKERS}/<card number>): it is not acted on")
@@ -253,10 +274,35 @@ def read(root: Path) -> Reads:
     return Reads(shipped(root), found, merged)
 
 
-def _marker_changes(root: Path, refs: tuple[str, ...] = TIPS) -> list[MarkerChange]:
+def _entry(meta: str, path: str) -> Entry:
+    """The entry at ``path`` a raw diff line names: ``meta`` is the line before its path,
+    ``:<mode> <mode> <blob before> <blob after> <status>``, each blob in full (``--raw
+    --no-abbrev``), the blob after all zeros once deleted."""
+    _, _, _, after, status = meta.split(" ")
+    return Entry(status[0], path, None if set(after) == {"0"} else after)
+
+
+def changes(root: Path, old: str, new: str) -> tuple[Entry, ...]:
+    """Every entry, at any path, the change from commit ``old`` to commit ``new`` adds,
+    changes or deletes, read as :func:`_marker_changes` reads one: no rename detection (a
+    moved file is deleted and added, never ``R``), each blob in full.
+
+    Raises:
+        GitError: When git cannot read either commit.
+    """
+    out = git(root, "diff", "--raw", "--no-abbrev", "-z", "--no-renames", old, new)
+    fields = out.split("\0")
+    return tuple(_entry(meta, path)
+                 for meta, path in zip(fields[0:-1:2], fields[1::2], strict=True))
+
+
+def _marker_changes(root: Path, refs: tuple[str, ...] = TIPS, *,
+                    first_parent: bool = False) -> list[MarkerChange]:
     """Every change a commit of ``refs``' history (``dev``'s and ``main``'s unless named) made
-    to an entry under :data:`MARKERS`, newest first (:class:`MarkerChange`).  The ONE walk of
-    the markers' history: :func:`history`, :func:`ever_marked` and :func:`held_blobs` all read it.
+    to an entry under :data:`MARKERS`, newest first (:class:`MarkerChange`); with
+    ``first_parent``, of each ref's OWN line alone, its first-parent history, the states the
+    branch itself was in.  The ONE walk of the markers' history: :func:`history`,
+    :func:`ever_marked` and :func:`landings` all read it.
 
     **It lists a commit for every marker any commit of that history ever held, and for every
     blob one held.**  Such a marker (or blob) arrived through a commit holding it whose
@@ -272,20 +318,22 @@ def _marker_changes(root: Path, refs: tuple[str, ...] = TIPS) -> list[MarkerChan
     fully with the merge's change and no ``--full-history``; nothing in git's manual says
     the one implies the other, so the walk states the flag its argument rests on.)  A blob
     is the same argument over a path's content: the first commit holding it at that path
-    whose first parent does not lists it as the blob after its change.  Read with no rename
-    detection, which git turns on by default, so a marker moved to another name reads as
-    deleted and added, never ``R``; and each blob in full (``--raw --no-abbrev``)."""
+    whose first parent does not lists it as the blob after its change.  On one line alone
+    (``--first-parent``) every state is its first parent's plus that commit's change against
+    it, so the walk lists every commit of the line through which the line took a marker or
+    blob in.  Read with no rename detection, which git turns on by default, so a marker
+    moved to another name reads as deleted and added, never ``R``; and each blob in full
+    (``--raw --no-abbrev``)."""
     out = git(root, "log", "--format=%x01%H%x02%s", "--raw", "--no-abbrev", "--no-renames",
-              "--full-history", "--diff-merges=first-parent", *refs, "--", MARKERS)
+              "--full-history", "--diff-merges=first-parent",
+              *(("--first-parent",) if first_parent else ()), *refs, "--", MARKERS)
     found = []
     for record in filter(None, out.split("\x01")):
-        head, _, changes = record.partition("\n")
+        head, _, lines = record.partition("\n")
         sha, _, subject = head.partition("\x02")
-        for line in filter(str.strip, changes.splitlines()):
+        for line in filter(str.strip, lines.splitlines()):
             meta, _, path = line.partition("\t")
-            _, _, _, after, status = meta.split(" ")
-            found.append(MarkerChange(status[0], sha, subject, path,
-                                      None if set(after) == {"0"} else after))
+            found.append(MarkerChange(sha, subject, _entry(meta, path)))
     return found
 
 
@@ -293,8 +341,8 @@ def history(root: Path, number: int) -> list[tuple[str, str, str]]:
     """Each commit on ``dev`` or ``main`` that added (``A``), changed (``M``), deleted
     (``D``) or changed the type of (``T``) card ``number``'s marker, newest first: ``(status,
     sha, subject)``, a merge that brought it in among them (:func:`_marker_changes`)."""
-    return [(change.status, change.sha, change.subject) for change in _marker_changes(root)
-            if change.path == marker(number)]
+    return [(change.entry.status, change.sha, change.subject)
+            for change in _marker_changes(root) if change.entry.path == marker(number)]
 
 
 def ever_marked(root: Path) -> frozenset[int]:
@@ -303,20 +351,25 @@ def ever_marked(root: Path) -> frozenset[int]:
     in the merge of the two, which holds no marker neither side does (no rename is
     detected).  So it holds every card the tool closed as shipped that a revert has since
     unshipped, which ``sync`` reopens, and every card :func:`shipped` names NOW."""
-    names = {change.path.removeprefix(f"{MARKERS}/") for change in _marker_changes(root)}
-    return frozenset(int(name) for name in names if _NUMBER.fullmatch(name))
+    cards = {card_of(change.entry.path) for change in _marker_changes(root)}
+    return frozenset(number for number in cards if number is not None)
 
 
-def held_blobs(root: Path, ref: str) -> dict[str, frozenset[str]]:
-    """Every blob some commit of ``ref``'s history held at each entry under :data:`MARKERS`,
-    by path (:func:`_marker_changes`).  CI's write rule asks it of both integration branches:
-    a marker the other branch held and the target never did was judged where it landed
-    first, while one the target held and undid is brought back only by a fresh claim."""
-    found: dict[str, set[str]] = {}
-    for change in _marker_changes(root, (ref,)):
-        if change.blob is not None:
-            found.setdefault(change.path, set()).add(change.blob)
-    return {path: frozenset(blobs) for path, blobs in found.items()}
+def landings(root: Path, ref: str) -> dict[tuple[str, str], tuple[str, ...]]:
+    """Each blob the branch ``ref`` itself ever held at an entry under :data:`MARKERS`, as
+    ``(path, blob)``, with every commit of its OWN line (its first-parent history, the states
+    the branch itself was in) through which it took that blob in, newest first
+    (:func:`_marker_changes`).  A commit beside the line is none of the branch's states: a
+    claim commit holds its marker, but ``dev`` took it in only through the merge that landed
+    the card, code and marker together.  CI's write rule asks it of both integration
+    branches (``tools/quill/landing.py``): a marker passes as carried from the other branch
+    only when the change holds the commit through which that branch took it in, and never
+    when the target branch held it once and undid it."""
+    found: dict[tuple[str, str], list[str]] = {}
+    for change in _marker_changes(root, (ref,), first_parent=True):
+        if change.entry.blob is not None:
+            found.setdefault((change.entry.path, change.entry.blob), []).append(change.sha)
+    return {key: tuple(shas) for key, shas in found.items()}
 
 
 def has_branch(root: Path, name: str) -> bool:
