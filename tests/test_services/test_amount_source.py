@@ -1707,8 +1707,10 @@ class TestAShadowWithNoParentRefuses:
         """A twin with no parent has nothing to be equal to, so rule 5 REFUSES.
 
         Advertised in ``_transfer_answer``'s own ``Raises:`` and in
-        ``tests._test_helpers.shadow_amount``'s, and graded nowhere until an
-        adversarial review of plan step X-au-g-2c-2 counted it.  It mattered
+        ``tests._test_helpers.shadow_amount``'s (a helper deleted at plan step
+        ``balance:X-bi-6-4d-2``, which deleted the shadows it priced), and
+        graded nowhere until an adversarial review of plan step X-au-g-2c-2
+        counted it.  It mattered
         more after that step than before: every transfer shadow was derived
         then, so rule 5 was the terminal answer for every one of them, and a
         fallback here would have published ``None`` into a money path for a

@@ -2032,11 +2032,13 @@ def loan_correction_entries_at(
     """Return the loan_payment corrections at ONE key on a loan's chart rows.
 
     The key form of :func:`loan_correction_entries`, for a test that holds the
-    payment's period and day but no longer holds a settled shadow -- after a
-    revert (the shadow's day is released, the correction stays at the day it
-    was posted), after a hard delete (the shadow is gone), or for a key the
-    walk merged two payments into.  The ``loan_payment`` journal entries in
-    *period_id* dated *day* with a leg on any of the loan's own chart rows
+    payment's period and day but whose loan side no longer holds a dated
+    record -- after a revert (the side keeps its record and the record's day
+    is released; the correction stays at the day it was posted), after a hard
+    delete (the transfer is gone, its sides' records taken off before it), or
+    for a key the walk merged two payments into.  The ``loan_payment``
+    journal entries in *period_id* dated *day* with a leg on any of the loan's
+    own chart rows
     (:func:`app.services._posting_reconcile.account_chart_row_ids`: its linked
     row and its per-loan interest / escrow / refund / opening-equity rows) in
     *scenario_id* (postings are scenario-scoped, and a loan paid in two
@@ -4778,8 +4780,9 @@ def transfer_family_journal_filter(transfer_id):
     **A settled transfer's money is posted under its two covering movements
     since plan step ``balance:X-bi-6-3``** (rulings **R-BAL45** and
     **R-BAL101**): one entry per side, linked by
-    ``journal_entries.transaction_entry_id`` to the shadow's covering movement
-    on that side, each against the owner's Transfers-in-transit account.  A
+    ``journal_entries.transaction_entry_id`` to the movement covering that
+    side (the side's record; it hung off the side's shadow until the
+    re-parent below), each against the owner's Transfers-in-transit account.  A
     suite that reads "the transfer's postings" by ``JournalEntry.transfer_id``
     alone reads only the LEGACY one-entry shape, which the pair's door reverses
     to zero and which no go-forward settle writes.  This is the ONE spelling
@@ -5740,15 +5743,15 @@ def transfer_repriced_by_the_owner(xfer, figure):
     """Re-price the transfer *xfer* the way the transfer edit door does.
 
     :func:`repriced_by_the_owner` one table over (plan step balance:X-ch,
-    ruling R-BAL17 on the twin), with the difference the twin table has: a
-    transfer's figure lives on THREE rows -- the parent and its two shadow
-    legs -- and ``transfer_service.update_transfer`` is the one door that
-    moves them together (Transfer Invariants 3 and 4), so the two acts
-    ``routes/transfers/mutations`` performs on a typed figure go through it:
-    the figure as OWNERSHIP, and ``is_override=True`` beside it because the
-    transfer is the owner's now rather than the rule's.  A fixture that set
-    ``amount_ownership`` on the parent alone would leave the legs declaring
-    a parent that no longer prices them the way it did.
+    ruling R-BAL17 on the twin), through the twin table's own door: every
+    write of a transfer goes through ``transfer_service``, so the two acts
+    ``routes/transfers/mutations`` performs on a typed figure for a recurring
+    transfer go through ``transfer_service.update_transfer``: the figure as
+    OWNERSHIP, and ``is_override=True`` beside it because the transfer is
+    the owner's now rather than the rule's.  The figure lives on the
+    transfer alone, and both legs are drawn off it: it lived on THREE rows
+    -- the parent and its two shadow legs, which that door moved together
+    -- until plan step ``balance:X-bi-6-4d-2`` made a transfer one row.
 
     Args:
         xfer: The flushed :class:`~app.models.transfer.Transfer`, the
@@ -5756,7 +5759,7 @@ def transfer_repriced_by_the_owner(xfer, figure):
         figure: The figure the owner typed (str or Decimal-coercible).
 
     Returns:
-        *xfer*, flushed, owning *figure* with both legs following it.
+        *xfer*, flushed, owning *figure*.
     """
     # Pylint: ``import-outside-toplevel`` -- this module imports no app
     # symbols at top level (its collection-time-safety convention).
@@ -9646,8 +9649,9 @@ class PlantedPricing:
 
     **It answered a LOAN half too until plan step X-au-g-2c-2**, and planting
     was keyed by TRANSACTION id because that half (``LoanPricing.live_cash``)
-    took a row.  That method is deleted -- a transfer shadow is DERIVED and has
-    no stored figure for a read-time override to supersede -- so the seam is
+    took a row.  That method is deleted -- a transfer shadow was DERIVED from
+    that step and had no stored figure for a read-time override to supersede,
+    and plan step ``balance:X-bi-6-4d-2`` deleted the shadows -- so the seam is
     salary alone and the key is the pair the salary derivation is keyed on.
     Answering the old key would have been worse than failing: the loan half was
     asked FIRST, so every planted figure landed there, and a helper that kept
@@ -9758,21 +9762,20 @@ def planted_basis(*rows, overrides=None):
 def transfer_amount(xfer):
     """What one parent TRANSFER is worth -- its amount, resolved.
 
-    **The parent twin of :func:`shadow_amount`, and it exists for the same
-    reason one step later.**  That helper was written when plan step
-    X-au-g-2c-2 moved a SHADOW's figure from a column to a value; plan step
-    X-au-f does the same for the PARENT, so a case asserting
-    ``xfer.amount == Decimal(...)`` on a generated transfer is now comparing a
-    figure against ``None``.  What those cases were ABOUT -- what the transfer
-    is worth -- is asked of the amount model here.
+    **Written when plan step X-au-f moved a generated transfer's figure from a
+    column to a value**, one step after X-au-g-2c-2 did the same for each
+    transfer shadow, which a helper of its own priced (deleted at plan step
+    ``balance:X-bi-6-4d-2``, which deleted the shadows).  A case
+    asserting ``xfer.amount == Decimal(...)`` on a generated transfer would
+    compare a figure against ``None``; what those cases were ABOUT -- what the
+    transfer is worth -- is asked of the amount model here.
 
     An AD-HOC transfer still owns its figure, so this answers the same column it
     always did for one; the helper is right for both kinds, which is what stops
     a case having to know which it holds.
 
-    A FRESH basis per call, for the reason :func:`shadow_amount` states: a case
-    that edits a transfer and re-reads must see the new figure, and a basis
-    memoizes for the length of a read pass.
+    A FRESH basis per call: a case that edits a transfer and re-reads must see
+    the new figure, and a basis memoizes for the length of a read pass.
 
     Args:
         xfer: The transfer to price.
@@ -9791,42 +9794,6 @@ def transfer_amount(xfer):
 
     return resolve_transfer_amount(
         xfer, derived_amount_basis(xfer.user_id, xfer.scenario_id),
-    )
-
-
-def shadow_amount(shadow):
-    """What one transfer SHADOW is worth -- Transfer Invariant 3, read.
-
-    **The invariant moved from a COLUMN to a VALUE at plan step X-au-g-2c-2**,
-    and this is what a test asserts it with.  A shadow used to hold a COPY of
-    its parent's ``amount``, kept true by ``update_transfer``'s propagation and
-    by ``restore_transfer``'s drift corrector, so every case could assert
-    ``shadow.estimated_amount == xfer.amount`` and was really asserting that the
-    two repairs had run.  A shadow declares ``PARENT_TRANSFER`` and stores
-    nothing now, so that assertion would compare ``None`` against a figure; what
-    it was ABOUT -- both legs being worth what the transfer is -- is asked of
-    the amount model here.
-
-    A FRESH basis per call: a case that edits a transfer and re-reads must see
-    the new figure, and a basis memoizes for the length of the read pass.
-
-    Args:
-        shadow: A transfer shadow, with its ``account`` reachable.
-
-    Returns:
-        The ``Decimal`` the shadow resolves to.
-
-    Raises:
-        AmountUnresolvable: When the row's rule cannot price it -- which for a
-            shadow means its parent is gone (Transfer Invariant 2 broken).
-    """
-    from app.services.cash_ledger import (  # pylint: disable=import-outside-toplevel
-        derived_amount_basis,
-        resolve_transaction_amount,
-    )
-
-    return resolve_transaction_amount(
-        shadow, derived_amount_basis(shadow.account.user_id, shadow.scenario_id),
     )
 
 

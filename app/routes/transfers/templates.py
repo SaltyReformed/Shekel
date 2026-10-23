@@ -604,8 +604,15 @@ def update_transfer_template(template_id):
     # the dated series together (plan step X-au-a).  ``effective_from`` is the
     # form's "Amount effective from" date, which also bounds the regeneration
     # below -- ONE value, applied by two different predicates (the series reads
-    # a row's DUE date, the sweep its pay PERIOD's end); finding **N-247** holds
-    # that seam and X-au-e dissolves it.  Absent from a partial update means the
+    # a transfer's DUE date, the sweep its pay PERIOD's end).  Finding
+    # **N-247** filed that seam: an edit could rewrite a row whose due date
+    # preceded the date it states.  Plan step X-au-e dissolved it on the
+    # template twin (``routes/templates/crud.py``), and plan step X-au-f-2
+    # here, where generation copied ``default_amount`` onto every transfer it
+    # made until then: the sweep writes a DECLARATION
+    # (``derived_ownership(TEMPLATE)``) rather than a figure, so which
+    # transfers it reaches decides nothing about money: a transfer it declares
+    # resolves by its own due date.  Absent from a partial update means the
     # amount was not restated.
     if "default_amount" in data:
         template_amount_service.set_amount(
