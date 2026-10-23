@@ -188,9 +188,12 @@ class TestTransferPrompt:
         periods (``generate_transfers_for_all_periods``), so each installment
         the schedule holds becomes a transfer into the loan from the savings
         account the case posts from, in the pay period holding its due date.
-        The source is a second account the case creates, never the seeded
-        checking: the seed's owner and its checking account are both id 1, so
-        a from-side written as the owner's id would read as checking and pass.
+        The source is a second account the case creates, not the seeded
+        checking, so the read tells the account posted from the owner's
+        checking.  It was chosen when the seed's owner and its checking were
+        both id 1, so a from-side written as the owner's id read as checking
+        and passed; since ruling R-BAL356 each non-ref table's ids start in a
+        range of their own, and the two differ.
 
         **Re-expressed onto the TRANSFER at plan step balance:X-bi-6-4d-3**
         (ruling **R-BAL167** class 1).  It counted the live income SHADOW
@@ -377,8 +380,8 @@ class TestTransferPrompt:
     ):
         """The per-definition settings door updates that payment's extra in place.
 
-        No shadow regeneration is needed (the extra is a live parameter): the
-        settings row's ``extra_principal`` is set to the new value.  The 302
+        The door writes the settings row alone (the extra is a live
+        parameter): its ``extra_principal`` is set to the new value.  The 302
         is also the proof that the moved door still ROUTES: the ownership 404s
         below are only meaningful beside it.
         """
@@ -543,16 +546,18 @@ class TestTransferPrompt:
     ):
         """Source accounts dropdown does not include the current debt account.
 
-        Scopes the assertion to the ``source_account_id`` select.  A
-        naive ``f'value="{acct.id}" not in html`` check would falsely
-        match the loan account's id when it appears in any unrelated
-        attribute on the page (e.g., the dashboard's hidden form
-        carrying ``value="N"`` for some other model whose id happens
-        to equal the loan account's id).  The OR with ``"No recurring
-        payment" not in html`` papered over collisions when the
-        prompt was hidden, but failed deterministically when the
-        prompt was shown AND ``acct.id`` collided with another
-        element's value.
+        Scopes the assertion to the ``source_account_id`` select, the
+        control the case is about.  While every table's ids started at
+        1, a naive ``f'value="{acct.id}" not in html`` check could match
+        the loan account's id in an unrelated attribute (e.g., the
+        dashboard's hidden form carrying ``value="N"`` for another model
+        whose id equalled the loan account's), and the OR with ``"No
+        recurring payment" not in html`` that papered over it failed
+        deterministically when the prompt was shown and the ids
+        collided.  Since ruling R-BAL356 each non-ref table's ids start
+        in a range of their own, so that collision cannot occur in the
+        test database; the scoping stays because the assertion is about
+        that one control.
         """
         acct = _create_mortgage(seed_user, db.session)
 

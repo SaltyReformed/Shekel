@@ -13,8 +13,10 @@ can reach the state, through the status seam itself) and read back as STORED:
   either, so a refused settle stages no record (review L1);
 * a hidden transfer is refused by its name, or "Transfer" when it has none,
   and "was archived" when its definition is (finding **BAL-547**);
-* a transfer whose twin row was deleted behind the app's back settles like
-  any other (ruling **R-BAL235**, retiring R-BAL148 / R-BAL158);
+* a transfer whose twin row was deleted behind the app's back settled like
+  any other (ruling **R-BAL235**, retiring R-BAL148 / R-BAL158); its case went
+  with the twins (ruling **R-BAL380**), since no twin can be stored (ruling
+  **R-BAL258**);
 * a page that NAMES a matched record's bank line frees it for an endpoint
   move and for the occurrence delete, and logs it (ruling **R-BAL229**'s
   positive path, review L5);
@@ -39,7 +41,6 @@ from app.enums import MovementFigureSourceEnum, SettledDayBasisEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.statement_match import StatementMatch
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import (
@@ -428,30 +429,6 @@ class TestAHiddenTransferIsToldByItsName:
                 f"Transfer to {savings.name} was archived: a payment cannot "
                 "be recorded",
             )
-
-
-class TestATransferWithABrokenTwinPairSettles:
-    """Ruling R-BAL235 ("Offer and settle it"): the settle no longer requires the twins."""
-
-    def test_a_deleted_twin_does_not_stop_the_settle(self, app, seed_user):
-        """The Savings twin hidden around the service; Mark Paid records both sides."""
-        with app.app_context():
-            xfer = _transfer(seed_user)
-            savings_twin = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id, account_id=xfer.to_account_id,
-            ).one()
-            savings_twin.is_deleted = True
-            db.session.commit()
-
-            transfer_service.settle_transfer(xfer.id, _owner(seed_user))
-            db.session.commit()
-
-            expense, income = _records(xfer.id)
-            assert expense.amount == income.amount == _AMOUNT
-            assert expense.account_id == xfer.from_account_id
-            assert income.account_id == xfer.to_account_id
-            assert None not in (expense.settled_on, income.settled_on)
-            assert _stored(xfer.id)[0] == ref_cache.status_id(StatusEnum.DONE)
 
 
 class TestAPageThatNamesTheLineFreesIt:
