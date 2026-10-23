@@ -23,6 +23,7 @@ from app.enums import (
 )
 from app.extensions import db
 from app.models.account import Account
+from app.models.amount_ownership import AmountOwnership
 from app.models.investment_params import InvestmentParams
 from app.models.paycheck_line import PaycheckLine
 from app.models.ref import AccountType, CalcMethod, PaycheckLineKind, FilingStatus
@@ -30,7 +31,12 @@ from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction_template import TransactionTemplate
-from app.services import balance_at, savings_dashboard_service
+from app.models.transfer_template import TransferTemplate
+from app.models.user import User, UserSettings
+from app.services import (
+    account_service, balance_at, obligations_aggregator, savings_dashboard_service,
+)
+from app.services.auth_service import hash_password
 from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
@@ -68,11 +74,6 @@ def _freeze_today_inside_seed_range(monkeypatch):
     wall-clock date.
     """
     freeze_today(monkeypatch, date(2026, 3, 20))
-from app.models.transfer_template import TransferTemplate
-from app.models.user import User, UserSettings
-from app.services import account_service, obligations_aggregator
-from app.services.auth_service import hash_password
-from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
