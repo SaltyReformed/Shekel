@@ -479,15 +479,18 @@ jobs:
       # because the ruling refuses EVERY release and a registry-only PR is
       # one.  It reads the REAL clock, in the display timezone, so the TZ skew
       # above cannot move it and the calendar sweep's faked date never
-      # reaches it.  It is judged when the PR is PUSHED: GitHub does not
-      # re-run it at merge, so a PR checked green on November 30 can still
-      # merge in December.  That merge -- and a tag, which skips PRs -- is
-      # what the same check in docker-publish.yml stops, before the release
-      # image is built.  (Step X-cx's L5 requires the merge queue on dev
-      # only: a merge into dev is then judged again on its merge group, but
-      # a release merge into main is never queued, so docker-publish.yml's
-      # check still stops that one.)  The banner on every owner page and the
-      # weekly tax-law.yml run give the month's warning before either refuses.
+      # reaches it.  It is judged when the PR is pushed, and again on the
+      # merge-queue group that lands it: dev and main each take a change only
+      # through a queue (R-BAL322), and this workflow runs on every group, a
+      # release into main's included (measured 2026-10-23: main's one queued
+      # run so far, 39463907960 for release PR #587, ran this job's refuse
+      # check, as dev's groups do).  A group is judged before it lands (that
+      # one at 17:11 UTC, landed 17:24 UTC on 2026-10-20), so a group judged
+      # green on November 30 can still land in December.  Such a group into
+      # main -- and a tag, which skips PRs -- is what the same check in
+      # docker-publish.yml stops, before the release image is built.  The banner on every owner
+      # page and the weekly tax-law.yml run give the month's warning before
+      # either refuses.
       - name: Is next year's tax law in? (refuses from December 1)
         run: python scripts/check_tax_law.py refuse
 

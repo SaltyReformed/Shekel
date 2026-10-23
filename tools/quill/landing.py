@@ -36,23 +36,31 @@ carries is judged when that branch's own pull request lands it (exit 0, said).  
    the revert would re-ship the card with no change to its record, so a release would count
    none of the code it brings back (the ruling's report, finding 1).  A card undone ships
    again from a fresh claim, which writes a new line.
-4. **A line the OTHER integration branch took in passes** -- a release, a resync, a branch
-   that merged the other in -- when M holds the commit of that branch's own line through
-   which it took the line in (:func:`_git.landings`): the merge that landed the card's code
-   and marker together, judged where it landed.  A copy of the line, or a merge of the
-   claim commit alone, holds no such commit, and would put the record where the code is
-   not (measured 2026-10-23, ``m2_probe/f4.sh`` cases 7 and 8).  The tracker is not read
-   for it: it was judged where it first landed, and the tracker has changed since
+4. **A line the OTHER integration branch's own line took in passes only as carried from
+   it**, from any branch, the card's own included -- a release, a resync, a branch that
+   merged the other in: when the change BRINGS a commit of that line through which it took
+   the line in (M holds it and M's first parent does not), and does not hold the commit of
+   that line through which the branch later undid it (:func:`_git.landings`); that is, the
+   merge that landed the card's code and marker together, judged where it landed.  A copy
+   of the line, or a merge of the claim commit alone, brings no such commit, and would put
+   the record where the code is not (measured 2026-10-23, ``m2_probe/f4.sh`` cases 7 and 8),
+   as would a copy made after a release that brought the card's landing and its revert
+   together; and a revert of the other branch's revert would re-ship the card with no
+   change to its record, then refused by rule 3 at every release (M2's review, HIGH-1 and
+   MEDIUM-3, measured).  A cherry-pick is a copy too: a picked marker is refused, and the
+   line arrives through the merge that took it in.  The tracker is not read for a carried
+   line: it was judged where it first landed, and the tracker has changed since
    (``R-BAL184``).
-5. **Otherwise only from ``card/N``**, card N's own claim (:func:`_git.claimed_card`), a
+5. **Any other line only from ``card/N``**, card N's own claim (:func:`_git.claimed_card`), a
    branch of this repository: one of another repository is no claim.  And a change from
    ``card/N`` must add or change ``plan/ships/N``: a branch pushed again after its merge
    records nothing (the report's 5c).
 6. **The records-only door** (``R-BAL363``): a change into ``main`` whose every entry, at
    any path, ADDS a card's marker may add one from any branch, for a card no commit of
-   ``dev`` or ``main`` ever marked (:func:`_git.ever_marked`): work that landed before
-   records existed, vouched for by whoever writes the change.  It is deleted once the
-   history cards (``R-BAL353``) are recorded.
+   ``dev`` or ``main`` ever marked (:func:`_git.ever_marked`) and no claim was ever made for
+   (:func:`_git.ever_claimed`): work that landed before records existed, vouched for by
+   whoever writes the change.  A claimed card's work is the records' own, recorded by its
+   claim.  It is deleted once the history cards (``R-BAL353``) are recorded.
 7. **Every card rule 5 or 6 lets a change record is read against the tracker**
    (:func:`refusals`): a card the tracker holds; work (:func:`_state.no_work`, which names a
    container, a ruling, a question or a card with no type for ``quill sync`` too); and not
@@ -76,9 +84,9 @@ needs none is judged without a read.
 
 **What cannot be read refuses to judge** (exit 2): a command line naming no pull request;
 the pull request, when no token or repository is set, GitHub answers an error or cannot be
-reached, or its answer lacks a field; a merge that is not the pull request's; git; a
-marker that conflicts in the merge of M with the other branch; and the tracker, as
-:func:`refusals` says.
+reached, or its answer lacks a field; a merge that is not the pull request's; git; when a
+card must be read, a marker that conflicts in the merge of M with the other branch; and
+the tracker, as :func:`refusals` says.
 
 Usage, at the repository root::
 
@@ -165,6 +173,12 @@ class Landing:
         return BRANCHES[self.pull.base]
 
     @property
+    def claim(self) -> int | None:
+        """The card whose claim the pull request's head is (:func:`_git.claimed_card`), if
+        any: a branch of another repository is none."""
+        return _git.claimed_card(self.pull.head) if self.pull.head else None
+
+    @property
     def other(self) -> str:
         """The other integration branch, by its full name."""
         return next(ref for name, ref in BRANCHES.items() if name != self.pull.base)
@@ -174,15 +188,15 @@ class Landing:
 class _Facts:
     """What the rule reads of git for a change that writes a marker: the lines the target's
     own line (``held``, at M's first parent) and the other branch's (``carried``) took in,
-    with the commits that took each in (:func:`_git.landings`); ``claim``, the card whose
-    claim the pull request's head is, if any; ``records_only``, whether the change is one
-    rule 6 reads (into ``main``, every entry an added marker); and ``door``, the cards of
-    such a change no commit of ``dev`` or ``main`` ever marked."""
+    with the commits that took each in and undid it (:func:`_git.landings`);
+    ``records_only``, whether the change is one rule 6 reads (into ``main``, every entry an
+    added marker); and for such a change, ``claimed``, the cards a claim was ever made for,
+    and ``door``, its cards neither that nor ever marked on ``dev`` or ``main``."""
 
-    held: Mapping[tuple[str, str], tuple[str, ...]]
-    carried: Mapping[tuple[str, str], tuple[str, ...]]
-    claim: int | None
+    held: Mapping[tuple[str, str], tuple[_git.Took, ...]]
+    carried: Mapping[tuple[str, str], tuple[_git.Took, ...]]
     records_only: bool
+    claimed: frozenset[int]
     door: frozenset[int]
 
 
@@ -284,24 +298,34 @@ def _facts(landing: Landing) -> _Facts:
     root, entries = landing.root, landing.entries
     records_only = landing.target == tracking(MAIN) and all(
         entry.status == "A" and _git.card_of(entry.path) is not None for entry in entries)
+    claimed = _git.ever_claimed(root) if records_only else frozenset()
     door = (frozenset(_git.card_of(entry.path) for entry in entries) - _git.ever_marked(root)
-            if records_only else frozenset())
+            - claimed if records_only else frozenset())
     return _Facts(_git.landings(root, landing.onto), _git.landings(root, landing.other),
-                  _git.claimed_card(landing.pull.head) if landing.pull.head else None,
-                  records_only, door)
+                  records_only, claimed, door)
+
+
+def _carried(landing: Landing, took: Iterable[_git.Took]) -> bool:
+    """Rule 4: whether the change brings one of the commits ``took`` names, through which
+    the other branch's own line took a line in, without the commit through which it undid
+    it."""
+    root, merge = landing.root, landing.merge
+    return any(is_ancestor(root, each.sha, merge) and not is_ancestor(root, each.sha, landing.onto)
+               and (each.until is None or not is_ancestor(root, each.until, merge))
+               for each in took)
 
 
 def _unclaimed(landing: Landing, facts: _Facts, entry: _git.Entry, number: int) -> str:
     """Why ``entry``, a written marker of card ``number`` that no rule passes, is refused."""
     if facts.records_only:
+        before = (f"a claim was made for card {number}" if number in facts.claimed
+                  else f"card {number} was marked on {DEV} or {MAIN} before")
         return (f"{entry.path}: a change that only adds markers records work landed before "
-                f"records existed, but card {number} was marked on {DEV} or {MAIN} before, so "
-                f"only {_git.card_branch(number)} may record it")
-    other = landing.other.removeprefix("refs/remotes/")
+                f"records existed, but {before}, so only {_git.card_branch(number)} may "
+                "record it")
     return (f"{entry.path}: {landing.pull.head or 'a branch of another repository'} "
             f"{_VERBS.get(entry.status, 'writes')} it, but only card {number}'s own claim, "
-            f"{_git.card_branch(number)}, may record it, or a release or resync holding the "
-            f"commit through which {other} took that line in")
+            f"{_git.card_branch(number)}, may record it")
 
 
 def _written(landing: Landing, facts: _Facts,
@@ -318,10 +342,17 @@ def _written(landing: Landing, facts: _Facts,
                 f"re-ship card {number} with no change to its record, and a release would "
                 "count none of the code it brings back: a card undone ships again from a "
                 f"fresh claim (quill claim {number}), which writes a new line"), None
-    if any(is_ancestor(landing.root, sha, landing.merge)
-           for sha in facts.carried.get((entry.path, entry.blob), ())):
-        return None, None
-    if number in (facts.claim, *facts.door):
+    if took := facts.carried.get((entry.path, entry.blob)):
+        if _carried(landing, took):
+            return None, None
+        other = landing.other.removeprefix("refs/remotes/")
+        return (f"{entry.path}: {other} took this very line in, but this change does not bring "
+                "the commit through which it did, or holds the one through which it undid it, "
+                f"so it would record card {number} where its code is not, or re-ship it with no "
+                f"change to its record: the line comes from {other} only through the merge that "
+                "took it in, and a card undone ships again from a fresh claim (quill claim "
+                f"{number}), which writes a new line"), None
+    if number in (landing.claim, *facts.door):
         return None, number
     return _unclaimed(landing, facts, entry, number), None
 
@@ -331,7 +362,7 @@ def _judged(landing: Landing) -> tuple[list[str], set[int]]:
     :data:`_git.MARKERS`, and the cards it records that the tracker must be read for."""
     written = [entry for entry in landing.entries
                if _under_markers(entry.path) and entry.blob is not None]
-    claim = _git.claimed_card(landing.pull.head) if landing.pull.head else None
+    claim = landing.claim
     reasons = []
     if claim is not None and not any(entry.path == _git.marker(claim) for entry in written):
         reasons.append(f"{landing.pull.head} adds or changes no {_git.marker(claim)}, so it "

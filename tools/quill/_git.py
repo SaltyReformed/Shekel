@@ -9,8 +9,9 @@ the file ``plan/ships/N`` (:func:`marker`) is in the tree of the merge of ``dev`
 instant its card was claimed, so every claim writes different content.  Which change may add
 or change a marker is CI's one write rule, judged once where every change lands
 (``tools/quill/landing.py``, step X-cx's M2): the card's own branch, or a release or resync
-carrying the very commit through which the other branch took that marker in
-(:func:`landings`).  Every reader here takes the markers ``dev`` and ``main`` hold as they
+bringing the very commit through which the other branch took that marker in, and not the
+one through which it undid it (:func:`landings`).  Every reader here takes the markers
+``dev`` and ``main`` hold as they
 are.  This module writes a marker only in :func:`claim`'s commit.
 
 **A claim is the branch ``card/N`` on ``origin``** (:func:`card_branch`) whose tip neither
@@ -105,6 +106,16 @@ class MarkerChange:
 
 
 @dataclass(frozen=True)
+class Took:
+    """One commit of a branch's own line through which it took a marker's blob in (``sha``),
+    and the next commit of that line that changed the marker again (``until``), None while
+    the branch still holds it (:func:`landings`)."""
+
+    sha: str
+    until: str | None
+
+
+@dataclass(frozen=True)
 class Reads:
     """What one command reads of git (:func:`read`): what shipped, and every claim by card."""
 
@@ -144,6 +155,29 @@ def claimed_card(branch: str) -> int | None:
     None for any other branch name."""
     name = branch.removeprefix(CARD_BRANCH)
     return int(name) if branch.startswith(CARD_BRANCH) and _NUMBER.fullmatch(name) else None
+
+
+def released_card(branch: str) -> int | None:
+    """The card whose released claim the branch ``branch`` keeps (``released/<number>/<when>``,
+    :func:`release`); None for any other branch name."""
+    number, slash, when = branch.removeprefix(RELEASED).partition("/")
+    return (int(number) if branch.startswith(RELEASED) and slash and when
+            and _NUMBER.fullmatch(number) else None)
+
+
+def ever_claimed(root: Path) -> frozenset[int]:
+    """Every card a claim was made for, as this clone's tracking refs of ``origin`` name its
+    branches: ``card/<number>`` (:func:`claimed_card`), live or merged, and
+    ``released/<number>/<when>`` (:func:`released_card`), where a release keeps the work.
+    Read from the tracking refs, never asked of ``origin``: CI's checkout fetches every
+    branch into them, and one a clone still tracks after ``origin`` deleted it names a card
+    that WAS claimed, which this question counts."""
+    out = git(root, "for-each-ref", "--format=%(refname)",
+              f"refs/remotes/origin/{CARD_BRANCH.rstrip('/')}",
+              f"refs/remotes/origin/{RELEASED.rstrip('/')}")
+    branches = [ref.removeprefix("refs/remotes/origin/") for ref in out.splitlines()]
+    return frozenset(number for branch in branches
+                     if (number := claimed_card(branch) or released_card(branch)) is not None)
 
 
 def instant(when: datetime) -> str:
@@ -355,21 +389,26 @@ def ever_marked(root: Path) -> frozenset[int]:
     return frozenset(number for number in cards if number is not None)
 
 
-def landings(root: Path, ref: str) -> dict[tuple[str, str], tuple[str, ...]]:
+def landings(root: Path, ref: str) -> dict[tuple[str, str], tuple[Took, ...]]:
     """Each blob the branch ``ref`` itself ever held at an entry under :data:`MARKERS`, as
     ``(path, blob)``, with every commit of its OWN line (its first-parent history, the states
-    the branch itself was in) through which it took that blob in, newest first
-    (:func:`_marker_changes`).  A commit beside the line is none of the branch's states: a
-    claim commit holds its marker, but ``dev`` took it in only through the merge that landed
-    the card, code and marker together.  CI's write rule asks it of both integration
-    branches (``tools/quill/landing.py``): a marker passes as carried from the other branch
-    only when the change holds the commit through which that branch took it in, and never
-    when the target branch held it once and undid it."""
-    found: dict[tuple[str, str], list[str]] = {}
+    the branch itself was in) through which it took that blob in, newest first, each beside
+    the next commit of the line that changed that entry again (:class:`Took`), all read from
+    the one walk (:func:`_marker_changes`).  A commit beside the line is none of the branch's
+    states: a claim commit holds its marker, but ``dev`` took it in only through the merge
+    that landed the card, code and marker together.  CI's write rule asks it of both
+    integration branches (``tools/quill/landing.py``): a marker passes as carried from the
+    other branch only when the change brings the commit through which that branch took it in
+    and not the one through which it undid it, and never when the target branch held it once
+    and undid it."""
+    found: dict[tuple[str, str], list[Took]] = {}
+    newer: dict[str, str] = {}
     for change in _marker_changes(root, (ref,), first_parent=True):
-        if change.entry.blob is not None:
-            found.setdefault((change.entry.path, change.entry.blob), []).append(change.sha)
-    return {key: tuple(shas) for key, shas in found.items()}
+        path, blob = change.entry.path, change.entry.blob
+        if blob is not None:
+            found.setdefault((path, blob), []).append(Took(change.sha, newer.get(path)))
+        newer[path] = change.sha
+    return {key: tuple(took) for key, took in found.items()}
 
 
 def has_branch(root: Path, name: str) -> bool:

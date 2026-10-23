@@ -234,7 +234,7 @@ def test_landings_names_the_commit_on_the_branch_line_that_took_each_line_in(rep
     dev took the first line in through its merge, never through the claim commit beside its
     line (a change merging that commit alone would carry the line without the code); main
     through the release; the card's own branch through its claim; and the revert leaves
-    the landing in dev's past."""
+    the landing in dev's past, naming the revert as the commit that undid it."""
     base = _origin(repo)
     claimed = _files(repo, base, "claim plan#212", _marker(212))
     work = _files(repo, claimed, "work", {"app.py": "212\n"})
@@ -246,9 +246,10 @@ def test_landings_names_the_commit_on_the_branch_line_that_took_each_line_in(rep
                      for sha in (claimed, again))
     assert first != second
     path = _git.marker(212)
-    assert _git.landings(repo, again) == {(path, second): (again,), (path, first): (landed,)}
-    assert _git.landings(repo, released) == {(path, first): (released,)}
-    assert _git.landings(repo, work) == {(path, first): (claimed,)}
+    assert _git.landings(repo, again) == {(path, second): (_git.Took(again, None),),
+                                          (path, first): (_git.Took(landed, reverted),)}
+    assert _git.landings(repo, released) == {(path, first): (_git.Took(released, None),)}
+    assert _git.landings(repo, work) == {(path, first): (_git.Took(claimed, None),)}
     assert not _git.landings(repo, base)
 
 
@@ -282,6 +283,27 @@ def test_a_path_names_a_cards_marker_only_as_plan_ships_and_its_number(path, car
 def test_a_branch_is_a_cards_claim_only_as_card_and_its_number(branch, card):
     """A claim is the branch ``card/<card number>``, and no other name is one."""
     assert _git.claimed_card(branch) == card
+
+
+@pytest.mark.parametrize(("branch", "card"), [
+    ("released/12/20261019T130000Z", 12), ("released/012/x", None), ("released/12", None),
+    ("released/12/", None), ("released/x/y", None), ("card/12", None),
+    ("feat/released/12/x", None)])
+def test_a_branch_keeps_a_released_claim_only_as_released_its_number_and_when(branch, card):
+    """A released claim's work is kept on ``released/<card number>/<when>``, and no other
+    name is one."""
+    assert _git.released_card(branch) == card
+
+
+def test_ever_claimed_reads_every_claim_and_released_claim_the_tracking_refs_name(repo):
+    """A live claim and a released one each name their card; a branch of another shape, a
+    local branch and a tag name none."""
+    base = _origin(repo)
+    for ref in ("refs/remotes/origin/card/12", "refs/remotes/origin/released/13/20261019T1300Z",
+                "refs/remotes/origin/card/x", "refs/remotes/origin/released/14",
+                "refs/remotes/origin/cards/15", "refs/heads/card/16", "refs/tags/card/17"):
+        _run(repo, "update-ref", ref, base)
+    assert _git.ever_claimed(repo) == {12, 13}
 
 
 def test_shipped_reads_the_merge_of_the_two_tips_it_is_named(repo):

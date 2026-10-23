@@ -271,8 +271,7 @@ def test_a_branch_carrying_another_cards_claim_is_refused(check, code):
     assert status == 1
     assert out.splitlines()[0] == (
         "REFUSED -- plan/ships/400: feat/cleanup adds it, but only card 400's own claim, "
-        "card/400, may record it, or a release or resync holding the commit through which "
-        "origin/main took that line in")
+        "card/400, may record it")
 
 
 @pytest.mark.parametrize("how", ["a copy of its line", "its claim commit alone"])
@@ -281,7 +280,7 @@ def test_devs_line_reaches_main_only_with_the_merge_that_landed_it(check, code, 
     copies its marker's line, or merges its claim commit alone, holds the line dev holds but
     not the merge that landed the card's code with it: main would record card 500 shipped
     with none of its code, and the release that later brought the code would count none of
-    it.  Refused, as a records-only change naming a card marked before; the release itself
+    it.  Refused as a line dev took in that the change does not bring; the release itself
     (case 9) passes."""
     root, base = code
     claimed, work = _claim(root, base, 500)
@@ -290,11 +289,94 @@ def test_devs_line_reaches_main_only_with_the_merge_that_landed_it(check, code, 
             if how == "a copy of its line" else _merge(root, base, claimed, "claim alone"))
     status, out, _ = check(base, head, "copy", base="main")
     assert status == 1
-    assert out.splitlines()[0] == (
-        "REFUSED -- plan/ships/500: a change that only adds markers records work landed before "
-        "records existed, but card 500 was marked on origin/dev or origin/main before, so only "
-        "card/500 may record it")
+    assert out.splitlines()[0] == _not_brought(500, "origin/dev")
     assert check(base, dev, "dev", base="main")[0] == 0
+
+
+def _not_brought(number, other):
+    """The refusal of card ``number``'s line, which the branch ``other`` took in, written by a
+    change that does not bring it from there."""
+    return (f"REFUSED -- plan/ships/{number}: {other} took this very line in, but this change "
+            "does not bring the commit through which it did, or holds the one through which it "
+            f"undid it, so it would record card {number} where its code is not, or re-ship it "
+            f"with no change to its record: the line comes from {other} only through the merge "
+            "that took it in, and a card undone ships again from a fresh claim (quill claim "
+            f"{number}), which writes a new line")
+
+
+@pytest.mark.parametrize("into", ["main", "dev"])
+def test_a_copy_after_a_landing_and_its_revert_arrived_together_is_refused(check, code, into):
+    """M2's review HIGH-1: a card lands on one branch and is reverted there, and a release
+    (or resync) takes both to the other, whose history then holds the landing with no marker
+    and no code.  A copy of the line into it does not BRING the landing (its first parent
+    already holds it): refused, from any branch, card/500 included, as the card would read
+    shipped with its code reverted everywhere."""
+    root, base = code
+    undone = _undone(root, _landed(root, base, 500), 500)
+    (point_dev if into == "main" else point_main)(root, undone)
+    onto = _merge(root, base, undone, "release" if into == "main" else "resync")
+    other = "origin/dev" if into == "main" else "origin/main"
+    for head in ("copy", "card/500"):
+        copied = commit_files(root, onto, "copy", {marker(500): f"claimed {MON}\n"})
+        status, out, _ = check(onto, copied, head, base=into)
+        assert status == 1 and out.splitlines()[0] == _not_brought(500, other)
+
+
+def test_a_line_whose_landing_the_target_holds_already_is_not_brought_again(check, code):
+    """Card 5 lands on dev with one line while main holds another (its own hotfix), and the
+    release's merge resolves the conflict to main's: main then holds dev's landing without
+    its line, and nothing undid it.  A copy of dev's line into main does not BRING that
+    landing (main's tip holds it), so it is refused: what was settled is not reopened by a
+    copy."""
+    root, base = code
+    point_dev(root, landed := _landed(root, base, 5))
+    hotfix = _landed(root, base, 5, TUE)
+    kept = run(root, "commit-tree", f"{hotfix}^{{tree}}", "-p", hotfix, "-p", landed, "-m",
+               "release, keeping main's line")
+    copied = commit_files(root, kept, "copy", {marker(5): f"claimed {MON}\n"})
+    status, out, _ = check(kept, copied, "copy", base="main")
+    assert status == 1 and out.splitlines()[0] == _not_brought(5, "origin/dev")
+
+
+def test_a_revert_of_a_revert_made_on_the_other_branch_is_refused(check, code):
+    """M2's review MEDIUM-3: hotfix 700 lands on main and main reverts it; a branch off main
+    reverts that revert, with a money fix, into dev.  It brings main's landing AND main's
+    undo of it, so it would re-ship 700 with no change to its record, and rule 3 would then
+    refuse every release: refused here, from any branch."""
+    root, base = code
+    reverted = _undone(root, _landed(root, base, 700), 700)
+    point_main(root, reverted)
+    for head in ("revert-700", "card/700"):
+        again = commit_files(root, reverted, 'Revert "Revert plan#700"',
+                             {marker(700): f"claimed {MON}\n", "w700.txt": "work\n",
+                              "app.py": "a money fix\n"})
+        status, out, _ = check(base, again, head)
+        assert status == 1 and out.splitlines()[0] == _not_brought(700, "origin/main")
+
+
+def test_a_queue_groups_later_entry_is_judged_on_the_merge_the_earlier_one_makes(capsys,
+                                                                                   code):
+    """M2's review: a group of several pull requests into dev, whose tip has not moved yet.
+    A later entry's merge stands on the earlier one's, and is judged on it: card/8 after
+    card/7's entry records card 8 alone; and after entries landing card 9 and reverting it,
+    card/9 writing its old line again is refused as dev's own line's (rule 3, read at M's
+    first parent, never at dev's tip), the tracker never read."""
+    root, base = code
+    github = _Lookup(_tracker(_card(8)))
+    first = _merge(root, base, _claim(root, base, 7)[1], "Merge pull request #601")
+    tip = _claim(root, base, 8)[1]
+    later = _merge(root, first, tip, "Merge pull request #602")
+    queue = f"refs/heads/gh-readonly-queue/dev/pr-602-{first}"
+    assert main(["merge_group", later, queue], _reader(github), _pull("card/8", tip), root) == 0
+    assert github.asked == [[8]]
+    capsys.readouterr()
+    undone = _undone(root, _landed(root, base, 9), 9)
+    again = commit_files(root, undone, "claim 9 by hand", {marker(9): f"claimed {MON}\n"})
+    status = main(["merge_group", _merge(root, undone, again), queue], _never,
+                  _pull("card/9", again), root)
+    assert status == 1
+    assert "plan/ships/9: origin/dev held this very line once and undid it" in (
+        capsys.readouterr().out)
 
 
 # ----------------------------------------------------------------- arms 1, 2 and 5: the claim
@@ -321,8 +403,7 @@ def test_a_card_branch_may_undo_another_card_but_record_only_its_own(check, code
     assert status == 1
     assert out.splitlines() == [
         "REFUSED -- plan/ships/8: card/7 adds it, but only card 8's own claim, card/8, may "
-        "record it, or a release or resync holding the commit through which origin/main took "
-        "that line in", _verdict("card/7", 3, 1)]
+        "record it", _verdict("card/7", 3, 1)]
     assert github.asked == [[7]]
 
 
@@ -356,8 +437,7 @@ def test_a_branch_of_another_repository_is_no_claim(check, code):
     assert status == 1
     assert out.splitlines() == [
         "REFUSED -- plan/ships/7: a branch of another repository adds it, but only card 7's "
-        "own claim, card/7, may record it, or a release or resync holding the commit through "
-        "which origin/main took that line in",
+        "own claim, card/7, may record it",
         _verdict("a branch of another repository", 1, 1)]
 
 
@@ -392,6 +472,26 @@ def test_the_records_door_adds_markers_into_main_for_cards_never_marked(check, c
     status, out, _ = check(base, records, "records", base="main", github=github)
     assert (status, out) == (0, _verdict("records", 2, 0, "main") + "\n")
     assert github.asked == [[2, 4]]
+
+
+@pytest.mark.parametrize("ref", ["refs/remotes/origin/card/900",
+                                 "refs/remotes/origin/released/900/20261019T130000Z"])
+def test_the_records_door_never_records_a_card_a_claim_was_made_for(check, code, ref):
+    """M2's review HIGH-2: card 900 is claimed (live, or released), its work not landed.  A
+    change into main adding its claim's line, or a line of its own, would record it with none
+    of its code, so the release that later brought the code would count none of it: refused,
+    since a claimed card's work is the records' own, not work landed before them."""
+    root, base = code
+    claimed, work = _claim(root, base, 900)
+    run(root, "update-ref", ref, work)
+    for head in (_merge(root, base, claimed, "claim alone"),
+                 commit_files(root, base, "records", {marker(900): "landed before records\n"})):
+        status, out, _ = check(base, head, "records", base="main")
+        assert status == 1
+        assert out.splitlines()[0] == (
+            "REFUSED -- plan/ships/900: a change that only adds markers records work landed "
+            "before records existed, but a claim was made for card 900, so only card/900 may "
+            "record it")
 
 
 @pytest.mark.parametrize(("base", "files"), [
