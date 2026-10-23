@@ -189,7 +189,7 @@ def test_a_range_reads_only_the_commits_it_names(repo):
 
 def test_several_tips_are_read_as_one_history_each_commit_once(repo):
     """Two lines beside each other, each named: one walk reads both, and the commit they
-    share once (CI's landing check reads dev, main and a change set's head so)."""
+    share once."""
     base = _commit(repo, "base", "Ships: plan#2")
     left = _commit(repo, "left", "Ships: plan#3", parents=[base])
     right = _commit(repo, "right", "Ships: plan#4", parents=[base])
