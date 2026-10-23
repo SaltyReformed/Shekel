@@ -205,7 +205,7 @@ class TestPayPeriodGenerate:
         read as a gap*: it asserted **R-PC1**'s forward-only floor and the 422
         that renders it.  This door cannot reach that refusal any more, because
         it no longer forwards a payday.  The rule itself is unmoved and is
-        covered at its own layer -- ``test_pay_period_write.py`` pins the
+        covered at its own layer -- ``test_pay_period_write/`` pins the
         message in seven places, and the doors that still state a payday
         (regenerate, reset) still meet it.
         """
