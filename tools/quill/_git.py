@@ -223,9 +223,9 @@ def fetch(root: Path, cards: Iterable[int] = ()) -> None:
 TIPS = (tracking(DEV), tracking(MAIN))
 
 
-def _shown(ref: str) -> str:
-    """``ref`` as a line names it: a remote-tracking branch by its short name, a commit id by
-    its first twelve characters."""
+def shown(ref: str) -> str:
+    """``ref`` as a sentence names it: a remote-tracking branch by its short name
+    (``origin/dev``), a commit id by its first twelve characters."""
     return ref[:12] if FULL_ID.fullmatch(ref) else ref.removeprefix("refs/remotes/")
 
 
@@ -250,7 +250,7 @@ class Merged:
         """
         if self.conflicts:
             one, other = self.tips
-            raise MarkerConflict(f"{_shown(one)} and {_shown(other)} merge with a conflict on "
+            raise MarkerConflict(f"{shown(one)} and {shown(other)} merge with a conflict on "
                                  f"{', '.join(self.conflicts)}, so whether those cards shipped "
                                  f"is unknown: settle it in the merge of {MAIN} into {DEV} "
                                  "first", self.conflicts)
@@ -277,10 +277,22 @@ def merge(root: Path, tips: tuple[str, str]) -> Merged:
     done = run(root, "merge-tree", "--write-tree", "-X", "no-renames", "--name-only",
                "--no-messages", "-z", one, other)
     if done.returncode not in (0, 1):
-        raise GitError(f"git merge-tree {_shown(one)} {_shown(other)}: {done.stderr.strip()}")
+        raise GitError(f"git merge-tree {shown(one)} {shown(other)}: {done.stderr.strip()}")
     tree, *conflicted = [name for name in done.stdout.split("\0") if name]
-    return Merged(tips, tree, tuple(sorted({name for name in conflicted
-                                            if name.startswith(f"{MARKERS}/")})))
+    return Merged(tips, tree, tuple(sorted({path for name in conflicted
+                                            if (path := _conflicted(name, tips)).startswith(
+                                                f"{MARKERS}/")})))
+
+
+def _conflicted(name: str, tips: tuple[str, str]) -> str:
+    """The path that conflicts, for a name git's merge lists: where a file meets a directory
+    at its path, git lists the file it moved aside as ``<path>~<tip>``, the tip as it was
+    given with each ``/`` read as ``_`` (measured 2026-10-23, git 2.56), so two merges whose
+    tips are spelled differently would name one conflict two ways (L1's review, its L1)."""
+    for tip in tips:
+        if name.endswith(suffix := f"~{tip.replace('/', '_')}"):
+            return name.removesuffix(suffix)
+    return name
 
 
 def merged_tree(root: Path, tips: tuple[str, str]) -> str:

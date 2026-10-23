@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 from tools.ci.scratch import commit_files, point_main, run
+from tools.quill import _git
 from tools.quill._git import marker
 from tools.quill._histories import MON, TUE, claim, judging, landed, merge, never, pull, start
 from tools.quill._histories import undone, verdict
@@ -210,6 +211,33 @@ def test_an_app_change_lands_while_dev_and_main_conflict_on_a_marker(check, code
     head = commit_files(root, onto, "an app change", {"app.py": "app\n"})
     assert check(onto, head, "feat/app", base=into)[:2] == (
         0, verdict("feat/app", 0, 0, into) + "\n")
+
+
+def test_an_app_change_lands_while_a_file_meets_a_directory_at_a_marker(check, code):
+    """L1's review, its L1: dev changes card 7's line while main makes ``plan/ships/7`` a
+    directory (a stray rule 1 refuses wherever it is written, so built here by hand).  git
+    names that conflict after each merge's own tips, so BEFORE's name and AFTER's differ; read
+    by its path, it is one conflict before and after an app change, which lands."""
+    root, base = code
+    both = commit_files(root, base, "seven", {marker(7): f"claimed {MON}\n"})
+    dev = commit_files(root, both, "dev", {marker(7): f"claimed {TUE}\n"})
+    point_main(root, commit_files(root, commit_files(root, both, "main", {marker(7): None}),
+                                  "a directory", {f"{marker(7)}/x": "x\n"}))
+    head = commit_files(root, dev, "an app change", {"app.py": "app\n"})
+    assert check(dev, head, "feat/app")[:2] == (0, verdict("feat/app", 0, 0) + "\n")
+
+
+def test_a_delete_of_a_marker_main_changed_lands_though_the_two_then_conflict(check, code):
+    """L1's review, its L3: rule 8 reads only a marker a change leaves, so a marker it writes
+    stays rules 1-7's.  Card 7 lands on dev and is released; main's hotfix deletes it and main
+    ships it again from a fresh claim.  A revert of card 7 on dev deletes dev's line, which
+    main changed: a delete (rule 2), which lands, though dev and main then conflict on it."""
+    root, base = code
+    dev, hotfix = _hotfixed(root, base, 7)
+    point_main(root, landed(root, hotfix, 7, TUE))
+    reverted = undone(root, dev, 7)
+    assert check(dev, reverted, "revert-7")[:2] == (0, verdict("revert-7", 1, 0) + "\n")
+    assert _git.merge(root, (reverted, _git.TIPS[1])).conflicts == (marker(7),)
 
 
 def test_a_conflict_a_change_brings_without_writing_it_refuses_to_judge(check, code):

@@ -244,6 +244,22 @@ def test_a_merge_names_each_marker_that_conflicts_and_only_merged_tree_refuses_i
     assert raised.value.paths == (_git.marker(7),)
 
 
+def test_a_file_meeting_a_directory_at_a_marker_is_named_by_its_path(repo):
+    """L1's review, its L1: dev changes card 7's line and main makes ``plan/ships/7`` a
+    directory.  git lists that conflict under the name of the file it moved aside,
+    ``<path>~<tip>``, the tip as given; the merge names it by its path, however each tip is
+    spelled and whichever side holds the file."""
+    base = _files(repo, _origin(repo), "seven", _marker(7))
+    dev = _files(repo, base, "dev", _marker(7, "2026-10-20T09:30:00Z"))
+    main = _files(repo, _files(repo, base, "main", {_git.marker(7): None}), "a directory",
+                  {"plan/ships/7/x": "x\n"})
+    _push(repo, dev, "dev")
+    _push(repo, main, "main")
+    _git.fetch(repo)
+    for tips in ((dev, main), (main, dev), _git.TIPS, tuple(reversed(_git.TIPS))):
+        assert _git.merge(repo, tips).conflicts == (_git.marker(7),), tips
+
+
 def test_blob_at_reads_a_file_and_nothing_else(repo):
     """The blob of the file at a path; None where nothing is, where a directory is, and
     where a submodule's commit (a gitlink) is."""
