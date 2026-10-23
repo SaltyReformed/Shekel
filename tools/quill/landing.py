@@ -464,27 +464,28 @@ def _moved(landing: Landing, number: int, was: str | None, now: str | None) -> s
     differ: each its line, or None where the merge holds none.
 
     A settled merge of one marker holds one side's state of it, or a line git merged from
-    the two: so where AFTER holds M's own (the target's, which M leaves as it was), the
-    change keeps it against what git's merge of the two takes (BEFORE); and where AFTER
+    the two: so where AFTER holds M's own (the target's, which M leaves as it was, ``kept``),
+    the change keeps it against what git's merge of the two takes (BEFORE); and where AFTER
     holds another, what the change brings of the other branch moves their merge's answer."""
-    path, held = _git.marker(number), landing.lines.get(number)
+    path, kept = _git.marker(number), landing.lines.get(number)
     target, other = _git.shown(landing.target), _git.shown(landing.other)
     meet = f"once this change and {other} meet"
     if was is None:
         reads = f"card {number} would read shipped {meet}, as it does not"
     elif now is None:
-        reads = f"card {number} would read not shipped {meet}, as it does"
+        reads = f"card {number} would read not shipped {meet}, where it reads shipped"
     else:
         reads = f"card {number} would read shipped on another line {meet} than"
     claim = f"claim card {number} again (quill claim {number}), which writes a new line"
-    if now != held and held is None:
+    if now != kept and kept is None:
         why = (f"{target} deleted it, and what this change brings of {other} makes their merge "
-               f"take {other}'s line instead, with no change to its record; delete it on "
-               f"{other} too, as their merge reads it now")
-    elif now != held:
+               f"take {other}'s line instead, which {other} holds again after a commit of its "
+               f"history held none, with no change to its record; revert on {other} what took "
+               "it back (a revert deletes the marker with its code), or leave out what this "
+               f"change brings of {other}")
+    elif now != kept:
         why = (f"what it brings of {other} moves their merge's answer, with no change to its "
-               f"record; write in this change the marker card {number} should then hold, or "
-               f"leave out what it brings of {other}")
+               f"record; leave out what it brings of {other}")
     elif was is None:
         why = ("a merge keeping a marker the other side deleted re-ships a card with no change "
                "to its record, so a release would count none of its code; take the delete "
@@ -495,7 +496,7 @@ def _moved(landing: Landing, number: int, was: str | None, now: str | None) -> s
     else:
         undid = f", which {other} held once and undid," if _undid(landing, (path, now)) else ""
         why = (f"it keeps {target}'s line{undid} where their merge takes another, with no "
-               f"change to its record; take the line their merge takes, or {claim}")
+               "change to its record; take the line their merge takes")
     return (f"{path}: {reads} once {target} and {other} do, though this change writes no line "
             f"of it: {why}")
 

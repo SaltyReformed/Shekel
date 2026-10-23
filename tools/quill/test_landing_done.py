@@ -138,7 +138,8 @@ def test_a_later_queue_entry_reads_before_at_the_merge_the_earlier_one_makes(cap
 
 def _moved(number, reads, why):
     """Rule 8's refusal of card ``number`` by a change into dev, whose answer once it and
-    main meet ``reads`` (to "than" or "as it does"), for the reason ``why``."""
+    main meet ``reads`` (to "than", "as it does not" or "where it reads shipped"), for the
+    reason ``why``."""
     return (f"REFUSED -- plan/ships/{number}: card {number} would read {reads} once origin/dev "
             f"and origin/main do, though this change writes no line of it: {why}")
 
@@ -151,7 +152,9 @@ def test_a_resync_keeping_devs_line_where_main_holds_another_is_refused(check, c
     way, but on Y where git's merge takes Z: the next release would bring back a line main
     undid, refused there by rule 3 (and so would the obvious repair, a copy of Z).  Refused
     here; and where main never held Y (its release kept its own hotfix's line), refused
-    without saying main undid it.  git's own resync then lands, and the release after it."""
+    without saying main undid it.  No claim is offered: git says card 7 shipped, which quill
+    claim refuses (R-BAL391's approval).  git's own resync then lands, and the release after
+    it."""
     root, base = code
     dev = landed(root, base, 7)
     if undid:
@@ -165,8 +168,7 @@ def test_a_resync_keeping_devs_line_where_main_holds_another_is_refused(check, c
     assert (status, out.splitlines()) == (1, [_moved(
         7, "shipped on another line once this change and origin/main meet than",
         f"it keeps origin/dev's line{held} where their merge takes another, with no change to "
-        "its record; take the line their merge takes, or claim card 7 again (quill claim 7), "
-        "which writes a new line"), verdict("resync", 0, 1)])
+        "its record; take the line their merge takes"), verdict("resync", 0, 1)])
     resync = merge(root, dev, main_tip, "resync")
     assert check(dev, resync, "resync")[:2] == (0, verdict("resync", 1, 0) + "\n")
     run(root, "update-ref", "refs/remotes/origin/dev", resync)
@@ -184,7 +186,7 @@ def test_a_resync_dropping_the_marker_of_a_hotfix_main_holds_is_refused(check, c
     dropped = commit_files(root, hotfix, "drop the marker, keep the code", {marker(8): None})
     status, out, _ = check(base, _resolved(root, dropped, base, hotfix, "resync"), "resync")
     assert (status, out.splitlines()) == (1, [_moved(
-        8, "not shipped once this change and origin/main meet, as it does",
+        8, "not shipped once this change and origin/main meet, where it reads shipped",
         "it drops card 8's marker, which origin/main holds, with no change to its record; take "
         "origin/main's file, as their merge does"), verdict("resync", 0, 1)])
     assert check(base, merge(root, base, hotfix, "resync"), "resync")[0] == 0
@@ -196,7 +198,7 @@ def test_a_branch_bringing_mains_delete_is_refused_where_main_took_the_line_back
     main then takes the very line back -- a revert of its revert, which main's own rule 3
     refuses but git can hold -- so dev and main merge with dev's delete.  A branch that
     merged main's hotfix in moves their merge onto main's line though it writes no marker:
-    refused, naming dev's delete.  Once main deletes it too, the branch lands."""
+    refused, naming dev's delete.  Once main reverts what took it back, the branch lands."""
     root, base = code
     dev = landed(root, base, 7)
     hotfix = undone(root, merge(root, base, dev, "release"), 7)
@@ -209,8 +211,10 @@ def test_a_branch_bringing_mains_delete_is_refused_where_main_took_the_line_back
     assert (status, out.splitlines()) == (1, [_moved(
         7, "shipped once this change and origin/main meet, as it does not",
         "origin/dev deleted it, and what this change brings of origin/main makes their merge "
-        "take origin/main's line instead, with no change to its record; delete it on "
-        "origin/main too, as their merge reads it now"), verdict("feat/x", 0, 1)])
+        "take origin/main's line instead, which origin/main holds again after a commit of its "
+        "history held none, with no change to its record; revert on origin/main what took it "
+        "back (a revert deletes the marker with its code), or leave out what this change "
+        "brings of origin/main"), verdict("feat/x", 0, 1)])
     point_main(root, undone(root, _git.TIPS[1], 7))
     assert check(reverted, feature, "feat/x")[:2] == (0, verdict("feat/x", 0, 0) + "\n")
 
@@ -220,7 +224,7 @@ def test_a_branch_bringing_mains_copy_of_a_line_without_its_delete_is_refused(ch
     rule 4 refuses where it lands, built here by hand), and main then deletes it: dev and
     main merge keeping dev's, since their merge base holds none.  A branch that merged
     main's copy in, and not its delete, moves their merge onto main's delete though it writes
-    no marker: refused; writing the delete in the change lands."""
+    no marker: refused; the branch without main's copy lands."""
     root, base = code
     dev = commit_files(root, base, "claim plan#7", {marker(7): f"claimed {MON}\n"})
     copy = commit_files(root, base, "a copy", {marker(7): f"claimed {MON}\n"})
@@ -228,12 +232,30 @@ def test_a_branch_bringing_mains_copy_of_a_line_without_its_delete_is_refused(ch
     feature = merge(root, dev, copy, "merge main's copy in")
     status, out, _ = check(dev, feature, "feat/x")
     assert (status, out.splitlines()) == (1, [_moved(
-        7, "not shipped once this change and origin/main meet, as it does",
+        7, "not shipped once this change and origin/main meet, where it reads shipped",
         "what it brings of origin/main moves their merge's answer, with no change to its "
-        "record; write in this change the marker card 7 should then hold, or leave out what "
-        "it brings of origin/main"), verdict("feat/x", 0, 1)])
-    deleted = commit_files(root, feature, "take the delete", {marker(7): None})
-    assert check(dev, deleted, "feat/x")[:2] == (0, verdict("feat/x", 1, 0) + "\n")
+        "record; leave out what it brings of origin/main"), verdict("feat/x", 0, 1)])
+    alone = commit_files(root, dev, "work alone", {"x.py": "x\n"})
+    assert check(dev, alone, "feat/x")[:2] == (0, verdict("feat/x", 0, 0) + "\n")
+
+
+def test_a_branch_moving_their_merge_onto_mains_line_over_devs_is_refused(check, code):
+    """L1's widening's review, its L2: the arm where AFTER takes a line other than the
+    change's own.  Card 7's line X is in both histories; dev changes it to Y, and main takes
+    a copy of Y and then X back (each a history main's own rules 3 and 4 refuse, built here
+    by hand), so dev and main merge keeping dev's Y.  A branch that merged main's copy in,
+    and not what took X back, moves their merge onto main's X though it writes no marker:
+    refused, saying their merge's answer moves."""
+    root, base = code
+    both = commit_files(root, base, "claim plan#7", {marker(7): f"claimed {MON}\n"})
+    dev = commit_files(root, both, "claim plan#7 again", {marker(7): f"claimed {TUE}\n"})
+    copy = commit_files(root, both, "a copy", {marker(7): f"claimed {TUE}\n"})
+    point_main(root, commit_files(root, copy, "X back", {marker(7): f"claimed {MON}\n"}))
+    status, out, _ = check(dev, merge(root, dev, copy, "merge main's copy in"), "feat/x")
+    assert (status, out.splitlines()) == (1, [_moved(
+        7, "shipped on another line once this change and origin/main meet than",
+        "what it brings of origin/main moves their merge's answer, with no change to its "
+        "record; leave out what it brings of origin/main"), verdict("feat/x", 0, 1)])
 
 
 # ------------------------------------------------------- a marker that conflicts BEFORE
