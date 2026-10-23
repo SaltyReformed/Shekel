@@ -227,6 +227,34 @@ def test_a_conflict_on_a_marker_refuses_to_answer_and_one_elsewhere_does_not(rep
         _git.shipped(repo)
 
 
+def test_held_blobs_names_every_blob_a_history_held_at_each_marker_and_its_undo_keeps_it(repo):
+    """CI's write rule asks which blobs a branch's history ever held at a marker: card 212
+    ships on dev (its first claim's line), a release takes it to main, dev reverts it and a
+    fresh claim re-ships it with a new line.  dev's history held both lines, main's the first
+    alone; a history that never held the marker names no entry for it."""
+    base = _origin(repo)
+    first = _files(repo, base, "claim plan#212", _marker(212))
+    reverted = _files(repo, first, "Revert plan#212", {_git.marker(212): None})
+    again = _files(repo, reverted, "claim plan#212 again", _marker(212, "2026-10-21T08:00:00Z"))
+    lines = {_run(repo, "rev-parse", f"{sha}:{_git.marker(212)}") for sha in (first, again)}
+    assert len(lines) == 2
+    assert _git.held_blobs(repo, again) == {_git.marker(212): frozenset(lines)}
+    assert _git.held_blobs(repo, first) == {
+        _git.marker(212): frozenset({_run(repo, "rev-parse", f"{first}:{_git.marker(212)}")})}
+    assert not _git.held_blobs(repo, base)
+
+
+def test_shipped_reads_the_merge_of_the_two_tips_it_is_named(repo):
+    """The landing check reads what will have shipped once a pull request's merge and the
+    other branch meet: the merge of the commit and main it names, never dev and main."""
+    base = _origin(repo)
+    _push(repo, _files(repo, base, "hotfix", _marker(9)), "main")
+    change = _files(repo, base, "claim plan#5", _marker(5))
+    _git.fetch(repo)
+    assert _git.shipped(repo).cards == {9}
+    assert _git.shipped(repo, (change, _git.tracking(_git.MAIN))).cards == {5, 9}
+
+
 def test_a_claim_is_created_once_and_read_with_its_marker(repo):
     """The claim's push is create-only: a second claim, a fast-forward a plain push would take,
     is ClaimTaken; the claim read back names its tip, when it was committed and when its
