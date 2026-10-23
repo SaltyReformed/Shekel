@@ -332,6 +332,21 @@ def test_markers_in_reads_one_trees_markers_and_names_each_other_entry(repo):
     assert _git.markers_in(repo, base) == (frozenset(), ())
 
 
+def test_lines_in_reads_each_markers_line_beside_the_entries_markers_in_names(repo):
+    """The one reading of a tree's markers, with each card's line (its blob): two claims'
+    lines differ, and every other entry under the markers' directory is named as
+    :func:`_git.markers_in` names it."""
+    base = _origin(repo)
+    one = _files(repo, base, "one", {**_marker(5), **_marker(12, "2026-10-21T08:00:00Z"),
+                                     "plan/ships/notes": "x\n", "app.py": "a\n"})
+    lines, strays = _git.lines_in(repo, one)
+    assert lines == {number: _run(repo, "rev-parse", f"{one}:{_git.marker(number)}")
+                     for number in (5, 12)}
+    assert lines[5] != lines[12]
+    assert strays == ("plan/ships/notes",) == _git.markers_in(repo, one)[1]
+    assert _git.lines_in(repo, base) == ({}, ())
+
+
 @pytest.mark.parametrize(("path", "card"), [
     ("plan/ships/7", 7), ("plan/ships/1234", 1234), ("plan/ships/07", None),
     ("plan/ships/0", None), ("plan/ships/notes", None), ("plan/ships/8/inner", None),

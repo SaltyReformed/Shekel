@@ -1,13 +1,17 @@
-"""CI's landing check, rule 8 (ruling ``balance:R-BAL385``): a marker a change leaves as it was
-may not make its card read shipped; and rule 1 read as every reader of the markers reads them.
+"""CI's landing check, rule 8 (rulings ``balance:R-BAL385`` and ``R-BAL390``): a marker a
+change leaves as it was may not change what dev and main together say of its card; and rule 1
+read as every reader of the markers reads them.
 
-Rule 8 compares the cards BEFORE (the merge of the change's first parent with the other
-integration branch) and AFTER (the merge of the change with it) say shipped.  Its first case
-is X-cx L8's resync probe (``plan-tracker-2026-10-23/m3_resync_probe.md``, measured
-2026-10-23): a resync built by hand that keeps the marker ``main``'s hotfix deleted, which
-writes nothing on ``dev``'s line and so passed every rule that reads what a change writes.
-Every history is built and judged by the builders ``test_landing.py`` shares
-(:mod:`tools.quill._histories`); no test here reads the tracker.
+Rule 8 compares what BEFORE (the merge of the change's first parent with the other
+integration branch) and AFTER (the merge of the change with it) say of each card: not
+shipped, or shipped on a line.  Its first case is X-cx L8's resync probe
+(``plan-tracker-2026-10-23/m3_resync_probe.md``, measured 2026-10-23): a resync built by hand
+that keeps the marker ``main``'s hotfix deleted, which writes nothing on ``dev``'s line and so
+passed every rule that reads what a change writes.  R-BAL390 widened it to L1's review's two
+near-misses (``plan-tracker-2026-10-23/l1_review_probes/p3.py`` and ``p4.py``): a resync built
+by hand keeping a line ``main`` undid where ``main`` shipped the card again, and one dropping
+the marker of a hotfix ``main`` holds.  Every history is built and judged by the builders
+``test_landing.py`` shares (:mod:`tools.quill._histories`); no test here reads the tracker.
 """
 from __future__ import annotations
 
@@ -127,6 +131,109 @@ def test_a_later_queue_entry_reads_before_at_the_merge_the_earlier_one_makes(cap
     assert main(["merge_group", later, f"refs/heads/gh-readonly-queue/dev/pr-602-{first}"],
                 never, pull("feat/app", app), root) == 0
     assert "0 ship marker change(s), 0 refused" in capsys.readouterr().out
+
+
+# ------------------------------------- a marker left as it was, its line changed or dropped
+
+
+def _moved(number, reads, why):
+    """Rule 8's refusal of card ``number`` by a change into dev, whose answer once it and
+    main meet ``reads`` (to "than" or "as it does"), for the reason ``why``."""
+    return (f"REFUSED -- plan/ships/{number}: card {number} would read {reads} once origin/dev "
+            f"and origin/main do, though this change writes no line of it: {why}")
+
+
+@pytest.mark.parametrize("undid", [True, False], ids=["a line main undid", "one main never held"])
+def test_a_resync_keeping_devs_line_where_main_holds_another_is_refused(check, code, undid):
+    """L1's review's ``p3.py``: card 7 lands on dev (line Y) and is released; main's hotfix
+    deletes it and main ships it again from a fresh claim (line Z).  A resync built by hand
+    keeping dev's Y writes nothing, and card 7 reads shipped once dev and main meet either
+    way, but on Y where git's merge takes Z: the next release would bring back a line main
+    undid, refused there by rule 3 (and so would the obvious repair, a copy of Z).  Refused
+    here; and where main never held Y (its release kept its own hotfix's line), refused
+    without saying main undid it.  git's own resync then lands, and the release after it."""
+    root, base = code
+    dev = landed(root, base, 7)
+    if undid:
+        main_tip = landed(root, undone(root, merge(root, base, dev, "release"), 7), 7, TUE)
+    else:
+        hotfix = landed(root, base, 7, TUE)
+        main_tip = _resolved(root, hotfix, hotfix, dev, "release, keeping main's line")
+    point_main(root, main_tip)
+    status, out, _ = check(dev, _resolved(root, dev, dev, main_tip, "resync"), "resync")
+    held = ", which origin/main held once and undid," if undid else ""
+    assert (status, out.splitlines()) == (1, [_moved(
+        7, "shipped on another line once this change and origin/main meet than",
+        f"it keeps origin/dev's line{held} where their merge takes another, with no change to "
+        "its record; take the line their merge takes, or claim card 7 again (quill claim 7), "
+        "which writes a new line"), verdict("resync", 0, 1)])
+    resync = merge(root, dev, main_tip, "resync")
+    assert check(dev, resync, "resync")[:2] == (0, verdict("resync", 1, 0) + "\n")
+    run(root, "update-ref", "refs/remotes/origin/dev", resync)
+    assert check(main_tip, resync, "dev", base="main")[:2] == (0, verdict("dev", 0, 0, "main")
+                                                               + "\n")
+
+
+def test_a_resync_dropping_the_marker_of_a_hotfix_main_holds_is_refused(check, code):
+    """L1's review's ``p4.py``: hotfix 8 lands on main.  A resync built by hand takes its
+    code but drops its marker: it writes nothing on dev's line, yet card 8 would read not
+    shipped while its code runs, and the next release would delete the marker from main.
+    Refused; git's own resync takes main's file and lands."""
+    root, base = code
+    point_main(root, hotfix := landed(root, base, 8))
+    dropped = commit_files(root, hotfix, "drop the marker, keep the code", {marker(8): None})
+    status, out, _ = check(base, _resolved(root, dropped, base, hotfix, "resync"), "resync")
+    assert (status, out.splitlines()) == (1, [_moved(
+        8, "not shipped once this change and origin/main meet, as it does",
+        "it drops card 8's marker, which origin/main holds, with no change to its record; take "
+        "origin/main's file, as their merge does"), verdict("resync", 0, 1)])
+    assert check(base, merge(root, base, hotfix, "resync"), "resync")[0] == 0
+
+
+def test_a_branch_bringing_mains_delete_is_refused_where_main_took_the_line_back(check, code):
+    """L1's review, its L2: the sentence for a card made shipped names who deleted the marker.
+    Card 7 lands on dev and is released; main's hotfix deletes it and dev reverts it too.
+    main then takes the very line back -- a revert of its revert, which main's own rule 3
+    refuses but git can hold -- so dev and main merge with dev's delete.  A branch that
+    merged main's hotfix in moves their merge onto main's line though it writes no marker:
+    refused, naming dev's delete.  Once main deletes it too, the branch lands."""
+    root, base = code
+    dev = landed(root, base, 7)
+    hotfix = undone(root, merge(root, base, dev, "release"), 7)
+    point_main(root, commit_files(root, hotfix, 'Revert "Revert plan#7"',
+                                  {marker(7): f"claimed {MON}\n", "w7.txt": "work\n"}))
+    reverted = undone(root, dev, 7)
+    feature = commit_files(root, merge(root, reverted, hotfix, "merge main in"), "work",
+                           {"x.py": "x\n"})
+    status, out, _ = check(reverted, feature, "feat/x")
+    assert (status, out.splitlines()) == (1, [_moved(
+        7, "shipped once this change and origin/main meet, as it does not",
+        "origin/dev deleted it, and what this change brings of origin/main makes their merge "
+        "take origin/main's line instead, with no change to its record; delete it on "
+        "origin/main too, as their merge reads it now"), verdict("feat/x", 0, 1)])
+    point_main(root, undone(root, _git.TIPS[1], 7))
+    assert check(reverted, feature, "feat/x")[:2] == (0, verdict("feat/x", 0, 0) + "\n")
+
+
+def test_a_branch_bringing_mains_copy_of_a_line_without_its_delete_is_refused(check, code):
+    """Card 7's line reaches dev and main through two commits of their own (a copy, which
+    rule 4 refuses where it lands, built here by hand), and main then deletes it: dev and
+    main merge keeping dev's, since their merge base holds none.  A branch that merged
+    main's copy in, and not its delete, moves their merge onto main's delete though it writes
+    no marker: refused; writing the delete in the change lands."""
+    root, base = code
+    dev = commit_files(root, base, "claim plan#7", {marker(7): f"claimed {MON}\n"})
+    copy = commit_files(root, base, "a copy", {marker(7): f"claimed {MON}\n"})
+    point_main(root, commit_files(root, copy, "Revert plan#7", {marker(7): None}))
+    feature = merge(root, dev, copy, "merge main's copy in")
+    status, out, _ = check(dev, feature, "feat/x")
+    assert (status, out.splitlines()) == (1, [_moved(
+        7, "not shipped once this change and origin/main meet, as it does",
+        "what it brings of origin/main moves their merge's answer, with no change to its "
+        "record; write in this change the marker card 7 should then hold, or leave out what "
+        "it brings of origin/main"), verdict("feat/x", 0, 1)])
+    deleted = commit_files(root, feature, "take the delete", {marker(7): None})
+    assert check(dev, deleted, "feat/x")[:2] == (0, verdict("feat/x", 1, 0) + "\n")
 
 
 # ------------------------------------------------------- a marker that conflicts BEFORE

@@ -308,27 +308,41 @@ def merged_tree(root: Path, tips: tuple[str, str]) -> str:
     return merge(root, tips).settled()
 
 
-def markers_in(root: Path, tree: str) -> tuple[frozenset[int], tuple[str, ...]]:
-    """The cards whose markers the tree ``tree`` holds (a commit names its own tree): every
-    file under :data:`MARKERS` whose name is a card number; and the path of each other entry
-    there -- a name that is no number, a file in a directory below it, or :data:`MARKERS`
-    itself a file.  The ONE reading of a tree's markers: :func:`shipped` reads the merge of
-    ``dev`` and ``main`` with it, and the release tool what production holds before and after
-    a release (``tools/release/_cards.py``), and which entries a release changes are
-    markers.
+def lines_in(root: Path, tree: str) -> tuple[dict[int, str], tuple[str, ...]]:
+    """Each card whose marker the tree ``tree`` holds (a commit names its own tree), with
+    that marker's line (its blob): every file under :data:`MARKERS` whose name is a card
+    number; and the path of each other entry there -- a name that is no number, a file in a
+    directory below it, or :data:`MARKERS` itself a file.  The ONE reading of a tree's
+    markers: :func:`markers_in` names its cards, and CI's landing check compares the lines
+    two merges hold (``tools/quill/landing.py``, rule 8).
 
     Raises:
         GitError: When git cannot read ``tree``.
     """
-    cards, strays = set(), []
+    lines, strays = {}, []
     out = git(root, "ls-tree", "-r", "-z", tree, "--", MARKERS)
     for entry in filter(None, out.split("\0")):
-        kind, path = entry.split(" ")[1], entry.partition("\t")[2]
+        meta, _, path = entry.partition("\t")
+        _, kind, blob = meta.split(" ")
         if kind == "blob" and (number := card_of(path)) is not None:
-            cards.add(number)
+            lines[number] = blob
         else:
             strays.append(path)
-    return frozenset(cards), tuple(strays)
+    return lines, tuple(strays)
+
+
+def markers_in(root: Path, tree: str) -> tuple[frozenset[int], tuple[str, ...]]:
+    """The cards whose markers the tree ``tree`` holds, and the path of each other entry
+    under :data:`MARKERS` there (:func:`lines_in`, its lines aside): :func:`shipped` reads the
+    merge of ``dev`` and ``main`` with it, and the release tool what production holds before
+    and after a release (``tools/release/_cards.py``), and which entries a release changes
+    are markers.
+
+    Raises:
+        GitError: When git cannot read ``tree``.
+    """
+    lines, strays = lines_in(root, tree)
+    return frozenset(lines), strays
 
 
 def shipped(root: Path, tips: tuple[str, str] = TIPS) -> Shipped:
