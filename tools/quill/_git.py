@@ -97,7 +97,7 @@ class Entry:
 
 @dataclass(frozen=True)
 class MarkerChange:
-    """One change a commit made to an entry under :data:`MARKERS` (:func:`_marker_changes`):
+    """One change a commit made to an entry under :data:`MARKERS` (:func:`marker_changes`):
     the commit's ``sha`` and ``subject``, and the ``entry`` it changed."""
 
     sha: str
@@ -130,6 +130,16 @@ class Reads:
 class ClaimTaken(GitError):
     """``origin`` already holds the branch a claim would create: another session claimed it,
     or wrote this very commit first (:func:`claim`)."""
+
+
+class MarkerConflict(GitError):
+    """Two commits merge with a conflict on a ship marker (:func:`merged_tree`), so whether
+    those cards shipped is unknown: ``paths`` names each marker that conflicts."""
+
+    def __init__(self, message: str, paths: tuple[str, ...]) -> None:
+        """The error, saying ``message``, over the conflicting markers ``paths``."""
+        super().__init__(message)
+        self.paths = paths
 
 
 def card_branch(number: int) -> str:
@@ -219,17 +229,23 @@ def _shown(ref: str) -> str:
     return ref[:12] if FULL_ID.fullmatch(ref) else ref.removeprefix("refs/remotes/")
 
 
-def _merged_tree(root: Path, tips: tuple[str, str]) -> str:
-    """The tree of the merge of the two ``tips``, as git's three-way merge writes it.  A
+def merged_tree(root: Path, tips: tuple[str, str]) -> str:
+    """The tree of the merge of the two ``tips``, as git's three-way merge writes it: what
+    :func:`shipped` reads, and what a release of a cut into ``main`` leaves production
+    running (``tools/release/_cards.py``).  A
     conflict outside :data:`MARKERS` is no record's, and the tree still holds every marker; a
     conflict on a marker leaves that card's record unknown, so it is refused.  The merge
     detects no rename (``-X no-renames``, which no setting can turn back on): two markers
     hold the same line when claimed in the same second, so a marker deleted beside another
     added reads as a rename, and the other side's change to the deleted one would land
-    silently in the added one, never the conflict it is (M1's review L1, measured).
+    silently in the added one, never the conflict it is (M1's review L1, measured).  So in
+    that one case alone it differs from the merge GitHub's queue writes, which detects
+    renames: it reads as the conflict it is what that merge would land in the wrong marker
+    (M3's review, its 8).
 
     Raises:
-        GitError: When a path under :data:`MARKERS` conflicts, or the merge fails.
+        MarkerConflict: When a path under :data:`MARKERS` conflicts.
+        GitError: When the merge fails.
     """
     one, other = tips
     done = run(root, "merge-tree", "--write-tree", "-X", "no-renames", "--name-only",
@@ -238,33 +254,50 @@ def _merged_tree(root: Path, tips: tuple[str, str]) -> str:
         raise GitError(f"git merge-tree {_shown(one)} {_shown(other)}: {done.stderr.strip()}")
     tree, *conflicted = [name for name in done.stdout.split("\0") if name]
     if records := sorted({name for name in conflicted if name.startswith(f"{MARKERS}/")}):
-        raise GitError(f"{_shown(one)} and {_shown(other)} merge with a conflict on "
-                       f"{', '.join(records)}, so whether those cards shipped is unknown: "
-                       f"settle it in the merge of {MAIN} into {DEV} first")
+        raise MarkerConflict(f"{_shown(one)} and {_shown(other)} merge with a conflict on "
+                             f"{', '.join(records)}, so whether those cards shipped is "
+                             f"unknown: settle it in the merge of {MAIN} into {DEV} first",
+                             tuple(records))
     return tree
 
 
-def shipped(root: Path, tips: tuple[str, str] = TIPS) -> Shipped:
-    """What git says shipped: every file :data:`MARKERS` holds in the merge of the two
-    ``tips`` (:func:`_merged_tree`; ``dev`` and ``main`` unless named) whose name is a card
-    number ships that card; any other entry there -- a name that is no number, a file in a
-    directory below it, or :data:`MARKERS` itself a file -- is a HISTORY line, acted on
-    nowhere.  CI's landing check names a pull request's merge and the other branch, to read
-    what will have shipped once that change and the other branch meet.
+def markers_in(root: Path, tree: str) -> tuple[frozenset[int], tuple[str, ...]]:
+    """The cards whose markers the tree ``tree`` holds (a commit names its own tree): every
+    file under :data:`MARKERS` whose name is a card number; and the path of each other entry
+    there -- a name that is no number, a file in a directory below it, or :data:`MARKERS`
+    itself a file.  The ONE reading of a tree's markers: :func:`shipped` reads the merge of
+    ``dev`` and ``main`` with it, and the release tool what production holds before and after
+    a release (``tools/release/_cards.py``), and which entries a release changes are
+    markers.
 
     Raises:
-        GitError: When a marker conflicts in that merge (:func:`_merged_tree`).
+        GitError: When git cannot read ``tree``.
     """
     cards, strays = set(), []
-    out = git(root, "ls-tree", "-r", "-z", _merged_tree(root, tips), "--", MARKERS)
+    out = git(root, "ls-tree", "-r", "-z", tree, "--", MARKERS)
     for entry in filter(None, out.split("\0")):
         kind, path = entry.split(" ")[1], entry.partition("\t")[2]
         if kind == "blob" and (number := card_of(path)) is not None:
             cards.add(number)
         else:
-            strays.append(f"{path} on {DEV} or {MAIN} is no card's marker (a marker is a file "
-                           f"{MARKERS}/<card number>): it is not acted on")
-    return Shipped(frozenset(cards), tuple(strays))
+            strays.append(path)
+    return frozenset(cards), tuple(strays)
+
+
+def shipped(root: Path, tips: tuple[str, str] = TIPS) -> Shipped:
+    """What git says shipped: every card whose marker the merge of the two ``tips``
+    (:func:`merged_tree`; ``dev`` and ``main`` unless named) holds (:func:`markers_in`); any other
+    entry under :data:`MARKERS` there is a HISTORY line, acted on nowhere.  CI's landing check
+    names a pull request's merge and the other branch, to read what will have shipped once
+    that change and the other branch meet.
+
+    Raises:
+        MarkerConflict: When a marker conflicts in that merge (:func:`merged_tree`).
+    """
+    cards, strays = markers_in(root, merged_tree(root, tips))
+    return Shipped(cards, tuple(f"{path} on {DEV} or {MAIN} is no card's marker (a marker is "
+                                f"a file {MARKERS}/<card number>): it is not acted on"
+                                for path in strays))
 
 
 def _claimed_at(root: Path, sha: str, number: int) -> str | None:
@@ -316,27 +349,31 @@ def _entry(meta: str, path: str) -> Entry:
     return Entry(status[0], path, None if set(after) == {"0"} else after)
 
 
-def changes(root: Path, old: str, new: str) -> tuple[Entry, ...]:
-    """Every entry, at any path, the change from commit ``old`` to commit ``new`` adds,
-    changes or deletes, read as :func:`_marker_changes` reads one: no rename detection (a
-    moved file is deleted and added, never ``R``), each blob in full.
+def changes(root: Path, old: str, new: str, *paths: str) -> tuple[Entry, ...]:
+    """Every entry the change from ``old`` to ``new`` (each a commit or a tree) adds, changes
+    or deletes, at any path, or under ``paths`` when any are named, read as
+    :func:`marker_changes` reads one: no rename detection (a moved file is deleted and added,
+    never ``R``), each blob in full.
 
     Raises:
-        GitError: When git cannot read either commit.
+        GitError: When git cannot read either.
     """
-    out = git(root, "diff", "--raw", "--no-abbrev", "-z", "--no-renames", old, new)
+    out = git(root, "diff", "--raw", "--no-abbrev", "-z", "--no-renames", old, new, "--",
+              *paths)
     fields = out.split("\0")
     return tuple(_entry(meta, path)
                  for meta, path in zip(fields[0:-1:2], fields[1::2], strict=True))
 
 
-def _marker_changes(root: Path, refs: tuple[str, ...] = TIPS, *,
-                    first_parent: bool = False) -> list[MarkerChange]:
+def marker_changes(root: Path, refs: tuple[str, ...] = TIPS, *,
+                   first_parent: bool = False) -> list[MarkerChange]:
     """Every change a commit of ``refs``' history (``dev``'s and ``main``'s unless named) made
     to an entry under :data:`MARKERS`, newest first (:class:`MarkerChange`); with
     ``first_parent``, of each ref's OWN line alone, its first-parent history, the states the
     branch itself was in.  The ONE walk of the markers' history: :func:`history`,
-    :func:`ever_marked` and :func:`landings` all read it.
+    :func:`ever_marked` and :func:`landings` all read it, and the release tool reads it over
+    a release's range (``<base>..<cut>``) for the commits there that changed each marker
+    (``tools/release/_cards.py``).
 
     **It lists a commit for every marker any commit of that history ever held, and for every
     blob one held.**  Such a marker (or blob) arrived through a commit holding it whose
@@ -374,18 +411,18 @@ def _marker_changes(root: Path, refs: tuple[str, ...] = TIPS, *,
 def history(root: Path, number: int) -> list[tuple[str, str, str]]:
     """Each commit on ``dev`` or ``main`` that added (``A``), changed (``M``), deleted
     (``D``) or changed the type of (``T``) card ``number``'s marker, newest first: ``(status,
-    sha, subject)``, a merge that brought it in among them (:func:`_marker_changes`)."""
+    sha, subject)``, a merge that brought it in among them (:func:`marker_changes`)."""
     return [(change.entry.status, change.sha, change.subject)
-            for change in _marker_changes(root) if change.entry.path == marker(number)]
+            for change in marker_changes(root) if change.entry.path == marker(number)]
 
 
 def ever_marked(root: Path) -> frozenset[int]:
     """Every card whose marker a commit on ``dev`` or ``main`` ever held
-    (:func:`_marker_changes`): each card git ever said shipped, since "shipped" is a marker
+    (:func:`marker_changes`): each card git ever said shipped, since "shipped" is a marker
     in the merge of the two, which holds no marker neither side does (no rename is
     detected).  So it holds every card the tool closed as shipped that a revert has since
     unshipped, which ``sync`` reopens, and every card :func:`shipped` names NOW."""
-    cards = {card_of(change.entry.path) for change in _marker_changes(root)}
+    cards = {card_of(change.entry.path) for change in marker_changes(root)}
     return frozenset(number for number in cards if number is not None)
 
 
@@ -394,7 +431,7 @@ def landings(root: Path, ref: str) -> dict[tuple[str, str], tuple[Took, ...]]:
     ``(path, blob)``, with every commit of its OWN line (its first-parent history, the states
     the branch itself was in) through which it took that blob in, newest first, each beside
     the next commit of the line that changed that entry again (:class:`Took`), all read from
-    the one walk (:func:`_marker_changes`).  A commit beside the line is none of the branch's
+    the one walk (:func:`marker_changes`).  A commit beside the line is none of the branch's
     states: a claim commit holds its marker, but ``dev`` took it in only through the merge
     that landed the card, code and marker together.  CI's write rule asks it of both
     integration branches (``tools/quill/landing.py``): a marker passes as carried from the
@@ -403,7 +440,7 @@ def landings(root: Path, ref: str) -> dict[tuple[str, str], tuple[Took, ...]]:
     and undid it."""
     found: dict[tuple[str, str], list[Took]] = {}
     newer: dict[str, str] = {}
-    for change in _marker_changes(root, (ref,), first_parent=True):
+    for change in marker_changes(root, (ref,), first_parent=True):
         path, blob = change.entry.path, change.entry.blob
         if blob is not None:
             found.setdefault((path, blob), []).append(Took(change.sha, newer.get(path)))

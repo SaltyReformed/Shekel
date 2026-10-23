@@ -84,10 +84,10 @@ the one reader and the one ``shipped`` rule the tracker tool also asks:
    refuses a later pull request for a stray that reached ``dev`` or
    ``main`` without it (none had: neither held a ``plan#`` trailer on
    2026-10-18), or past a check no merge requires, and undoing one owes
-   nothing (rule 2).  The release tool still counts such a stray: a money
-   one that reached ``dev`` beside another money change blocks every
-   release, which only a check every merge into ``dev`` requires can
-   prevent.  ``dev`` and ``main`` are read only when the change set carries
+   nothing (rule 2).  The release tool's reader before the cutover refuses
+   such a stray (``tools/release/_carried.py``), and its card reader after
+   it reads none as a record, since step X-cx's M3 reads the ship markers
+   (ruling ``R-BAL359``).  ``dev`` and ``main`` are read only when the change set carries
    a ``Reopens:``, and a checkout that cannot read either refuses to judge.
    The old ``<arc>:<id>`` form is not read here: it ends at the cutover
    (``R-BAL287``), and no ``Reopens:`` in it exists (none on any ref,
