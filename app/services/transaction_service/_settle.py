@@ -175,8 +175,8 @@ def leg_retained_amounts_by_key(legs) -> "dict[tuple[int, int], Decimal | None]"
     (leaf ``X-bi-6-1``, ruling **R-BAL87**), keyed by
     :attr:`~app.services.transfer_legs.TransferLeg.cell_key`.  The same rule
     through the same seam: ``None`` for a leg whose parent is settled (its
-    recorded figure is on screen already) and for one holding no stated
-    record; else what its transfer's retained figure still states
+    recorded figure is on screen already) and for one whose transfer stores
+    no stated figure; else what its transfer's retained figure still states
     (:func:`~app.services.status_seam.honoured_figure` over
     :func:`~app.services.status_seam.recorded_leg_settlement`, the transfer's
     one figure since plan step ``balance:X-bi-6-4d-2``) -- the figure a

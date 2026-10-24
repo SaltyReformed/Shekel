@@ -53,10 +53,11 @@ if TYPE_CHECKING:
 class Settlement:
     """WHAT a settle records: the figure that moved, who wrote it, and the tender.
 
-    The value a settle door hands :func:`apply_status_change` so the whole
-    record -- the day, the figure and its source -- is written in ONE act (plan
-    step **X-au-c3**).  Handing the seam one value is what keeps the figure and
-    its provenance from being written apart -- ``Settlement.__post_init__``
+    The value a settle door hands the seam (:func:`apply_status_change` for a
+    row, the Transfer arm's ``_side.sync_side_records`` for a transfer) so the
+    whole record -- the day, the figure and its source -- is written in ONE act
+    (plan step **X-au-c3**).  Handing the seam one value is what keeps the
+    figure and its provenance from being written apart -- ``Settlement.__post_init__``
     refuses a malformed pair, so a door cannot build one to hand over.
 
     **The constructor is where the record's invariants are enforced**, and
@@ -69,17 +70,21 @@ class Settlement:
     entries state it, an envelope's purchases or a close of nothing.  And
     **the figure is never negative** -- a settle verb takes a MAGNITUDE
     (:class:`~app.services.stated_figure.StatedFigure`), every form field
-    that feeds one validates it non-negative, and this is the one home of
-    that rule since plan step ``balance:X-bi-4b-2`` deleted
+    that feeds one validates it non-negative, and for a row this is the one
+    home of that rule since plan step ``balance:X-bi-4b-2`` deleted
     ``ck_transactions_settled_amount`` with its column: the movement's own
     CHECK is ``amount <> 0``, because a merchant credit is a negative
     PURCHASE (ruling ``bank_import:R-II``), so the storage tier cannot say
-    it for a covering movement.
+    it for a covering movement.  A transfer's stored figure says it again
+    (:class:`~app.models.settled_figure.SettledFigure`,
+    ``ck_transfers_settled_figure_non_negative``).
 
     **The SOURCE is the stated field** (plan step **X-bi-3e-1**, ruling
-    **R-BAL69**): ``figure_source_id`` on the covering movement records who
-    wrote the figure -- the settle's own pricing (``resolved``), a person
-    (``typed``) or the bank's line (``observed``) -- and :attr:`stated` is
+    **R-BAL69**): ``figure_source_id`` on the covering movement (a
+    transfer's own ``settled_figure_source_id`` since plan step
+    ``balance:X-bi-6-4d-2``) records who wrote the figure -- the settle's
+    own pricing (``resolved``), a person (``typed``) or the bank's line
+    (``observed``) -- and :attr:`stated` is
     the one reading derived from it.  The row's ``settled_basis_id``
     (``derived`` / ``corrected`` / ``purchases``) was a function of the same
     field, answered by a ``basis`` property here for the seam's column write
@@ -94,11 +99,12 @@ class Settlement:
     tender and the seam books on its one default
     (:func:`tender_account_id_of`: the kept record's account, else the
     row's), so a re-settle after a revert keeps where the money moved exactly
-    as it keeps a stated figure (R-CC42).  A record READ off a movement
-    (:func:`_movement_settlement`) leaves it ``None`` for the same reason a
-    read carries no instruction: ``transfer_service`` hands a drifted
-    shadow's SIBLING's record to the seam, and a sibling's account would
-    book the shadow's movement on the wrong side of the pair.
+    as it keeps a stated figure (R-CC42).  A record READ back
+    (:func:`_movement_settlement`, :func:`recorded_leg_settlement`) leaves
+    it ``None``, because a read carries no instruction: :meth:`from_settle`
+    gives a re-settle the door's own *tender* whatever the retained record
+    held.  No transfer door names a tender: each side's record books on its
+    side's endpoint (:mod:`._side`).
 
     Attributes:
         amount: What moved.  ``None`` exactly when the row's own entries
@@ -293,11 +299,12 @@ def recorded_settlement(row: Transaction) -> Optional[Settlement]:
     """Return the settlement *row* already records, or ``None`` if it has none.
 
     The read half of the record, for the callers that must carry a row's
-    record forward without inventing either term: both settle verbs honouring
-    a RETAINED correction across a revert (:meth:`Settlement.from_settle`), and
-    ``transfer_service._status.apply_status_to_all_three`` resolving a drifted
-    shadow's record from its SIBLING's -- Transfer Invariant 3 read rather than
-    maintained, the exact rule the pair's settle DAY already follows.
+    record forward without inventing either term: the transaction settle
+    verb honouring a RETAINED correction across a revert
+    (:meth:`Settlement.from_settle`; :func:`honoured_correction` is the same
+    read's projection), and ``transaction_service._door``'s tender-only
+    correction, which re-points the row's record whole.  A transfer's record
+    is :func:`recorded_leg_settlement`'s.
 
     **The record is read off the COVERING MOVEMENT** (plan step
     ``balance:X-bi-4b-1``, ruling **R-BAL80**): the row stores no writer --
@@ -314,9 +321,7 @@ def recorded_settlement(row: Transaction) -> Optional[Settlement]:
     * a covering movement -- its figure and its source, dated or kept;
     * none, and the row is SETTLED -- ``Settlement(None, None)``: the row's
       entries ARE its record (an envelope's purchases; a close of nothing,
-      ruling **R-BAL82**).  This is what lets ``restore_transfer`` repair a
-      drifted shadow of a pair settled at ``$0.00`` from its sibling: the
-      seam takes the record and mirrors nothing, which is that pair's state;
+      ruling **R-BAL82**);
     * none, and the row is not settled -- ``None``: it records nothing a
       re-settle could honour.  A ``$0.00`` stated figure lands here after a
       revert, and is honoured by nothing (R-BAL82): a movement of nothing
@@ -366,8 +371,10 @@ def recorded_leg_settlement(leg: "TransferLeg") -> Optional[Settlement]:
       and its figure with them).
 
     Asked by ``transfer_service._settle.settle`` for the pair's retained
-    record and by ``transfer_service._settle.leg_settle_amount`` for the
-    offered leg's.
+    record, by ``transfer_service._settle.leg_settle_amount`` for the
+    offered leg's and by
+    ``transaction_service._settle.leg_retained_amounts_by_key`` for a grid
+    leg's.
 
     Args:
         leg: A :class:`~app.services.transfer_legs.TransferLeg`.
@@ -586,12 +593,14 @@ def correction_record(
     2026-08-17): the estimate and the actual are two different facts about a
     row, so they get two boxes, and editing the actual states what the bank
     really took.  ``transaction_service._door`` asks it with a plain row's
-    record and ``transfer_service._update`` with a transfer's expense leg's; a
-    second spelling of the echo comparison is how the two tables would come to
-    disagree about what counts as a correction.  It takes the RECORDED FIGURE
-    rather than the row since leaf ``balance:X-bi-6-4d-1``, so each table
-    reads its own record its own way -- a row off its entries, a leg off the
-    covering movement ``transfer_legs`` reaches -- and the rule stays one.
+    record and ``transfer_service._update`` with the figure a transfer
+    stores, read through its expense leg; a second spelling of the echo
+    comparison is how the two tables would come to disagree about what counts
+    as a correction.  It takes the RECORDED FIGURE rather than the row since
+    leaf ``balance:X-bi-6-4d-1``, so each table reads its own record its own
+    way -- a row off its entries, a transfer off its own stored figure
+    (:func:`~app.services.row_valuation.leg_settled_figure`) -- and the rule
+    stays one.
 
     **An ECHO writes nothing.**  Both popovers PREFILL the box with what the row
     already records, so an untouched Save posts the same figure back; recording

@@ -210,10 +210,10 @@ class TestATransferIsCoveredOnBothLegs:
     direction.  Each leg is read as its TRANSFER and its side's record, which
     hangs off the transfer since plan step balance:X-bi-6-4d-2 (off the side's
     shadow until then; ruling R-BAL167 classes 1 and 4, :func:`_legs_of`).
-    The posted ledger keeps booking the pair as ONE transfer entry and a
-    shadow's movement posts NOWHERE through the interval (ruling
-    **R-BAL45**: the ruled endpoint, one entry per movement against a
-    transfers-in-transit account, is ``X-bi-6``'s); the walk reads each
+    The posted ledger books each side's movement as an entry of its own
+    against the owner's transfers-in-transit account, and nothing for the
+    transfer whole (ruling **R-BAL45**, built at plan step
+    ``balance:X-bi-6-3``); the walk reads each
     leg's movement and nothing of the leg (ruling **R-BAL80**), and each leg
     is worth its movement (ruling **R-BAL81**), so the fold reads nothing for
     a leg without one -- the control below.  Worked on ``$500.00`` Checking
@@ -576,8 +576,10 @@ class TestALoanPaymentReStatedAtZeroMovesTheLoansPositionAndNotItsPostedLedger:
     that was the interval ruling R-BAL40 accepted, and the pin is inverted
     with it: re-stating the payment as a close of nothing (a write no door
     makes) now reads it as nothing moved, and moves the loan's position with
-    it.  The posted ledger's loan entry is still R-BAL45's, untouched by
-    either.  Since plan step ``balance:X-bi-6-4d-2``'s 4d-4 half the figure
+    it.  The posted ledger does not move: the re-statement reaches no posting
+    door, and the loan side's entry against transit (one of ruling R-BAL45's
+    two) keeps its postings.
+    Since plan step ``balance:X-bi-6-4d-2``'s 4d-4 half the figure
     the record states lives on the TRANSFER (rulings **R-BAL365**,
     **R-BAL366**), so the re-statement writes it there: ``0.00``, with both
     sides' records off, the one storable shape of a close of nothing.  Until
@@ -644,8 +646,8 @@ class TestALoanPaymentReStatedAtZeroMovesTheLoansPositionAndNotItsPostedLedger:
             assert xfer.status.is_settled
             # The record is the transfer's figure: at 0.00 the leg records
             # $0.00 (R-BAL82's close of nothing), the loan's position moves,
-            # and the posted ledger -- R-BAL45's one transfer entry -- is
-            # untouched.
+            # and the posted ledger does not move: the loan side's entry
+            # against transit, one of R-BAL45's two, keeps its postings.
             income = _leg_again(income)
             assert row_valuation.leg_settled_contribution(income) == Decimal("0")
             without_movement = _read()

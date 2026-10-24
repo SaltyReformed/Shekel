@@ -709,9 +709,10 @@ def test_the_revision_below_takes_what_this_downgrade_writes(
     twin to say its transfer's status and its side's record's day, basis and
     link (cp1 review M-2).  Six shapes made after the upgrade: an endpoint
     move with records, a soft delete of a Paid transfer, a revert, a hard
-    delete, a ``$0.00`` close and a transfer born settled; every record is
-    re-attached to its twin on the way down.  Deliberately NOT inside a nested
-    application context: the fixture's idle session would hold a lock that
+    delete, a ``$0.00`` close and a transfer created and then marked Paid;
+    every record is re-attached to its twin on the way down.  Deliberately
+    NOT inside a nested application context: the fixture's idle session
+    would hold a lock that
     ``e616adf7fe22``'s ``ALTER TABLE budget.transfers`` waits on.
     """
     del app
@@ -792,7 +793,7 @@ def test_the_revision_below_takes_what_this_downgrade_writes(
 
 #: Each status act the app makes at ``e616adf7fe22``, which writes the transfer
 #: and its sides' records and never a twin: ``(act, whether the transfer is
-#: born settled, the status the act states)``.
+#: settled before the act, the status the act states)``.
 _STATUS_ACTS = (
     ("settle", False, "Paid"),
     ("revert", True, "Projected"),

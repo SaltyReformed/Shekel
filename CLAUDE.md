@@ -228,17 +228,12 @@ Security response rule: 404 for both "not found" and "not yours." Structured log
 `app/ref_cache/`. NEVER compare against string `name` columns in Python or Jinja (gate:
 `shekel-refname-compare` for Python; the template hook for Jinja).
 
-**Transfers are one row each.** The database refuses a transaction that names a transfer, and a
-payment record on the wrong account, out of step with its transfer's status, or under a deleted
-transfer (each constraint's comment says why: `app/models/_transaction_table_args.py`,
-`app/models/transaction_entry.py`, `app/side_band_infrastructure.py`,
-`app/deleted_row_infrastructure.py`). Two rules are not structural yet, and `balance:X-eu` (the
-first) and `balance:X-bi-6-4d-4` (the second) delete both:
-**every write of a transfer goes through `transfer_service`** (a write anywhere else skips its
-refusals and the copies it keeps in step, the posted ledger's among them), and
-**a settled transfer's amount is its sides' records, never read off budget.transfers** (it is stored
-on each side today; `balance:X-bi-6-4d-4` gives it one home). Older comments cite these two as
-transfer invariants 4 and 5.
+**Transfers are one row each, and the database holds their rules**, each constraint's comment saying
+why (`app/models/transfer.py`, `app/models/transaction_entry.py`,
+`app/side_band_infrastructure.py`): a settled transfer's amount is stored once, on the transfer. One
+rule is not structural yet, and `balance:X-eu` deletes it:
+**every write of a transfer goes through `transfer_service`**. Older comments cite these as transfer
+invariants 4 and 5.
 
 ## Definition of Done
 

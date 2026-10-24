@@ -224,8 +224,9 @@ def resolve_pair_days(
     lender may pull a payment before the borrower's account shows it).
 
     Args:
-        current: Each side's day as it stands, ``None`` for a side out of the
-            settled band (a drifted side is repaired, not believed).
+        current: Each side's day as it stands, ``None`` for a side holding no
+            dated record (and for a side an endpoint move is carrying, whose
+            evidence ``_endpoints._moved_days`` drops).
         stated: What the act states, already admitted by its verb.
         fallback: The day to share when neither side has evidence
             (:func:`repair_fallback`).

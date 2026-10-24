@@ -164,14 +164,15 @@ class TestSyncSettlePostsBalancedEntry:
     def test_settle_uses_effective_amount_not_transfer_amount(
         self, app, db, seed_user, savings,
     ):
-        """A settled side's RECORD overrides the transfer amount.
+        """A settled transfer's FIGURE overrides the transfer amount.
 
-        The transfer's nominal amount is $100, but the settled record is
-        $97.50 (each side's covering movement carries it), so each side's
+        The transfer's nominal amount is $100, but its settled figure is
+        $97.50 (stored once on the transfer; neither side's record holds
+        one), so each side's
         leg is $97.50 -- the value the balance calculator and the oracle use.
         The postings must be -97.50 / +97.50 on the real accounts, NOT -100 /
         +100 (the plan Section 5 prose said ``xfer.amount``; the correct,
-        oracle-reconciling value is the record, matching the Commit-3
+        oracle-reconciling value is the settled figure, matching the Commit-3
         backfill).  Re-expressed for the pair at plan step
         ``balance:X-bi-6-3``.
         """
@@ -186,7 +187,7 @@ class TestSyncSettlePostsBalancedEntry:
             savings_ledger = _ledger_id(savings)
             transit_ledger = _transit_ledger_id(seed_user)
 
-            # Commit-5 wiring: the divergent settled record auto-posted as two
+            # Commit-5 wiring: the divergent settled figure auto-posted as two
             # per-movement entries (plan step ``balance:X-bi-6-3``); read them
             # back by side (a re-sync would no-op).
             by_side = _side_entries(transfer.id)

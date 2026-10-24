@@ -55,10 +55,14 @@ one more thing the fold's never does: its RECORD, the covering movement the
 status seam wrote when the transfer settled (:attr:`~TransferLeg.record`).
 **R-BAL87's text says "its dated covering movement"; the record here is
 that movement dated OR kept un-dated across a revert** (ruling **R-BAL61**),
-one word wider than the ruling's, because the grid draws a reverted leg's
-"marking paid records $X" caption off the kept movement exactly as it draws
-a reverted row's (``retained_settle_amounts_by_id``'s rule); a settled leg's
-record is dated, so the ruling's case is unchanged.  That movement hangs off
+one word wider than the ruling's, because the load takes a side's record
+whatever its day (:func:`covering_movements_by_leg`) and the popover's
+withdrawal caption names a reverted transfer's kept records
+(``routes/transfers/forms._payment_withdrawal``).  A reverted leg's
+"marking paid records $X" caption reads its TRANSFER's kept figure
+(``transaction_service.leg_retained_amounts_by_key``), never the record,
+which holds no figure; a settled leg's record is dated, so the ruling's
+case is unchanged.  That movement hangs off
 the transfer by its side link since plan step ``balance:X-bi-6-4d-2`` (off
 the transfer's shadow row on that account until then), and
 :func:`covering_movements_by_leg` reaches it through ONE join -- the join

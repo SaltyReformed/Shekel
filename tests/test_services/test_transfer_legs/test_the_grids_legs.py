@@ -435,10 +435,16 @@ class TestTheLegContributionTwins:
             with pytest.raises(AmountUnresolvable):
                 leg_settled_contribution(leg)
 
-    def test_a_settled_leg_is_worth_its_record_and_not_its_plan(
+    def test_a_settled_from_side_leg_is_worth_the_transfers_figure_and_not_its_plan(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The contribution is the transfer's settled $240.00 where the plan says $250.00."""
+        """The from-side leg contributes the transfer's settled $240.00, not the plan's $250.00.
+
+        Formerly ``test_a_settled_leg_is_worth_its_record_and_not_its_plan``:
+        a side's record holds no figure since plan step
+        ``balance:X-bi-6-4d-2``'s 4d-4 half, and the case builds the from-side
+        leg alone.
+        """
         with app.app_context():
             checking = seed_user["account"]
             savings = _savings(seed_user)

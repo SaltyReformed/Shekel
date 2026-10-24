@@ -55,16 +55,14 @@ Security and data scoping:
   or a transfer's). The code refuses the state first, with an actionable message.
 - No `|safe` on user data in templates; CSRF on every form; mutations use POST.
 
-Transfer rules (critical -- breaking either is a critical bug):
-- A transfer is ONE row. The database refuses a transaction that names a transfer,
-  and a payment record on the wrong account, out of step with its transfer's
-  status, or under a deleted transfer.
-- Every write of a transfer goes through `transfer_service`: a write anywhere else
-  skips its refusals and the copies it keeps in step, the posted ledger's among
-  them (balance:X-eu makes this structural).
-- A settled transfer's amount is its sides' records, never read off
-  budget.transfers (stored on each side today; balance:X-bi-6-4d-4 gives it one
-  home). Older comments cite these two rules as transfer invariants 4 and 5.
+Transfer rules (critical -- breaking any is a critical bug):
+- A transfer is ONE row, and the database holds its rules, each constraint's
+  comment saying why (app/models/transfer.py, app/models/transaction_entry.py,
+  app/side_band_infrastructure.py).
+- A settled transfer's amount is stored once, on the transfer.
+- Every write of a transfer goes through `transfer_service`: one rule not
+  structural yet, and balance:X-eu deletes it. Older comments cite these as
+  transfer invariants 4 and 5.
 
 Design (DRY / SOLID / pythonic):
 - Duplicated logic should be extracted, not copy-pasted. `duplicate-code`

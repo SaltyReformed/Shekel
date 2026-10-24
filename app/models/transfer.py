@@ -465,10 +465,12 @@ class Transfer(
     # ``balance:X-bi-6-4d-2``, ruling **R-BAL88**; ``Transaction.entries``'
     # shape, rulings **R-CC54** and **R-CC64**).  At most one per side
     # (``uq_transaction_entries_one_expense_side_record`` /
-    # ``..._one_income_side_record``): the from-side's money leaving, the
-    # to-side's arriving, dated while the transfer is settled and kept
-    # un-dated across a revert (ruling **R-BAL61**).  No ``delete`` cascade and
-    # ``passive_deletes="all"``: the side keys are ``NO ACTION``, so deleting a
+    # ``..._one_income_side_record``): where and when the from-side's money
+    # left and the to-side's arrived -- never how much, which the transfer
+    # stores once (:attr:`settled_figure`) -- dated while the transfer is
+    # settled and kept un-dated across a revert (ruling **R-BAL61**).  No
+    # ``delete`` cascade and ``passive_deletes="all"``: the side keys are
+    # ``NO ACTION``, so deleting a
     # transfer still holding a record is REFUSED at flush, and the one act that
     # takes a movement off the books (:mod:`app.services.movement_removal`)
     # deletes each record itself and takes it out of THIS list

@@ -8158,17 +8158,17 @@ def inject_cash_backfill_kind_id(monkeypatch, migration_module):
 
     This swaps the two frozen, immutable Pass-A SQL constants on
     *migration_module* for kind-injected equivalents -- reusing the shipped
-    mapping SQL as the single source -- so the migration's real
+    mapping SQL as the single source -- and Pass B's backfill SQL for one whose
+    fallback join reads the head owner-bucket flag, so the migration's real
     ``_backfill_settled_transactions`` orchestration runs unchanged at HEAD with
-    Pass A carrying the kind the Step-4 backfill would assign.  Shared by the
-    cash-backfill suite and the cash reconciliation oracle, the two suites that
-    invoke that backfill (a duplicate-code finding).  ``monkeypatch``
-    auto-reverts the patched constants after each test.
+    Pass A carrying the kind the Step-4 backfill would assign.  Its one caller
+    is the cash-backfill suite (``tests/test_models/test_posting_cash_backfill.py``).
+    ``monkeypatch`` auto-reverts the patched constants after each test.
 
     Args:
         monkeypatch: The test's ``monkeypatch`` fixture.
-        migration_module: The loaded 7d63 migration module (each suite loads its
-            own via :func:`load_migration_module`, so each patches its own copy).
+        migration_module: The loaded 7d63 migration module (the suite loads its
+            own via :func:`load_migration_module`, and patches that copy).
     """
     monkeypatch.setattr(
         migration_module, "_CREATE_CATEGORY_LEDGER_ACCOUNTS_SQL",

@@ -133,8 +133,9 @@ def sync_side_records(
     side is written (the cp2a review's L1, measured: a settle naming the
     from-side's day onto a to-side whose books open later left the new
     from-side record staged when the to-side was refused).  The removal act
-    a ``$0.00`` close runs refuses a line the press did not name as it
-    starts, and that act is this function's only write in that case.
+    a ``$0.00`` close runs is the exception: it refuses a line the press did
+    not name after reversing what the records posted, though before taking
+    either off, and the transfer's ``0.00`` is written after it.
 
     Args:
         legs: The transfer's ``(expense, income)`` legs, each carrying the

@@ -11,6 +11,8 @@ from app.models.transaction import Transaction
 from app.services import account_service, reconcile_service, status_seam, transfer_service
 from app.utils.log_events import EVT_TRANSFERS_RECONCILED
 from tests._test_helpers import (
+    linked_ledger_account,
+    linked_net_by_date,
     open_books_before_the_first_assertion,
     resolved_amount,
     transfer_side_figure,
@@ -418,6 +420,35 @@ class TestTheTransferArm:
                     transfer.from_account_id, transfer.to_account_id,
                 )
             } == {Decimal("74.11")}
+            # Each LEG on its own account's ledger, signed as the ledger signs
+            # it (out of Checking negative, into Savings positive).  The read
+            # above asks the transfer's one figure twice, so a leg that booked
+            # the $75.00 plan instead still reads $74.11 there.  Hand
+            # arithmetic on the statement day, where the tick dates both
+            # sides: the correction books $74.11 in place of the $75.00 plan
+            # (75.00 - 0.89 = 74.11), so Checking nets -74.11 and Savings
+            # +74.11.  No other posting on either ledger is dated that day:
+            # Checking's opening and origination are dated in 2024 (the
+            # seed's bootstrap) and the seed's envelope row is Projected;
+            # Savings' opening is dated on its books' day, 2026-01-01 (the day
+            # before the first pay period), and its assertion's correction on
+            # the suite's frozen today, 2026-03-20.  Not
+            # ``account_posting_total``: an assertion absorbs a movement dated
+            # before it, so Savings, asserted after the statement day, totals
+            # its $100.00 whatever its leg booked.
+            scenario_id = seed_user["scenario"].id
+            for side, account_id, posted in (
+                ("from-side", transfer.from_account_id, Decimal("-74.11")),
+                ("to-side", transfer.to_account_id, Decimal("74.11")),
+            ):
+                assert linked_net_by_date(
+                    db.session,
+                    linked_ledger_account(db.session, account_id).id,
+                    scenario_id,
+                ).get(_OBSERVED_ON) == posted, (
+                    f"the correction did not reach the {side}'s leg on "
+                    f"account {account_id}"
+                )
 
             events = [
                 record for record in caplog.records

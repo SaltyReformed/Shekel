@@ -288,7 +288,8 @@ def apply_status_to_all_three(
     settlement repair" that read a drifted twin's sibling's record went with
     them: every move INTO the band carries its record (the settle verb, the
     one door into the band since ruling **R-BAL379** deleted the create's
-    settled arm), and an identity move keeps each record's figure.
+    settled arm), and an identity move stating no figure keeps the transfer's
+    one settled figure.
 
     **Verified in FULL before anything is assigned**: the transfer's own
     transition, the revert refusal, every stated day and a day stated on a
@@ -306,10 +307,12 @@ def apply_status_to_all_three(
             already admitted by the calling verb.  Empty derives every day,
             which is what every door that knows none means.
         settlement: WHAT moved, when this change records a settle
-            (:class:`app.services.status_seam.Settlement`) -- applied to BOTH
-            sides, which are equal by Transfer Invariant 3.  **A move INTO the
+            (:class:`app.services.status_seam.Settlement`) -- its figure stored
+            once, on the transfer, while each side's record takes its day (a
+            ``$0.00`` figure leaves neither side a record).  **A move INTO the
             settled band must carry one**, which the arm refuses otherwise.
-            ``None`` on any other move leaves each side's figure alone.
+            ``None`` on any other move keeps the transfer's figure, save a move
+            out of the band with no record on either side, which releases it.
         press: The save's :class:`~app.services.match_press.Press` (ruling
             **R-CC135**), or ``None`` when its door named nothing.  A
             ``$0.00`` record takes both sides' kept payments off the books in

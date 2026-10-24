@@ -48,7 +48,8 @@ def apply_amount_ownership(rows: TransferRows, ownership) -> None:
     here is the owner's, an absent one hands the pair to the definition that
     generated it.  Each side's leg is priced off the transfer while it is
     planned (:class:`~app.services.transfer_legs.TransferLeg` stores no
-    figure); a settled side's figure is its record's.
+    figure), and once settled off the transfer's one settled figure (a
+    side's record holds none).
 
     **A twin row's ownership FOLLOWED the parent's** until plan step
     ``balance:X-bi-6-4d-3`` deleted the twins (its leaf 3b deleted the loop

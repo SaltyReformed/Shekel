@@ -45,8 +45,9 @@ from app.utils.hidden_row import HiddenRow
 
 
 #: The rows this seam accepts.  ``Transfer`` carries no ``settled_on`` column --
-#: a transfer's settle day lives on its two shadow ``Transaction`` rows --
-#: so the dating half of the mechanics is skipped for one of the two.  The
+#: each side's day lives on that side's payment record, the Transfer arm's
+#: (:mod:`._side`) -- so the dating half of the mechanics is skipped for one of
+#: the two.  The
 #: branch is on the MODEL, never on ``hasattr``: a probe would silently skip the
 #: maintenance for any future row that merely spelled the column differently,
 #: and this arc has already paid for a ``hasattr``-shaped test -- plan step
@@ -100,16 +101,13 @@ def reject_settle_day_without_settled_status(
             not one of :func:`~app.utils.balance_predicates.settled_status_ids`.
 
             **A ``ValidationError`` (a 400) rather than a programming error,
-            and NO form can reach it yet.**  Measured: no schema declares a
-            settle day, no template renders one, and no ``app/`` caller passes
-            ``settled_on`` to ``transfer_service.update_transfer`` -- so today
-            the only way here is a service-layer mistake, for which a 400 is
-            generous.  Plan step **X-f1c** is what makes it a user mistake with
-            a correction: it puts the field on the full-edit door, and
-            submitting a day while moving the row back to Projected becomes an
-            ordinary form error.  The class is chosen for the door that is
-            coming rather than re-picked when it lands; saying so beats a
-            rationale in the present tense that is not yet true.
+            and NO form reaches it.**  The class was picked for plan step
+            **X-f1c**'s settle-day field on the full-edit doors, and both
+            doors read a submitted day through
+            :func:`~app.services.status_seam.settle_day_for_status`, which
+            drops a day beside a status that settles nothing (ruling
+            **R-EG**) -- so only a service caller reaches this, for which a
+            400 is generous.
     """
     if settle_day is None:
         return
@@ -324,7 +322,8 @@ def reject_settlement_on_a_deleted_row(
     (``transfer_service._validation._get_transfer_or_raise``), so only a
     service caller that skipped it reaches this.  (A deleted SHADOW, which
     this sentence named until then -- finding **BAL-550** -- no longer
-    reaches the seam at all: a twin row is written by no status act.)
+    reaches the seam at all: no transaction row names a transfer,
+    ``ck_transactions_names_no_transfer``.)
 
     Args:
         row: The row being written.

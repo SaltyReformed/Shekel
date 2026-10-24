@@ -6,8 +6,8 @@ The single status-mechanics primitive for BOTH status-bearing rows.
 ``Transfer.status_id`` is assigned.  Every status-changing path -- the manual
 ``mark_done`` branch, the inline PATCH, ``cancel``, ``mark_as_credit`` /
 ``unmark_credit``, the envelope ``settle_from_entries``, and the transfer
-service's mirror onto a transfer and its two shadow rows -- routes through it so
-the status mechanics are uniform and impossible to skip.
+service's one status writer for a transfer -- routes through it so the status
+mechanics are uniform and impossible to skip.
 
 **It became the only seam at plan step X-aj1** (ruling **R-DN**,
 ``docs/audits/balance_architecture/README.md``).  ``transfer_service`` used to
@@ -71,11 +71,11 @@ Architecture:
     (:func:`settle_day_for_status`, plan step X-f1c / ruling R-EG), which is
     form-submission policy rather than a primitive.  It lives here anyway, and
     the narrower "primitive only" claim this paragraph used to make alone was
-    corrected by a neutral review: the rule has THREE route doors (the
-    transaction PATCH, the transfer PATCH, and the transaction PATCH's
-    shadow branch) spread over two route packages, so the alternatives were a
-    shared route helper -- a cross-package private import, which W9910 fences --
-    or three spellings of one rule, which is this arc's own root cause 1.  It
+    corrected by a neutral review: the rule has two route doors (the
+    transaction PATCH and the transfer PATCH) in two route packages, so the
+    alternatives were a shared route helper -- a cross-package private
+    import, which W9910 fences -- or two spellings of one rule, which is this
+    arc's own root cause 1.  It
     sits beside the refusal it defers to
     (:func:`reject_settle_day_without_settled_status`) so the forgiving door
     rule and the fail-loud service rule are read together.
@@ -84,7 +84,8 @@ Architecture:
   - No Flask imports.  Mutates the passed row in place and does NOT commit
     -- the caller owns the session boundary; it flushes explicitly only in
     the covering movement's own teardown and re-point
-    (:func:`apply_status_change`'s docstring says which).
+    (:func:`apply_status_change`'s docstring says which) and in a side
+    record's own teardown and endpoint move (:mod:`._side`).
 """
 
 from app.services.status_seam._record import (

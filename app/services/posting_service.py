@@ -61,10 +61,10 @@ second writer.  The one-entry ``transfer`` source is LEGACY: the deploy's
 first resync reverses whatever it posted, once, and every later sync leaves
 it at zero (the shape ``balance:X-bi-4a`` gave the transaction source); its
 arm is the leaf :mod:`app.services._posting_legacy`, which ``X-bi-6-5``
-deletes whole with the source.  The
-amount is still what the leg RECORDED and never ``transfers.amount``: a
-movement's figure is the record, and ``cash_ledger.movement_cash_leg`` is
-the one producer of its signed cash.
+deletes whole with the source.  The amount is the transfer's
+settled figure (``Transfer.settled_figure``), never ``transfers.amount``: a
+side's record holds no figure, and ``cash_ledger.movement_cash_leg`` is the
+one producer of each side's signed cash.
 """
 
 import logging

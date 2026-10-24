@@ -2,7 +2,9 @@
 Shekel Budget App -- Transfer Service: the UPDATE verb
 
 The one path that changes an existing transfer and its two sides' payment
-records (through the one writer, ``_status.apply_status_to_all_three``).  It
+records (on a status move through the one writer,
+``_status.apply_status_to_all_three``; an endpoint move carries them,
+:mod:`._endpoints`).  It
 also mirrored the transfer's period, category, due date and override flag
 onto two shadow :class:`~app.models.transaction.Transaction` rows, in this
 module and nowhere else, until plan step ``balance:X-bi-6-4d-3`` deleted the
@@ -136,9 +138,10 @@ def _grade_submitted_figure(
     on every settled transfer, which is the trap ruling **R-EG** removed for the
     settle day.  A figure the user CHANGED is a different thing and is refused.
 
-    The record is the EXPENSE side's (``rows.expense_leg``, read through
-    ``transfer_legs``), the side :func:`._settle.settle` resolves its figures
-    from; the parent carries no record at all.
+    The record is the transfer's one settled figure
+    (``leg_settled_figure``), read through the EXPENSE leg
+    (``rows.expense_leg``), the leg :func:`._settle.settle` resolves its
+    figures from; either leg would answer the same.
 
     Args:
         rows: The transfer, at its pre-update status.
@@ -381,8 +384,8 @@ def _reject_unowned_references(
     The user-scoped FK :func:`update_transfer` accepts that no derivation
     answers, checked with the other pre-write gates rather than at the arm
     that assigns it.  It ran inside :func:`_apply_remaining_fields`, which is
-    AFTER :func:`_dispatch_settle` has written the status, the pair's day and
-    the settlement record to both sides -- so an unowned id raised with the
+    AFTER :func:`_dispatch_settle` has written the transfer's status and
+    settled figure and its sides' records -- so an unowned id raised with the
     settlement already staged, and the route's ``NotFoundError`` exit returns
     404 without rolling back (unlike ``_error_transfer_response``, which does).
     Nothing persists today, because Flask-SQLAlchemy's teardown removes the
@@ -572,9 +575,10 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
 
     # ── the SETTLE ─────────────────────────────────────────────────
     # When this update moves the transfer into the settled band, ONE act writes
-    # the amount, the status and each side's day for the transfer and both
-    # sides' records; the three kwargs it consumes are then dropped so the
-    # field application below cannot write any of them a second time.
+    # the transfer's status and settled figure and each side's record on its
+    # own day (a ``$0.00`` close keeps none); the three kwargs it consumes are
+    # then dropped so the field application below cannot write any of them a
+    # second time.
     settled = _dispatch_settle(rows, updates, stated, press)
     if settled is not None:
         remaining = _fields_the_settle_left(updates)
@@ -711,7 +715,8 @@ def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
     """Update a transfer and its sides' records.
 
     A side's record is written by the one writer
-    (``_status.apply_status_to_all_three``).  Each side's leg reads the
+    (``_status.apply_status_to_all_three``) on a status move, and carried by
+    an endpoint move (:func:`_apply_endpoint_move`).  Each side's leg reads the
     transfer's period, category and due date (``transfer_legs``), so no copy
     of them is kept to hold equal: the twin rows that carried one went at
     plan step ``balance:X-bi-6-4d-3``, and their mirrors at its leaf 3b.  A
@@ -765,9 +770,9 @@ def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
         figure         -- What MOVED and WHO WROTE the figure, as one
                           :class:`~app.services.stated_figure.StatedFigure`
                           (``typed`` from the transfer popover's Actual box,
-                          plan step X-bi-3e-1), recorded on both sides'
-                          payment records: a transfer's money moves on its
-                          two sides and the parent carries no such column.
+                          plan step X-bi-3e-1), stored once as the
+                          transfer's settled figure: a side's payment record
+                          holds none.
                           A figure arriving WITH a
                           settling ``status_id`` is the settle's own, subject to
                           its echo rule (:data:`_SETTLE_OWNED_FIELDS`).  One

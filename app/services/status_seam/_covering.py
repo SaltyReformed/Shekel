@@ -10,24 +10,22 @@ covering movement, a ``budget.transaction_entries`` row carrying the figure
 the settle booked, who wrote it, the day the money moved and how that day is
 known, and the statement that showed it.  ``X-bi-3d`` cut every
 already-settled row over to this shape, ``X-bi-4a`` re-pointed the fold and
-the posting writer onto movements, ``X-bi-4b-1`` every other reader, and
-``X-bi-4b-2`` deleted the row's own columns (migration ``45f10b870c8b``), so
-the movement is the record's ONE home
-(ruling **R-BAL80**), ``X-bi-4b-1`` every remaining reader of the record
-(``row_valuation.settled_figure`` sums the row's entries; ``_record``'s
-retained reads take the movement's figure and source); the bill row still
-keeps its own two columns, written by the seam and read by nothing that
-counts money -- the interval ruling **R-BAL40** accepts, and the stale cache
-``X-bi-4b-2`` deletes by migration.
+the posting writer onto movements, ``X-bi-4b-1`` every other reader of the
+record (``row_valuation.settled_figure`` sums the row's entries; ``_record``'s
+retained reads take the movement's figure and source), and ``X-bi-4b-2``
+deleted the row's own two columns, ``settled_amount`` / ``settled_basis_id``
+(migration ``45f10b870c8b``), so the movement is the record's ONE home
+(ruling **R-BAL80**).
 
 **Why the seam, and not the settle verb.**  ``apply_status_change`` is the ONE
-writer of the settlement record (plan step X-au-c3), reached by every settle
-door and both settle verbs (``transaction_service._settle.settle_transaction``
-and ``transfer_service._settle.settle`` through ``apply_status_to_all_three``).
-The covering movement is that record's new home, so it is written where the
-record is: a second call site in each verb would be the maintenance contract
-rule 14 deletes, and a verb added later would inherit the write with none of
-the seam's refusals.
+writer of a row's settlement record (plan step X-au-c3), reached by every
+settle door of a row and the transaction settle verb
+(``transaction_service._settle.settle_transaction``); a transfer's record is
+written by the seam's Transfer arm (:mod:`._side`, through
+``apply_status_to_all_three``).  The covering movement is that record's new
+home, so it is written where the record is: a second call site in each verb
+would be the maintenance contract rule 14 deletes, and a verb added later
+would inherit the write with none of the seam's refusals.
 
 **The movement IS the money** (plan step ``balance:X-bi-4a``, ruling
 **R-BAL80**).  The fold's fact producer reads every dated movement and no row
@@ -45,10 +43,7 @@ Through ``X-bi-3e`` the first two also read the row's own leg,
 purchases, exactly zero for a covered bill by ruling **R-FM**'s identity --
 so the write here was balance-neutral by construction; the matcher read it
 one step longer, and it is deleted.  None of those readers
-branches on the row's kind; the one place a kind branch stands is the
-POSTING doors, which return for a transfer shadow's entries, and that branch
-is ruling **R-BAL45**'s interval rather than a reader deciding for itself
-(below).
+branches on the row's kind.
 
 **A revert UN-DATES the covering movement and KEEPS it** (ruling
 **R-BAL61**, plan step ``X-bi-3e-2``).  Leaving the settled band releases
@@ -102,20 +97,19 @@ leaf at a time.**  ``X-bi-3a`` covered EXPENSE parents; ``X-bi-3b`` covered
 INCOME parents once a movement's direction was its parent's everywhere it is
 read (``cash_ledger.movement_cash_leg``, ruling **R-BAL35**) -- until then
 six readers spelled *a purchase is money leaving* and a covered paycheck read
-``-figure``; ``X-bi-3c`` covered the two shadows of a TRANSFER.  A shadow is
-reached here through ``transfer_service`` alone
-(``_status.apply_status_to_all_three`` hands the seam one ``Settlement`` for
-the pair, one call per leg), which is Transfer Invariant 4 kept without a
-second writer: the transfer settle and the transaction settle call the ONE
-writer, and it is this module.  Each leg's movement moves in its own leg's
-direction -- the expense shadow's ``-figure`` off the from-account, the
-income shadow's ``+figure`` into the to-account -- through the same producer
-a bill's and a paycheck's read.
+``-figure``; ``X-bi-3c`` covered the two shadows of a TRANSFER.  A
+transfer's sides have their own arm since plan step ``balance:X-bi-6-4d-2``
+(:mod:`._side`, through ``transfer_service._status.apply_status_to_all_three``),
+which writes each side's record under the transfer's side link and asks this
+module only :func:`raises_basis`.  Each side's record moves the transfer's
+one figure in its own side's direction -- ``-figure`` off the from-account,
+``+figure`` into the to-account -- through the same producer a bill's and a
+paycheck's read.
 
 **A transfer's movements POST, each as its own entry, since plan step
 ``balance:X-bi-6-3``** (ruling **R-BAL45**'s shape C, built under
-**R-BAL101**).  The posted ledger books each shadow's covering movement on
-its own day against the owner's Transfers-in-transit account -- ``{from-side
+**R-BAL101**).  The posted ledger books each side's record on its own day
+against the owner's Transfers-in-transit account -- ``{from-side
 account -figure, transit +figure}`` and ``{to-side account +figure, transit
 -figure}`` -- through the ONE movement writer every purchase and covering
 movement posts through (``_posting_purchases``, the counter leg dispatched by
@@ -126,7 +120,7 @@ purchase-posting door returned for a shadow's entries -- the interval ruling
 **R-BAL45** accepted, closed when that step gave the writer its per-movement
 shape.  The two sides' days part since ``X-bi-6-4c-3`` (ruling **R-BAL142**:
 each side keeps its own day, a side with no evidence borrows the other's), and
-each movement follows its own shadow through :func:`_mirror_assertion`.
+each side's record takes its own through the Transfer arm (:mod:`._side`).
 Posting a shadow's movement through the purchase source with a CATEGORY
 counter was rejected at R-BAL45: a transfer between two of the owner's
 accounts is neither income nor expense, which is what the transit counter
@@ -135,10 +129,12 @@ says.
 **A movement's account is its own -- where its money moved** (rulings
 **R-BAL46**, **R-BAL75**, **R-BAL76**).  The co-located key that held it to
 its parent's, ``fk_transaction_entries_parent_account``, is dropped since
-plan step ``credit_card:CC-5-1``; a shadow's movements are re-pointed by hand
-by ``transfer_service._endpoints._apply_endpoint_move`` when its endpoint
-moves.  **The movement this module writes books on the TENDER** (plan step
-``credit_card:CC-5-3``, rulings **R-CC15** and **R-CC42**): the account the
+plan step ``credit_card:CC-5-1``; a transfer side's record follows its
+endpoint through its side key's ``ON UPDATE CASCADE`` when the endpoint moves
+(``transfer_service._endpoints._apply_endpoint_move``, which lands it in the
+session through ``_side.land_moved_side_record``).  **The movement this
+module writes books on the TENDER** (plan step ``credit_card:CC-5-3``,
+rulings **R-CC15** and **R-CC42**): the account the
 :class:`~app.services.status_seam._record.Settlement` names when the door
 named one -- the card, for a bill the owner charged to it -- else the seam's
 one default, :func:`~._record.tender_account_id_of` (the kept movement's own
@@ -345,7 +341,8 @@ def covered_cash_leg(row: PlanItem, account_id: int) -> Decimal:
 
     Each posted covering movement is worth
     :func:`app.services.cash_ledger.movement_cash_leg` -- the ONE valuation
-    of a movement, its whole figure in its PARENT's direction (plan step
+    of a movement, its whole figure (for a transfer side's record, its
+    transfer's) in its PARENT's direction (plan step
     ``X-bi-3b``, ruling **R-BAL35**), which is what the fact producer and the
     ledger writer book for it.  This read ``-movement.amount`` for itself
     until that step, a second spelling stated rather than hidden because a
@@ -404,12 +401,10 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
       correction moves both;
     * the days are EQUAL and the row's basis RAISES the movement's -- a bank
       line confirmed the day the panel had only bounded (``_moving``, finding
-      **N-332**), or a transfer side that was borrowing its day took it as its
-      own (ruling **R-BAL164**; plan step ``balance:X-bi-6-4c-3``): the
-      movement takes the row's pair and the link stands, the same change of
-      basis the row itself records.  A raise is the row's ``observed``, or any
-      basis over a movement holding no evidence of its own
-      (:func:`~app.services.settle_day.is_evidence`); the three evidence
+      **N-332**): the movement takes the row's pair and the link stands, the
+      same change of basis the row itself records.  A raise is the row's
+      ``observed``, or any basis over a movement holding no evidence of its
+      own (:func:`~app.services.settle_day.is_evidence`); the three evidence
       members are separated by provenance and not ranked, so nothing else
       moves.  **The movement's own evidence is never lowered**, the contract
       ``TestTheMirrorNeverLowersEvidence``
@@ -872,12 +867,11 @@ def record_clearing(row: Transaction, anchor_id: int) -> None:
     the flush.  Its two shapes:
 
     * the row is on the statement's account -- a bill on the account's own
-      list, or a transfer's leg: the row takes the link, and so does each
-      covering movement on that account (a bill's tick names the account as
-      its tender; a leg's movement is on its shadow's account).  Every caller
-      before ``CC-5-4b`` passed this shape, and for it the rule writes what
-      the old body wrote (the row unconditionally, a movement on the row's
-      account);
+      list: the row takes the link, and so does each covering movement on
+      that account (a bill's tick names the account as its tender).  Every
+      caller before ``CC-5-4b`` passed this shape, and for it the rule writes
+      what the old body wrote (the row unconditionally, a movement on the
+      row's account);
     * the row is planned on ANOTHER account and its payment is on the
       statement's -- a bill planned on Checking, paid from the card and
       reopened, ticked on the card's "Paid from this account" list: the
@@ -943,9 +937,9 @@ def sync_covering_movement(
     assertion did not change, so a movement a revert kept has nothing to
     follow (the days already agree at ``None`` and the link is already
     ``None`` -- ``_mirror_assertion``'s equal-days arm would write nothing),
-    and reading it would cost a Projected TRANSFER's every popover Save two
-    lazy loads and a mid-update autoflush for a no-op (each shadow's
-    ``entries``; a transaction's door loads them for its reconcile anyway).
+    and reading it would cost a lazy load of the row's ``entries`` and a
+    mid-update autoflush for a no-op wherever the caller has not loaded them
+    (a transaction's door loads them for its reconcile anyway).
     The seam refuses a record beside a non-settled status before it gets here
     (``reject_settlement_without_settled_status``), so *settlement* is
     ``None`` whenever *now_settled* is ``False``.  The status the row was

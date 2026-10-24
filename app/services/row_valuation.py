@@ -144,9 +144,10 @@ def settled_figure(txn) -> "Decimal | None":
 
     **THE RECORD IS THE ROW'S ENTRIES, and the figure is their sum** (plan
     step ``balance:X-bi-4b-1``, ruling **R-BAL80**; the readers move here,
-    the columns go at ``X-bi-4b-2``).  A bill's, a paycheck's or a transfer
-    leg's money is its one covering movement (``status_seam._covering``,
-    ruling **R-BAL39**); an envelope's is its purchases; a close of nothing
+    the columns go at ``X-bi-4b-2``).  A bill's or a paycheck's money is its
+    one covering movement (``status_seam._covering``, ruling **R-BAL39**; a
+    transfer's figure is the transfer's own, :func:`leg_settled_figure`);
+    an envelope's is its purchases; a close of nothing
     holds no entry and records ``$0.00`` (ruling **R-BAL82**: a movement of
     nothing is not one, so a ``$0.00`` close is a close with no entries).  One
     kind-blind reduction, the same one :func:`purchases_total` performs for
@@ -512,8 +513,9 @@ def leg_settled_contribution(leg) -> Decimal:
     :func:`app.services.loan_loaders.income_legs`, whose membership is the
     plan half's exact complement: a still-Projected transfer whose side
     carries a DATED covering movement -- a status drift no door writes -- is a
-    payment that happened, and it is worth what that movement moved, as the
-    cash fold already counts it (``cash_ledger.movement_cash_leg``).  The
+    payment that happened, and it is worth the figure its transfer stores, as
+    the cash fold already counts that movement
+    (``cash_ledger.movement_cash_leg``).  The
     Spending report narrows to settled parents in SQL and the savings metric
     to DATED records (plan step ``balance:X-bi-6-4d-2``, finding
     **BAL-534**: equal, since a side's record is dated exactly while its

@@ -12,10 +12,12 @@ transfer is one row, which ``ck_transactions_names_no_transfer`` holds by
 refusing a transaction that names one, and the database refuses the states its
 sides' payment records may not reach (the side keys, and the deferred rules in
 ``app/side_band_infrastructure.py`` and
-``app/deleted_row_infrastructure.py``).  The two rules it cannot refuse are
-kept here: every write of a transfer goes through this package, and a settled
-transfer's amount is its sides' records.  Plan steps ``balance:X-eu`` and
-``balance:X-bi-6-4d-4`` make them structural.
+``app/deleted_row_infrastructure.py``).  A settled transfer's amount is
+stored once, on the transfer (``settled_figure``, plan step
+``balance:X-bi-6-4d-2``), and the side-band rule's figure arm ties it to the
+records and the status at commit.  The one rule the database cannot refuse is
+kept here: every write of a transfer goes through this package.  Plan step
+``balance:X-eu`` makes it structural.
 
 **Why it is a PACKAGE, and it is findings N-152 / N-156 ANSWERED rather
 than deferred again.**  This was one module and four ``_transfer_*``

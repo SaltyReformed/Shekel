@@ -70,11 +70,12 @@ transfer's side on this account from ``transfer_legs.offerable_transfer_legs``
 (keyed by the transfer on this screen), and :func:`_leg_settlement_candidates`
 each paid side's movement from ``transfer_legs.recorded_transfer_legs`` -- the
 owner, live, status and period clauses read off the TRANSFER in both.  The two
-row arms EXCLUDE a transfer's shadow (``transfer_id IS NULL``): through leaf
-``X-bi-6-4c-2`` a transfer was offered as its SHADOW row on this account, a
-TRANSACTION, and its paid side as the shadow's movement joined to the shadow,
-which ``X-bi-6-4d`` -- deleting the shadows -- would have left offering
-nothing.  The two leg arms partition by the movement (ruling **R-BAL79**): a
+row arms still carry ``transfer_id IS NULL``, which excludes nothing now that
+no row can name a transfer (``ck_transactions_names_no_transfer``): through
+leaf ``X-bi-6-4c-2`` a transfer was offered as its SHADOW row on this
+account, a TRANSACTION, and its paid side as the shadow's movement joined to
+the shadow, which ``X-bi-6-4d`` -- deleting the shadows -- would have left
+offering nothing.  The two leg arms partition by the movement (ruling **R-BAL79**): a
 side is a LEG while its transfer is Projected and its money has not moved,
 and its DATED movement is the subject once it has (ruling **R-BAL80**).  Where
 the row arms offer an un-dated kept movement (a row reverted after a
@@ -631,18 +632,20 @@ def _leg_candidates(
 
     * this account is one of its endpoints (either side);
     * it is Projected and live, and THIS side holds no dated movement
-      (ruling **R-BAL79**: the movement decides a side, the parent decides a
-      drifted shadow, ruling **R-JM**);
+      (ruling **R-BAL79**: the movement decides a side; ruling **R-JM**: a
+      transfer leg reads its parent);
     * its pay period is one of the OWNER's saved periods -- the owner the
       calendar is, the scope's ownership clause.
 
-    On every door-written state it offers exactly the transfers whose shadow
-    the row arm offered (a Projected parent's two shadows are Projected, live
-    and filed in its period -- Transfer Invariants 1, 3 and 4).  Priced by
+    When it replaced the row arm's shadow offer, it offered exactly the
+    transfers whose shadow that arm had offered on every door-written state
+    (a Projected parent's two shadows were Projected, live and filed in its
+    period -- Transfer Invariants 1, 3 and 4).  Priced by
     :func:`~._leg_valuation.leg_price`, off the transfer alone: a transfer
-    whose twin pair is DAMAGED is offered like any other (ruling
+    whose twin pair was DAMAGED was offered like any other (ruling
     **R-BAL235**; it was counted among the unpriceable and not offered,
-    ruling **R-BAL158**, until plan step ``balance:X-bi-6-4d-2``).  Not scoped by scenario, for
+    ruling **R-BAL158**, until plan step ``balance:X-bi-6-4d-2``), and a
+    transfer has no twin pair now.  Not scoped by scenario, for
     :func:`_transaction_candidates`' reason.
 
     Args:
@@ -683,8 +686,8 @@ def _leg_settlement_candidates(
     a side whose money moved on this account is offered as its covering
     movement, the leg's RECORD (``transfer_legs.recorded_transfer_legs``,
     ruling **R-BAL80**), through the loader that reaches a movement's
-    transfer and side -- so no clause here names the shadow the movement
-    still hangs off.  Every clause is the row arm's, read off the TRANSFER:
+    transfer and side by its side link.  Every clause is the row arm's, read
+    off the TRANSFER:
 
     * the MOVEMENT is on this account (a transfer's is on its own side's);
     * the transfer CONTRIBUTES and is live, and is filed in one of the
@@ -698,8 +701,9 @@ def _leg_settlement_candidates(
       :func:`~._valuation.leg_settlement_candidate` carries why, and re-asks
       the day in Python for :func:`~._valuation.repriced`'s sake.
 
-    No leg payment is ever unpriceable: its figure is the movement's own
-    (``cash_ledger.movement_cash_leg``), which no amount model can refuse.
+    No leg payment is ever unpriceable: its figure is the one its transfer
+    stores (``cash_ledger.movement_cash_leg`` reads it off the transfer),
+    which no amount model can refuse.
 
     Args:
         account_id: The cash account the statement is for.

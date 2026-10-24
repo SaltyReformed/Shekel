@@ -53,13 +53,13 @@ and the developer ruled it there (2026-08-12).  What THIS leaf does instead is
 put the write in ONE place, so moving it is a one-line change rather than a hunt
 across four modules.
 
-**What it costs on production today is `$0.00`, and the reason is worth
-stating**: ``budget.loan_payment_settings`` holds ZERO rows, so
-``loan_payment_config`` answers ``(False, 0.00)`` for every transfer template
-and every shadow resolves to its parent's own figure -- which every shadow
+**What it cost on production was `$0.00`, and the reason is worth
+stating**: ``budget.loan_payment_settings`` held ZERO rows, so
+``loan_payment_config`` answered ``(False, 0.00)`` for every transfer template
+and every shadow resolved to its parent's own figure -- which every shadow
 already equalled (re-measured 2026-09-01 at stamp ``a4c6f1d92b73``: 0 of 350
-differ).  The split opens the first time a loan payment transfer is created
-through ``routes/loan/payment_transfer.py``, which is a live route.
+differed).  The split would open the first time a loan payment transfer was
+created through ``routes/loan/payment_transfer.py``, a live route.
 
 Architecture (``CLAUDE.md``):
   - No Flask imports.  Reads and mutates ORM rows; no flush, no commit.
@@ -125,8 +125,8 @@ def _reject_unsettleable(transfer: Transfer) -> None:
 # is the state it repaired becoming unrepresentable rather than a rule changing.
 # It published ``LoanPricing.live_cash`` under a name -- *the live payment-date
 # figure a settle FREEZES* -- because a loan-payment shadow STORED a
-# creation-time estimate that the settle had to supersede.  A transfer shadow
-# stores no figure at all now, and a transfer leg is priced by the amount model,
+# creation-time estimate that the settle had to supersede.  A transfer has no
+# shadow now, and a transfer leg is priced by the amount model,
 # so :func:`~app.services.cash_ledger.leg_contribution_of` answers the same number
 # for a derive-mode payment (its installment's P&I + escrow + extra), for a
 # manual one (its definition's price + extra) and for a plain transfer (its
@@ -138,8 +138,9 @@ def _reject_unsettleable(transfer: Transfer) -> None:
 # figure with a later derivation.  What holds that now is
 # :func:`~app.services.row_valuation.leg_fixed_contribution`, asked FIRST inside
 # :func:`~app.services.cash_ledger.leg_contribution_of` -- a settled leg answers
-# from its own record and never reaches a producer -- plus :func:`settle`
-# running only on the way INTO the settled band.  Two independent reasons
+# from its transfer's settled figure and never reaches a producer -- plus
+# :func:`settle` running only on the way INTO the settled band.  Two
+# independent reasons
 # where there was one.
 
 
@@ -163,10 +164,11 @@ def settle(
     1. **The figure, decided but not yet written.**  What the expense LEG is
        worth (:func:`~app.services.cash_ledger.leg_contribution_of`, the
        parent's resolved amount) is asked ONCE, before anything moves -- after
-       the status flip it would answer from the record this act is about to
-       write.  A RETAINED
-       correction (:func:`~app.services.status_seam.honoured_figure` over the
-       expense side's record) outranks that derivation, and a figure a HUMAN supplied NOW outranks
+       the status flip it would answer from the settled figure this act is
+       about to write.  A RETAINED correction
+       (:func:`~app.services.status_seam.honoured_figure` over the transfer's
+       one settled figure, read through the expense leg) outranks that
+       derivation, and a figure a HUMAN supplied NOW outranks
        both: it is compared against what the row would book anyway and is a
        CORRECTION only if it differs.  A figure somebody read off a statement is
        a fact; a derivation is an inference.
@@ -181,8 +183,9 @@ def settle(
        the intermediate value was a day the money did not move.  The side
        nobody stated for borrows the stated side's day (ruling **R-BAL142**).
        The figure rides in the same call
-       (``status_seam.Settlement``) and lands on BOTH sides' records, because
-       a transfer's money moves on its sides.
+       (``status_seam.Settlement``) and is stored once, on the transfer; each
+       side's record takes its day and no figure (a ``$0.00`` close keeps
+       none).
 
     **It was THREE acts until plan step X-au-c3**, the third being a separate
     write of the figure into ``actual_amount`` after the seam.  One call is what
@@ -201,12 +204,13 @@ def settle(
     world before this step, where an uncorrected settle recorded nothing and
     every reader fell back to the row's plan.
 
-    **A settle never CLEARS the record, and there is no door that does.**  A
-    ``figure`` arriving without a settling status is REFUSED outright
-    (``_update._apply_transfer_fields``), because a figure states what MOVED and
-    an unsettled pair has moved nothing.  Correcting a recorded figure is
-    revert, edit, settle again -- the revert KEEPS what moved and the re-settle
-    honours it (act 1 above), so the round trip is lossless.
+    **A settle never CLEARS the record.**  A ``figure`` beside a status that
+    settles nothing is REFUSED unless it echoes what the pair records
+    (``_update._grade_submitted_figure``), because a figure states what MOVED
+    and an unsettled pair has moved nothing; one on a pair that stays settled
+    is a CORRECTION, applied in place.  A revert KEEPS what moved (a ``$0.00``
+    close's revert clears its ``0.00``, ruling **R-BAL365**) and the re-settle
+    honours a stated figure (act 1 above), so the round trip is lossless.
     ``settle_transaction`` follows the same rule one table over, so the two
     settles cannot come to disagree.
 
@@ -214,9 +218,10 @@ def settle(
     closed finding N-241.**  It went to ``actual_amount`` -- a column ruling
     **R-FH** reserves for a figure a HUMAN supplied -- so a machine-derived
     freeze written there manufactured a correction nobody made.  A record
-    that says WHO wrote its figure (the covering movement's
-    ``figure_source_id`` since plan step ``balance:X-bi-4b-1``; the row's
-    ``settled_basis_id`` through ``X-bi-4a``) leaves the freeze nothing to
+    that says WHO wrote its figure (the transfer's
+    ``settled_figure_source_id`` since plan step ``balance:X-bi-6-4d-2``; a
+    covering movement's ``figure_source_id`` from ``balance:X-bi-4b-1``; the
+    row's ``settled_basis_id`` through ``X-bi-4a``) leaves the freeze nothing to
     overwrite, and the column it was hiding in is gone.
 
     Mutates in place.  Does NOT flush, commit, or reconcile the posted ledger
@@ -228,7 +233,7 @@ def settle(
             from the EXPENSE leg; either would answer the same (both price the
             one parent, and both read the transfer's one settled figure), and
             naming one means the choice is not made twice.
-        new_status_id: The settled status all three rows move to, as the DOOR
+        new_status_id: The settled status the transfer moves to, as the DOOR
             asked for it.  Verified by
             :func:`~app.services.transfer_service._status.apply_status_to_all_three`.
         submitted: The figure a caller stated and who wrote it
@@ -291,10 +296,11 @@ def settle(
         else None
     )
 
-    # ONE act: the status, each side's day, and what each leg RECORDS as having
-    # moved.  ``Settlement.from_settle`` states the "a human's figure beats the
-    # derivation" rule once for both settle verbs, and the record lands on the
-    # two sides because a transfer's money moves on its sides.
+    # ONE act: the status, each side's day, and what the transfer RECORDS as
+    # having moved.  ``Settlement.from_settle`` states the "a human's figure
+    # beats the derivation" rule once for both settle verbs, and the seam's
+    # Transfer arm stores the figure once, on the transfer: each side's record
+    # says where and when its money moved, not how much.
     #
     # **The figure goes to the row's OWN record, not to a column reserved for a
     # human, and that closes finding N-241.**  It was written to
@@ -302,15 +308,15 @@ def settle(
     # read off a statement, and which three subsystems read the NULL-ness of as
     # meaning exactly that -- so every derive-mode loan settle manufactured a
     # correction nobody had made.  The two are different facts now, and which
-    # one a figure is stands in the record's SOURCE (the covering movement's
-    # ``figure_source_id``, plan step balance:X-bi-4b-1) rather than being
-    # inferred from a column being populated.
+    # one a figure is stands in the record's SOURCE (the transfer's
+    # ``settled_figure_source_id``, plan step balance:X-bi-6-4d-2) rather than
+    # being inferred from a column being populated.
     #
     # The pair's RETAINED record is read from the expense leg -- the same leg the
     # figures above come from, and for the same reason (both legs read the
     # transfer's one settled figure, so naming one means the choice is not
     # accidental).  A
-    # revert releases the pair's assertion and keeps what moved,
+    # revert releases the pair's assertion and keeps a figure above ``$0.00``,
     # so re-settling a transfer the user reverted in order to edit honours the
     # figure they read off their statement instead of re-deriving over it.
     apply_status_to_all_three(
@@ -335,9 +341,11 @@ def settle(
     # rather than being kept as a green check that measures nothing.
     #
     # What it recorded is not lost: the record says whether a booked figure
-    # was the app's own resolution or a human's correction (the covering
-    # movement's ``figure_source_id``; the row's ``settled_basis_id`` through
-    # ``X-bi-4a``), for every settle rather than for the subset a predicate
+    # was the app's own resolution or a human's correction (the transfer's
+    # ``settled_figure_source_id`` since ``balance:X-bi-6-4d-2``; a covering
+    # movement's ``figure_source_id`` before it, and the row's
+    # ``settled_basis_id`` through ``X-bi-4a``), for every settle rather than
+    # for the subset a predicate
     # happened to select (plan step X-au-c3).
     return correction is not None
 

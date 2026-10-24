@@ -540,6 +540,34 @@ class TestTransferActualBox:
             assert net_posted_by_day(
                 transfer_family_journal_filter(xfer.id),
             ) == {day: Decimal("187.65")}
+            # Each LEG on its own account's ledger, signed as the ledger signs
+            # it (out of Checking negative, into Savings positive).  The
+            # figure read above asks the transfer's one figure once per side,
+            # and the family read keeps the LARGEST per-account residue, so it
+            # catches a to-side still booking the $200.00 plan only because
+            # 200.00 > 187.65: a correction UP would hide the same defect
+            # behind the from-side's larger figure.  Hand arithmetic on the
+            # transfer's day: the settle books $200.00 and the correction
+            # re-books $187.65 (200.00 - 187.65 = 12.35), so Checking -200.00
+            # + 12.35 = -187.65; Savings +200.00 - 12.35 = +187.65.  No other
+            # posting on either ledger is dated that day: Checking's opening
+            # and origination are dated in 2024 (the seed's bootstrap), and
+            # Savings opened at $0.00, which books no entry, and asserts
+            # today.  Not ``account_posting_total``: an assertion absorbs a
+            # movement dated before it, so Savings, asserted today, totals
+            # $0.00 whatever its leg booked.
+            for side, account_id, posted in (
+                ("from-side", held.from_account_id, Decimal("-187.65")),
+                ("to-side", held.to_account_id, Decimal("187.65")),
+            ):
+                assert linked_net_by_date(
+                    db.session,
+                    linked_ledger_account(db.session, account_id).id,
+                    seed_user["scenario"].id,
+                ).get(day) == posted, (
+                    f"the correction did not reach the {side}'s leg on "
+                    f"account {account_id}"
+                )
 
     def test_a_recordless_settled_pair_repairs_with_the_day_AND_the_figure(
         self, app, auth_client, seed_user, seed_periods_today,

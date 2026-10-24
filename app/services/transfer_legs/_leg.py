@@ -102,9 +102,12 @@ class TransferLeg:  # pylint: disable=too-many-public-methods
             them, stated here from the columns that decide it.
         record: The leg's COVERING MOVEMENT
             (:class:`~app.models.transaction_entry.TransactionEntry`,
-            ``covers_settlement``) when one exists: what this side's money DID,
-            written by the status seam at the settle, dated when the money
-            moved and kept un-dated across a revert (ruling **R-BAL61**).
+            ``covers_settlement``) when one exists: where and when this side's
+            money moved -- its account and its day, never a figure (the
+            transfer stores that once,
+            :attr:`~app.models.transfer.Transfer.settled_figure`) -- written
+            by the status seam at the settle, dated when the money moved and
+            kept un-dated across a revert (ruling **R-BAL61**).
             ``None`` when the leg has none -- or when the loader did not ask:
             the fold's :func:`planned_transfer_legs` emits legs whose DATED
             movement does not exist and never loads one (ruling **R-BAL79**
@@ -275,8 +278,8 @@ class TransferLeg:  # pylint: disable=too-many-public-methods
         """The civil day this leg's money moved, or ``None``.
 
         Read off the leg's RECORD -- its covering movement's ``settled_on``
-        (ruling **R-BAL80**: a settled leg's money is its dated movement) --
-        and never off the parent or a shadow row: a leg whose money moved
+        (a record says where and when its side's money moved; the transfer
+        stores how much) -- and never off the parent: a leg whose money moved
         carries a dated movement (ruling **R-BAL79**), a reverted one a
         movement kept un-dated, a planned one none.  What
         ``Transaction.settled_on`` states as a column for a row, for the
@@ -290,8 +293,7 @@ class TransferLeg:  # pylint: disable=too-many-public-methods
         paid on any day, a transfer stores no day of its own, and the
         timeliness metric asks the RECORD of a row and a leg alike since leaf
         ``X-bi-6-4a`` (``spending_analysis._holds_a_record``), so a
-        $0.00-closed row stops counting as a timed bill too.  Reading the
-        shadow's column here would be the read leaf ``X-bi-6-1`` deleted.
+        $0.00-closed row stops counting as a timed bill too.
         """
         if self.record is None:
             return None

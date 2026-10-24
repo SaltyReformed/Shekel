@@ -601,10 +601,12 @@ def covering_movements_by_leg(
 
     The grid's one load of every leg's record for a window of transfers
     (leaf ``X-bi-6-1``): one statement over :func:`_side_records` narrowed to
-    the transfers named, dated or not -- the grid draws a settled leg's
-    recorded figure and day off a dated one and a reverted leg's retained
-    figure off an un-dated one (``retained_settle_amounts``' rule), so it asks
-    for both.  At most one per key: a side holds at most one record
+    the transfers named, dated or not, so a reverted leg carries the record
+    its revert kept (ruling **R-BAL61**) as a settled leg carries its dated
+    one.  A record says where and when its side's money moved and holds no
+    figure: the settled and retained figures the grid draws are the
+    transfer's (:attr:`~app.models.transfer.Transfer.settled_figure`).  At
+    most one per key: a side holds at most one record
     (``uq_transaction_entries_one_expense_side_record`` /
     ``..._one_income_side_record``), and a record's account IS its side's
     endpoint (the side keys), so the key is the leg's.
@@ -660,13 +662,18 @@ def grid_transfer_leg(transfer: Transfer, account_id: int) -> TransferLeg:
 def transfer_side_leg(transfer: Transfer, *, is_income: bool) -> TransferLeg:
     """Return *transfer*'s leg on one SIDE with its record, keyed by the side alone.
 
-    How the transfer service reads what a side already RECORDS (leaf
-    ``X-bi-6-4d-1``): the settle's retained correction and carried record and
-    the update's echo comparison, off the expense side
-    (``transfer_service._validation.TransferRows.expense_leg``), and the
-    offer's retained correction, off the offered side
-    (``transfer_service._settle.settle_amount``) -- each of which read its
-    shadow's ``entries`` until then.
+    How the transfer service reaches a side's leg and record (leaf
+    ``X-bi-6-4d-1``).  The act's expense leg
+    (``transfer_service._validation.TransferRows.expense_leg``) is how the
+    settle and the update read the retained correction a re-settle honours
+    and the figure an echoed Actual box is compared against -- each off the
+    leg's TRANSFER, the settled figure's one home since plan step
+    ``balance:X-bi-6-4d-2``, never off the record, which holds no figure;
+    they read the expense shadow's ``entries`` until that leaf.  The writers
+    that need a side's record itself read it here too: both sides for the
+    seam pass (``transfer_service._status._side_legs``) and for an endpoint
+    move (``transfer_service._endpoints``), and the offered side for the
+    statement link (``transfer_service._settle.record_leg_clearing``).
 
     **Keyed by the SIDE and never by an account**, which is what makes it
     safe inside an act that moves an endpoint: ``_endpoints._apply_endpoint_move``

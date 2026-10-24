@@ -70,9 +70,9 @@ class TransferRows:
     **It holds ONE row since plan step ``balance:X-bi-6-4d-3``**, which
     deleted the twin rows and made the database refuse a new one (rulings
     **R-BAL166**, **R-BAL258**).  The twins had been mirrors and nothing more
-    since ``X-bi-6-4d-2``: a transfer's status is one column on the
-    transfer, and each side's day and figure are its payment record's, hung
-    off the transfer by a side link.  The step's leaf 3b deleted the
+    since ``X-bi-6-4d-2``: a transfer's status and settled figure are its
+    own columns, and each side's day is its payment record's, hung off the
+    transfer by a side link.  The step's leaf 3b deleted the
     ``shadows`` attribute, the loader that queried the twins
     (``load_transfer_rows``) and the arms of ``_update``, ``_amount`` and
     ``_endpoints`` that wrote the mirrors over them.  What the value still
@@ -87,12 +87,14 @@ class TransferRows:
 
     @cached_property
     def expense_leg(self) -> TransferLeg:
-        """Return the from-side LEG with its record: what the pair already records.
+        """Return the from-side LEG with its record; what the pair records is read through it.
 
-        The settle and the update read what a pair RECORDS off its expense
-        side -- the retained correction a re-settle honours, the record it
-        carries forward, the figure an echoed Actual box is compared against
-        -- and since leaf ``balance:X-bi-6-4d-1`` they read it here, through
+        The settle and the update read what a pair RECORDS through its
+        expense leg -- the retained correction a re-settle honours, the record
+        it carries forward, the figure an echoed Actual box is compared
+        against, each read off the leg's TRANSFER, the settled figure's one
+        home (plan step ``balance:X-bi-6-4d-2``) -- and since leaf
+        ``balance:X-bi-6-4d-1`` they read it here, through
         :func:`app.services.transfer_legs.transfer_side_leg`, rather than off
         the expense shadow's ``entries``: ``transfer_legs`` holds the one join
         ``X-bi-6-4d``'s re-parent moves, so this read moves with it.  The
@@ -104,24 +106,25 @@ class TransferRows:
         correction of one update ask one query between them: a producer asked
         twice in one request is two resolution points, which can come to
         disagree about WHEN they resolved.
-        That is correct because every reader asks BEFORE the act's seam pass
-        writes the record, and nothing earlier in the act writes a movement's
-        figure or source -- an endpoint move carries the record to the new
-        endpoint and may re-date it ``borrowed`` (ruling **R-BAL168**), and
-        every reader of this value asks only for the record's figure, its
-        source and its retained correction, none of which a move writes.  A
-        reader AFTER the seam pass would not see the act's own write
-        consistently (a first settle's new movement is absent from the cached
-        value; a kept one is the same object, re-priced in place), so none
-        may be added there.  **Its ``account_id`` is frozen at the read**, too,
-        and an act may move an endpoint around that read: when a figure is
+        That is correct because every reader asks BEFORE the act's seam pass,
+        and asks only for its TRANSFER's facts -- the status and soft delete,
+        the settled figure and its source, and what the transfer resolves to
+        -- which the leg reads off the live transfer at each asking; none asks
+        for the leg's ``record``, which the read freezes (an endpoint move
+        carries it to the new endpoint and may re-date it ``borrowed``, ruling
+        **R-BAL168**).  A reader of the record AFTER the seam pass would not
+        see the act's own write consistently (a first settle's new record is
+        absent from the cached value; a kept one is the same object, re-dated
+        in place), so none may be added there.  **Its ``account_id`` is
+        frozen at the read**, too, and an act may move an endpoint around
+        that read: when a figure is
         graded the read precedes the move (``_update._grade_submitted_figure``
         runs ahead of ``_endpoints._apply_endpoint_move``) and names the OLD
         source after it; otherwise the first read is the settle's, after the
         move has flushed, and names the NEW source.  Either way nothing may
         read this leg's account: every
-        reader takes its ``record``, and one that needs the side's account
-        reads the transfer's.
+        reader reads through its ``transfer``, and one that needs the side's
+        account reads the transfer's.
 
         Returns:
             The :class:`~app.services.transfer_legs.TransferLeg` on the

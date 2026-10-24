@@ -372,7 +372,8 @@ def _reject_held_rows(head: "list[DerivedPeriod]") -> None:
     Refusal 1 of :func:`gate_removable_head`, in the ruling's wording: one
     sentence per paycheck naming its items, then the one remedy.  An item is
     named once however many reasons hold it: a changed row that also holds a
-    purchase, or a transfer both of whose legs keep a payment.
+    purchase, or a transfer whose two sides each keep a record of its one
+    payment.
 
     Args:
         head: The periods the removal would take.

@@ -11,9 +11,10 @@ stream.  THREE kinds of fact enter it, and nothing else:
   The kind travels onto the event, because a loan whose first balance is a
   tracking start has the months before it cleared one by one (ruling
   **R-R117**, :func:`.._replay.replay_loan_events`);
-* a **PAYMENT** -- the to-side leg of a settled transfer into the loan, its
-  covering movement the record that cash actually moved
-  (:func:`~app.services.loan_loaders.settled_income_legs`);
+* a **PAYMENT** -- the to-side leg of a settled transfer into the loan
+  (:func:`~app.services.loan_loaders.settled_income_legs`): its cash is the
+  figure the transfer stores, and its covering movement, which a ``$0.00``
+  close does not hold, records the day that cash moved;
 * a **CHARGE** -- what an accrual period cost the loan
   (:func:`.._charges.contract_charges`), one per CONTRACTUAL installment from
   origination (plan step recurrence:R16-c-2, ruling **R-R100**).  It joined the
