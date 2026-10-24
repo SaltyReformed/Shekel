@@ -59,8 +59,8 @@ a failure cut short (R-BAL186): every card it creates is marked ``filing``
 until its last write, and a marked card is never offered (R-BAL202).  Run
 again, it writes nothing over a card the earlier run filed that is still open,
 still marked (refused when a person's or `quill drop`'s close ended it, unless it
-is work git says shipped), or -- for a ruling, which its own filing closes -- linked under
-its owner; a card closed after its filing finished is not looked for, so the
+is work git says shipped), or -- for a ruling, which its own filing closes -- blocked by
+its owner (R-BAL395); a card closed after its filing finished is not looked for, so the
 command files another (unless a listing that lags its close still shows it open).
 ``edit`` run again writes only the parts that differ, so it finishes an edit a
 failure cut short.
@@ -69,7 +69,6 @@ from __future__ import annotations
 
 import argparse
 import difflib
-import re
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -87,19 +86,19 @@ from tools.quill._command import (
     Refused,
     _label,
     _one,
-    _outside_parent,
     _read,
     _unfinished,
+    card_number,
     with_closure,
 )
 from tools.quill._export import cmd_export
 from tools.quill._filing import cmd_file
 from tools.quill._github import CredentialsError, GitHubError
+from tools.quill._show import cmd_show
 from tools.quill._state import (
     STALE_CLAIM,
     SyncPlan,
     Unsplit,
-    done_tasks,
     drop_shows,
     drop_unlinks,
     filing_unfinished,
@@ -126,7 +125,6 @@ from tools.quill.check import (
     BODY,
     TITLE,
     Draft,
-    alias_mark,
     in_ruling_shape,
     normalized,
     violations,
@@ -142,17 +140,6 @@ from tools.quill.setup_tracker import (
 #: How a command reaches the plan's tracker: quill's App, narrowed to its repository.  The
 #: release tool's command line reaches it the same way (``tools/release/release.py``).
 CONNECT = partial(Tracker.connect, PLAN)
-_CARD_REF = re.compile(r"(?:plan#|#)?([1-9][0-9]*)")
-#: What a commit did to a ship marker, by its status in :func:`_git.history`.
-_MARKER_CHANGES = {"A": "added", "M": "changed", "D": "deleted", "T": "changed the type of"}
-
-
-def card_number(text: str) -> int:
-    """``plan#7``, ``#7`` or ``7`` -> 7."""
-    found = _CARD_REF.fullmatch(text.strip())
-    if not found:
-        raise argparse.ArgumentTypeError(f"{text!r} is not a card: write plan#<number>")
-    return int(found.group(1))
 
 
 # -- next, claim, release -----------------------------------------------------
@@ -253,137 +240,6 @@ def cmd_release(args, _tracker: Tracker, root: Path,
     print(f"released plan#{args.card}, {holder(claim)}: its work is kept on {kept}")
     if _git.has_branch(root, claim.branch):
         print(f"  this clone's branch {claim.branch} is left as it is")
-    return 0
-
-
-# -- show ---------------------------------------------------------------------
-
-def _resolve_reference(tracker: Tracker, text: str) -> int:
-    """``plan#N`` -> N; an old id (``R-BAL80``, ``balance:X-bi-6-4d``) -> its titled card."""
-    try:
-        return card_number(text)
-    except argparse.ArgumentTypeError:
-        pass
-    arc, _, ident = text.rpartition(":")
-    alias = alias_mark(ident)
-    found = [
-        number for number, title in tracker.find_titles(ident)
-        if title.startswith(alias)
-    ]
-    if arc:
-        found = [n for n, card in tracker.cards(found).items() if arc in card.labels]
-    if len(found) != 1:
-        raise Refused(f"{text!r} names {len(found)} cards ({found}); name one as plan#N"
-                      + ("" if arc else " or give its arc, e.g. balance:" + ident))
-    return found[0]
-
-
-def _card_lines(card: Card, tracker: Tracker, cards: dict[int, Card], reads: _git.Reads,
-                listed: dict[int, Card]) -> list[str]:
-    """What the tracker and git (``reads``) say about a card, one fact a line.  ``cards``
-    holds every step linked below it (:func:`_steps_below`), so a step linked under it that
-    is no leaf of it says so (:func:`_state.never_split`), as ``next`` reads it; ``listed``
-    holds each card it lists as a child or a blocker, so each task among its children says
-    whether git says it is done (:func:`_state.done_tasks`), as a task itself does in place
-    of whether it shipped."""
-    claim = reads.claims.get(card.number)
-    stale = set(never_split(card, cards, reads.shipped.cards))
-    done = done_tasks({**listed, card.number: card}, reads.shipped.tasks, reads.claims)
-    order = [n for n, _ in tracker.board.order()]
-    state = "open" if card.is_open else f"closed ({card.state_reason})"
-    yes = {True: "yes", False: "no"}
-    ship = (f"done (git): {yes[card.number in done]}" if card.kind == TASK else
-            f"shipped (git): {yes[card.number in reads.shipped.cards]}")
-    place = f"#{order.index(card.number) + 1}" if card.number in order else "not on it"
-    lines = [
-        _label(card),
-        f"  state: {state}",
-        f"  {ship}",
-        f"  board: {place}",
-        f"  claim: {holder(claim)}" if claim else "  claim: none",
-        (f"  parent: plan#{card.parent}" if card.parent else
-         f"  parent: {outside} (outside the tracker)" if (outside := _outside_parent(card))
-         else "  parent: none"),
-    ]
-    lines += [f"  child: plan#{child.number} ({child.kind}, "
-              f"{'open' if child.is_open else 'closed'}"
-              + ("; no leaf: closed while still being filed, so never part of the split, "
-                 "R-BAL205" if child.number in stale else "")
-              + (f"; done (git): {yes[child.number in done]}" if child.kind == TASK else "")
-              + f") {listed[child.number].title}"
-              for child in card.children]
-    lines += [f"  blocked by: plan#{blocker} {listed[blocker].title}"
-              for blocker in card.blocked_by]
-    if filing_unfinished(card):
-        lines.append("  filing: not finished (R-BAL202) -- never offered until its `quill file` "
-                     "command runs again; with that command lost, make its missing writes on "
-                     f"the web and remove its {FILING!r} label last")
-    lines += [f"  {link.what} outside the tracker: {link.issue} -- not offered until it is "
-              "removed (R-BAL188)" for link in card.outside if link.what != "parent"]
-    return lines
-
-
-def _linked(tracker: Tracker, numbers: set[int], card: Card) -> dict[int, Card]:
-    """The cards ``numbers``, each linked below ``card`` or blocking it, read by number;
-    :class:`TrackerError` when the read does not hold one the link names (a read that
-    lags the link, or a card deleted or moved since).  No numbers, no read."""
-    if not numbers:
-        return {}
-    found = tracker.cards(numbers)
-    if absent := sorted(numbers - set(found)):
-        raise TrackerError(f"plan#{absent[0]} is linked below plan#{card.number} or blocks it, "
-                           "but a read by its number does not hold it: run show again")
-    return found
-
-
-def _steps_below(tracker: Tracker, card: Card) -> dict[int, Card]:
-    """``card`` and every step linked below it, read by number: all that the leaf rule
-    reads (:func:`_state.leaves` reads a linked step's own leaves, never a blocker or a
-    parent), so the leaf rule's read is no more than it needs; the cards ``show`` lists
-    are :func:`_listed`'s read."""
-    cards, wanted = {card.number: card}, set(card.step_children)
-    while wanted:
-        found = _linked(tracker, wanted, card)
-        cards.update(found)
-        wanted = {number for step in found.values() for number in step.step_children} - set(cards)
-    return cards
-
-
-def _listed(tracker: Tracker, card: Card, read: dict[int, Card]) -> dict[int, Card]:
-    """Each card ``card`` lists as a child or a blocker, whose title ``show`` prints, and,
-    for a task, whose state: from ``read`` (the steps :func:`_steps_below` read already), and
-    the rest read by number in one more read (:meth:`_tracker.Tracker.cards`: one request
-    per 50 cards), made only when one is left."""
-    numbers = {child.number for child in card.children} | set(card.blocked_by)
-    cards = {**read, **_linked(tracker, numbers - set(read), card)}
-    return {number: cards[number] for number in numbers}
-
-
-def cmd_show(args, tracker: Tracker, root: Path) -> int:
-    """A card -- the title of each card linked below it or blocking it among its facts --
-    then its text, its comments oldest first, and the code repository's history for it:
-    each commit on ``dev`` or ``main`` that added, changed or deleted its ship marker
-    (:func:`_git.history`), newest first."""
-    number = _resolve_reference(tracker, args.card)
-    card = _one(tracker, number)
-    reads = _git.read(root)
-    steps = _steps_below(tracker, card)
-    print("\n".join(_card_lines(card, tracker, steps, reads, _listed(tracker, card, steps))))
-    print()
-    print(tracker.body(number))
-    print()
-    comments = tracker.comments(number)
-    if not comments:
-        print("no comments")
-    for comment in comments:
-        print(f"== comment, {comment.created_at} by {comment.author or '?'}")
-        print(comment.body.rstrip())
-    print()
-    history = _git.history(root, number)
-    for status, sha, subject in history:
-        print(f"{_MARKER_CHANGES[status]} {_git.marker(number)}: {sha[:12]} {subject}")
-    if not history:
-        print(f"no commit on {DEV} or {MAIN} adds, changes or deletes {_git.marker(number)}")
     return 0
 
 

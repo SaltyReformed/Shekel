@@ -909,18 +909,32 @@ def sync_unsplits(cards: Mapping[int, Card], shipped: Iterable[int], plan: SyncP
     return undos
 
 
+def owner(card: BareCard) -> int | None:
+    """A finding's or a ruling's owner (ruling ``balance:R-BAL395``, :data:`OWNED`), the one
+    spelling: the card it is blocked by, when that is its one blocker, in the tracker or
+    outside it.  None for a card of another kind, and for one blocked by no card of the
+    tracker, by an issue outside it, or by more than one, which names no one owner.  Whether
+    that card is a step, and live, is the reader's to ask (:func:`_owner_lost`)."""
+    if card.kind not in OWNED or len(card.blocked_by) != 1 or any(
+            link.what == "blocker" for link in card.outside):
+        return None
+    return card.blocked_by[0]
+
+
 def _owner_lost(card: Card, cards: Mapping[int, Card], shipped: set[int]) -> str | None:
-    """How an open finding lost its live owner, the one step it is blocked by (R-BAL395);
-    None while it has one -- or an owner outside the tracker, which the outside link's own
-    report names (R-BAL188).  Blocked by two cards or more, it names no one owner."""
-    outside = [link.issue for link in card.outside if link.what == "blocker"]
-    if len(card.blocked_by) + len(outside) > 1:
-        named = ", ".join([f"plan#{number}" for number in card.blocked_by] + outside)
-        return f"is not one step: it is blocked by {named}"
-    if not card.blocked_by:
+    """How an open finding lost its live owner (:func:`owner`), the one step it is blocked
+    by (R-BAL395); None while it has one -- or an owner outside the tracker, which the
+    outside link's own report names (R-BAL188).  Blocked by two cards or more, it names no
+    one owner."""
+    number = owner(card)
+    if number is None:
+        outside = [link.issue for link in card.outside if link.what == "blocker"]
+        if len(card.blocked_by) + len(outside) > 1:
+            named = ", ".join([f"plan#{held}" for held in card.blocked_by] + outside)
+            return f"is not one step: it is blocked by {named}"
         return None if outside else "is missing"
-    owner = cards[card.blocked_by[0]]
-    if owner.kind != "step":
-        return f"plan#{owner.number} is {_kind_named(owner)}, no step"
-    return (None if is_live(owner.number, cards, shipped) else
-            f"plan#{owner.number} is no longer live (done, or under a dropped step)")
+    held = cards[number]
+    if held.kind != "step":
+        return f"plan#{held.number} is {_kind_named(held)}, no step"
+    return (None if is_live(held.number, cards, shipped) else
+            f"plan#{held.number} is no longer live (done, or under a dropped step)")
