@@ -25,8 +25,8 @@ every read either re-sync makes of ``budget.transactions`` or
 ``budget.transfers`` is keyed on a set of ids taken from the POSTED ledger, and
 a freshly generated row is ``Projected`` and posts nothing.  A case here that
 asserts recurring ROWS runs ``_reset_and_populate``; ``POST
-/pay-periods/reset`` is graded in
-``tests/test_routes/test_pay_period_admin.py``.
+/pay-periods/reset`` is graded in the
+``tests/test_routes/test_pay_period_admin/`` package.
 
 All four disciplines apply, and carry extra weight here because the
 failure mode is silent balance corruption: structural invariants after

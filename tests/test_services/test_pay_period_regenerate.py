@@ -10,8 +10,8 @@ the read pass the recurrence resolves in may only be opened above the service
 layer and only after the periods exist.  A case here that asserts recurring
 ROWS therefore runs ``_regenerate_and_populate``, which is what the route
 runs; a case about the door's own contract calls the door alone.  ``POST
-/pay-periods/regenerate`` is graded in
-``tests/test_routes/test_pay_period_admin.py``.
+/pay-periods/regenerate`` is graded in the
+``tests/test_routes/test_pay_period_admin/`` package.
 
 ``today`` is pinned with ``freeze_today`` so the past / current / future
 split is deterministic regardless of when the suite runs.  All four
@@ -690,6 +690,9 @@ class TestABatchMayNotSkipAPaycheckOfThePlan:
             user_id = seed_user["user"].id
 
             with pytest.raises(TypeError):
+                # Pylint: ``unexpected-keyword-arg`` -- the call passes a gap
+                # answer the door does not take; its TypeError is this case's
+                # subject.
                 pay_period_admin.regenerate_pay_periods(  # pylint: disable=unexpected-keyword-arg
                     user_id, new_start_date=date(2026, 7, 10), num_periods=3,
                     rhythm=rhythm_of(14), confirms=object(),
