@@ -129,9 +129,9 @@ class MarkerChange:
 
 @dataclass(frozen=True)
 class Took:
-    """One commit of a branch's own line through which it took a marker's blob in (``sha``),
-    and the next commit of that line that changed the marker again (``until``), None while
-    the branch still holds it (:func:`landings`)."""
+    """One commit of a branch's own line through which it took a marker's or a task file's
+    blob in (``sha``), and the next commit of that line that changed that file again
+    (``until``), None while the branch still holds it (:func:`landings`)."""
 
     sha: str
     until: str | None
@@ -277,9 +277,9 @@ class Merged:
     conflicts the tree still holds a file, which is no settled record: the side that kept
     it, for a change against a delete, or git's conflict text, for two lines (measured
     2026-10-23, git 2.56), and so does a task's file.  So a reader of the tree reads the
-    conflicts first.  Only quill's own read asks after the tasks (:func:`shipped`): CI's
-    landing check and the release tool read markers alone, and the release tool never reads
-    a task (R-BAL386)."""
+    conflicts first.  Quill's own read (:func:`shipped`) and CI's landing check
+    (``tools/quill/landing.py``) ask after the tasks; the release tool reads markers alone
+    and never reads a task (R-BAL386)."""
 
     tips: tuple[str, str]
     tree: str

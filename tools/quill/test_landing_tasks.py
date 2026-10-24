@@ -66,13 +66,17 @@ def _reverted(root, on, card, task):
         marker(card): None, f"w{card}.txt": None, f"t{task}.txt": None, task_file(task): None})
 
 
-def _owes(number, card=7, head="card/7"):
+def _owes(number, card=7, head="card/7", *, shown=False):
     """The open-task arm's refusal of ``head``, recording card ``card``, which owes task
-    ``number``'s done file."""
+    ``number``'s done file; ``shown``, the task closed by the tool as done, which ``quill
+    drop`` drops only once ``quill sync`` has reopened it."""
+    why, drop = ((" (quill closed it as done while a branch held that file)",
+                  f"drop the task once quill sync reopens it (quill sync, then quill drop "
+                  f"plan#{number})") if shown else
+                 ("", f"drop the task (quill drop plan#{number})"))
     return (f"REFUSED -- plan/tasks/{number}: {head} records card {card}, but holds no done file "
-            f"for task plan#{number} under it, which is neither done nor dropped: write it in "
-            f"the commit that finishes the task (quill task-file plan#{number}), or drop the "
-            f"task (quill drop plan#{number})")
+            f"for task plan#{number} under it, which is neither done nor dropped{why}: write it "
+            f"in the commit that finishes the task (quill task-file plan#{number}), or {drop}")
 
 
 # ------------------------------------------------- the card's claim, and the tasks it owes
@@ -89,22 +93,34 @@ def test_a_claim_lands_its_card_with_the_done_file_of_each_task_under_it(check, 
 
 
 @pytest.mark.parametrize(("close", "owed"), [
-    (None, True), (("COMPLETED", APP_LOGIN), True), (("COMPLETED", PERSON), False),
-    (("NOT_PLANNED", APP_LOGIN), False)],
+    (None, _owes(12)), (("COMPLETED", APP_LOGIN), _owes(12, shown=True)),
+    (("COMPLETED", PERSON), None), (("NOT_PLANNED", APP_LOGIN), None)],
     ids=["open", "closed by the tool as done", "closed by a person", "dropped by quill drop"])
 def test_a_claim_is_refused_while_a_task_under_its_card_lacks_its_done_file(check, code, close,
                                                                            owed):
     """card/7 records card 7 with no done file for task 12 under it.  An open task is owed,
     and so is one the TOOL closed as done, as that close only shows git (the branch it
-    showed may since have been rewritten): refused, the task read by its number.  A person's
-    close is a drop, and so is ``quill drop``'s: it lands."""
+    showed may since have been rewritten, or the piece reverted on it): refused, the task
+    read by its number, and the drop it offers for that one waits for ``quill sync`` to
+    reopen it, as ``quill drop`` refuses a closed card.  A person's close is a drop, and so
+    is ``quill drop``'s: it lands."""
     root, base = code
     task = card_node(12, "task", parent=7)
     github = Lookup(tracker(card_node(7), closed(task, *close) if close else task))
     status, out, _ = check(base, claim(root, base, 7)[1], "card/7", github=github)
-    assert (status, out.splitlines()) == ((1, [_owes(12), verdict("card/7", 1, 1)]) if owed
+    assert (status, out.splitlines()) == ((1, [owed, verdict("card/7", 1, 1)]) if owed
                                           else (0, [verdict("card/7", 1, 0)]))
     assert github.asked == [[7], [12]]
+
+
+def test_a_sub_issue_of_its_card_that_is_no_task_is_never_owed(check, code):
+    """Card 7 lists sub-issue 11, of no type: no task, so card/7 owes no done file for it,
+    and it is never read by its number."""
+    root, base = code
+    github = Lookup(tracker(card_node(7), card_node(11, None, parent=7)))
+    status, out, _ = check(base, claim(root, base, 7)[1], "card/7", github=github)
+    assert (status, out) == (0, verdict("card/7", 1, 0) + "\n")
+    assert github.asked == [[7]]
 
 
 def test_a_task_its_card_lists_that_the_tracker_lacks_refuses_to_judge(check, code):
@@ -133,6 +149,18 @@ def test_a_task_re_parented_is_done_on_its_new_cards_claim_only(check, code):
     assert (status, out.splitlines()) == (1, [_owes(12, 9, "card/9"), verdict("card/9", 1, 1)])
     assert check(base, _built(root, base, 9, 12), "card/9", github=github)[:2] == (
         0, verdict("card/9", 1, 0, tasks=1) + "\n")
+
+
+def test_a_task_whose_done_file_landed_under_its_old_card_is_not_owed_by_its_new(check, code):
+    """Card 7 landed on dev with task 12's piece; a person then moved task 12 under card 9.
+    card/9, cut from that dev, writes no done file for task 12, but M's tree holds the one
+    card 7 landed, so task 12 is done in git, as sync reads it: card/9 does not owe it."""
+    root, base = code
+    point_dev(root, landed := merge(root, base, _built(root, base, 7, 12), "Merge card/7"))
+    github = Lookup(tracker(card_node(7), card_node(9), card_node(12, "task", parent=9)))
+    status, out, _ = check(landed, claim(root, landed, 9)[1], "card/9", github=github)
+    assert (status, out) == (0, verdict("card/9", 1, 0) + "\n")
+    assert github.asked == [[9], [12]]
 
 
 @pytest.mark.parametrize(("cards", "why"), [
@@ -327,6 +355,41 @@ def test_a_resync_dropping_a_hotfixs_done_file_is_refused(check, code):
         "origin/main's file, then revert task 13 in a commit that is no merge (a revert "
         "deletes the done file with its code)", verdict("resync", 1, 1)])
     assert check(base, merge(root, base, hotfix, "resync"), "resync")[0] == 0
+
+
+def test_a_branch_deleting_a_hotfixs_done_file_in_a_commit_of_its_own_lands(check, code):
+    """Hotfix card 8 lands on main with task 13's piece.  A branch that merged main in, then
+    deletes task 13's done file in a commit of its own, a person's "not done": the change
+    shows the delete (R-BAL391), so it lands, as the same drop made in a merge's resolution
+    does not (:func:`test_a_resync_dropping_a_hotfixs_done_file_is_refused`)."""
+    root, base = code
+    point_main(root, hotfix := merge(root, base, _built(root, base, 8, 13), "Merge card/8"))
+    merged = merge(root, base, hotfix, "merge main in")
+    not_done = commit_files(root, merged, "task 13 is not done", {task_file(13): None})
+    assert check(base, not_done, "feat/x")[:2] == (0, verdict("feat/x", 1, 0) + "\n")
+
+
+def test_a_resync_settling_a_done_file_conflict_on_a_line_main_undid_is_refused(check, code):
+    """Two done files of task 12 (lines Y and Z) cross: dev merges Z into Y keeping Y, and
+    main merges Y into Z also keeping Y, then main's hotfix deletes Y.  dev's and main's
+    merge then conflicts on the file though main undid dev's very line.  A resync built by
+    hand keeping Y would mark task 12 done again with no change to its record: refused, in a
+    task's words, though the file conflicted BEFORE."""
+    root, base = code
+    one = commit_files(root, base, "done Y", {task_file(12): f"done {MON}\n"})
+    two = commit_files(root, base, "done Z", {task_file(12): f"done {TUE}\n"})
+    dev = run(root, "commit-tree", f"{one}^{{tree}}", "-p", one, "-p", two, "-m", "dev keeps Y")
+    took = run(root, "commit-tree", f"{one}^{{tree}}", "-p", two, "-p", one, "-m", "main takes Y")
+    point_main(root, main_tip := commit_files(root, took, "hotfix", {task_file(12): None}))
+    resync = run(root, "commit-tree", f"{dev}^{{tree}}", "-p", dev, "-p", main_tip, "-m",
+                 "resync")
+    status, out, _ = check(dev, resync, "resync")
+    assert (status, out.splitlines()) == (1, [
+        "REFUSED -- plan/tasks/12: origin/dev and origin/main conflict on it, and this change "
+        "settles it on a line origin/main held once and undid, though it writes no line of it, "
+        "so it would mark task 12 done again with no change to its record: a task undone is "
+        "done again from a fresh done file (quill task-file plan#12), which writes a new line",
+        verdict("resync", 0, 1)])
 
 
 def test_a_conflict_a_change_brings_on_a_done_file_refuses_to_judge(check, code):

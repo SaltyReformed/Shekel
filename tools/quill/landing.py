@@ -172,11 +172,11 @@ from tools.ci.arcs import REPO
 from tools.ci.gitcmd import FULL_ID, GitError, git
 from tools.ci.trailers import DEV, MAIN, is_ancestor, tracking
 from tools.quill import _git
-from tools.quill._command import with_closure
+from tools.quill._command import with_cards, with_closure
 from tools.quill._github import GitHub, GitHubError
 from tools.quill._state import dropped, filing_ended, filing_unfinished, names_no_task, no_work
 from tools.quill._tracker import BareCard, CardReader, TrackerError
-from tools.quill.setup_tracker import PLAN, TASK
+from tools.quill.setup_tracker import PLAN
 
 #: The environment variable holding the token the check reads the tracker with.
 TOKEN_VARIABLE = "PLAN_READ_TOKEN"
@@ -346,10 +346,10 @@ class Landing:
 
 @dataclass(frozen=True)
 class _Facts:
-    """What rule 6 reads of git for a change that writes a marker: ``records_only``, whether
-    the change is one it reads (into ``main``, every entry an added marker); and for such a
-    change, ``claimed``, the cards a claim was ever made for, and ``door``, its cards
-    neither that nor ever marked on ``dev`` or ``main``."""
+    """What rule 6 reads of git for a change that writes a marker or a task's done file:
+    ``records_only``, whether the change is one it reads (into ``main``, every entry an
+    added marker); and for such a change, ``claimed``, the cards a claim was ever made for,
+    and ``door``, its cards neither that nor ever marked on ``dev`` or ``main``."""
 
     records_only: bool
     claimed: frozenset[int]
@@ -590,8 +590,8 @@ def _settled(root: Path, merged: _git.Merged, kind: _Kind) -> dict[int, str]:
 
 
 def _undid(landing: Landing, line: tuple[str, str | None]) -> bool:
-    """Whether the other integration branch's own line held ``line``, a marker's ``(path,
-    blob)``, and holds it no longer (:attr:`Landing.carried`)."""
+    """Whether the other integration branch's own line held ``line``, a marker's or a task
+    file's ``(path, blob)``, and holds it no longer (:attr:`Landing.carried`)."""
     took = landing.carried.get(line)
     return bool(took) and all(each.until is not None for each in took)
 
@@ -752,23 +752,28 @@ def _owed(landing: Landing, card: BareCard, held: dict[int, BareCard],
     pull request's own claim records, that was not dropped (:func:`_state.dropped`: closed by
     a person, or by ``quill drop``; a task the TOOL closed as done counts, as that close only
     shows git) and whose done file M's tree does not hold.  Each task is read by its number,
-    as a parent's listing of it names no closer: those ``held`` lacks, which it then holds.
+    as a parent's listing of it names no closer: those ``held`` lacks, which it then holds
+    (:func:`_command.with_cards`).  A task the tool closed is dropped only once ``quill sync``
+    has reopened it (``quill drop`` refuses a closed card), so its sentence says so.
 
     Raises:
         _tracker.TrackerError: when a task ``card`` lists does not exist.
     """
-    numbers = [child.number for child in card.children if child.kind == TASK]
-    if wanted := [number for number in numbers if number not in held]:
-        held.update(reader.cards(wanted))
-    if absent := sorted(set(numbers) - set(held)):
-        raise TrackerError(f"cards {absent} are named by others but do not exist")
-    done, head = landing.lines[_git.TASKS], landing.pull.head
-    return [f"{_git.task_file(number)}: {head} records card {card.number}, but holds no done "
-            f"file for task plan#{number} under it, which is neither done nor dropped: write it "
-            f"in the commit that finishes the task (quill task-file plan#{number}), or drop the "
-            f"task (quill drop plan#{number})"
-            for number in sorted(numbers) if number not in done and not dropped(number, held,
-                                                                                 set())]
+    numbers = card.task_children
+    with_cards(reader, held, numbers)
+    done, head, reasons = landing.lines[_git.TASKS], landing.pull.head, []
+    for number in sorted(numbers):
+        if number in done or dropped(number, held, set()):
+            continue
+        shown, drop = (("", f"drop the task (quill drop plan#{number})") if held[number].is_open
+                       else (" (quill closed it as done while a branch held that file)",
+                             f"drop the task once quill sync reopens it (quill sync, then quill "
+                             f"drop plan#{number})"))
+        reasons.append(f"{_git.task_file(number)}: {head} records card {card.number}, but holds "
+                       f"no done file for task plan#{number} under it, which is neither done "
+                       f"nor dropped{shown}: write it in the commit that finishes the task "
+                       f"(quill task-file plan#{number}), or {drop}")
+    return reasons
 
 
 def refusals(landing: Landing, read: Mapping[str, set[int]], shipped: Iterable[int],
@@ -780,7 +785,9 @@ def refusals(landing: Landing, read: Mapping[str, set[int]], shipped: Iterable[i
     card owes (:func:`_owed`); ``read`` holds the cards (under :data:`_git.MARKERS`) and the
     tasks (under :data:`_git.TASKS`), and ``shipped`` is git's answer once the change and
     the other integration branch meet.  The tracker is read through the reader ``connect``
-    makes, the cards and tasks in one read.
+    makes: the cards and the tasks the change writes in one read, then each card a decision
+    over those cards reads (:func:`_command.with_closure`), then each task under the claim's
+    card not read yet (:func:`_owed`).
 
     Raises:
         NotSet: when ``connect`` has no token to read with.
@@ -810,9 +817,10 @@ def problems(root: Path, merge: str, pull: PullRequest,
              connect: Callable[[], CardReader]) -> tuple[dict[str, int], list[str]]:
     """How many entries under :data:`_git.MARKERS`, and under :data:`_git.TASKS`, the merge
     ``merge`` of ``pull`` writes or deletes, by directory, and one sentence for each refusal
-    (the module's rules); the tracker is read only for a card the change records by rule 5
-    or 6, or a task whose done file a claim writes.  The merge of ``merge`` with the other
-    branch (AFTER) is made once, and what it says shipped read once, by rules 7 and 8.
+    (the module's rules); the tracker is read only when the change records a card by rule 5
+    or 6, or a claim writes a task's done file (what it reads, :func:`refusals`).  The merge
+    of ``merge`` with the other branch (AFTER) is made once, and what it says shipped read
+    once, by rules 7 and 8.
 
     Raises:
         CannotJudge: as :func:`_landing` raises it.

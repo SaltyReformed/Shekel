@@ -26,12 +26,12 @@ from tools.quill._git import marker
 from tools.quill._github import GitHubError
 from tools.quill._histories import MON, PERSON, TUE, judging
 from tools.quill._histories import Lookup as _Lookup
+from tools.quill._histories import card_node as _card
 from tools.quill._histories import claim as _claim
 from tools.quill._histories import closed as _closed
 from tools.quill._histories import landed as _landed
 from tools.quill._histories import merge as _merge
 from tools.quill._histories import never as _never
-from tools.quill._histories import card_node as _card
 from tools.quill._histories import pull as _pull
 from tools.quill._histories import reader as _reader
 from tools.quill._histories import start as _start
@@ -43,6 +43,7 @@ from tools.quill._tracker import CardReader, Tracker
 from tools.quill.landing import (TOKEN_VARIABLE, CannotJudge, PullRequest, main, named,
                                  pull_from_environment, pull_request, reader_from_environment)
 from tools.quill.setup_tracker import APP_LOGIN, DEPLOY_TOGETHER_LABEL, FILING, PLAN
+
 
 def _paths(value, prefix=""):
     """Every key path in ``value``: a dict's keys, joined by dots, a list's items as ``[]``."""
