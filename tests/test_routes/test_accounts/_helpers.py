@@ -96,8 +96,8 @@ class _TestTheReconcileRouteMembers:
     it names is unchanged and still real: reconciling account A must not touch
     account B's purchases.  The exhaustive scoping matrix (another user, a
     credit purchase, a settled parent, an already-recorded entry) is graded at
-    the service in ``test_services/test_reconcile_service.py``; what is graded here
-    is the ROUTE -- that it resolves the assertion day itself, refuses a
+    the service in ``test_services/test_reconcile_service/test_the_outstanding_set.py``; what is
+    graded here is the ROUTE -- that it resolves the assertion day itself, refuses a
     non-owner, and commits.
     """
 

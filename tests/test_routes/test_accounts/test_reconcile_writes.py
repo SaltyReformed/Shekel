@@ -284,8 +284,8 @@ class TestTheReconcileRoute(_TestTheReconcileRouteMembers):
 
         Graded on the rendered document rather than on the producer, because the
         producer's grouping is already pinned in
-        ``test_services/test_reconcile_service.py`` and what this asserts is that
-        the panel consumes it: the name appears exactly once per envelope, each
+        ``test_services/test_reconcile_service/test_the_transaction_arm.py`` and what this asserts
+        is that the panel consumes it: the name appears exactly once per envelope, each
         block carries its own subtotal, and every purchase is still individually
         tickable (the two acts stay independent, R-EW's second half).
         """

@@ -399,7 +399,7 @@ class TestTheTransferArmThroughItsROUTE:
     """Plan step **X-f2-c3**: the TRANSFER arm, from the door rather than the service.
 
     The arm's rules are graded exhaustively at the service
-    (``test_services/test_reconcile_service.py::TestTheTransferArm``).  What
+    (``test_services/test_reconcile_service/test_the_transfer_arm.py::TestTheTransferArm``).  What
     is graded HERE is the part only the route and the template can get wrong:
     that a transfer reaches the panel at all, that its section prints the
     sentence saying a SECOND account moves, and that a tick posted as an
