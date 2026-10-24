@@ -20,10 +20,11 @@ placement at once unless told to lag (:attr:`FakeBoard.lagging`); the lag
 itself is graded against a recording.
 Nothing here calls GitHub.
 
-What git says -- a card shipped, a card claimed -- is never faked: :func:`ship`,
-:func:`unship` and :func:`claim` write the ship markers and claims (ruling
-``balance:R-BAL359``) to the ``code`` fixture's bare ``origin`` (``conftest.py``), which
-every command then reads as it reads the real one.
+What git says -- a card shipped, a card claimed, a task done -- is never faked:
+:func:`ship`, :func:`unship` and :func:`claim` write the ship markers and claims (ruling
+``balance:R-BAL359``), and :func:`finish`, :func:`unfinish`, :func:`piece` and
+:func:`unpiece` the task files (ruling ``balance:R-BAL386``), to the ``code`` fixture's bare
+``origin`` (``conftest.py``), which every command then reads as it reads the real one.
 """
 from __future__ import annotations
 
@@ -93,10 +94,11 @@ class FakeBoard:
 class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-attributes
     """The tracker in memory: cards, bodies, comments, its board, and every write.
 
-    Pylint: ``too-many-public-methods`` (26/20) -- it stands in for
+    Pylint: ``too-many-public-methods`` (27/20) -- it stands in for
     :class:`_tracker.Tracker`, so it has each of that class's 25 reads and
-    writes (its own disable says why there are so many), and ``add``, which
-    puts a card in.  ``too-many-instance-attributes`` (10/7) -- **one per kind
+    writes (its own disable says why there are so many), and ``add`` and
+    ``add_task``, which put a card or a task in.
+    ``too-many-instance-attributes`` (10/7) -- **one per kind
     of fact it keeps**: nine a command reads back (cards, bodies, saved
     versions, comments, the board, the deleted numbers, the milestones, each
     card's milestone, and how GitHub renders a text) and the log of writes the
@@ -132,6 +134,15 @@ class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-
         if on_board and values["is_open"] and kind in quill.ON_BOARD:
             self.board.items.append(number)
         return self.cards_by_number[number]
+
+    def add_task(self, number, parent, **fields):
+        """Put a task in the tracker (R-BAL386): a sub-issue of type ``task`` under the card
+        ``parent``, which lists it, as GitHub links one; open and carrying no label by
+        default, and never on the board."""
+        task = self.add(number, "task", labels=(), parent=parent, **fields)
+        held = self.cards_by_number[parent]
+        self._set(parent, children=(*held.children, Child(number, "task", task.is_open)))
+        return task
 
     def _set(self, number, **fields):
         """Change a held card."""
@@ -410,6 +421,44 @@ def unship(root, *numbers):
     """Delete from ``origin``'s ``dev`` the ship marker of each card in ``numbers``, as a
     revert of the change that shipped it does; its sha."""
     return _onto_dev(root, "Revert ship", dict.fromkeys(map(_git.marker, numbers)))
+
+
+def finish(root, *numbers):
+    """Land on ``origin``'s ``dev`` the file of each task in ``numbers`` (R-BAL386), as the
+    merge of its card's branch lands it; its sha."""
+    return _onto_dev(root, "finish", {_git.task_file(number): f"done {_git.instant(CLAIMED)}\n"
+                                      for number in numbers})
+
+
+def unfinish(root, *numbers):
+    """Delete from ``origin``'s ``dev`` the file of each task in ``numbers``, as a revert of the
+    commit that wrote it does; its sha."""
+    return _onto_dev(root, "Revert finish", dict.fromkeys(map(_git.task_file, numbers)))
+
+
+def _onto_claim(root, card, message, files):
+    """A commit on ``origin``'s ``card/<card>`` (a claim :func:`claim` made) writing or deleting
+    ``files``, pushed there from another clone (:func:`scratch.elsewhere`), as a session pushes
+    the commit finishing a piece; its sha."""
+    other, branch = elsewhere(root), _git.card_branch(card)
+    _run(other, "fetch", "--quiet", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
+    sha = commit_files(other, _run(other, "rev-parse", f"refs/remotes/origin/{branch}"), message,
+                       files)
+    _run(other, "push", "--quiet", "origin", f"{sha}:refs/heads/{branch}")
+    return sha
+
+
+def piece(root, card, *numbers):
+    """Push onto ``card/<card>`` the file of each task in ``numbers`` (R-BAL386), as the commit
+    finishing each piece writes it; its sha."""
+    return _onto_claim(root, card, "piece", {
+        _git.task_file(number): f"done {_git.instant(CLAIMED)}\n" for number in numbers})
+
+
+def unpiece(root, card, *numbers):
+    """Push onto ``card/<card>`` a commit deleting the file of each task in ``numbers``, as a
+    revert of the commit finishing the piece does on the branch; its sha."""
+    return _onto_claim(root, card, "Revert piece", dict.fromkeys(map(_git.task_file, numbers)))
 
 
 def claim(root, number, when=CLAIMED):

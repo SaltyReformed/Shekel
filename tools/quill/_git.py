@@ -607,6 +607,15 @@ def landings(root: Path, ref: str) -> dict[tuple[str, str], tuple[Took, ...]]:
     return {key: tuple(took) for key, took in found.items()}
 
 
+def checked_out(root: Path) -> str | None:
+    """The branch checked out in ``root``'s working tree, by its short name; None when none
+    is (a detached HEAD)."""
+    done = run(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+    if done.returncode not in (0, 1):
+        raise GitError(f"git symbolic-ref HEAD: {done.stderr.strip()}")
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
 def has_branch(root: Path, name: str) -> bool:
     """Whether this clone holds the local branch ``name``."""
     done = run(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}")

@@ -211,12 +211,27 @@ def test_repository_drift_names_only_the_settings_that_differ():
     assert repository_drift(declared, actual) == {"has_wiki": False, "description": "d"}
 
 
-def test_a_new_organizations_issue_types_differ_seven_ways():
-    """A new organization has Task, Bug and Feature enabled and none of the four kinds."""
+def test_a_new_organizations_issue_types_differ_eight_ways():
+    """A new organization has Task, Bug and Feature enabled and none of the plan's five types:
+    the four kinds of card and a task (R-BAL386), whose name is ``task``, never GitHub's
+    built-in ``Task``, so each of the five is missing and each of the three is extra."""
     defaults = [{"name": n, "is_enabled": True} for n in ("Task", "Bug", "Feature")]
     differences = issue_type_differences(ISSUE_TYPES, defaults)
-    assert len(differences) == 7
+    assert len(differences) == 8
     assert all(any(repr(kind) in d for d in differences) for kind in ISSUE_TYPES)
+
+
+def test_the_organization_as_the_developer_set_it_for_tasks_matches():
+    """R-BAL386's click (2026-10-23): GitHub's built-in ``Task`` renamed ``task`` and enabled,
+    ``Bug`` and ``Feature`` left disabled, beside the four kinds of card -- exactly the five
+    types the plan reads.  The same organization before the click lacks ``task``."""
+    kinds = [{"name": n, "is_enabled": True} for n in ("step", "finding", "ruling", "question")]
+    disabled = [{"name": n, "is_enabled": False} for n in ("Bug", "Feature")]
+    assert ISSUE_TYPES == ("step", "finding", "ruling", "question", "task")
+    assert not issue_type_differences(ISSUE_TYPES, [*kinds, {"name": "task", "is_enabled": True},
+                                                    *disabled])
+    assert issue_type_differences(ISSUE_TYPES, [*kinds, {"name": "Task", "is_enabled": False},
+                                                *disabled]) == ["issue type 'task' is missing"]
 
 
 def test_the_four_kinds_enabled_and_the_defaults_disabled_match():

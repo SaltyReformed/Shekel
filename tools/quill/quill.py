@@ -21,6 +21,10 @@ first reads it once (:func:`_git.read`): it lists the ``card/N`` branches
 this checkout's ``origin/dev``, ``origin/main`` and ``origin/card/N``.
 (``move`` and ``drop`` ask it whether a step is split: a leaf dropped before
 its filing finished is no leaf unless git says it shipped, ``_state.leaves``.)
+A TASK (ruling ``balance:R-BAL386``) is a piece of one step or finding, a sub-issue
+of it done when its file ``plan/tasks/N`` is in git (``_state.done_tasks``):
+``file task`` files one, ``task-file`` writes its file for the commit that finishes
+the piece (:mod:`_tasks`), and ``sync``, ``drop`` and ``show`` read it.
 
 Usage, from the repository root (``plan#N`` or ``N`` names a card)::
 
@@ -33,6 +37,8 @@ Usage, from the repository root (``plan#N`` or ``N`` names a card)::
     python -m tools.quill.quill file ruling --arc ARC --title NAME --owner plan#S
                                 (--question-file Q | --from-question plan#Q) --answer-file A
     python -m tools.quill.quill file question --arc ARC --title NAME --body-file QUESTION
+    python -m tools.quill.quill file task --parent plan#N --title NAME --body-file PIECE
+    python -m tools.quill.quill task-file plan#T
     python -m tools.quill.quill edit plan#N [--title NAME] [--body-file TEXT]
     python -m tools.quill.quill comment plan#N --body-file TEXT
     python -m tools.quill.quill block plan#N --by plan#M [--remove]
@@ -75,7 +81,7 @@ import requests
 from tools.ci.arcs import ARCS, REPO
 from tools.ci.gitcmd import GitError
 from tools.ci.trailers import DEV, MAIN, tracking
-from tools.quill import _git
+from tools.quill import _git, _tasks
 from tools.quill._command import (
     ON_BOARD,
     Refused,
@@ -93,6 +99,7 @@ from tools.quill._state import (
     STALE_CLAIM,
     SyncPlan,
     Unsplit,
+    done_tasks,
     drop_shows,
     drop_unlinks,
     filing_unfinished,
@@ -124,7 +131,13 @@ from tools.quill.check import (
     normalized,
     violations,
 )
-from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, FILING, MOVES_MONEY_LABEL, PLAN
+from tools.quill.setup_tracker import (
+    DEPLOY_TOGETHER_LABEL,
+    FILING,
+    MOVES_MONEY_LABEL,
+    PLAN,
+    TASK,
+)
 
 #: How a command reaches the plan's tracker: quill's App, narrowed to its repository.  The
 #: release tool's command line reaches it the same way (``tools/release/release.py``).
@@ -266,21 +279,26 @@ def _resolve_reference(tracker: Tracker, text: str) -> int:
 
 
 def _card_lines(card: Card, tracker: Tracker, cards: dict[int, Card], reads: _git.Reads,
-                titles: dict[int, str]) -> list[str]:
+                listed: dict[int, Card]) -> list[str]:
     """What the tracker and git (``reads``) say about a card, one fact a line.  ``cards``
     holds every step linked below it (:func:`_steps_below`), so a step linked under it that
-    is no leaf of it says so (:func:`_state.never_split`), as ``next`` reads it; ``titles``
-    holds the title of each card it lists as a child or a blocker."""
+    is no leaf of it says so (:func:`_state.never_split`), as ``next`` reads it; ``listed``
+    holds each card it lists as a child or a blocker, so each task among its children says
+    whether git says it is done (:func:`_state.done_tasks`), as a task itself does in place
+    of whether it shipped."""
     claim = reads.claims.get(card.number)
     stale = set(never_split(card, cards, reads.shipped.cards))
+    done = done_tasks({**listed, card.number: card}, reads.shipped.tasks, reads.claims)
     order = [n for n, _ in tracker.board.order()]
     state = "open" if card.is_open else f"closed ({card.state_reason})"
-    ship = "yes" if card.number in reads.shipped.cards else "no"
+    yes = {True: "yes", False: "no"}
+    ship = (f"done (git): {yes[card.number in done]}" if card.kind == TASK else
+            f"shipped (git): {yes[card.number in reads.shipped.cards]}")
     place = f"#{order.index(card.number) + 1}" if card.number in order else "not on it"
     lines = [
         _label(card),
         f"  state: {state}",
-        f"  shipped (git): {ship}",
+        f"  {ship}",
         f"  board: {place}",
         f"  claim: {holder(claim)}" if claim else "  claim: none",
         (f"  parent: plan#{card.parent}" if card.parent else
@@ -290,9 +308,12 @@ def _card_lines(card: Card, tracker: Tracker, cards: dict[int, Card], reads: _gi
     lines += [f"  child: plan#{child.number} ({child.kind}, "
               f"{'open' if child.is_open else 'closed'}"
               + ("; no leaf: closed while still being filed, so never part of the split, "
-                 "R-BAL205" if child.number in stale else "") + f") {titles[child.number]}"
+                 "R-BAL205" if child.number in stale else "")
+              + (f"; done (git): {yes[child.number in done]}" if child.kind == TASK else "")
+              + f") {listed[child.number].title}"
               for child in card.children]
-    lines += [f"  blocked by: plan#{blocker} {titles[blocker]}" for blocker in card.blocked_by]
+    lines += [f"  blocked by: plan#{blocker} {listed[blocker].title}"
+              for blocker in card.blocked_by]
     if filing_unfinished(card):
         lines.append("  filing: not finished (R-BAL202) -- never offered until its `quill file` "
                      "command runs again; with that command lost, make its missing writes on "
@@ -318,8 +339,8 @@ def _linked(tracker: Tracker, numbers: set[int], card: Card) -> dict[int, Card]:
 def _steps_below(tracker: Tracker, card: Card) -> dict[int, Card]:
     """``card`` and every step linked below it, read by number: all that the leaf rule
     reads (:func:`_state.leaves` reads a linked step's own leaves, never a blocker or a
-    parent), so the leaf rule's read is no more than it needs; the titles ``show`` prints
-    are :func:`_titles`' read."""
+    parent), so the leaf rule's read is no more than it needs; the cards ``show`` lists
+    are :func:`_listed`'s read."""
     cards, wanted = {card.number: card}, set(card.step_children)
     while wanted:
         found = _linked(tracker, wanted, card)
@@ -328,14 +349,14 @@ def _steps_below(tracker: Tracker, card: Card) -> dict[int, Card]:
     return cards
 
 
-def _titles(tracker: Tracker, card: Card, read: dict[int, Card]) -> dict[int, str]:
-    """The title of each card ``card`` lists as a child or a blocker: from ``read`` (the
-    steps :func:`_steps_below` read already), and the rest read by number in one more
-    read (:meth:`_tracker.Tracker.cards`: one request per 50 cards), made only when one is
-    left."""
+def _listed(tracker: Tracker, card: Card, read: dict[int, Card]) -> dict[int, Card]:
+    """Each card ``card`` lists as a child or a blocker, whose title ``show`` prints, and,
+    for a task, whose state: from ``read`` (the steps :func:`_steps_below` read already), and
+    the rest read by number in one more read (:meth:`_tracker.Tracker.cards`: one request
+    per 50 cards), made only when one is left."""
     numbers = {child.number for child in card.children} | set(card.blocked_by)
     cards = {**read, **_linked(tracker, numbers - set(read), card)}
-    return {number: cards[number].title for number in numbers}
+    return {number: cards[number] for number in numbers}
 
 
 def cmd_show(args, tracker: Tracker, root: Path) -> int:
@@ -347,7 +368,7 @@ def cmd_show(args, tracker: Tracker, root: Path) -> int:
     card = _one(tracker, number)
     reads = _git.read(root)
     steps = _steps_below(tracker, card)
-    print("\n".join(_card_lines(card, tracker, steps, reads, _titles(tracker, card, steps))))
+    print("\n".join(_card_lines(card, tracker, steps, reads, _listed(tracker, card, steps))))
     print()
     print(tracker.body(number))
     print()
@@ -527,12 +548,17 @@ def cmd_move(args, tracker: Tracker, root: Path) -> int:
     return 0
 
 
-def _drop(tracker: Tracker, card: Card, why: str, claims: dict[int, _git.Claim]) -> None:
-    """Drop one piece of work: the reason as a comment, then closed as not planned; each
-    write printed as it lands, and a claim on it (one of ``claims``) named."""
+def _drop(tracker: Tracker, card: Card, why: str, reads: _git.Reads) -> None:
+    """Drop one piece of work: first each task under it its drop takes
+    (:func:`_tasks.taken_by_drop`, R-BAL386), each dropped as this drops it; then the reason
+    as a comment, then closed as not planned; each write printed as it lands, and a claim on
+    it (one of ``reads``' claims) named.  Run again after a failure, it finds the tasks still
+    to drop: one closed already is not taken again."""
+    for task in _tasks.taken_by_drop(tracker, card, reads.shipped.tasks):
+        _drop(tracker, task, why, reads)
     tracker.comment(card.number, f"Dropped: {why}")
     print(f"  commented on plan#{card.number}: Dropped: {why}")
-    _close_dropped(tracker, card, claims)
+    _close_dropped(tracker, card, reads.claims)
 
 
 def _close_dropped(tracker: Tracker, card: Card, claims: dict[int, _git.Claim]) -> None:
@@ -594,11 +620,28 @@ def _leave_split(tracker: Tracker, leaf: Card, cards: dict[int, Card],
                               tracker.board.order() if opened else None), cards)
 
 
+def _refuse_drop(card: Card, cards: dict[int, Card], reads: _git.Reads) -> None:
+    """Refuse to drop ``card``, no step split into smaller steps, when it is closed already, or
+    is work git says shipped, or a task whose file is on ``dev`` or ``main``: each is undone
+    by a revert."""
+    if not card.is_open:
+        raise Refused(f"{_label(card)} is already closed")
+    if is_work(card, cards, reads.shipped.cards) and card.number in reads.shipped.cards:
+        raise Refused(f"{_label(card)} shipped in git: undo it by reverting the change that "
+                      f"shipped it, which deletes {_git.marker(card.number)}, not by a drop")
+    if card.kind == TASK and card.number in reads.shipped.tasks:
+        raise Refused(f"{_label(card)} is done in git ({_git.task_file(card.number)} is on "
+                      f"{DEV} or {MAIN}): undo it by reverting the commit that wrote that "
+                      "file, not by a drop")
+
+
 def cmd_drop(args, tracker: Tracker, root: Path) -> int:
     """Retire work with no code: each card's reason as a comment, then closed as not planned.
 
     Work git says shipped is never dropped: undoing it is a revert of the change that
-    shipped it, which deletes its marker.
+    shipped it, which deletes its marker; nor is a task whose file is on ``dev`` or ``main``,
+    undone the same way.  A card's drop drops each task under it still to do first
+    (:func:`_drop`, R-BAL190's shape: the tool records the decision where the work is).
     A leaf dropped while its filing has not finished is first taken out of the
     split it began, which it was never part of (R-BAL205, :func:`_leave_split`):
     unlinked, and its split step, if it was the only leaf and will be open, a
@@ -632,17 +675,12 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
     shipped = reads.shipped.cards
     cards = with_closure(tracker, {card.number: card})
     if not is_container(card, cards, shipped):
-        if not card.is_open:
-            raise Refused(f"{_label(card)} is already closed")
-        if is_work(card, cards, shipped) and card.number in shipped:
-            raise Refused(f"{_label(card)} shipped in git: undo it by reverting the change "
-                          f"that shipped it, which deletes {_git.marker(card.number)}, not "
-                          "by a drop")
+        _refuse_drop(card, cards, reads)
         if card.kind == "step" and card.parent is not None and filing_unfinished(card):
             _leave_split(tracker, card, cards, shipped)
         for undo in drop_unlinks(card, cards, shipped, set()):
             _unsplit(tracker, undo, cards)
-        _drop(tracker, card, args.why, reads.claims)
+        _drop(tracker, card, args.why, reads)
         return 0
     below = leaves_below(card, cards, shipped)
     done = [leaf for leaf in below if leaf.number in shipped]
@@ -659,7 +697,7 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
     print(f"  commented on plan#{card.number}: dropping its leaves still work, {names}"
           + ("" if card in bare else "; it shows them at the next `quill sync`"))
     for leaf in below:
-        _drop(tracker, leaf, args.why, reads.claims)
+        _drop(tracker, leaf, args.why, reads)
     for undo in drop_unlinks(card, cards, shipped, ending):
         _unsplit(tracker, undo, cards)
     for step in bare:
@@ -668,7 +706,7 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
         if step.number == card.number:
             _close_dropped(tracker, step, reads.claims)
         else:
-            _drop(tracker, step, args.why, reads.claims)
+            _drop(tracker, step, args.why, reads)
     return 0
 
 
@@ -705,21 +743,30 @@ def _sync_reads(tracker: Tracker, reads: _git.Reads,
     listing finds (it is closed, and carries no mark); the
     claimed ones so that a claim on a split step is reported whatever that step's
     state (:func:`_state.sync_plan`) -- and then every card a decision over them reads
-    (:func:`with_closure`).
+    (:func:`with_closure`).  Every card a task file on ``dev`` or ``main`` or at a claim's
+    tip names is read by its number too, and then every task linked under a card read
+    (R-BAL386): a task the tool closed as done is found through the card it is under, so it
+    is reopened once git no longer says it is done.  (Not found: one under a card a PERSON
+    closed while it was claimed, never shipped nor marked, whose claim was released since;
+    it stays shown done under that dropped card.)
     """
     listed = {**tracker.open_cards(), **tracker.marked()}
-    cards = tracker.cards(ever | set(listed) | set(reads.claims))
+    named = set(reads.shipped.tasks).union(*(claim.tasks for claim in reads.claims.values()))
+    cards = tracker.cards(ever | set(listed) | set(reads.claims) | named)
     if unread := sorted(set(listed) - set(cards)):
         raise TrackerError(f"plan#{unread[0]} is listed, but a read by its number does not hold "
                            "it (that read has not caught up yet, or the card was deleted or "
                            "moved since): run sync again")
     history = [f"the marker {_git.marker(number)} on {DEV} or {MAIN} names plan#{number}, "
                "which does not exist" for number in sorted(reads.shipped.cards - set(cards))]
-    return with_closure(tracker, cards), history
+    cards = with_closure(tracker, cards)
+    tasks = {child.number for card in cards.values() for child in card.children
+             if child.kind == TASK} - set(cards)
+    return with_closure(tracker, {**cards, **tracker.cards(tasks)}), history
 
 
 def cmd_sync(args, tracker: Tracker, root: Path) -> int:
-    """Write each step's and finding's open or closed state from git (display only), then
+    """Write each step's, finding's and task's open or closed state from git (display only), then
     undo each split a leaf closed while still being filed is linked under (R-BAL205,
     :func:`_undo_splits`): last, after every state write and every REPORT and HISTORY
     line, so a failed undo costs none of them; run again, it finishes the undo.
@@ -733,7 +780,7 @@ def cmd_sync(args, tracker: Tracker, root: Path) -> int:
     reads = _git.read(root)
     shipped = reads.shipped.cards
     cards, history = _sync_reads(tracker, reads, _git.ever_marked(root))
-    changes = sync_plan(cards, shipped, reads.claims)
+    changes = sync_plan(cards, shipped, reads.claims, reads.shipped.tasks)
     verb = "would " if args.dry_run else ""
     for number in changes.close:
         if not args.dry_run:
@@ -825,8 +872,8 @@ def cmd_spec_revert(args, tracker: Tracker, _root: Path) -> int:
 # -- the command line -----------------------------------------------------------------
 
 def _file_parser(commands) -> None:
-    """``file step|finding|ruling|question`` and each kind's arguments."""
-    kinds = commands.add_parser("file", help="file a step, finding, ruling or question")
+    """``file step|finding|ruling|question|task`` and each kind's arguments."""
+    kinds = commands.add_parser("file", help="file a step, finding, ruling, question or task")
     sub = kinds.add_subparsers(dest="kind", required=True)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--arc", required=True, choices=ARCS)
@@ -848,6 +895,12 @@ def _file_parser(commands) -> None:
     ruling.add_argument("--answer-file", required=True, help="his answer, word for word")
     question = sub.add_parser("question", parents=[common], help="for the developer to answer")
     question.add_argument("--body-file", required=True, help="the question")
+    task = sub.add_parser(TASK, help="a piece of one step or finding: a commit in its card's "
+                                     "pull request (its arc is its card's)")
+    task.add_argument("--parent", type=card_number, required=True,
+                      help="the step or finding it is a piece of")
+    task.add_argument("--title", required=True, help="a short name (R-BAL178)")
+    task.add_argument("--body-file", required=True, help="what the piece builds")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -885,6 +938,9 @@ def parser() -> argparse.ArgumentParser:
     drop = commands.add_parser("drop", help="retire a card with no code")
     drop.add_argument("card", type=card_number)
     drop.add_argument("--why", required=True)
+    commands.add_parser("task-file", help="write a task's file plan/tasks/T, to commit with "
+                                          "its piece on its card's branch").add_argument(
+        "task", type=card_number)
     commands.add_parser("sync", help="write cards' state from git").add_argument(
         "--dry-run", action="store_true")
     history = commands.add_parser("spec-history", help="a card's body edits")
@@ -901,7 +957,7 @@ def parser() -> argparse.ArgumentParser:
 COMMANDS: dict[str, Callable[..., int]] = {
     "next": cmd_next, "claim": cmd_claim, "release": cmd_release, "show": cmd_show,
     "file": cmd_file, "edit": cmd_edit, "comment": cmd_comment, "block": cmd_block,
-    "move": cmd_move, "drop": cmd_drop,
+    "move": cmd_move, "drop": cmd_drop, "task-file": _tasks.cmd_task_file,
     "sync": cmd_sync, "spec-history": cmd_spec_history, "spec-revert": cmd_spec_revert,
     "export": cmd_export,
 }

@@ -107,10 +107,17 @@ REHEARSAL = Place("saltyreformed-labs", "shekel-plan-rehearsal", "Shekel plan re
 #: :data:`PLAN`'s names, which this module's checks configure.
 ORG, REPO, PROJECT_TITLE = PLAN.owner, PLAN.name, PLAN.board_title
 
-#: The four kinds of card.  The organization's issue types are managed only
-#: with the ``admin:org`` scope, which the token every session shares does not
-#: carry, so the developer sets them on the web and this module checks them.
-ISSUE_TYPES = ("step", "finding", "ruling", "question")
+#: The four kinds of card: each carries one arc label, and ``check.violations`` holds
+#: each to its kind's rules.
+CARD_TYPES = ("step", "finding", "ruling", "question")
+#: A piece of one step or finding, a commit inside its card's one pull request (ruling
+#: ``balance:R-BAL386``): a sub-issue of that card, never on the board, which carries no arc
+#: label (its arc is its card's), and is done when its file ``plan/tasks/N`` is in git.
+TASK = "task"
+#: Every issue type the plan reads: the four kinds of card, and a task.  The organization's
+#: issue types are managed only with the ``admin:org`` scope, which the token every session
+#: shares does not carry, so the developer sets them on the web and this module checks them.
+ISSUE_TYPES = (*CARD_TYPES, TASK)
 ISSUE_TYPES_URL = f"https://github.com/organizations/{ORG}/settings/issue-types"
 
 #: The repository's settings this module holds.  ``auto_init`` is a creation
@@ -326,7 +333,7 @@ def issue_type_differences(declared: tuple[str, ...], actual: list[dict]) -> lis
     """Each way the organization's issue types differ from ``declared``.
 
     Every declared type must exist and be enabled; any OTHER enabled type is a
-    kind of card the plan cannot read, so it is a difference too.
+    kind of issue the plan cannot read, so it is a difference too.
     """
     by_name = {issue_type["name"]: issue_type for issue_type in actual}
     differences = []
@@ -336,7 +343,7 @@ def issue_type_differences(declared: tuple[str, ...], actual: list[dict]) -> lis
         elif not by_name[name]["is_enabled"]:
             differences.append(f"issue type {name!r} is disabled")
     differences += [
-        f"issue type {name!r} is enabled but is not one of the plan's kinds"
+        f"issue type {name!r} is enabled but is not one of the plan's types"
         for name, issue_type in by_name.items()
         if name not in declared and issue_type["is_enabled"]
     ]
