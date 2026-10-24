@@ -73,7 +73,7 @@ class TestTheFigureCorrectionDoorOnAPair:
             for account_id in (xfer.from_account_id, xfer.to_account_id)
         )
 
-    def test_a_correction_records_on_both_legs_and_on_neither_parent(
+    def test_a_correction_records_once_on_a_paid_transfer_keeping_it_paid_and_both_sides_days(
         self, app, db, transfer_data,
     ):
         """Transfer Invariant 3 for the settlement record.
@@ -88,7 +88,10 @@ class TestTheFigureCorrectionDoorOnAPair:
         (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  The status
         is read off the row re-read from the database since plan step
         ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2, where it read the
-        object in the session (ruling R-BAL290 part 1).
+        object in the session (ruling R-BAL290 part 1).  Named
+        ``test_a_correction_records_on_both_legs_and_on_neither_parent``
+        until plan step ``balance:X-bi-6-4d-2``'s 4d-4 half, when each side's
+        record held the figure.
         """
         with app.app_context():
             td = transfer_data

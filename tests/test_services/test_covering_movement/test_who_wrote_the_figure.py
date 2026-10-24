@@ -663,10 +663,10 @@ class TestTheRetainedReadTakesTheSourceOffTheMovement:
             assert retained == status_seam.Settlement(None, None)
             assert not retained.stated
 
-    def test_both_legs_of_a_corrected_transfer_read_typed_off_their_movements(
+    def test_each_leg_of_a_corrected_transfer_holds_one_record_and_reads_typed_off_the_transfer(
         self, app, seed_user, seed_periods,
     ):
-        """The retained read off each leg: its side's record, and the transfer's figure and source.
+        """Each leg holds one record, and its retained read is the transfer's figure and source.
 
         Read through ``status_seam.recorded_leg_settlement``, the leg-shaped
         read the transfer settle takes its retained record by, since plan step
@@ -674,7 +674,9 @@ class TestTheRetainedReadTakesTheSourceOffTheMovement:
         ``recorded_settlement`` off each shadow until then (ruling R-BAL167
         class 4).  The figure and who wrote it are stored once on the
         TRANSFER since that step's 4d-4 half; each side's record carried
-        them until then and states neither now.
+        them until then and states neither now.  Named
+        ``test_both_legs_of_a_corrected_transfer_read_typed_off_their_movements``
+        until that half.
         """
         with app.app_context():
             xfer, _, _ = _settled_pair(seed_user, seed_periods[0])

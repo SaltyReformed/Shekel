@@ -559,16 +559,17 @@ class TestATransfersMovementsFollowItsLifecycle:
             assert _only_movement(expense).account_id == seed_user["account"].id
 
 
-class TestALoanPaymentsLoanSideMovementIsItsRecord:
+class TestALoanPaymentReStatedAtZeroMovesTheLoansPositionAndNotItsPostedLedger:
     """The loan replay prices a payment by its RECORD: the transfer's settled figure.
 
     A payment's income leg sits on the LOAN account and carries a covering
     movement there; every loan reader values the leg by its record
-    (``row_valuation.leg_settled_contribution``; since plan step
-    ``balance:X-bi-4b-1`` the record is the leg's movement, ruling
-    **R-BAL80**, and since ``balance:X-bi-6-4d-2`` it hangs off the transfer
-    by its side link, not off the leg's shadow) -- so the movement is the
-    whole of what the loan side reads of the payment.
+    (``row_valuation.leg_settled_contribution``; from plan step
+    ``balance:X-bi-4b-1`` the record was the leg's movement, ruling
+    **R-BAL80**, which hangs off the transfer by its side link since
+    ``balance:X-bi-6-4d-2``, not off the leg's shadow) -- and since that
+    step's 4d-4 half what the loan side reads of the payment is the
+    transfer's settled figure, which the movement does not hold.
     Through ``X-bi-4a`` the reader took the leg's own ``settled_amount`` and
     this class pinned the movement as INERT to it ("the seam's balance and
     the posted balance read identically with and without the movement");
@@ -582,9 +583,18 @@ class TestALoanPaymentsLoanSideMovementIsItsRecord:
     sides' records off, the one storable shape of a close of nothing.  Until
     then this took the records away and the reader inferred ``$0.00`` from
     the gap, the inference ruling **R-BAL368** deletes.
+
+    What the case grades is that ``$0.00`` close, not that the reader reads
+    the figure: the re-statement takes the records off and zeroes the figure
+    together, so a reader answering ``0.00`` for a leg holding no record
+    passes it too (the 4d-4b review measured that mutant passing).  The
+    class was named
+    ``TestALoanPaymentsLoanSideMovementIsItsRecord`` and the case
+    ``test_the_loan_side_reads_the_transfers_figure_as_the_payment`` until
+    that review.
     """
 
-    def test_the_loan_side_reads_the_transfers_figure_as_the_payment(
+    def test_a_zero_close_is_worth_nothing_to_the_loan_and_moves_its_position_not_its_posted_ledger(
         self, app, seed_user, seed_periods,
     ):
         with app.app_context():

@@ -13,7 +13,8 @@ gains its transfer arm, :data:`app.deleted_row_infrastructure.TRANSFER_ARM`.
 
 Each case writes the state with raw SQL or the bare ORM, the way a writer
 nobody enumerated would, against the database the suite runs on, and each
-refusal sits beside the control that lands.  The records planted are KEPT
+refusal sits beside its control: the like write the rule lets through.  The
+records planted are KEPT
 un-dated ones (a revert's, ruling R-BAL61) under a Projected transfer, the one
 side-record state no settle verb is needed to reach.  A side's record states
 no figure: its transfer holds the one the records moved, and holds a record
@@ -170,15 +171,25 @@ class TestTheSideKeys:
         _record(xfer, income=True, account_id=checking.id)
         _refused_by("fk_transaction_entries_income_side")
 
-    def test_a_side_holds_one_record(self, app, seed_user):
-        """A second from-side record is refused by the per-side unique index."""
+    @pytest.mark.parametrize("income", [False, True], ids=["from-side", "to-side"])
+    def test_a_side_holds_one_record(self, app, seed_user, income):
+        """A second record on a side is refused by that side's unique index.
+
+        Each side ALONE takes the second record, because each side's link has
+        a unique index of its own and each must refuse on its own.  The case
+        staged a second from-side record alone until plan step
+        ``balance:X-bi-6-4d-2``'s 4d-4b review.
+        """
         del app
         checking, savings, _van = _accounts(seed_user)
         xfer = _transfer(seed_user, checking, savings)
         _kept_pair(xfer)
         _db.session.commit()
-        _record(xfer)
-        _refused_by("uq_transaction_entries_one_expense_side_record")
+        _record(xfer, income=income)
+        _refused_by(
+            "uq_transaction_entries_one_income_side_record" if income
+            else "uq_transaction_entries_one_expense_side_record"
+        )
 
 
 class TestOneParent:
@@ -292,17 +303,25 @@ class TestTheSideKeysCarryAndKeep:
         ), {"e": expense_id, "i": income_id}).all())
         assert accounts == {expense_id: van.id, income_id: savings.id}
 
-    def test_deleting_a_transfer_holding_a_record_is_refused(self, app, seed_user):
+    @pytest.mark.parametrize("income", [False, True], ids=["from-side", "to-side"])
+    def test_deleting_a_transfer_holding_a_record_is_refused(
+        self, app, seed_user, income,
+    ):
         """A transfer holding a payment is history; only the removal act takes it off.
 
-        The one from-side record is staged inside the save, flushed and never
+        Each side ALONE holds the record, because each side's link has a key
+        of its own, ``NO ACTION`` on delete, and each must refuse on its own.
+        The case held the from-side's record alone until plan step
+        ``balance:X-bi-6-4d-2``'s 4d-4b review.
+
+        The one record is staged inside the save, flushed and never
         committed: one record alone is a state the band's figure arm refuses
         at COMMIT, and the side key refuses the DELETE at its own statement.
         """
         del app
         checking, savings, _van = _accounts(seed_user)
         xfer = _transfer(seed_user, checking, savings)
-        _record(xfer)
+        _record(xfer, income=income)
         _db.session.flush()
         with pytest.raises(sa_exc.IntegrityError) as excinfo:
             _db.session.execute(
@@ -311,7 +330,8 @@ class TestTheSideKeysCarryAndKeep:
             )
         _db.session.rollback()
         assert constraint_name_from(excinfo.value) == (
-            "fk_transaction_entries_expense_side"
+            "fk_transaction_entries_income_side" if income
+            else "fk_transaction_entries_expense_side"
         )
 
 
@@ -329,26 +349,34 @@ class TestTheSideKeysCarryAndKeep:
             "SELECT count(*) FROM budget.transfers WHERE id = :t"
         ), {"t": xfer_id}).scalar_one() == 0
 
-    def test_a_cascade_beside_an_unchanged_link_is_no_arrival(self, app, seed_user):
+    @pytest.mark.parametrize("income", [False, True], ids=["from-side", "to-side"])
+    def test_a_cascade_beside_an_unchanged_link_is_no_arrival(
+        self, app, seed_user, income,
+    ):
         """The arrival arm's early return, graded where it decides the outcome.
 
-        A transfer hidden earlier in the same save, its endpoint then moved:
-        PostgreSQL's cascade re-writes the record's account through an UPDATE
-        that names the link column too, so the arrival trigger fires -- and
-        must not read the move as the record ARRIVING under the hidden
-        transfer.  Both records come off before COMMIT, and the figure they
-        moved with them, so the hiding arm has nothing to refuse; without the
-        early return the endpoint UPDATE itself is refused.
+        A transfer hidden earlier in the same save, one endpoint then moved:
+        PostgreSQL's cascade re-writes that side's record's account through an
+        UPDATE that names the link column too, so the arrival trigger fires --
+        and must not read the move as the record ARRIVING under the hidden
+        transfer.  Each side's endpoint is moved ALONE, because the early
+        return compares each link and each side's cascade must pass it on its
+        own.  The case moved the from-account alone until plan step
+        ``balance:X-bi-6-4d-2``'s 4d-4b review.  Both records come off before
+        COMMIT, and the figure they moved with them, so the hiding arm has
+        nothing to refuse; without the early return the endpoint UPDATE
+        itself is refused.
         """
         del app
         checking, savings, van = _accounts(seed_user)
         xfer = _transfer(seed_user, checking, savings)
-        record, _income = _kept_pair(xfer)
+        from_record, to_record = _kept_pair(xfer)
         _db.session.commit()
-        record_id = record.id
+        record_id = (to_record if income else from_record).id
         _hide_transfer(xfer.id)
+        endpoint = "to_account_id" if income else "from_account_id"
         _db.session.execute(
-            text("UPDATE budget.transfers SET from_account_id = :a WHERE id = :t"),
+            text(f"UPDATE budget.transfers SET {endpoint} = :a WHERE id = :t"),
             {"a": van.id, "t": xfer.id},
         )
         assert _db.session.execute(text(
@@ -457,7 +485,8 @@ class TestTheDeletedRowTransferArm:
         from-side link alone until plan step ``balance:X-bi-6-4d-3``'s
         vacuous-residue checkpoint, where an arm reading the from-side link
         only, or an early return comparing it only, failed no test in the
-        suite (measured there).  :meth:`test_a_record_re_pointed_onto_a_live_transfer_lands`
+        suite (measured there).
+        :meth:`test_a_record_re_pointed_onto_a_live_transfer_passes_the_arrival_arm`
         is the control, per side.
         """
         del app
@@ -472,7 +501,9 @@ class TestTheDeletedRowTransferArm:
         _db.session.rollback()
 
     @pytest.mark.parametrize("income", [False, True], ids=["from-side", "to-side"])
-    def test_a_record_re_pointed_onto_a_live_transfer_lands(self, app, seed_user, income):
+    def test_a_record_re_pointed_onto_a_live_transfer_passes_the_arrival_arm(
+        self, app, seed_user, income,
+    ):
         """CONTROL: the same UPDATE onto a live transfer sharing the record's account.
 
         Per side since plan step ``balance:X-bi-6-4d-3``'s vacuous-residue

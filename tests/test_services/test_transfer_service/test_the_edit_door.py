@@ -556,7 +556,8 @@ class TestUpdateTransfer:
         is ``test_transfer_legs/test_what_a_side_shows.py``'s ``TestBothSidesShowTheTransfer``; a
         SETTLED side's price is not, since that table holds no settled row,
         but ``test_transfer_legs/test_the_grids_legs.py``'s
-        ``TestTheLegMapProducers::test_a_settled_leg_records_its_movements_figure``
+        ``TestTheLegMapProducers``'
+        ``test_both_legs_of_a_settled_transfer_record_its_figure_beside_the_plan_and_retain_nothing``
         and ``TestTheLegContributionTwins``'
         ``test_a_settled_leg_is_worth_its_record_and_not_its_plan``
         (the review of that checkpoint measured both failing under a mutant

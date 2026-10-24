@@ -297,13 +297,15 @@ def _apply_remaining_fields(
     # day arriving alone reaches the seam as an identity transition, the
     # reason the seam stays the single writer of the settlement columns.
     #
-    # The record goes to both SIDES, which ``apply_status_to_all_three`` owns:
-    # a transfer's money moves on its two sides, so each side records its own
-    # and the two are equal.
+    # The record goes to the TRANSFER through ``apply_status_to_all_three``,
+    # whose arm (``status_seam.sync_side_records``) stores it once as the
+    # transfer's settled figure: a side's record holds no figure
+    # (``ck_transaction_entries_side_record_states_no_figure``).
     new_status_id = updates.get("status_id", rows.transfer.status_id)
-    # Resolved from the EXPENSE side's record, read once for the act
-    # (``rows.expense_leg``) as :func:`._settle.settle` reads it: both sides'
-    # records carry the same figure, so one side is the choice.
+    # Resolved through the EXPENSE leg, read once for the act
+    # (``rows.expense_leg``) as :func:`._settle.settle` reads it:
+    # ``leg_settled_figure`` answers the transfer's one settled figure, so
+    # either leg would answer the same and one is the choice.
     # A figure only ever reaches here as a CORRECTION -- a settling one is the
     # settle's (:data:`_SETTLE_OWNED_FIELDS`), and one on an unsettled pair was
     # refused before any field was written (:func:`_grade_submitted_figure`).
@@ -717,8 +719,8 @@ def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
     transfer's figure is the TRANSFER's own since plan step
     ``balance:X-bi-6-4d-2``'s 4d-4 half (rulings **R-BAL365**,
     **R-BAL366**: ``0.00`` for a close of nothing), which the one writer
-    states; each side's record still carries a copy until that half's second
-    commit empties it.
+    states; a side's record holds no figure
+    (``ck_transaction_entries_side_record_states_no_figure``).
 
     **A change that moves the transfer INTO the settled band is a SETTLE**, and
     this hands that act whole to

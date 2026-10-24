@@ -238,6 +238,7 @@ class TestTheDowngradeRefuses:
 class TestEachMovementStatesItsFigureOrNone:
     """R-BAL366's two CHECKs: a side record states no figure, every other movement one."""
 
+    @pytest.mark.parametrize("income", [False, True], ids=["from-side", "to-side"])
     @pytest.mark.parametrize(
         ("column", "constraint"),
         [
@@ -248,16 +249,25 @@ class TestEachMovementStatesItsFigureOrNone:
         ids=["amount", "source"],
     )
     def test_a_side_record_stating_a_figure_is_refused(
-        self, app, seed_user, seed_periods, column, constraint,
+        self, app, seed_user, seed_periods, column, constraint, income,
     ):
-        """A settled transfer's record handed the figure back: the copy is unstorable."""
+        """A settled transfer's record handed the figure back: the copy is unstorable.
+
+        Each side's record is handed it ALONE, because each CHECK reads both
+        link columns and each side must refuse on its own.  The case handed
+        the figure to the from-side's record alone until plan step
+        ``balance:X-bi-6-4d-2``'s 4d-4b review, where the amount CHECK mutated
+        to admit an amount on any to-side record left this module green
+        (measured there).
+        """
+        link = "income_transfer_id" if income else "expense_transfer_id"
         with app.app_context():
             xfer_id = _settled(seed_user, seed_periods, "60.00")
             with pytest.raises(exc.IntegrityError, match=constraint):
                 db.session.execute(
                     text(
                         f"UPDATE budget.transaction_entries SET {column} "
-                        "WHERE expense_transfer_id = :t"
+                        f"WHERE {link} = :t"
                     ),
                     {"t": xfer_id, "source": _resolved()},
                 )

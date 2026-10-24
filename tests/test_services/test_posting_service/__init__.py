@@ -28,9 +28,10 @@ every per-real-account figure is unchanged:
     ledger and ``+amount`` on the to-account's, each against transit, each
     entry summing to zero; the rule is class-independent (asset->asset AND
     asset->liability).
-  * **Effective amount, not transfer amount** -- a settled side's RECORD
-    (its covering movement's figure) overrides the nominal transfer amount
-    (the value the balance calculator and the oracle use).
+  * **Effective amount, not transfer amount** -- a settled transfer's
+    stored figure (``Transfer.settled_figure``, which each side's covering
+    movement posts) overrides the nominal transfer amount (the value the
+    balance calculator and the oracle use).
   * **Idempotency** -- a repeat sync computes ``delta = 0`` and writes
     nothing.
   * **Reversal reads the ledger** -- a revert / delete negates exactly what

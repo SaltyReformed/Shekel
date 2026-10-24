@@ -42,12 +42,13 @@ step empties them and makes a side record holding a figure unstorable.  That
 transitional second copy lives only inside the held branch, which never ships
 without the next revision.
 
-The downgrade drops the columns.  The records still state the figure, so
-nothing is lost -- unless a figure stored on a transfer disagrees with its
-records, which no door writes and the downgrade refuses, named, rather than
-discarding the figure the app was reading.  A ``$0.00`` close stored since the
-upgrade holds no record and becomes the close of nothing it was before this
-revision.
+The downgrade drops the columns.  A transfer holding records keeps its figure
+and who wrote it on those records -- unless a figure stored on a transfer
+disagrees with its records, which no door writes and the downgrade refuses,
+named, rather than discarding the figure the app was reading.  A ``$0.00``
+close stored since the upgrade holds no record, so the downgrade LOSES who
+wrote its ``0.00``: nothing is left to carry it, and the transfer becomes the
+close of nothing it was before this revision, which stores no figure source.
 """
 from alembic import op
 import sqlalchemy as sa

@@ -192,10 +192,11 @@ def loan_event_stream(
             :func:`~app.services.row_valuation.leg_settled_contribution` -- the
             accessor whose NAME asserts the payment has SETTLED -- rather than
             a resolver, because every leg here has, so it answers from the
-            settlement it RECORDED -- its covering movement -- and there is no
-            plan to reach; a leg holding none is the ``$0.00`` record (ruling
-            **R-BAL82**), a payment of nothing, never a fallback to a
-            forecast, and a leg that has not settled at all REFUSES, which is
+            figure its TRANSFER stores as having moved
+            (``leg.transfer.settled_figure``) and there is no plan to reach;
+            a ``$0.00`` close stores ``0.00`` (ruling **R-BAL365**), a
+            payment of nothing, never a fallback to a forecast, and a leg
+            that has not settled at all REFUSES, which is
             what makes the loader's partition a precondition this replay
             states rather than merely relies on.
         calendar: The loan's contract terms

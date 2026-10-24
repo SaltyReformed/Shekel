@@ -146,7 +146,9 @@ def sync_side_records(
             the writer resolved them (ruling **R-BAL142**); ``(None, None)``
             out of the band.
         settlement: WHAT moved, when the act records a settle; ``None``
-            leaves each record's figure alone.
+            states no figure, so the transfer keeps the one it stores, save
+            an act leaving the band with no record on either side, which
+            releases it (:func:`_follow_figure`).
         press: The save's :class:`~app.services.match_press.Press`, or
             ``None`` when its door named nothing -- asked by the one removal
             act a ``$0.00`` close runs.

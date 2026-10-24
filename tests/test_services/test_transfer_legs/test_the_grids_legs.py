@@ -297,10 +297,18 @@ class TestTheLegMapProducers:
             assert leg_settled_amounts_by_key([leg]) == {key: None}
             assert leg_retained_amounts_by_key([leg]) == {key: None}
 
-    def test_a_settled_leg_records_its_movements_figure(
+    def test_both_legs_of_a_settled_transfer_record_its_figure_beside_the_plan_and_retain_nothing(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The recorded figure is the movement's, not the plan's, on both sides."""
+        """The recorded figure is the transfer's, not the plan's, on both sides.
+
+        ``leg_settled_amounts_by_key`` reads each leg through
+        ``row_valuation.leg_settled_figure``, which reads
+        ``Transfer.settled_figure``.  Named
+        ``test_a_settled_leg_records_its_movements_figure`` until plan step
+        ``balance:X-bi-6-4d-2``'s 4d-4 half, when each side's record held the
+        figure.
+        """
         with app.app_context():
             checking = seed_user["account"]
             savings = _savings(seed_user)
@@ -357,7 +365,7 @@ class TestTheLegMapProducers:
     ):  # pylint: disable=unused-argument
         """A typed correction outlives the revert; the plan's own price does not.
 
-        ``honoured_figure`` over ``movement_settlement``: only a STATED record
+        ``honoured_figure`` over ``recorded_leg_settlement``: only a STATED record
         is honoured (ruling R-BAL61), which is the rule the row twin applies
         through ``honoured_correction``.
         """
@@ -430,7 +438,7 @@ class TestTheLegContributionTwins:
     def test_a_settled_leg_is_worth_its_record_and_not_its_plan(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The contribution is the movement's $240.00 where the plan says $250.00."""
+        """The contribution is the transfer's settled $240.00 where the plan says $250.00."""
         with app.app_context():
             checking = seed_user["account"]
             savings = _savings(seed_user)

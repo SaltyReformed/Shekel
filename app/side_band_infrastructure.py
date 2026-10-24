@@ -54,8 +54,16 @@ inserted settled with no figure is graded only by an attachment that fires
 on every insert (rulings **R-BAL339**: a refusal is the database's, and
 **R-BAL357**: a database refusal is a backstop behind the create's own).
 One event per inserted transfer, graded at commit; a later revision that
-inserts transfers and then alters ``budget.transfers`` in one transaction
-commits between the two.
+inserts transfers and then alters ``budget.transfers`` gets no commit between
+the two, because the deploy runs the whole chain in ONE transaction
+(``scripts/init_database.py``, ruling **R-BAL105**) through
+``app.migration_runner.upgrade_to_head``, which commits nothing (ruling
+**R-BAL114**).  It must drain the event before the ``ALTER`` instead, with
+``SET CONSTRAINTS budget.ck_side_record_figure_on_insert IMMEDIATE``: the
+drain :mod:`app.opening_infrastructure` states as ``SET CONSTRAINTS ALL
+IMMEDIATE``, and the one ``test_dc02_detects_self_transfer``
+(``tests/test_scripts/test_integrity_check/test_the_consistency_checks.py``)
+runs.
 
 **The arms are a LITERAL per revision** (:data:`BAND_ARM`,
 :data:`FIGURE_ARM`, :data:`ALL_ARMS`), the precedent ``opening_infrastructure``

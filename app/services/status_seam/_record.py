@@ -361,8 +361,9 @@ def recorded_leg_settlement(leg: "TransferLeg") -> Optional[Settlement]:
       **R-BAL365**), where this answered ``Settlement(None, None)`` read off
       the missing records until this step;
     * none -- ``None``: the transfer records nothing a re-settle could honour
-      (never settled, or a reverted ``$0.00`` close, whose figure the revert
-      cleared).
+      (never settled; a reverted ``$0.00`` close, whose figure the revert
+      cleared; or a soft-deleted transfer whose delete took its records off,
+      and its figure with them).
 
     Asked by ``transfer_service._settle.settle`` for the pair's retained
     record and by ``transfer_service._settle.leg_settle_amount`` for the

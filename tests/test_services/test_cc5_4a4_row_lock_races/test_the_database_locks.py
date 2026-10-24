@@ -74,9 +74,13 @@ def _race_statements(
     first committed (``waited``).
 
     *then*, when given, is the rest of the FIRST click: run after the second
-    is seen waiting (or finished) and before the first commits.  A click
-    whose later statement takes a lock of its own splits there, so the wait
-    measured is on the lock *first* took and on nothing *then* takes.
+    is seen waiting and before the first commits.  A click whose later
+    statement takes a lock of its own splits there, so the wait measured is
+    on the lock *first* took and on nothing *then* takes.  It is refused
+    when the second FINISHED without waiting: its statements returned but
+    its transaction is still open and holds its locks, so a *then* needing
+    one would block until the second stopped waiting for its turn
+    (``_WAIT``) and committed FIRST, ending the race in the other order.
     """
     first_outcome, second_outcome = _Outcome(), _Outcome()
     acted, go, done = threading.Event(), threading.Event(), threading.Event()
@@ -128,6 +132,12 @@ def _race_statements(
         "harness is not measuring the race"
     )
     if then is not None:
+        assert second_outcome.waited, (
+            "the second click finished without waiting on a lock, so the "
+            "rest of the first click would wait on the second's locks and "
+            "the second would commit first -- the harness is not measuring "
+            "the race"
+        )
         then()
     try:
         _db.session.commit()

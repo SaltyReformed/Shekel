@@ -23,8 +23,9 @@ the ``ref.movement_figure_sources`` id naming who wrote it.  ``$0.00`` is a
 figure (ruling **R-BAL365**: a close of nothing stores ``0.00`` and who
 typed it, until plan step ``balance:X-db`` refuses a new one and tightens
 the column above zero).  "No figure stored" -- a transfer that has never
-settled, or whose revert of a ``$0.00`` close cleared it -- is ``None`` on
-the attribute, never an empty instance, for the factory reason
+settled, whose revert of a ``$0.00`` close cleared it, or whose soft delete
+took its records off and released it with them -- is ``None`` on the
+attribute, never an empty instance, for the factory reason
 :func:`app.models.amount_ownership.from_columns` states.
 """
 

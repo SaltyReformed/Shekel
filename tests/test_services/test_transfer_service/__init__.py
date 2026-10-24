@@ -22,7 +22,8 @@ R-BAL290 part 2), where it took in the already-hidden and paid groups.  What
 each side shows of a Projected or
 Cancelled row is the ``test_transfer_legs`` package's
 ``TestBothSidesShowTheTransfer``, and a settled row's price that package's
-``TestTheLegMapProducers::test_a_settled_leg_records_its_movements_figure``
+``TestTheLegMapProducers``'
+``test_both_legs_of_a_settled_transfer_record_its_figure_beside_the_plan_and_retain_nothing``
 and ``TestTheLegContributionTwins::test_a_settled_leg_is_worth_its_record_and_not_its_plan``.
 One leg per side is that package's
 ``TestTransferLegs::test_each_account_gets_its_own_side``, and which endpoint

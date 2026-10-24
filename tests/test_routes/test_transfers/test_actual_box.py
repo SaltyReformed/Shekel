@@ -15,6 +15,8 @@ from tests._test_helpers import (
     an_entered_day,
     an_observed_day,
     field_is_disabled,
+    linked_ledger_account,
+    linked_net_by_date,
     net_posted_by_day,
     on_both_sides,
     transfer_family_journal_filter,
@@ -263,10 +265,10 @@ class TestTransferActualBox:
     def test_a_correction_lands_on_BOTH_legs_and_moves_the_ledger(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """$200.00 settled, the statement says $214.37: both legs record it.
+        """$200.00 settled, the statement says $214.37: both legs post it.
 
         Transfer Invariant 3 for the settlement record: a transfer's money moves
-        on its two legs and the two record the same figure, while each side's
+        on its two legs by the one figure the transfer stores, while each side's
         day is its own (ruling **R-BAL108**, plan step ``balance:X-bi-6-4c-3``;
         the fixture dates both sides alike).  The ledger follows in the same request, because the
         figure IS the pair's confirmed cash effect -- a correction that changed
@@ -315,6 +317,30 @@ class TestTransferActualBox:
             assert net_posted_by_day(
                 transfer_family_journal_filter(xfer.id),
             ) == {day: Decimal("214.37")}
+            # Each LEG on its own account's ledger, signed as the ledger signs
+            # it (out of Checking negative, into Savings positive).  The family
+            # read above keeps the LARGEST per-account residue, so a correction
+            # booked on the from-side alone still reads $214.37 there.  Hand
+            # arithmetic on the transfer's day: Checking -200.00 - 14.37 =
+            # -214.37; Savings +200.00 + 14.37 = +214.37.  No other posting on
+            # either ledger is dated that day: Checking's opening and
+            # origination are dated in 2024 (the seed's bootstrap), and
+            # Savings opened at $0.00, which books no entry, and asserts today.
+            # Not ``account_posting_total``: an assertion absorbs a movement
+            # dated before it, so Savings, asserted today, totals $0.00
+            # whatever its leg booked.
+            scenario_id = seed_user["scenario"].id
+            for account_id, posted in (
+                (xfer.from_account_id, Decimal("-214.37")),
+                (xfer.to_account_id, Decimal("214.37")),
+            ):
+                assert linked_net_by_date(
+                    db.session,
+                    linked_ledger_account(db.session, account_id).id,
+                    scenario_id,
+                ).get(day) == posted, (
+                    f"the correction did not reach the leg on account {account_id}"
+                )
 
     def test_an_ECHO_of_the_recorded_figure_records_nothing(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -475,9 +501,12 @@ class TestTransferActualBox:
         What this still grades that its transaction sibling cannot: the
         correction reaches BOTH SIDES and the pair stays mirrored.  The
         transfer's status is the one status since plan step
-        ``balance:X-bi-6-4d-2``, and each side's figure and day are its
-        payment record's, read off the transfer where the twins' status and
-        figure were (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+        ``balance:X-bi-6-4d-2``, and each side's day is its payment record's,
+        read off the transfer where the twins' status and day were (ruling
+        R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  The figure is the
+        transfer's own since that step's 4d-4 half (rulings **R-BAL365**,
+        **R-BAL366**), so the per-side figure read asks that one figure once
+        per side.
         """
         with app.app_context():
             day = _THREE_DAYS_AGO()
@@ -529,7 +558,7 @@ class TestTransferActualBox:
         (ruling **R-BAL141**), and stating the day alone is REFUSED with the
         sentence the developer picked (ruling **R-BAL230**, "Refuse, say
         why"): nothing is stored and nothing is posted.  The Actual box,
-        which reads ``0`` for the pair, is how the owner states what the bank
+        which reads ``0.00`` for the pair, is how the owner states what the bank
         really took, and a figure with the day dates both sides.
 
         The popover must RENDER for such a pair: a surface that refuses to
@@ -712,11 +741,17 @@ class TestTheTransferLockCoversTheShadowOnlyEdits:
     prefilled `$200.00` against the same pin, 200 OK, both legs now record
     `$200.00`.  The statement figure gone, reported as success.
 
-    Since plan step ``balance:X-bi-6-4d-2`` the two facts live on each
-    side's payment RECORD -- still a row other than the transfer's own --
-    which hangs off the transfer, where they lived on the shadows until then,
-    so the cases read each side's figure there (ruling R-BAL167 class 4, plan
-    step balance:X-bi-6-4d-2).
+    Since plan step ``balance:X-bi-6-4d-2`` the two facts live apart, where
+    they lived on the shadows until then (ruling R-BAL167 class 4).  The DAY
+    is each side's payment RECORD's, still a row other than the transfer's
+    own, so a day correction moves the counter only because
+    ``status_seam``'s ``sync_side_records`` forces the transfer into the
+    flush; ``test_a_settle_day_correction_moves_the_counter_too`` grades
+    that.  The FIGURE is the transfer's own column since that step's 4d-4
+    half (rulings **R-BAL365**, **R-BAL366**), so a figure correction moves
+    the counter by itself, and
+    ``test_a_stale_tab_cannot_overwrite_a_figure_correction`` grades the 409
+    a stale tab meets, not that forced flush.
     """
 
     @staticmethod
@@ -733,12 +768,14 @@ class TestTheTransferLockCoversTheShadowOnlyEdits:
 
     @staticmethod
     def _side_figures(xfer_id):
-        """Return what *xfer_id*'s two sides record, the from-side first.
+        """Return *xfer_id*'s settled figure as each side reads it, the from-side first.
 
-        Each off the side's payment record, which hangs off the transfer
-        since plan step ``balance:X-bi-6-4d-2``; this read the twins'
-        figures until then, which they keep no longer (ruling R-BAL167
-        class 4, plan step balance:X-bi-6-4d-2).
+        Each is the figure the TRANSFER stores (``transfer_side_figure``,
+        ``None`` while it is not settled): a side's payment record holds no
+        figure since plan step ``balance:X-bi-6-4d-2``'s 4d-4 half (rulings
+        **R-BAL365**, **R-BAL366**).  This read the twins' figures until
+        that step, which they keep no longer (ruling R-BAL167 class 4, plan
+        step balance:X-bi-6-4d-2).
         """
         xfer = db.session.get(Transfer, xfer_id)
         return [
@@ -762,7 +799,7 @@ class TestTheTransferLockCoversTheShadowOnlyEdits:
             assert first.status_code == 200, first.get_data(as_text=True)
             db.session.expire_all()
             assert db.session.get(Transfer, xfer.id).version_id > shared_pin, (
-                "a side-record-only write left the transfer's counter behind"
+                "the figure correction left the transfer's counter behind"
             )
 
             second = auth_client.patch(

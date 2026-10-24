@@ -226,8 +226,8 @@ def settle(
     Args:
         rows: The transfer, at its pre-settle status.  The figure is resolved
             from the EXPENSE leg; either would answer the same (both price the
-            one parent, and both sides carry the same record), and naming one
-            means the choice is not made twice.
+            one parent, and both read the transfer's one settled figure), and
+            naming one means the choice is not made twice.
         new_status_id: The settled status all three rows move to, as the DOOR
             asked for it.  Verified by
             :func:`~app.services.transfer_service._status.apply_status_to_all_three`.
@@ -271,7 +271,7 @@ def settle(
     basis = derived_amount_basis(
         rows.transfer.user_id, rows.transfer.scenario_id,
     )
-    # Off the expense LEG -- the transfer and the side's record -- never a
+    # Off the expense LEG -- its transfer, never its side's record -- never a
     # twin row (plan step ``balance:X-bi-6-4d-2``): a twin's status is no
     # longer kept, and a twin left saying Paid under a reverted transfer would
     # price at the sum of its empty entries, ``$0.00``, and a ``$0.00`` settle
@@ -280,8 +280,9 @@ def settle(
     # A RETAINED correction outranks the derivation, through the same published
     # rule :func:`leg_settle_amount` offers from, so the pair's offer and its
     # booking are one expression (plan step X-au-c3).  The record is the
-    # expense side's, read once for the act (``rows.expense_leg``, through
-    # ``transfer_legs``) and carried into the settlement below.
+    # transfer's one settled figure, read once for the act through the
+    # expense leg (``rows.expense_leg``; ``recorded_leg_settlement`` reads
+    # the leg's transfer) and carried into the settlement below.
     retained = recorded_leg_settlement(rows.expense_leg)
     held = honoured_figure(retained)
     booked = resolved if held is None else held
@@ -306,8 +307,9 @@ def settle(
     # inferred from a column being populated.
     #
     # The pair's RETAINED record is read from the expense leg -- the same leg the
-    # figures above come from, and for the same reason (both sides carry the
-    # same record, so naming one means the choice is not accidental).  A
+    # figures above come from, and for the same reason (both legs read the
+    # transfer's one settled figure, so naming one means the choice is not
+    # accidental).  A
     # revert releases the pair's assertion and keeps what moved,
     # so re-settling a transfer the user reverted in order to edit honours the
     # figure they read off their statement instead of re-deriving over it.
@@ -362,7 +364,7 @@ def leg_settle_amount(leg: TransferLeg, basis: AmountBasis) -> Decimal:
     It was asked of the leg's TWIN ROW through plan step
     ``balance:X-bi-6-4d-2`` (``settle_amount(shadow)``, through a
     ``_shadow_of`` that refused a corrupt twin pair); a twin is no longer
-    read, so a leg is priced off its transfer and its side's record alone.
+    read, so a leg is priced off its transfer, never its side's record.
 
     **The basis is the CALLER'S and this builds none** (plan step X-au-j,
     finding **N-295**): each caller's read pass builds one for the owner and

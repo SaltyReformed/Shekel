@@ -393,9 +393,12 @@ class TestTheTransferArm:
         (``TransferLeg.tracks_purchases``; production: 342 shadows, 0 entries,
         measured while a transfer kept its shadow rows).  The corrected
         figure must reach BOTH legs or the two accounts disagree about how much
-        money moved between them.  Each leg's figure is its side's payment
-        RECORD's since plan step ``balance:X-bi-6-4d-2``; the shadows held it
-        until then (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+        money moved between them.  The figure is the TRANSFER's own since plan
+        step ``balance:X-bi-6-4d-2``'s 4d-4 half (rulings **R-BAL365**,
+        **R-BAL366**), so the read below asks that one figure once per side;
+        each side's payment RECORD held it from that step until then, and the
+        shadows before it (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-2).
         """
         with app.app_context():
             transfer = self._transfer_out(seed_user, seed_periods)
