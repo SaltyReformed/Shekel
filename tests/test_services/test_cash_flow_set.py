@@ -12,8 +12,9 @@ Three subjects, each its own class: the resolver
 clause (:func:`~app.services.cash_flow_set.own_rows_clause`: every member's
 own rows and no shadow, since leaf ``balance:X-bi-6-1b`` the only row clause
 -- R-CC23's far leg is the LEG spelling's, ``leg_accounts_shown``, graded in
-``test_transfer_legs.py``; the far-leg query the balance seam reads is graded
-beside it here), and the orthogonal ``revolving`` filter the set is built on.
+``test_transfer_legs/test_the_grids_legs.py``; the far-leg query the balance
+seam reads is graded beside it here), and the orthogonal ``revolving`` filter
+the set is built on.
 The seam's composed subtotal and its "On other accounts" term are graded in
 ``test_balance_at/test_cash_flow.py`` (``TestTheSubtotalsAreThePaychecksAcrossTheSet``),
 and the identity oracle they extend in ``test_balance_at/test_grid.py``
@@ -44,6 +45,7 @@ from app.services.cash_flow_set import (
 )
 from app.services.cash_ledger import settled_cash_facts
 from tests._test_helpers import (
+    assert_a_twin_is_refused,
     capture_sql_statements,
     create_account_of_type,
     create_loan_account,
@@ -91,16 +93,6 @@ def _loaded_ids(cash_flow, scenario_id):
         )
         .all()
     }
-
-
-def _shadow_on(transfer, account):
-    """Return *transfer*'s live shadow row on *account*."""
-    return (
-        db.session.query(Transaction)
-        .filter_by(transfer_id=transfer.id, account_id=account.id)
-        .filter(Transaction.is_deleted.is_(False))
-        .one()
-    )
 
 
 class TestResolveCashFlowSet:
@@ -294,10 +286,12 @@ class TestOwnRowsClause:
     and dropping the far one (R-CC23) -- until leaf ``balance:X-bi-6-1b``
     left that clause with no reader: every reader draws a transfer as a LEG
     of its parent now, and R-CC23 is the leg spelling's
-    (``leg_accounts_shown``, graded case for case in ``test_transfer_legs.py``:
+    (``leg_accounts_shown``, graded case for case in
+    ``test_transfer_legs/test_the_grids_legs.py``:
     both endpoints members from either balance line, one endpoint in the set,
     both in and the line on neither).  What is left to grade here is the row
-    half, and that no shadow is a row on either side.
+    half, and that no shadow can be a row on either side: the database
+    refuses one (ruling R-BAL258).
     """
 
     def test_every_members_rows_load_and_an_outsiders_do_not(
@@ -343,7 +337,6 @@ class TestOwnRowsClause:
                     Transaction.scenario_id == seed_user["scenario"].id,
                     Transaction.is_deleted.is_(False),
                     Transaction.account_id == checking.id,
-                    Transaction.transfer_id.is_(None),
                 ).all()
             }
 
@@ -353,12 +346,17 @@ class TestOwnRowsClause:
     def test_no_shadow_is_a_row_on_either_side(
         self, app, db, seed_user, seed_periods_today,
     ):  # pylint: disable=unused-argument
-        """A transfer's two shadows are not rows on either member; the card bill beside them is.
+        """No twin of a transfer can be a row on either member; the card bill beside them is.
 
-        Both projected and settled.  The clause it replaced kept the checking
-        shadow here (the near leg) and dropped the card's; the leg the set
-        draws for the same transfer is ``leg_accounts_shown``'s, graded in
-        ``test_transfer_legs.py``.
+        Both projected and settled.  It read the two shadows the create door
+        wrote for each transfer and found neither loaded until plan step
+        ``balance:X-bi-6-4d-2``: a transfer is one row, and
+        ``ck_transactions_names_no_transfer`` (ruling R-BAL258) refuses a twin
+        on either side, so none can be stored to load (ruling R-BAL167
+        class 2).  The clause it replaced kept the checking shadow here (the
+        near leg) and dropped the card's; the leg the set draws for the same
+        transfer is ``leg_accounts_shown``'s, graded in
+        ``test_transfer_legs/test_the_grids_legs.py``.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -383,8 +381,8 @@ class TestOwnRowsClause:
 
             assert phone.id in loaded
             for transfer in (payment, paid):
-                assert _shadow_on(transfer, checking).id not in loaded
-                assert _shadow_on(transfer, card).id not in loaded
+                for is_income in (False, True):
+                    assert_a_twin_is_refused(db.session, transfer, is_income)
 
 
 class TestFarLegsOf:

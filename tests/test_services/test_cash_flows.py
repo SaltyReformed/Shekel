@@ -47,9 +47,9 @@ from datetime import date
 from decimal import Decimal
 
 from app.enums import StatusEnum
-from app.models.transaction import Transaction
 from app.services import transaction_service
 from app.services.cash_ledger import in_flight_movements, sum_projected
+from app.services.transfer_legs import planned_transfer_legs
 from tests._test_helpers import (
     add_entry,
     add_txn,
@@ -377,18 +377,19 @@ class TestTheReductionIsAdditiveOverRows:
     def test_a_transfer_shadow_is_priced_like_any_other_row(
         self, app, db, seed_user, seed_periods,
     ):
-        """A transfer's expense shadow takes ``effective_amount``, not a rule.
+        """A transfer's leaving side is worth its amount, not a reservation rule.
 
-        The reduction reads no ``transfer_id``: a shadow carries no template
-        and no entries, so it is worth its amount and nothing about it is
-        special here.  Groceries: est=500, uncleared_debit=300, credit=0 ->
-        max(500 - 0 - 0, 300) = 500.  Shadow: 200.00.
+        The side is the transfer's from-side LEG, loaded as the plan loads it
+        (``planned_transfer_legs``): it carries no template and no entries, so
+        it is worth its amount and lands on the expense leg, and nothing about
+        it is special here.  Groceries: est=500, uncleared_debit=300, credit=0
+        -> max(500 - 0 - 0, 300) = 500.  Leg: 200.00.
         Reduction: (0.00, 700.00).  (Was: 5000 - 500 - 200 = 4300.)
 
-        The transfer is built through the service rather than by hand, so it
-        carries BOTH shadows (Transfer Invariant 1); the version this test
-        moved from constructed a single expense shadow, a state the invariant
-        forbids.  Only the leaving account's rows are reduced here, so the
+        It priced the transfer's expense SHADOW row until plan step
+        ``balance:X-bi-6-4d-2`` (ruling R-BAL167 class 1): a transfer is one
+        row and writes no shadow, and the plan holds its leaving side as a
+        leg.  Only the leaving account's items are reduced here, so the
         figure is unchanged.
         """
         with app.app_context():
@@ -405,16 +406,12 @@ class TestTheReductionIsAdditiveOverRows:
                 period=seed_periods[1], amount=Decimal("200.00"),
             )
             db.session.commit()
-            shadow = (
-                db.session.query(Transaction)
-                .filter(
-                    Transaction.transfer_id == transfer.id,
-                    Transaction.account_id == seed_user["account"].id,
-                )
-                .one()
+            [leg] = planned_transfer_legs(
+                seed_user["account"].id, seed_user["scenario"].id, options=(),
             )
+            assert (leg.transfer.id, leg.is_income) == (transfer.id, False)
 
             assert sum_projected(
-                self._with_in_flight(seed_user, groceries, shadow),
-                _unreconciled(groceries, shadow),
+                self._with_in_flight(seed_user, groceries, leg),
+                _unreconciled(groceries, leg),
             ) == (_ZERO, Decimal("700.00"))
