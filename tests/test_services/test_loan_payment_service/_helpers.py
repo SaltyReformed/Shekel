@@ -16,7 +16,12 @@ from tests._test_helpers import (
     open_books_before_the_first_assertion,
 )
 from app.services.cash_ledger import derived_amount_basis
-from app.services.transfer_service import TransferSpec, create_transfer
+from app.utils.balance_predicates import settled_status_ids
+from app.services.transfer_service import (
+    TransferSpec,
+    create_transfer,
+    update_transfer,
+)
 from app.services import account_service
 from app.models.amount_ownership import AmountOwnership
 
@@ -111,23 +116,29 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
     Uses the transfer service, the one door that writes a transfer, so the
     transfer is the one production writes: one row since plan step
     balance:X-bi-6-4d-3 (ruling **R-BAL258**), where the door also wrote the
-    two shadows whose amounts and statuses it kept equal.
+    two shadows whose amounts and statuses it kept equal.  **A SETTLED one is
+    created Projected, then settled** through the settle verb
+    (``update_transfer`` with *status_enum*), because the create makes no
+    settled transfer (ruling **R-BAL379**); it was created in its settled
+    status until then, and the settle stores what that create stored.
 
     Args:
         seed_user: The seed_user fixture dict.
         loan_account: The destination loan account.
         period: The PayPeriod for the transfer.
         amount: Transfer amount as Decimal.
-        status_enum: StatusEnum member for the initial status.
-        settled_on: The civil day the cash moved, for a transfer created
-            already in the settled band.  ``None`` leaves the write door to
-            stamp the user's today (a settled create) or to write no day at
-            all (a Projected one).
+        status_enum: StatusEnum member the transfer ends in.
+        settled_on: The civil day the cash moved, stated ``entered`` on both
+            sides by the settle of a transfer whose *status_enum* is settled.
+            ``None`` leaves the settle to stamp the user's today (a Paid
+            press); a transfer left unsettled has no day.
 
     Returns:
         Transfer: the created transfer.
     """
-    return create_transfer(
+    status_id = ref_cache.status_id(status_enum)
+    settled = status_id in settled_status_ids()
+    transfer = create_transfer(
         TransferSpec(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
@@ -135,8 +146,16 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             amount_ownership=AmountOwnership.own(amount),
-            status_id=ref_cache.status_id(status_enum),
+            status_id=(
+                ref_cache.status_id(StatusEnum.PROJECTED) if settled
+                else status_id
+            ),
             category_id=seed_user["categories"]["Rent"].id,
+        ),
+    )
+    if settled:
+        update_transfer(
+            transfer.id, seed_user["user"].id, status_id=status_id,
             side_days=(
                 () if settled_on is None
                 else on_both_sides(
@@ -144,5 +163,5 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
                     an_entered_day(settled_on),
                 )
             ),
-        ),
-    )
+        )
+    return transfer

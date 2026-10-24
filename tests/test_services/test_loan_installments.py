@@ -42,7 +42,11 @@ from app.utils.balance_predicates import balance_excluded_status_ids
 from app.services.loan_payment_service import get_payment_history, load_loan_context
 from app.services.cash_ledger import derived_amount_basis
 from app.services.transfer_legs import TransferLeg
-from app.services.transfer_service import TransferSpec, create_transfer
+from app.services.transfer_service import (
+    TransferSpec,
+    create_transfer,
+    settle_transfer,
+)
 from tests._test_helpers import (
     an_entered_day,
     assert_a_twin_is_refused,
@@ -76,8 +80,23 @@ def _transfer_to_loan(
     by inserting rows, so the transfer this file reads is the one production
     writes: one row since plan step balance:X-bi-6-4d-3 (ruling **R-BAL258**),
     where it came with the pair of shadows this file read until then.
+
+    **A SETTLED one is created Projected, then settled** through the settle
+    verb, because the create makes no settled transfer (ruling **R-BAL379**);
+    it was created in its settled status until then, and the settle stores
+    what that create stored: the transfer's own figure on both sides, on
+    *settled_on* (``entered``) or, with none, on the owner's today.
+    **Received is then laid on BARE**: the verb settles a transfer with
+    ``Done`` and no transfer door writes ``Received``, which the
+    every-status case below still needs as a member of ``ref.statuses``
+    (approved inside ruling R-BAL379's question: the case builds its state
+    another way, its expected answer unchanged).  A bare status inside the
+    settled band leaves both sides' dated records as the band rule requires,
+    as ``test_routes/test_transfers/_helpers._received_transfer_of`` lays one.
     """
-    return create_transfer(
+    status_id = ref_cache.status_id(status_enum)
+    settled = status_id in _settled_ids()
+    transfer = create_transfer(
         TransferSpec(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
@@ -85,16 +104,28 @@ def _transfer_to_loan(
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             amount_ownership=AmountOwnership.own(amount),
-            status_id=ref_cache.status_id(status_enum),
-            category_id=seed_user["categories"]["Rent"].id,
-            side_days=(
-                () if settled_on is None
-                else on_both_sides(
-                    seed_user["account"].id, loan.id, an_entered_day(settled_on),
-                )
+            status_id=(
+                ref_cache.status_id(StatusEnum.PROJECTED) if settled
+                else status_id
             ),
+            category_id=seed_user["categories"]["Rent"].id,
         ),
     )
+    if not settled:
+        return transfer
+    settle_transfer(
+        transfer.id, seed_user["user"].id,
+        side_days=(
+            () if settled_on is None
+            else on_both_sides(
+                seed_user["account"].id, loan.id, an_entered_day(settled_on),
+            )
+        ),
+    )
+    if transfer.status_id != status_id:
+        transfer.status_id = status_id
+        db.session.flush()
+    return transfer
 
 
 #: How many payments the eager-load controls build.  More than one, because the

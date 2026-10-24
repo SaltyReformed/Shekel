@@ -14,8 +14,8 @@ revert un-dates and keeps them (ruling **R-BAL61**); a ``$0.00`` close keeps
 none (rulings **R-BAL82**, **R-BAL141**); a corrected ``$0.00`` close is dated
 by its due date (ruling **R-BAL169**); the transfer's counter moves
 when a side's record or day does (developer ruling 2026-08-18, the
-``$214.37`` two-tab lost update); the born-settled create (finding
-**BAL-583**); a statement link reaches one side's record (ruling **R-FL**);
+``$214.37`` two-tab lost update); a statement link reaches one side's record
+(ruling **R-FL**);
 the removal act's list is the side's collection; the occurrence delete takes
 the records off (finding **BAL-532**, ruling **R-CC75**); and an endpoint move
 carries a side's record (ruling **R-BAL168**) under the page check (ruling
@@ -35,7 +35,6 @@ from app.enums import MovementFigureSourceEnum, SettledDayBasisEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
-from app.models.amount_ownership import AmountOwnership
 from app.models.statement_match import StatementMatch
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
@@ -369,33 +368,6 @@ class TestTheTransfersCounterMovesWithItsSides:
             expense, income = _records(xfer.id)
             assert recorded_settle_day(expense) == an_entered_day(day)
             assert recorded_settle_day(income) == SettleDay(day=day, basis=BORROWED)
-
-
-class TestABornSettledTransferRecordsBothSides:
-    """Finding BAL-583: the born-settled create writes through the Transfer arm."""
-
-    def test_a_transfer_created_paid_holds_two_dated_records(self, app, seed_user):
-        """``create_transfer`` in Done: both sides recorded at the amount, borrowed today."""
-        with app.app_context():
-            savings = _savings(seed_user)
-            xfer = transfer_service.create_transfer(
-                transfer_service.TransferSpec(
-                    user_id=_owner(seed_user),
-                    from_account_id=seed_user["account"].id,
-                    to_account_id=savings.id,
-                    pay_period_id=seed_user["bootstrap_period"].id,
-                    scenario_id=seed_user["scenario"].id,
-                    amount_ownership=AmountOwnership.own(_AMOUNT),
-                    status_id=_status(StatusEnum.DONE),
-                    category_id=None,
-                ),
-            )
-            db.session.commit()
-            today = SettleDay(day=display_today(), basis=BORROWED)
-            records = _records(xfer.id)
-            assert None not in records
-            assert [r.amount for r in records] == [_AMOUNT, _AMOUNT]
-            assert [recorded_settle_day(r) for r in records] == [today, today]
 
 
 class TestAStatementLinksOneSidesRecord:

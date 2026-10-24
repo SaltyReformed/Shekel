@@ -29,17 +29,13 @@ import logging
 from dataclasses import dataclass
 from datetime import date
 
-from app.enums import MovementFigureSourceEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.amount_ownership import AmountOwnership
 from app.models.ref import Status
 from app.models.transfer import Transfer
-from app.services import posting_service
-from app.services import status_seam
 from app.services.transfer_service._loan_posting import (
     _reject_payment_before_origination,
-    _sync_loan_postings_if_loan,
 )
 from app.services.transfer_service._ownership import (
     _get_owned_account,
@@ -47,11 +43,6 @@ from app.services.transfer_service._ownership import (
     _get_owned_period,
     _get_owned_scenario,
     _get_owned_transfer_template,
-)
-from app.services.transfer_service._side_days import SideDay, stated_by_side
-from app.services.transfer_service._status import (
-    date_born_settled_pair,
-    reject_stated_days_without_settle,
 )
 from app.services.transfer_service._validation import (
     _reject_unmodeled_source,
@@ -70,15 +61,15 @@ logger = logging.getLogger(__name__)
 class TransferSpec:  # pylint: disable=too-many-instance-attributes
     """The canonical inputs for creating a transfer.
 
-    Bundles the fourteen fields :func:`create_transfer` needs into one
+    Bundles the thirteen fields :func:`create_transfer` needs into one
     cohesive value object so the sole transfer-creation path takes a
-    single argument rather than a fourteen-field signature.  Every field
+    single argument rather than a thirteen-field signature.  Every field
     is read by ``create_transfer`` and supplied together by every caller
     (the new-transfer route, the recurrence engine, the materialize path)
     -- this is one "transfer to create" request, mirroring the columns
     of the ``Transfer`` row it produces.
 
-    Pylint: ``too-many-instance-attributes`` (14/7) -- these are the
+    Pylint: ``too-many-instance-attributes`` (13/7) -- these are the
     irreducible inputs of one creation request, read as a flat unit by
     the single consumer; there is NO cohesive sub-group to nest, so
     splitting would fragment one concept for no gain.  Mirrors the
@@ -102,7 +93,10 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
             could express only the first: a create door that cannot say *this
             row is priced by its definition* has to write a figure and let a
             later writer take it back, and the row is OWN in between.
-        status_id: Initial status (typically 'projected').
+        status_id: Initial status, outside the settled band: every app
+            door creates Projected.  A settled status is refused (ruling
+            **R-BAL379**): a transfer becomes settled only through the settle
+            verb, after it exists.
         category_id: Optional spending category.  May be None.
         notes: Optional notes on the transfer.
         transfer_template_id: Optional link to the generating transfer
@@ -110,17 +104,6 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
         name: Optional display name.  If None, generated from the
             account names.
         due_date: Optional due date stored on the transfer.
-        side_days: The day the money moved on each account the caller knows,
-            and HOW (:class:`~app.services.transfer_service._side_days.SideDay`,
-            at most one per endpoint), for a transfer created ALREADY settled
-            (plan step E1a; per side since ``balance:X-bi-6-4c-3``, ruling
-            **R-BAL142**).  Resolved exactly as the update path's stated days
-            are: a side nobody states for borrows the other's, and with none
-            stated both sides borrow the owner's TODAY, as a Paid press does
-            (the F-048 / C-22 rule, on the user's clock).  Meaningless for an
-            unsettled status, so :func:`create_transfer` rejects that
-            combination loudly rather than recording a settle day for a
-            payment that has not happened.
         occurs_on: WHICH OCCURRENCE this transfer answers: the day its
             template's cadence named (the transfer recurrence engine), or its
             own due date for a ONE-TIME transfer (the one-time branch of
@@ -141,15 +124,20 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
     transfer_template_id: int | None = None
     name: str | None = None
     due_date: date | None = None
-    side_days: "tuple[SideDay, ...]" = ()
     occurs_on: date | None = None
 
 
 def create_transfer(spec: TransferSpec) -> Transfer:
-    """Create a transfer, and for one born settled its sides' records.
+    """Create a transfer that has not settled.
 
     This is the ONLY code path that should create rows in
-    budget.transfers.
+    budget.transfers.  **It creates no settled transfer** (ruling
+    **R-BAL379**, developer 2026-10-23, "Delete paid-at-birth door"): a
+    transfer becomes settled only through the settle verb
+    (``settle_transfer``, or ``update_transfer`` moving it to Done),
+    which prices its figure, dates each side and records both sides'
+    payments in one act.  So a create writes the transfer row alone, and
+    neither side holds a payment record.
 
     Args:
         spec: The :class:`TransferSpec` carrying the owner, endpoints,
@@ -161,14 +149,11 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         The created, flushed :class:`Transfer`.
 
     Raises:
-        ValidationError: If a stated amount is non-positive, if a
-            born-SETTLED transfer states a relation rather than the figure
-            that moved, if the accounts are the same, or if any business rule
-            is violated.
+        ValidationError: If a stated amount is non-positive, if the
+            accounts are the same, if the status is a settled one, or if any
+            business rule is violated.
         NotFoundError: If any referenced entity does not exist or
             does not belong to user_id.
-        ValueError: If a stated side's day names an account on neither side,
-            or two name one side (:func:`~._side_days.stated_by_side`).
     """
     # ── Validate inputs ────────────────────────────────────────────
     # A stated figure is still refused when it is not positive; a spec that
@@ -225,50 +210,22 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     _get_owned_category(spec.category_id, spec.user_id)
     _get_owned_transfer_template(spec.transfer_template_id, spec.user_id)
     created_status = db.session.get(Status, spec.status_id)
-    # A born-SETTLED transfer must state what moved, so its spec must own a
-    # figure.  Every caller that births one is an ad-hoc or materialize door,
-    # and an ad-hoc transfer owns its amount structurally
-    # (``ck_transfers_adhoc_owns_amount``); the recurrence engine births
-    # Projected rows only.  So this refusal describes a state no writer in
-    # ``app/`` constructs -- and it is stated rather than assumed away, because
-    # the alternative to a figure is a settlement RECORD of ``None`` on both
-    # legs, which every reader then values as a close of nothing (ruling
-    # **R-BAL82**): a transfer of ``$0.00`` published as a fact.
+    # **A settled status is refused, before any row exists** (ruling
+    # **R-BAL379**): there is one way to a settled transfer, the settle verb,
+    # and a create that accepted one was a second create-and-settle path with
+    # its own figure and its own day writer, which no app door reached (each
+    # creates Projected) and only tests did.  Asked here, with every other
+    # refusal, so no row is ever written for a refused request.
     #
-    # **Hoisted AHEAD of the first write**, with every other refusal: a first
-    # revision raised it after ``db.session.add`` and two flushes, in a function
-    # whose stated discipline is that a refusal never runs after a row exists.
-    #
-    # ``is not None`` for the reason the born-settled branch below states it:
-    # ``db.session.get`` answers ``None`` for a status id no row carries, and
-    # the FK is what refuses that at the flush.  A first hoist read the
-    # attribute unguarded and turned a bad id into an ``AttributeError`` here
-    # instead of the integrity error the caller gets today.
-    if (
-        amount is None
-        and created_status is not None
-        and created_status.is_settled
-    ):
+    # ``is not None`` because ``db.session.get`` answers ``None`` for a status
+    # id no row carries, and the FK is what refuses that at the flush; reading
+    # the attribute unguarded would turn a bad id into an ``AttributeError``
+    # here instead of the integrity error the caller gets.
+    if created_status is not None and created_status.is_settled:
         raise ValidationError(
-            "A transfer created ALREADY SETTLED must state the figure that "
-            "moved, and this spec states a relation instead: a settlement "
-            "record says what the bank took, which a definition's price is "
-            "not. Create it Projected and settle it, or state the amount its "
-            "money moved at."
+            f"A transfer cannot be created already {created_status.name}: "
+            "create it Projected, then settle it."
         )
-
-    # The settled-iff-dated rule, asked BEFORE any row exists.  It is the seam's
-    # own predicate rather than a second statement of it (plan step X-f1b,
-    # finding **N-183**): the seam cannot answer this case itself, because the
-    # born-settled branch below is gated on the status being settled, so an
-    # unsettled create carrying a day never reaches it and the day would be
-    # dropped in silence.  One rule, two moments.  Each stated day is placed on
-    # its side first, which refuses an account on neither side
-    # (:func:`~._side_days.stated_by_side`) -- also before any row exists.
-    stated = stated_by_side(
-        spec.side_days, spec.from_account_id, spec.to_account_id,
-    )
-    reject_stated_days_without_settle(spec.status_id, stated)
 
     # ── Determine the name ─────────────────────────────────────────
     transfer_name = spec.name or f"{from_account.name} to {to_account.name}"
@@ -292,50 +249,8 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         is_deleted=False,
     )
     db.session.add(xfer)
-    # Flush to get transfer.id: a born-settled transfer's side records link
-    # it (``transaction_entries.expense_transfer_id`` / ``income_transfer_id``)
-    # and the event below names it.
+    # Flush to get transfer.id, which the event below names.
     db.session.flush()
-
-    # ── Born-settled coherence (plan step E1a) ─────────────────────
-    # A transfer BORN settled used to book NO cash entry and carry no settle
-    # day -- a settled effect the ledger never saw, which the
-    # checked-projection assert refuses the moment the loan syncs.  So the
-    # create chokepoint applies update_transfer's two settle rules: each side's
-    # ``settled_on`` is resolved from the caller's stated days, a side with
-    # none borrowing, and both borrow the user's today when none is stated (the
-    # F-048 / C-22 defense -- a transfer created settled settled at creation),
-    # and the posting reconcile runs (the cash entry + the loan genesis
-    # reconcile).  ``created_status`` was loaded in the validation block, which
-    # also rejects a ``settled_on`` on an unsettled create before any row
-    # exists.  ``display_today()`` rather than the server's day: this value IS
-    # the ``entry_date`` the postings below are filed under (step C2's one
-    # clock), and that day is the user's (ruling R-DH (b)) -- and the SEAM is
-    # what applies it, since plan step X-f1b made that the column's one writer
-    # (finding N-183).  Since plan step ``balance:X-bi-6-4d-2`` the days and
-    # the record land on each SIDE's payment record
-    # (``_status.date_born_settled_pair`` through the seam's Transfer arm,
-    # finding BAL-583); the transfer's status is already written, so nothing
-    # else moves.
-    if created_status is not None and created_status.is_settled:
-        # The transfer is BORN in the settled status, so nothing demands a
-        # record of what moved -- but a settled transfer whose sides hold no
-        # record is the ``$0.00`` record (ruling **R-BAL82**), a transfer that
-        # moved nothing.  So the create supplies one: the figure is the
-        # transfer's own amount, which is
-        # what a born-settled transfer says moved, and its source is
-        # ``resolved`` -- the app priced it from the row rather than anyone
-        # stating what the bank took (the source is the stated field since
-        # X-bi-3e-1).
-        date_born_settled_pair(
-            xfer, stated,
-            settlement=status_seam.Settlement(
-                amount=amount, source=MovementFigureSourceEnum.RESOLVED,
-            ),
-        )
-        db.session.flush()
-        posting_service.sync_transfer_postings(xfer)
-        _sync_loan_postings_if_loan(xfer)
 
     log_event(
         logger, logging.INFO, EVT_TRANSFER_CREATED, BUSINESS,

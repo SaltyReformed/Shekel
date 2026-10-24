@@ -3,10 +3,12 @@ Shekel Budget App -- Transfer Service status and settle-day writers
 
 The writers that move a transfer and its two SIDES together: the status
 applier (the transfer to its status through the one seam, and each side's
-payment record, dated with ITS OWN side's day, through the seam's Transfer arm),
-the born-settled create's writer beside it, and the soft delete's return of a
-transfer to a plan (:func:`return_to_plan`, ruling **R-BAL246**), which goes
-through the applier.
+payment record, dated with ITS OWN side's day, through the seam's Transfer arm)
+and the soft delete's return of a transfer to a plan (:func:`return_to_plan`,
+ruling **R-BAL246**), which goes through the applier.  The born-settled
+create's writer stood beside them until ruling **R-BAL379** (developer
+2026-10-23) deleted the create's settled arm: a transfer is created unsettled
+and enters the band only through the applier.
 
 Extracted from ``transfer_service`` at plan step **X-f1b**, on the same ground
 every earlier split from that module used -- it was at the 1000-line ceiling and
@@ -21,7 +23,7 @@ responsibility is unchanged and the file moved from
 **The two sides' DAYS part here since plan step ``balance:X-bi-6-4c-3``**
 (ruling **R-BAL142**): each side keeps its own day and basis, a side with no
 evidence of its own borrows the other's, and the derivation is
-:mod:`._side_days`' -- pure, and asked by both writers below through
+:mod:`._side_days`' -- pure, and asked by the applier through
 :func:`_resolved_days`.  The day CORRECTION door (``apply_settle_day_correction``,
 ruling **R-ED**) is gone: a correction states a day for a side and goes through
 :func:`apply_status_to_all_three` at the pair's current status, which is how a
@@ -95,9 +97,11 @@ def _resolved_days(
     Reads each side's CURRENT day off its RECORD (plan step
     ``balance:X-bi-6-4d-2``; the twin row's own day until then) and the
     repair order's fallback, then hands both to
-    :func:`~._side_days.resolve_pair_days`.  Both writers in this module call
-    it, so a borrowed day has one derivation in ``app/`` (the REC-552 study's
-    seam S6).  A record is dated exactly while its transfer is settled, so a
+    :func:`~._side_days.resolve_pair_days`.  The applier
+    (:func:`apply_status_to_all_three`) calls it, and the endpoint move asks
+    the same resolver itself (``_endpoints._moved_days``), so a borrowed day
+    has one derivation in ``app/`` (the REC-552 study's seam S6).  A record is
+    dated exactly while its transfer is settled, so a
     side's current day is the record's day; a side holding no record -- a
     ``$0.00`` close, or a first settle -- has none.  The repair order is the
     declared ``(expense, income)``: the twins' "a leg still in the band
@@ -169,9 +173,11 @@ def reject_stated_days_without_settle(status_id: int, stated: PairDays) -> None:
 
     No money has moved, so there is no day to record: the seam's own refusal
     (:func:`app.services.status_seam.reject_settle_day_without_settled_status`),
-    asked of each side's stated day.  One rule at three moments -- the create
-    before any row exists, the update before its first write, and this
-    module's writer before either side is written.
+    asked of each side's stated day.  One rule at two moments -- the update
+    before its first write, and this module's writer before either side is
+    written.  (The create asked it a third time, of the days a born-settled
+    create stated, until ruling **R-BAL379** deleted the create's settled arm
+    and its days with it.)
 
     Args:
         status_id: The status the transfer is, or is about to be, in.
@@ -275,7 +281,8 @@ def apply_status_to_all_three(
     14).  So the twins' transitions are no longer verified, and the "pair
     settlement repair" that read a drifted twin's sibling's record went with
     them: every move INTO the band carries its record (the settle verb, the
-    born-settled create), and an identity move keeps each record's figure.
+    one door into the band since ruling **R-BAL379** deleted the create's
+    settled arm), and an identity move keeps each record's figure.
 
     **Verified in FULL before anything is assigned**: the transfer's own
     transition, the revert refusal, every stated day and a day stated on a
@@ -387,47 +394,4 @@ def return_to_plan(transfer: Transfer, *, took_off: bool) -> None:
         return
     apply_status_to_all_three(
         TransferRows(transfer), ref_cache.status_id(StatusEnum.PROJECTED),
-    )
-
-
-def date_born_settled_pair(
-    transfer: Transfer,
-    stated: PairDays,
-    *,
-    settlement: "status_seam.Settlement",
-) -> None:
-    """Record both sides of a transfer CREATED settled, each on its own day.
-
-    The born-settled create's writer (``transfer_service.create_transfer``,
-    finding **BAL-583**: re-plumbed onto the status seam's Transfer arm at
-    plan step ``balance:X-bi-6-4d-2``).  The transfer is constructed in its
-    settled status, so its sides need their records and days and the
-    transfer's own status is already written: the arm is asked alone, with
-    the days :func:`_resolved_days` derives -- with nothing stated, both sides
-    borrow the owner's today, as a Paid press does.
-
-    **It is deliberately not :func:`apply_status_to_all_three` with the current
-    status.**  That function verifies the transfer's transition, and a
-    transfer's workflow map has no ``Received`` entry (transfers settle with
-    ``Done``), so routing a born-``Received`` create through it would refuse a
-    state ``create_transfer`` has always accepted -- a create-path rule, not
-    this writer's to decide.  And the fallback is today, never the due date:
-    a born-settled pair is entering the band, though its status says it is
-    already there.
-
-    Args:
-        transfer: The transfer just created, in a settled status.
-        stated: The days the create states, by side.
-        settlement: WHAT moved (:class:`app.services.status_seam.Settlement`):
-            the transfer's own amount, ``resolved``.
-
-    Raises:
-        ValidationError: From the arm's refusals (a future day, a day the
-            account's books do not reach).
-    """
-    legs = _side_legs(transfer)
-    days = _resolved_days(legs, stated, display_today())
-    status_seam.sync_side_records(
-        legs, transfer.status_id, days=tuple(days), settlement=settlement,
-        press=None,
     )

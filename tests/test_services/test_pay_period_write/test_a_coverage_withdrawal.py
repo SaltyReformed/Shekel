@@ -231,10 +231,13 @@ class TestACoverageWithdrawalIsAccepted:
                 pay_period_id=seed_periods[-1].id,
                 scenario_id=seed_user["scenario"].id,
                 amount_ownership=AmountOwnership.own(Decimal("150.00")),
-                status_id=ref_cache.status_id(StatusEnum.DONE),
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 category_id=None,
             ))
             xfer_id = xfer.id
+            # Created Projected, then settled: the create makes no settled
+            # transfer (ruling R-BAL379).
+            transfer_service.settle_transfer(xfer_id, user_id)
             db.session.execute(
                 text(
                     "UPDATE budget.transaction_entries SET settled_on = :day "

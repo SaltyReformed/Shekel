@@ -105,8 +105,8 @@ def sync_side_records(
 
     * **neither before nor after in the settled band** -- a cancel of a
       Projected transfer: nothing moves;
-    * **in the band with a record** -- a settle, a re-settle after a revert, a
-      figure correction or a born-settled create: each side's record carries
+    * **in the band with a record** -- a settle, a re-settle after a revert or
+      a figure correction: each side's record carries
       the figure and its own day (a new record when the side holds none), or,
       for a ``$0.00`` figure, neither side keeps one;
     * **otherwise each side's record follows its day** -- a revert un-dates

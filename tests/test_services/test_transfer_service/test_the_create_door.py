@@ -1,7 +1,7 @@
 """The create door, transfer_service.create_transfer: the one transfer it writes with its fields,
 category, template, name and default name, and the inputs it refuses (a zero, negative or
 unparseable amount, the same account twice, a transfer out of a loan, another user's account,
-period or category, and a missing account).
+period or category, a missing account, and a settled status).
 """
 
 from datetime import date
@@ -9,6 +9,8 @@ from decimal import Decimal
 
 import pytest
 
+from app import ref_cache
+from app.enums import StatusEnum
 from app.models.transfer import Transfer
 from app.services import transfer_service
 from app.exceptions import NotFoundError, ValidationError
@@ -371,6 +373,40 @@ class TestCreateTransferValidation:
                         category_id=other_cat.id,
                     ),
                 )
+
+    @pytest.mark.parametrize("settled", [StatusEnum.DONE, StatusEnum.RECEIVED])
+    def test_a_settled_status_is_refused_before_any_row_exists(
+        self, app, db, transfer_data, settled,
+    ):
+        """A transfer is created unsettled: a settled status writes no row.
+
+        Ruling **R-BAL379** (developer 2026-10-23, "Delete paid-at-birth
+        door"): the one way to a settled transfer is the settle verb, so the
+        create refuses either member of the settled band (Paid and Received)
+        with "create it Projected, then settle it", and refuses it before any
+        row exists: the owner's transfer count is unchanged after the refusal.
+        It created such a transfer, with its sides' records, until then.
+        """
+        with app.app_context():
+            td = transfer_data
+            owned = db.session.query(Transfer).filter_by(user_id=td["user"].id)
+            before = owned.count()
+            with pytest.raises(
+                ValidationError, match="create it Projected, then settle it",
+            ):
+                transfer_service.create_transfer(
+                    transfer_service.TransferSpec(
+                        user_id=td["user"].id,
+                        from_account_id=td["account"].id,
+                        to_account_id=td["savings_account"].id,
+                        pay_period_id=td["periods"][0].id,
+                        scenario_id=td["scenario"].id,
+                        amount_ownership=AmountOwnership.own(Decimal("100")),
+                        status_id=ref_cache.status_id(settled),
+                        category_id=td["categories"]["Rent"].id,
+                    ),
+                )
+            assert owned.count() == before
 
     def test_invalid_amount_string_rejected(self, app, db, transfer_data):
         """Non-numeric amount raises ValidationError."""

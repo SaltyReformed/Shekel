@@ -216,20 +216,23 @@ def update_transfer(xfer_id):
 
     Route-boundary FK ownership checks (commit C-27 / F-043 of the
     2026-04-15 security remediation plan): when the schema accepts
-    a ``category_id`` (the only user-scoped FK
-    :class:`TransferUpdateSchema` exposes), it is verified against
-    ``current_user.id`` here, before the service is invoked.  This
-    layered defense matches :func:`create_ad_hoc` and
+    a ``category_id``, it is verified against ``current_user.id``
+    here, before the service is invoked.  This layered defense
+    matches :func:`create_ad_hoc` and
     :func:`app.routes.transactions.create_inline`; the underlying
     ``transfer_service.update_transfer`` already runs the same
     ownership check via ``_get_owned_category``, but enforcing the
     rule at the route layer keeps the security boundary visible
     where requests arrive and protects against a future refactor
-    that bypasses the service helper.  ``status_id`` is a reference
-    table FK (not user-scoped) and so does not need an ownership
-    check.  Setting ``category_id`` to ``None`` (clearing the
-    category) is permitted and skips the ownership probe per the
-    schema's ``allow_none=True`` policy.
+    that bypasses the service helper.  :class:`TransferUpdateSchema`'s
+    other user-scoped FK, ``pay_period_id``, is checked by the service
+    alone since plan step ``pay_calendar:C13-b`` (the comment at the
+    probe below says why), and this route answers its ``NotFoundError``
+    with the same 404.  ``status_id`` is a reference table FK (not
+    user-scoped) and so does not need an ownership check.  Setting
+    ``category_id`` to ``None`` (clearing the category) is permitted
+    and skips the ownership probe per the schema's ``allow_none=True``
+    policy.
 
     Optimistic locking (commit C-18 / F-010): the cell ships
     ``version_id`` as a hidden input set to ``Transfer.version_id``
@@ -410,9 +413,12 @@ def create_ad_hoc():
 
     Route-boundary FK ownership checks (commit C-27 / F-043 of the
     2026-04-15 security remediation plan): every FK accepted from
-    the form is verified against ``current_user.id`` before the
-    service is invoked, mirroring the
-    :func:`app.routes.transactions.create_inline` pattern.  This
+    the form but ``pay_period_id`` is verified against
+    ``current_user.id`` before the service is invoked, mirroring the
+    :func:`app.routes.transactions.create_inline` pattern.  The period
+    is checked by the service alone since plan step
+    ``pay_calendar:C13-b`` (the comment at the probe below says why),
+    and its ``NotFoundError`` is answered with the same 404.  This
     layered defense is intentional: ``transfer_service`` already
     runs the same checks via its private ``_get_owned_*`` helpers,
     but a future refactor (or a new ``service`` consumer) that
@@ -475,7 +481,7 @@ def create_ad_hoc():
 
     # ``transfer_service.create_transfer`` calls ``db.session.flush()``
     # internally to obtain the transfer's primary key, which its log event
-    # names (as a born-settled one's side records do), so the
+    # names, so the
     # ``uq_transfers_adhoc_dedupe`` IntegrityError can fire either during
     # the service call (the flush) or at the subsequent ``db.session.commit()``.
     # A single ``try`` spans both so the constraint hit is translated into

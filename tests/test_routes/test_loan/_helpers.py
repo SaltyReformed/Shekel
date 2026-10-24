@@ -13,7 +13,11 @@ from app.models.ref import Status
 from app.services.balance_at import BalanceContext
 from app.services.recurrence import ClosesOn
 from app.services.recurring_definition import resolved_definition
-from app.services.transfer_service import TransferSpec, create_transfer
+from app.services.transfer_service import (
+    TransferSpec,
+    create_transfer,
+    update_transfer,
+)
 
 from tests._test_helpers import (
     add_escrow_line,
@@ -382,20 +386,25 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
                               status_enum=StatusEnum.PROJECTED):
     """Create a transfer from checking to loan account via the transfer service.
 
-    Enforces shadow transaction invariants by using the production
-    code path.  Does NOT directly insert shadow transactions.
+    Through the production code path, so the transfer is the one the app
+    writes; no row is inserted directly.
 
-    A transfer created ALREADY settled carries an explicit settle instant at
-    its period's start (step E1a: a born-settled create without one stamps
-    ``now()``, and the real clock sits past these fixtures' frozen todays and
+    **A SETTLED one is created Projected, then settled** through the settle
+    verb (``update_transfer`` with *status_enum*), because the create makes
+    no settled transfer (ruling **R-BAL379**); it was created in its settled
+    status until then, and the settle stores what that create stored: the
+    transfer's own figure, and an ``entered`` day at its period's start on
+    both sides (step E1a: with no day stated a settle stamps the owner's
+    today, and the real clock sits past these fixtures' frozen todays and
     seeded 2026 periods -- the payment would be invisible to every bounded
-    read).  Period start is the exact visibility these fixtures had before
-    E1a, when a born-settled create left the settle day NULL and every reader
-    fell back to the period start, so no test's arithmetic moves.
+    read).  Period start is
+    the exact visibility these fixtures had before E1a, when a born-settled
+    create left the settle day NULL and every reader fell back to the period
+    start, so no test's arithmetic moves.
     """
     status_id = ref_cache.status_id(status_enum)
     settled = _db.session.get(Status, status_id).is_settled
-    return create_transfer(
+    transfer = create_transfer(
         TransferSpec(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
@@ -403,17 +412,22 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             amount_ownership=AmountOwnership.own(amount),
-            status_id=status_id,
-            category_id=seed_user["categories"]["Rent"].id,
-            side_days=(
-                on_both_sides(
-                    seed_user["account"].id, loan_account.id,
-                    an_entered_day(period.start_date),
-                )
-                if settled else ()
+            status_id=(
+                ref_cache.status_id(StatusEnum.PROJECTED) if settled
+                else status_id
             ),
+            category_id=seed_user["categories"]["Rent"].id,
         ),
     )
+    if settled:
+        update_transfer(
+            transfer.id, seed_user["user"].id, status_id=status_id,
+            side_days=on_both_sides(
+                seed_user["account"].id, loan_account.id,
+                an_entered_day(period.start_date),
+            ),
+        )
+    return transfer
 
 
 # ── Payment Breakdown Tests (Commit 5.14-1) ────────────────────────

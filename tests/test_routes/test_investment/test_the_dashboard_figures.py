@@ -246,10 +246,21 @@ class TestEmployerMatchCapped:
         """Seed a Settled transfer into the investment account.
 
         Uses the canonical ``transfer_service.create_transfer`` -- the
-        only sanctioned path for budget.transfers rows -- with a
-        ``Received`` status whose ``excludes_from_balance = False`` so
+        only sanctioned path for budget.transfers rows -- and leaves it in
+        a ``Received`` status whose ``excludes_from_balance = False`` so
         the route's YTD aggregation (``calculate_investment_inputs``
         Step 4) counts the resulting shadow income.
+
+        **Created Projected, settled through the settle verb, then laid
+        Received on BARE**: the create makes no settled transfer (ruling
+        **R-BAL379**), and the verb settles a transfer with ``Done``; no
+        transfer door writes ``Received``.  It was created ``Received``
+        until that ruling, whose question approved building this state
+        another way with the case's expected answer unchanged; the stored
+        transfer is the one that create wrote (both sides recorded at the
+        figure on the owner's today), as
+        ``test_routes/test_transfers/_helpers._received_transfer_of`` lays
+        one.
         """
         from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
         from app.services import transfer_service  # pylint: disable=import-outside-toplevel
@@ -264,11 +275,13 @@ class TestEmployerMatchCapped:
                 pay_period_id=period.id,
                 scenario_id=seed_user["scenario"].id,
                 amount_ownership=AmountOwnership.own(amount),
-                status_id=received_id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 category_id=cat.id,
                 name="YTD seed",
             ),
         )
+        transfer_service.settle_transfer(xfer.id, seed_user["user"].id)
+        xfer.status_id = received_id
         db_session.commit()
         return xfer
 

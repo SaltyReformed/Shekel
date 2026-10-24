@@ -21,10 +21,15 @@ from ._helpers import _create_small_loan
 
 
 def _make_confirmed_transfer(seed_user, to_account, period, amount):
-    """Create a confirmed (Paid) transfer to a loan account."""
+    """Create a confirmed (Paid) transfer to a loan account.
+
+    Created Projected, then settled through the settle verb (a Paid press on
+    the owner's today): the create makes no settled transfer (ruling
+    **R-BAL379**).
+    """
     from app.services import transfer_service  # pylint: disable=import-outside-toplevel
 
-    return transfer_service.create_transfer(
+    transfer = transfer_service.create_transfer(
         transfer_service.TransferSpec(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
@@ -32,10 +37,12 @@ def _make_confirmed_transfer(seed_user, to_account, period, amount):
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             amount_ownership=AmountOwnership.own(amount),
-            status_id=ref_cache.status_id(StatusEnum.DONE),
+            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             category_id=seed_user["categories"]["Rent"].id,
         ),
     )
+    transfer_service.settle_transfer(transfer.id, seed_user["user"].id)
+    return transfer
 
 
 class TestPaidOffBadge:

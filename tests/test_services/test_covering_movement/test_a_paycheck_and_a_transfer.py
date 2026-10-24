@@ -14,7 +14,6 @@ from app.enums import (
     StatusEnum,
 )
 from app.extensions import db
-from app.models.amount_ownership import AmountOwnership
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.transaction_entry import TransactionEntry
@@ -425,38 +424,6 @@ class TestATransferIsCoveredOnBothLegs:
                 movement = _only_movement(leg)
                 assert movement.settled_on == corrected
                 assert movement.purchased_on == corrected
-
-    def test_a_born_settled_transfer_is_covered_on_both_legs(
-        self, app, seed_user, seed_periods,
-    ):
-        """``create_transfer``'s born-settled arm reaches the seam with a record."""
-        with app.app_context():
-            savings = create_savings_account(
-                seed_user, db.session, "Savings", Decimal("0.00"),
-            )
-            xfer = transfer_service.create_transfer(
-                transfer_service.TransferSpec(
-                    user_id=seed_user["user"].id,
-                    from_account_id=seed_user["account"].id,
-                    to_account_id=savings.id,
-                    pay_period_id=seed_periods[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    amount_ownership=AmountOwnership.own(Decimal("500.00")),
-                    status_id=ref_cache.status_id(StatusEnum.DONE),
-                    category_id=None,
-                ),
-            )
-            db.session.flush()
-            expense, income = _legs_of(xfer)
-            for leg in (expense, income):
-                # The transfer says Paid and its side's record is dated (R-BAL167
-                # class 1, plan step balance:X-bi-6-4d-2); the leg's day is that.
-                assert leg.status.is_settled
-                movement = _only_movement(leg)
-                assert movement.amount == Decimal("500.00")
-                assert movement.settled_on is not None
-            assert status_seam.covered_cash_leg(expense, expense.account_id) == Decimal("-500.00")
-            assert status_seam.covered_cash_leg(income, income.account_id) == Decimal("500.00")
 
 
 class TestATransfersMovementsFollowItsLifecycle:
