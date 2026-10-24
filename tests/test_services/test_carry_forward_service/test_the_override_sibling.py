@@ -261,10 +261,10 @@ class TestCarryForwardOverrideSiblingTransfers:
 
     The two transfers are the ENGINE's (:func:`generate_transfer_of`, plan
     step balance:X-ch), one per paycheck, and the first case then clears
-    both parents' ``occurs_on`` for the reason the transaction twin's class
-    docstring gives: the index whose exemption it grades is the UNDATED one,
-    and a dated pair is storable by its two occurrences whatever the flag
-    says.
+    both transfers' ``occurs_on`` for the reason
+    TestCarryForwardOverrideSibling's docstring gives: the index whose
+    exemption it grades is the UNDATED one, and a dated pair is storable by
+    its two occurrences whatever the flag says.
     """
 
     def test_carries_transfer_into_target_with_existing_rule_generated(
@@ -281,7 +281,7 @@ class TestCarryForwardOverrideSiblingTransfers:
             # -- the recurrence engine has already produced this period's
             # instance.
             target_xfer = generate_transfer_of(template, seed_periods[1])
-            # The pre-R17 shape, laid on bare: each parent claims its
+            # The pre-R17 shape, laid on bare: each transfer claims its
             # PAYCHECK rather than an occurrence (see the class docstring).
             source_xfer.occurs_on = None
             target_xfer.occurs_on = None
@@ -303,21 +303,6 @@ class TestCarryForwardOverrideSiblingTransfers:
             assert target_xfer.is_override is False
             assert source_xfer.transfer_template_id == template.id
             assert target_xfer.transfer_template_id == template.id
-
-            # Both transfers' shadow transactions follow them into the
-            # target period -- four shadows total (two per transfer).
-            shadows = (
-                db.session.query(Transaction)
-                .filter(
-                    Transaction.transfer_id.in_(
-                        [source_xfer.id, target_xfer.id]
-                    ),
-                    Transaction.is_deleted.is_(False),
-                ).all()
-            )
-            assert len(shadows) == 4
-            for shadow in shadows:
-                assert shadow.pay_period_id == seed_periods[1].id
 
     def test_transfer_recurrence_does_not_double_generate(
         self, app, db, seed_user, seed_periods

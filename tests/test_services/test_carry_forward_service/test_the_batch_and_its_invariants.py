@@ -49,7 +49,7 @@ class TestCarryForwardEnvelopeMixedBatch:
           * Envelope template ($100), source row, $40 entry.
           * Discrete template ($50), source row.
           * Ad-hoc transaction ($30).
-          * Transfer ($75 to savings).
+          * Transfer ($200 to savings).
 
         Target canonicals already exist for both templates in period 1
         (rule-generated rows at default amounts).
@@ -79,7 +79,7 @@ class TestCarryForwardEnvelopeMixedBatch:
                 amount="30.00",
             )
 
-            # Transfer (shadow rows in period 0).
+            # Transfer, Projected in period 0.
             transfer = _create_transfer_in_period(
                 seed_user, seed_periods, period_index=0,
             )
@@ -119,34 +119,26 @@ class TestCarryForwardEnvelopeMixedBatch:
             assert adhoc.pay_period_id == seed_periods[1].id
             assert adhoc.is_override is False
 
-            # Transfer parent + both shadows moved; no flag, as the ad-hoc
-            # transaction above takes none: the transfer move keys on
-            # ``recurs`` since plan step balance:X-ci-1 (ruling R-BAL93), and
-            # this transfer names no definition.  It asserted ``True`` until
-            # that leaf.
+            # Transfer moved; no flag, as the ad-hoc transaction above takes
+            # none: the transfer move keys on ``recurs`` since plan step
+            # balance:X-ci-1 (ruling R-BAL93), and this transfer names no
+            # definition.  It asserted ``True`` until that leaf.
             db.session.refresh(transfer)
             assert transfer.pay_period_id == seed_periods[1].id
             assert transfer.is_override is False
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=transfer.id
-            ).all()
-            assert len(shadows) == 2
-            for shadow in shadows:
-                assert shadow.pay_period_id == seed_periods[1].id
-                assert shadow.is_override is False
 
     def test_envelope_failure_rolls_back_other_branches(
         self, app, db, seed_user, seed_periods,
     ):
         """Ambiguous envelope target -- atomic rollback affects every branch.
 
-        Setup: same period 0 mix as the prior test, but the envelope
-        target in period 1 holds an owner-moved override beside its
-        canonical (the state ``_leftover_recipient`` refuses).  When the
-        envelope branch refuses with AMBIGUOUS, the discrete moves and
-        the transfer move (which
-        would have happened mid-batch in the no_autoflush block / shadow
-        loop respectively) must NOT persist.
+        Setup: the prior test's envelope and discrete rows in period 0 (no
+        ad-hoc row, no transfer), and the envelope target in period 1 holds
+        an owner-moved override beside its canonical (the state
+        ``_leftover_recipient`` refuses).  When the envelope branch refuses
+        with AMBIGUOUS, the discrete move (which would have happened
+        mid-batch in the no_autoflush block) and the envelope's settle must
+        NOT persist.
 
         The route's rollback restores every prior pending mutation;
         this test verifies the atomicity contract end-to-end.

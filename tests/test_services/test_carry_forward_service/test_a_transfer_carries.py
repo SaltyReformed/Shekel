@@ -6,7 +6,6 @@ cancelled or soft-deleted.
 from decimal import Decimal
 
 from app.models.ref import AccountType, Status
-from app.models.transaction import Transaction
 from app.services import account_service, carry_forward_service, transfer_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import generate_transfer_of, make_transfer_template
@@ -16,12 +15,18 @@ from ._helpers import _create_transaction, _create_savings, _create_transfer_in_
 
 
 class TestCarryForwardShadowTransactions:
-    """Tests for carry forward behavior with shadow transactions."""
+    """Carry-forward's transfer arm: one ``update_transfer`` call per transfer.
+
+    A transfer is ONE row, and both of its legs read its period
+    (``transfer_legs``), so nothing moves with it.  These cases read the
+    transfer; until plan step balance:X-bi-6-4d-2 deleted its two twin
+    rows, they read those too.
+    """
 
     def test_moves_shadow_transactions_via_service(
         self, app, db, seed_user, seed_periods
     ):
-        """Shadow transactions are carried forward atomically with their parent."""
+        """A transfer carries forward beside a regular row, each into the target."""
         with app.app_context():
             xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
             regular = _create_transaction(seed_user, seed_periods, name="Regular")
@@ -40,40 +45,26 @@ class TestCarryForwardShadowTransactions:
             db.session.refresh(xfer)
             assert xfer.pay_period_id == seed_periods[1].id
 
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id
-            ).all()
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.pay_period_id == seed_periods[1].id
-
     def test_deduplicates_shadow_pairs(
         self, app, db, seed_user, seed_periods
     ):
-        """Both shadows from one transfer count as a single carried item."""
+        """A transfer counts as ONE carried item."""
         with app.app_context():
-            xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
+            _create_transfer_in_period(seed_user, seed_periods, 0)
             db.session.flush()
-
-            # Both shadows are in period 0 (query returns both).
-            shadow_count = db.session.query(Transaction).filter(
-                Transaction.transfer_id == xfer.id,
-                Transaction.pay_period_id == seed_periods[0].id,
-            ).count()
-            assert shadow_count == 2
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
                 balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
-            # Counted as 1 transfer, not 2 shadows.
+            # One transfer, one item.
             assert count == 1
 
     def test_sets_is_override_on_a_recurring_definitions_transfer_and_shadows(
         self, app, db, seed_user, seed_periods
     ):
-        """Carry forward flags a RECURRING definition's transfer and both shadows.
+        """Carry forward flags a RECURRING definition's transfer.
 
         The flag is what keeps the maintain and generate passes off a row the
         owner placed elsewhere, so it is a recurring definition's transfer's
@@ -100,13 +91,6 @@ class TestCarryForwardShadowTransactions:
             assert xfer.pay_period_id == seed_periods[1].id
             assert xfer.is_override is True
 
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id
-            ).all()
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.is_override is True
-
     def test_does_not_flag_a_transfer_no_cadence_generated(
         self, app, db, seed_user, seed_periods
     ):
@@ -114,7 +98,7 @@ class TestCarryForwardShadowTransactions:
 
         No pass will ever write over it, and a flag would only hide it from
         a definition it might one day be given; this is the arm the
-        transaction twin's discrete branch already took for a row no rule
+        discrete branch already takes for a transaction no rule
         generated.  The one-time transfer's arm -- the same rule plus the
         re-placing -- is pinned in ``tests/test_routes/test_one_time_transfer_doors``.
         """
@@ -131,18 +115,11 @@ class TestCarryForwardShadowTransactions:
             db.session.refresh(xfer)
             assert xfer.pay_period_id == seed_periods[1].id
             assert xfer.is_override is False
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id
-            ).all()
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.pay_period_id == seed_periods[1].id
-                assert s.is_override is False
 
     def test_ignores_done_shadows(
         self, app, db, seed_user, seed_periods
     ):
-        """Done transfer and shadows are not carried forward."""
+        """A Paid transfer is not carried forward."""
         with app.app_context():
             xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
             done = db.session.query(Status).filter_by(name="Paid").one()
@@ -163,7 +140,7 @@ class TestCarryForwardShadowTransactions:
     def test_ignores_cancelled_shadows(
         self, app, db, seed_user, seed_periods
     ):
-        """Cancelled transfer and shadows are not carried forward."""
+        """A Cancelled transfer is not carried forward."""
         with app.app_context():
             xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
             cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
@@ -184,7 +161,7 @@ class TestCarryForwardShadowTransactions:
     def test_ignores_soft_deleted_shadows(
         self, app, db, seed_user, seed_periods
     ):
-        """Soft-deleted transfer and shadows are not carried forward."""
+        """A soft-deleted transfer is not carried forward."""
         with app.app_context():
             xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
             transfer_service.delete_transfer(
@@ -282,7 +259,7 @@ class TestCarryForwardShadowTransactions:
     def test_only_shadows_in_period(
         self, app, db, seed_user, seed_periods
     ):
-        """Period with only shadow transactions (no regular) carries forward."""
+        """A period holding only a transfer (no regular row) carries it forward."""
         with app.app_context():
             xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
             db.session.flush()
