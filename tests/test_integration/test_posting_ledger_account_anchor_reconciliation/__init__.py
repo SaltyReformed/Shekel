@@ -44,7 +44,7 @@ settle in the anchor period (the plan review's CRITICAL-1); the
 ``TestAbsoluteInvariantPerAccount`` fixture pins that exact regression.
 
 **Non-tautological by construction**, the same three independent ways the Step-3
-cash oracle is (``test_posting_ledger_cash_reconciliation.py``):
+cash oracle is (the ``test_posting_ledger_cash_reconciliation`` package):
 
   * **hand-computed literals** -- the expected ledger totals and correction
     deltas are the test author's arithmetic over the seeded anchors and
