@@ -52,9 +52,8 @@ auto-posted entry back, while its ``TestSyncIdempotency`` and
 re-sync no-ops or reverses.
 
 The Step-3 transaction tests (the ``TestTransaction*`` and ``TestEnvelope*``
-classes of ``test_a_settled_transaction.py``, ``test_fail_loud.py``'s
-``TestTransactionFailLoud`` and ``test_a_transfer_movement.py``'s
-``TestTransactionShadowFamily``) cover the plan's one cash-effect formula --
+classes of ``test_a_settled_transaction.py`` and ``test_fail_loud.py``'s
+``TestTransactionFailLoud``) cover the plan's one cash-effect formula --
 ``effective - Sigma(credit entries)``, signed ``+`` income / ``-`` expense --
 with hand-computed worked examples (plain income/expense, the debit-only
 envelope effect, the all-credit no-op), the correct-by-construction reconcile

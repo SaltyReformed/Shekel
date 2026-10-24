@@ -406,13 +406,15 @@ def transfer_holds_a_movement() -> Exists:
     that must not remove a transfer holding money asks it -- the pay-period
     lock and the reset gate (``pay_period_locks.items_holding_a_movement``),
     "Remove earlier paychecks" through the same items, and the transfer
-    archive, the recurring transfer's delete and the account's delete
-    (``archive_helpers``, whose aggregate reads
-    :func:`held_transfer_entries`, the same join).  Until that leaf each of
-    those six doors walked the shadows itself, so ``X-bi-6-4d-2``, which
-    moved a transfer's movements off the shadows onto the transfer, had one
-    module to change, this one -- the join (:func:`_side_records`) and its
-    link (:func:`_movement_link`).
+    archive and the recurring transfer's delete (``archive_helpers``, whose
+    aggregate reads :func:`held_transfer_entries`, the same join).  Until
+    that leaf each of those five doors walked the shadows itself, and so did
+    the account's delete, which asks no such question since plan step
+    ``X-bi-6-4d-2`` (``archive_helpers.account_has_history`` counts every
+    live transfer from or to the account, holding money or not).  So
+    ``X-bi-6-4d-2``, which moved a transfer's movements off the shadows
+    onto the transfer, had one module to change, this one -- the join
+    (:func:`_side_records`) and its link (:func:`_movement_link`).
 
     **Any record on either side, dated or kept un-dated**: the scope of the
     side keys it pre-empts, which refuse the transfer's delete for any
