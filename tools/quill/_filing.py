@@ -1,8 +1,10 @@
-"""The ``quill file`` command: a step, finding, ruling or question filed after
+"""The ``quill file`` command: a step, finding, ruling, question or task filed after
 :func:`check.violations` passes, a filing a failure cut short finished by the same
 command (R-BAL186), and nothing written over one an earlier run filed -- ruling
 ``balance:R-BAL202``'s mark, its leaf rule (R-BAL204) and ruling closes (R-BAL206) --
-and no leaf filed under a step a branch has claimed.  ``quill.py``'s module docstring is
+and no leaf filed under a step a branch has claimed, or one with a task still open.  A
+task (ruling ``balance:R-BAL386``) is filed under the piece of work it is part of, as a
+finding is under its owner, and carries no arc label.  ``quill.py``'s module docstring is
 the command's usage.
 
 Split out of the command module at X-cx L2's leaf C, whose change would otherwise take
@@ -28,6 +30,7 @@ from tools.quill._state import (
     filing_ended,
     filing_unfinished,
     holder,
+    is_container,
     is_live,
     leaf_placement,
     leaves,
@@ -44,7 +47,7 @@ from tools.quill.check import (
     ruling_question,
     violations,
 )
-from tools.quill.setup_tracker import FILING
+from tools.quill.setup_tracker import FILING, TASK
 
 
 @dataclass(frozen=True)
@@ -87,7 +90,7 @@ def _converted_body(asked: _Asked, answer: str) -> str:
 
 
 #: What a filing with no parent holds of git, which it does not read (:func:`_filing_for`).
-_NOTHING_READ = _git.Reads(_git.Shipped(frozenset(), ()), {}, {})
+_NOTHING_READ = _git.Reads(_git.Shipped(frozenset(), frozenset(), ()), {}, {})
 
 
 @dataclass(frozen=True)
@@ -116,7 +119,9 @@ def _filing_for(args, tracker: Tracker, root: Path) -> _Filing:
 
     Whether the parent is still LIVE is git's answer and the cards', read the
     way ``next`` reads a step (:func:`_state.is_live`), never the card's open
-    state alone, which is display.
+    state alone, which is display.  A task's parent is a piece of work whose own filing
+    has finished, never a step split into smaller steps: no change ships one, so no task
+    under it is ever done.
     """
     parent_number = getattr(args, "owner", None) or getattr(args, "parent", None)
     parent = _one(tracker, parent_number) if parent_number else None
@@ -124,13 +129,19 @@ def _filing_for(args, tracker: Tracker, root: Path) -> _Filing:
         raise Refused(f"{_label(parent)}'s own filing has not finished (R-BAL202): finish it "
                       "with the same `quill file` command first, then split it -- a leaf under "
                       "it would make it a split step its own filing puts on the board")
+    if args.kind == TASK and filing_unfinished(parent):
+        raise Refused(f"{_label(parent)}'s own filing has not finished (R-BAL202): finish it "
+                      "with the same `quill file` command first, then file its tasks")
     owner, cards, reads = None, {}, _NOTHING_READ
     if parent is not None:
         reads = _git.read(root)
         cards = with_closure(tracker, {parent.number: parent})
         owner = Owner(parent.kind, is_live(parent.number, cards, reads.shipped.cards))
+    if args.kind == TASK and is_container(parent, cards, reads.shipped.cards):
+        raise Refused(f"{_label(parent)} is split into smaller steps (R-BAL177): a task is a "
+                      "piece of one of them, so file it under that one")
     asked = None
-    if args.kind in ("step", "question"):
+    if args.kind in ("step", "question", TASK):
         body = _read(args.body_file)
     elif args.kind == "finding":
         body = args.text
@@ -143,7 +154,8 @@ def _filing_for(args, tracker: Tracker, root: Path) -> _Filing:
         body = _converted_body(asked, _read(args.answer_file))
     else:
         body = ruling_body(_read(args.question_file), _read(args.answer_file))
-    labels = tuple(dict.fromkeys((args.arc, *(getattr(args, "label", None) or ()))))
+    arc = () if args.kind == TASK else (args.arc,)
+    labels = tuple(dict.fromkeys((*arc, *(getattr(args, "label", None) or ()))))
     return _Filing(Draft(args.kind, args.title, body, labels, owner), parent, cards,
                    reads.shipped.cards, reads.claims, asked)
 
@@ -300,6 +312,21 @@ def _refuse_under_a_claim(filing: _Filing, leaf: Card | None) -> None:
                   "abandoned), then run this again" + keep)
 
 
+def _refuse_over_tasks(filing: _Filing) -> None:
+    """Refuse to file a leaf of ``filing``'s parent -- a new one, or one's filing again -- while
+    a task under that parent is open (R-BAL386): a step split into smaller steps is never
+    shipped itself (R-BAL177), so no task under it could ever be done.  Its tasks are dropped
+    first, and each filed again under the smaller step it is a piece of."""
+    parent = filing.parent
+    if tasks := [child.number for child in parent.children
+                 if child.kind == TASK and child.is_open]:
+        names = ", ".join(f"plan#{number}" for number in tasks)
+        raise Refused(f"plan#{parent.number} has tasks still open ({names}): a step split into "
+                      "smaller steps is never shipped itself (R-BAL177), so no task under it "
+                      "could ever be done.  Drop each first (`quill drop plan#N`), then file it "
+                      "again under the smaller step it is a piece of")
+
+
 def _ended_unfinished(card: Card) -> str:
     """Why nothing is filed over ``card``, whose filing a decision ended
     (:func:`_state.withdrawn_filing`), and how a person restores it: filing it again
@@ -351,13 +378,14 @@ def _shipped_for(filing: _Filing, card: Card, root: Path) -> frozenset[int]:
 
 
 def cmd_file(args, tracker: Tracker, root: Path) -> int:
-    """File a step, finding, ruling or question, after :func:`check.violations` passes;
+    """File a step, finding, ruling, question or task, after :func:`check.violations` passes;
     finish one a failure cut short (R-BAL186); write nothing over one the earlier run
     filed (:func:`_same_filing`): refused when a decision ended it
     (:func:`_ended_unfinished`), else filed already (:func:`_filed_already`).  A leaf
     whose filing would write anything is refused under a claimed step
-    (:func:`_refuse_under_a_claim`) and beside an unfinished sibling
-    (:func:`_refuse_beside_unfinished`).
+    (:func:`_refuse_under_a_claim`), beside an unfinished sibling
+    (:func:`_refuse_beside_unfinished`) and under a step with a task still open
+    (:func:`_refuse_over_tasks`).
 
     Every card is created marked, :data:`setup_tracker.FILING` sent in the call
     that creates it (by :meth:`_tracker.Tracker.create`, never through ``--label``,
@@ -392,6 +420,7 @@ def cmd_file(args, tracker: Tracker, root: Path) -> int:
     if args.kind == "step" and filing.parent is not None:
         _refuse_under_a_claim(filing, card)
         _refuse_beside_unfinished(filing, card)
+        _refuse_over_tasks(filing)
     if card is None:
         card = _created(args.kind, tracker, filing.draft)
     else:

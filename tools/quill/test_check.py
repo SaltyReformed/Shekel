@@ -272,3 +272,51 @@ def test_a_title_carrying_no_alias_mark_gives_none(title):
     """No mark first, no space after it, an empty one, a ``]`` inside it, a space before it,
     nothing after it: none is :func:`card_title`'s shape."""
     assert title_alias(title) is None
+
+
+def _task(**changes):
+    """A task that passes every rule (R-BAL386), with ``changes`` applied."""
+    fields = {"kind": "task", "title": "4d-4a: the links' migration", "body": "The migration.",
+              "labels": (), "owner": Owner("step", True)}
+    return Draft(**{**fields, **changes})
+
+
+@pytest.mark.parametrize("owner", [Owner("step", True), Owner("finding", True)])
+def test_a_task_under_a_live_piece_of_work_carrying_no_arc_passes(owner):
+    """R-BAL386: a task is a piece of one step or finding, still work, and carries no arc
+    label, its arc being its card's (rule 14); the filing mark and a release label are no
+    arc."""
+    assert not violations(_task(owner=owner))
+    assert not violations(_task(owner=owner, labels=("filing", "moves-money")))
+
+
+def test_a_task_carrying_an_arc_label_is_refused_whatever_the_change():
+    """An arc on a task is a second home for its card's arc."""
+    (problem,) = violations(_task(labels=("balance",)), LABELS_ONLY)
+    assert problem == "a task carries no arc label: its arc is its card's; it has ['balance']"
+
+
+@pytest.mark.parametrize(("owner", "said"), [
+    (None, "none"),
+    (Owner(None, True), "a card with no type"),
+    (Owner("step", False), "a step that is done"),
+    (Owner("finding", False), "a finding that is done"),
+    (Owner("ruling", False), "ruling"),
+    (Owner("question", True), "question"),
+    (Owner("task", True), "task"),
+])
+def test_a_task_set_under_a_parent_needs_a_live_step_or_finding(owner, said):
+    """A task under no card, a card of no type, work that is done, or a card that is no work
+    is refused: no change ships its card, so it is never done."""
+    assert violations(_task(owner=owner)) == [
+        "a task is a sub-issue of a LIVE step or finding, the piece of work it is part of "
+        f"(R-BAL386); its parent is {said}"]
+    assert not violations(_task(owner=owner), {TITLE, BODY})
+
+
+def test_a_tasks_title_is_held_as_any_cards_is():
+    """R-BAL178 and R-BAL180 hold a task's title too, when the change writes it."""
+    assert violations(_task(title=" "), {TITLE}) == ["its title is a short name, and it has none"]
+    assert violations(_task(title="t" * (TITLE_CAP + 1)), {TITLE}) == [
+        f"its title is a short name of at most {TITLE_CAP} characters; it is {TITLE_CAP + 1}"]
+    assert not violations(_task(title="t" * (TITLE_CAP + 1)), LABELS_ONLY)

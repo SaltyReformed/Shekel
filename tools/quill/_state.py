@@ -67,13 +67,25 @@ split step it leaves with no leaf back on the board (:func:`unsplit`).
 until someone removes it, and a step blocked by an outside issue waits, as
 does every leaf under it.
 
+**A task is a piece of one step or finding** (ruling ``balance:R-BAL386``): a sub-issue
+of type ``task`` under that card, a commit inside its one pull request, never offered,
+claimed or on the board.  It is DONE when git says so (:func:`done_tasks`): its file
+``plan/tasks/N`` is in the merge of ``dev`` and ``main``, or the live claim of the card it
+is under wrote it.  Its open or closed state is the tool's display of that, which
+``sync`` keeps in step both ways, as it does a step's: closed as completed once done,
+reopened once a revert (or a claim released, or a branch rewritten) takes its file away
+while the tool's close stands.  A person's close is a drop, and ``quill drop`` of a card
+drops the tasks under it that are still to do (R-BAL190's shape, :func:`drop_takes`).
+An open task under a card that can never take its file -- dropped, shipped without it, or
+no work -- is reported, never closed (:func:`_stale_task`).
+
 **``sync`` never overrides a person** (the build plan: a check "never acts on"
 the developer's own edit): a card whose last close or reopen was a person's is
 reported, never changed.  **Permanent git history never fails it**
 (``R-BAL184``): what ``dev`` and ``main`` already hold wrongly (a marker
 naming no card, or a card no change ships; an entry under ``plan/ships/``
-that is no card's marker) is printed apart as history, since no tracker write
-can change it.
+that is no card's marker; a task file naming no task) is printed apart as
+history, since no tracker write can change it.
 """
 from __future__ import annotations
 
@@ -82,9 +94,9 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
 from tools.ci.trailers import DEV, MAIN
-from tools.quill._git import MARKERS, Claim
+from tools.quill._git import MARKERS, Claim, task_file
 from tools.quill._tracker import BareCard, Card
-from tools.quill.setup_tracker import FILING
+from tools.quill.setup_tracker import FILING, TASK
 
 #: How long a claim's branch may go without a commit before ``quill next`` reports it
 #: stale: the build plan's three days, measured from the branch's last commit since the
@@ -139,13 +151,20 @@ def is_work(card: BareCard, cards: Mapping[int, BareCard], shipped: Iterable[int
 def no_work(card: BareCard, cards: Mapping[int, BareCard], shipped: Iterable[int]) -> str | None:
     """What ``card`` is when it is no work (:func:`is_work`), for a line saying so -- ``a
     container`` (:func:`is_container`), ``a card with no type``, or its type, ``a ruling``,
-    ``a question`` or any other -- or None when it is work: how ``sync``'s history and CI's
-    landing check both name such a card.  (``tools/release/_cards._what`` still names a
-    card with no type its own way, ``a card of no type``: a tracker card at the cutover.)"""
+    ``a question``, ``a task`` or any other -- or None when it is work: how ``sync``'s
+    history and CI's landing check both name such a card.  (``tools/release/_cards._what``
+    still names a card with no type its own way, ``a card of no type``: a tracker card at
+    the cutover.)"""
     if is_work(card, cards, shipped):
         return None
     if is_container(card, cards, shipped):
         return "a container"
+    return _kind_named(card)
+
+
+def _kind_named(card: BareCard) -> str:
+    """``card``'s type as a line names it: ``a step``, ``a task``, ... or ``a card with no
+    type``."""
     return f"a {card.kind}" if card.kind else "a card with no type"
 
 
@@ -588,6 +607,30 @@ def holder(claim: Claim) -> str:
     return f"{claim.branch} ({claimed}; last commit {claim.committed})"
 
 
+def done_tasks(cards: Mapping[int, BareCard], tasks: Iterable[int],
+               claims: Mapping[int, Claim]) -> frozenset[int]:
+    """Each task among ``cards`` that git says is done (R-BAL386): its file is in the merge of
+    ``dev`` and ``main`` (``tasks``, :attr:`_git.Shipped.tasks`), or the live claim
+    (``claims``) of the card the tracker says it is under wrote it (:attr:`_git.Claim.tasks`).
+    The ONE reading of a task's state, which ``sync`` and ``show`` ask; ``quill drop`` asks
+    only whether that merge holds its file (:func:`drop_takes`), as a drop abandons the
+    claim.  A file naming a card that is no task, or a task under another card, makes
+    nothing done (:func:`_names_no_task`)."""
+    tasks = set(tasks)
+    return frozenset(number for number, card in cards.items() if card.kind == TASK and (
+        number in tasks or (card.parent in claims and number in claims[card.parent].tasks)))
+
+
+def drop_takes(task: BareCard, tasks: Iterable[int]) -> bool:
+    """Whether a drop of the card ``task`` is under drops it too (R-BAL190's shape: the tool
+    records the decision where the work is): it is no drop yet -- open, or closed by the tool
+    as done, which is only its display of git -- and its file is not in the merge of ``dev``
+    and ``main`` (``tasks``), which no drop undoes, as a split step's drop leaves a leaf git
+    says shipped.  A task done only on its card's claim is dropped with the card, whose
+    branch a drop abandons; one a person closed keeps their close."""
+    return not _closed_dropped(task) and task.number not in set(tasks)
+
+
 def stale_claims(claims: Mapping[int, Claim], now: datetime) -> list[Claim]:
     """Claims whose branch's tip was committed more than :data:`STALE_CLAIM` before ``now``:
     work idle that long, whoever holds it."""
@@ -624,6 +667,90 @@ def _sync_shipped(card: Card, plan: SyncPlan) -> None:
         )
         return
     plan.close.append(card.number)
+
+
+def _names_no_task(number: int, cards: Mapping[int, Card], under: int | None = None) -> str | None:
+    """Why the task file ``plan/tasks/<number>`` marks nothing done (:func:`done_tasks`): the
+    card it names does not exist, or is no task, or -- read at the tip of card ``under``'s
+    claim -- is a task under another card, or under none; None when it names a task (under
+    ``under``, when given)."""
+    card = cards.get(number)
+    if card is None:
+        return f"plan#{number} does not exist"
+    if card.kind != TASK:
+        return f"plan#{number} is {_kind_named(card)}, no task"
+    if under is not None and card.parent != under:
+        where = "no card" if card.parent is None else f"plan#{card.parent}"
+        return f"task plan#{number} is under {where}, not plan#{under}"
+    return None
+
+
+def _stale_task(card: Card, cards: Mapping[int, Card], shipped: set[int]) -> str | None:
+    """The REPORT for ``card``, a task not done, when it can never be done: the card it is
+    under was dropped, is no work (a container, which no change ships, or a card of another
+    kind), or shipped without its file; or it is under no card.  None while that card is work
+    still to do, or while its parent is outside the tracker, which that link's own report
+    names (R-BAL188).  Never closed by ``sync``: whether it was dropped is a person's call."""
+    number, drop = card.number, f"drop it (`quill drop plan#{card.number}`)"
+    if card.parent is None:
+        return (None if any(link.what == "parent" for link in card.outside) else
+                f"task plan#{number} is open under no card: link it under the step or finding "
+                f"it is a piece of, or {drop}")
+    parent = cards[card.parent]
+    if dropped(parent.number, cards, shipped):
+        why = "was dropped"
+    elif what := no_work(parent, cards, shipped):
+        why = f"is {what}, which no change ships"
+    elif parent.number in shipped:
+        why = f"shipped without {task_file(number)}"
+    else:
+        return None
+    return (f"task plan#{number} is open under plan#{parent.number}, which {why}, so it is "
+            f"never done: {drop}")
+
+
+def _sync_task(card: Card, plan: SyncPlan, cards: Mapping[int, Card], shipped: set[int],
+               done: frozenset[int]) -> None:
+    """A task's state shows git's (R-BAL386), as a piece of work's does: an open task git says
+    is done (:func:`done_tasks`) is closed as completed, unless a PERSON reopened it, which is
+    reported; one the tool showed done that git no longer says is done is reopened; a
+    person's close is a drop, and is left.  An open task that can never be done -- reopened
+    now, or open already -- is reported (:func:`_stale_task`)."""
+    number = card.number
+    if number in done:
+        if card.is_open and card.touched_by_hand:
+            plan.reports.append(
+                f"task plan#{number} is done in git ({task_file(number)} is on its card's "
+                f"claim, or on {DEV} or {MAIN}) but a person reopened it: close it by hand, or "
+                "take its file out of the branch that holds it")
+        elif card.is_open:
+            plan.close.append(number)
+        return
+    reopen = unshipped_shown_done(card, done)
+    if reopen:
+        plan.reopen.append(number)
+    if (card.is_open or reopen) and (stale := _stale_task(card, cards, shipped)):
+        plan.reports.append(stale)
+
+
+def _task_files(plan: SyncPlan, cards: Mapping[int, Card], tasks: Iterable[int],
+                claims: Mapping[int, Claim]) -> None:
+    """Each task file that marks nothing done (:func:`_names_no_task`): a HISTORY line for one
+    in the merge of ``dev`` and ``main`` (``tasks``), which no tracker write can change
+    (R-BAL184), and a REPORT for one a live claim's own commits wrote
+    (:attr:`_git.Claim.tasks`), which a person takes off that branch: a task is done on its
+    own card's branch only."""
+    for number in sorted(set(tasks)):
+        if why := _names_no_task(number, cards):
+            plan.history.append(f"the task file {task_file(number)} on {DEV} or {MAIN} marks "
+                                f"nothing done ({why}): it is not acted on")
+    for claim in sorted(claims.values(), key=lambda claim: claim.card):
+        for number in sorted(claim.tasks):
+            if why := _names_no_task(number, cards, claim.card):
+                plan.reports.append(
+                    f"{claim.branch}'s tip holds {task_file(number)}, but {why}, so it marks "
+                    f"nothing done (a task is done on its own card's branch only): take it off "
+                    f"{claim.branch}")
 
 
 def container_shown(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> str | None:
@@ -684,8 +811,14 @@ def _claimed_split(card: Card, claim: Claim, cards: Mapping[int, Card], shipped:
 
 
 def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int],
-              claims: Mapping[int, Claim]) -> SyncPlan:
-    """What ``sync`` writes so each step and finding shows git's answer.
+              claims: Mapping[int, Claim], tasks: Iterable[int] = ()) -> SyncPlan:
+    """What ``sync`` writes so each step, finding and task shows git's answer.
+
+    ``tasks``: each task whose file the merge of ``dev`` and ``main`` holds
+    (:attr:`_git.Shipped.tasks`; none unless named).  ``cards`` holds every card a task
+    file there or one a claim wrote names, and every task under a card it holds, so each
+    task's state is written from :func:`done_tasks` (:func:`_sync_task`) and each file that
+    marks nothing done is named (:func:`_task_files`).
 
     A claim on a step split into smaller steps is reported, never released: a
     branch building that step whole would ship a marker that names a split
@@ -696,6 +829,8 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int],
     """
     shipped = set(shipped)
     plan = SyncPlan(reports=outside_reports(cards) + unfinished_reports(cards, shipped))
+    _task_files(plan, cards, tasks, claims)
+    done = done_tasks(cards, tasks, claims)
     for card in sorted(cards.values(), key=lambda card: card.number):
         if card.kind == "ruling" and card.is_open and not filing_unfinished(card):
             plan.reports.append(
@@ -710,6 +845,8 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int],
             )
         if container and (claim := claims.get(card.number)):
             plan.reports.append(_claimed_split(card, claim, cards, shipped))
+        if card.kind == TASK:
+            _sync_task(card, plan, cards, shipped, done)
         if card.kind not in SHIPPABLE:
             continue
         if container:

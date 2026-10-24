@@ -14,7 +14,9 @@ What it holds a card to (rulings ``balance:R-BAL136``, ``R-BAL138``,
 ``R-BAL177``, ``R-BAL178``, ``R-BAL179`` and ``R-BAL180``):
 
 - always: its type is one of the four kinds, and it carries exactly one arc
-  label;
+  label -- or it is a TASK (ruling ``balance:R-BAL386``), a piece of one step or finding,
+  which carries none: its arc is its card's (rule 14), and a task set under a parent is a
+  sub-issue of a LIVE step or finding;
 - a title the change writes is a short name: present, and at most
   :data:`TITLE_CAP` characters;
 - a parent the change sets is the owner its kind needs: a finding's is a LIVE
@@ -46,7 +48,8 @@ from collections.abc import Collection
 from dataclasses import dataclass
 
 from tools.ci.arcs import ARCS
-from tools.quill.setup_tracker import ISSUE_TYPES
+from tools.quill._state import SHIPPABLE
+from tools.quill.setup_tracker import CARD_TYPES, TASK
 
 #: A NEW finding's text: one sentence of at most this many characters (R-BAL136).
 FINDING_CAP = 400
@@ -206,17 +209,22 @@ def _ruling_problems(text: str) -> list[str]:
     return problems
 
 
+def _parent_named(owner: Owner | None) -> str:
+    """A card's parent as a problem names it: none, a card with no type, a step or finding
+    that is done, or its kind."""
+    if owner is None:
+        return "none"
+    if owner.kind is None:
+        return "a card with no type"
+    if owner.kind in SHIPPABLE and not owner.live:
+        return f"a {owner.kind} that is done"
+    return owner.kind
+
+
 def _owner_problems(draft: Draft) -> list[str]:
     """Why a card's parent is not the owner its kind needs."""
     owner = draft.owner
-    if owner is None:
-        parent = "none"
-    elif owner.kind is None:
-        parent = "a card with no type"
-    elif owner.kind == "step" and not owner.live:
-        parent = "a step that is done"
-    else:
-        parent = owner.kind
+    parent = _parent_named(owner)
     is_step = owner is not None and owner.kind == "step"
     if draft.kind == "finding" and not (is_step and owner.live):
         problem = (f"a finding is a sub-issue of a LIVE step, its owner (R-BAL177); "
@@ -234,24 +242,51 @@ def _owner_problems(draft: Draft) -> list[str]:
     return [problem]
 
 
+def _title_problems(title: str, changed: Collection[str]) -> list[str]:
+    """Why a title the change writes is not a short name (R-BAL178) of at most
+    :data:`TITLE_CAP` characters (R-BAL180); none when the change writes no title."""
+    title = title.strip()
+    if TITLE in changed and not title:
+        return ["its title is a short name, and it has none"]
+    if TITLE in changed and len(title) > TITLE_CAP:
+        return [f"its title is a short name of at most {TITLE_CAP} characters; "
+                f"it is {len(title)}"]
+    return []
+
+
+def _task_problems(draft: Draft, changed: Collection[str]) -> list[str]:
+    """Every way a task breaks the plan's rules (R-BAL386): it carries no arc label, since
+    its arc is its card's (rule 14); a title it writes is a short name; and a parent it sets
+    is a LIVE step or finding, the piece of work it is part of (whether that is a step split
+    into smaller steps, which is no work, is the caller's to refuse: it reads the steps
+    linked under it)."""
+    problems = []
+    if arcs := sorted(label for label in draft.labels if label in ARCS):
+        problems.append(f"a task carries no arc label: its arc is its card's; it has {arcs}")
+    problems += _title_problems(draft.title, changed)
+    owner = draft.owner
+    if OWNER in changed and not (owner is not None and owner.kind in SHIPPABLE and owner.live):
+        problems.append("a task is a sub-issue of a LIVE step or finding, the piece of work it "
+                        f"is part of (R-BAL386); its parent is {_parent_named(owner)}")
+    return problems
+
+
 def violations(draft: Draft, changed: Collection[str] = NEW_CARD) -> list[str]:
     """Every way ``draft`` breaks the plan's rules; empty when it may be written.
 
     ``changed``: the parts the change writes (:data:`TITLE`, :data:`BODY`,
-    :data:`OWNER`); only those are graded beyond the type and arc label.
+    :data:`OWNER`); only those are graded beyond the type and arc label.  A task
+    (:data:`setup_tracker.TASK`) is held to its own rules (:func:`_task_problems`).
     """
+    if draft.kind == TASK:
+        return _task_problems(draft, changed)
     problems = []
-    if draft.kind not in ISSUE_TYPES:
-        problems.append(f"its type is {draft.kind!r}, not one of {', '.join(ISSUE_TYPES)}")
+    if draft.kind not in CARD_TYPES:
+        problems.append(f"its type is {draft.kind!r}, not one of {', '.join(CARD_TYPES)}")
     arcs = sorted(label for label in draft.labels if label in ARCS)
     if len(arcs) != 1:
         problems.append(f"it carries exactly one arc label of {', '.join(ARCS)}; it has {arcs}")
-    title = draft.title.strip()
-    if TITLE in changed and not title:
-        problems.append("its title is a short name, and it has none")
-    elif TITLE in changed and len(title) > TITLE_CAP:
-        problems.append(f"its title is a short name of at most {TITLE_CAP} characters; "
-                        f"it is {len(title)}")
+    problems += _title_problems(draft.title, changed)
     if OWNER in changed:
         problems += _owner_problems(draft)
     body = normalized(draft.body)
