@@ -255,7 +255,7 @@ def _assert_full_reconciliation(scenario_id: int) -> None:
     (every settle in this suite is stamped at server-now, after the
     origination assertion).  Amortizing loans are excluded -- their absolute
     invariant couples on the amortization split and is the loan oracle's job
-    (``test_posting_ledger_loan_reconciliation.py``).  Holds over every
+    (the ``test_posting_ledger_loan_reconciliation`` package).  Holds over every
     account that has postings, not only the ones a given test hand-computes.
 
     Scenario caveat: a NON-baseline scenario carries the openings here only

@@ -10675,7 +10675,7 @@ def unseeded_replay_balance(loan_id, scenario_id, as_of):
 
     **The reconciliation oracle deliberately does NOT call this**, and that is
     the one duplication left standing.  ``test_posting_ledger_loan_reconciliation
-    ._resolver_balance`` keeps its own body because
+    ._helpers._resolver_balance`` keeps its own body because
     ``test_the_roots_cover_what_the_reference_calls`` reads the modules the
     reference depends on off THAT FUNCTION'S OWN AST -- a delegation to a helper
     in this file would make the closure check grade an empty root set, which is

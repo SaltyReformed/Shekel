@@ -21,7 +21,7 @@ equality on every day is the EQUIVALENCE proof C3's cutover rests on -- the
 posted cache faithfully projects the fold -- and NOT an independent proof of the
 split's VALUE.  The split's value is pinned elsewhere and stays there: the
 Step-4 reconciliation oracle's parallel run against the un-seeded resolver
-(``test_posting_ledger_loan_reconciliation.py``), A2's hand-computed Taxes
+(the ``test_posting_ledger_loan_reconciliation`` package), A2's hand-computed Taxes
 oracle, and B1's hand-computed fold figures (``test_loan_ledger.py``).  Do not
 read this file's equalities as the correctness proof; they are the equivalence
 proof.
