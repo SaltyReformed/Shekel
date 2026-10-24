@@ -1,9 +1,10 @@
 """CI's landing check (X-cx M2): the one write rule over the ship markers a pull request's merge
 writes, and the tracker's word on each card a change records; nothing calls GitHub.
 
-Every history is a throwaway repository's (:mod:`tools.ci.scratch`), its markers written as
-files and its merges REAL ones (:func:`_merge`: git's three-way merge, two parents), judged as
-CI judges one: the merge of the pull request's head into its base's tip (:func:`_check`).  The
+Every history is a throwaway repository's, built and judged by the builders this module shares
+with rule 8's (:mod:`tools.quill._histories`): its markers written as files and its merges
+REAL ones, judged as CI judges one: the merge of the pull request's head into its base's tip
+(:func:`_check`).  The
 tracker is read through the REAL card-only reader (:class:`_tracker.CardReader`, review O3 of
 a1b), so each card it judges is a :class:`_tracker.BareCard` built by ``card_from`` from a node
 in the shape GitHub answers a read without the board, and a decision that reached for a board
@@ -20,10 +21,19 @@ import re
 import pytest
 import requests
 
-from tools.ci.scratch import commit, commit_files, point_dev, point_main, repository, run
+from tools.ci.scratch import commit_files, point_dev, point_main, run
 from tools.quill import landing
 from tools.quill._git import marker
 from tools.quill._github import GitHubError
+from tools.quill._histories import MON, TUE, judging
+from tools.quill._histories import claim as _claim
+from tools.quill._histories import landed as _landed
+from tools.quill._histories import merge as _merge
+from tools.quill._histories import never as _never
+from tools.quill._histories import pull as _pull
+from tools.quill._histories import start as _start
+from tools.quill._histories import undone as _undone
+from tools.quill._histories import verdict as _verdict
 from tools.quill._recorded import recording
 from tools.quill._tracker import CardReader, Tracker
 from tools.quill.landing import (TOKEN_VARIABLE, CannotJudge, PullRequest, main, named,
@@ -32,8 +42,6 @@ from tools.quill.setup_tracker import APP_LOGIN, DEPLOY_TOGETHER_LABEL, FILING, 
 
 #: A person's login, whose close is a decision of theirs.
 PERSON = "SaltyReformed"
-#: When the tests' claims are made, and when a later one is.
-MON, TUE = "2026-10-19T13:00:00Z", "2026-10-20T09:30:00Z"
 
 
 def _card(number, kind="step", parent=None, labels=("balance",)):
@@ -100,11 +108,6 @@ def _reader(github):
     return lambda: CardReader(github, PLAN)
 
 
-def _never():
-    """A connection no test may make: the tracker is read only when a card must be."""
-    raise AssertionError("the tracker was read")
-
-
 def _paths(value, prefix=""):
     """Every key path in ``value``: a dict's keys, joined by dots, a list's items as ``[]``."""
     if isinstance(value, dict):
@@ -117,73 +120,25 @@ def _paths(value, prefix=""):
 
 @pytest.fixture(name="code")
 def _code(tmp_path):
-    """A repository whose ``origin/dev`` and ``origin/main`` hold one base commit (its
-    ``app.py``), the start of every history below; the repository and the base."""
-    root = repository(tmp_path)
-    base = commit_files(root, commit(root, "root"), "base", {"app.py": "base\n"})
-    point_dev(root, base)
-    point_main(root, base)
-    return root, base
-
-
-def _merge(root, first, second, message="merge"):
-    """``second`` merged into ``first`` as git's three-way merge writes it: a commit of the
-    two, ``first`` its first parent; its sha."""
-    tree = run(root, "merge-tree", "--write-tree", first, second)
-    return run(root, "commit-tree", tree, "-p", first, "-p", second, "-m", message)
-
-
-def _claim(root, on, number, when=MON):
-    """Card ``number``'s branch as ``quill claim`` starts it on ``on`` and its session builds
-    it: the claim commit adding the marker ``claimed <when>``, then a commit of its work; the
-    claim commit and the branch's tip."""
-    claimed = commit_files(root, on, f"claim plan#{number}", {marker(number): f"claimed {when}\n"})
-    return claimed, commit_files(root, claimed, f"work {number}", {f"w{number}.txt": "work\n"})
-
-
-def _landed(root, onto, number, when=MON):
-    """Card ``number`` claimed on ``onto`` and its branch merged into it, as its queue lands
-    it; the merge."""
-    return _merge(root, onto, _claim(root, onto, number, when)[1], f"Merge card/{number}")
-
-
-def _undone(root, landed, number):
-    """A revert on ``landed`` of card ``number``'s landing: its marker and work deleted."""
-    return commit_files(root, landed, f"Revert plan#{number}",
-                        {marker(number): None, f"w{number}.txt": None})
-
-
-def _pull(head, sha, base="dev"):
-    """A read of the pull request of branch ``head`` (None: another repository's) at ``sha``
-    into ``base``, as :func:`landing.pull_request` makes one."""
-    return lambda number: PullRequest(number, base, head, sha)
+    """A repository whose ``origin/dev`` and ``origin/main`` hold one base commit, the start
+    of every history below (:func:`_histories.start`); the repository and the base."""
+    return _start(tmp_path)
 
 
 @pytest.fixture(name="check")
 def _check(capsys, code):
-    """The check run over the merge-queue group of pull request #600 in ``code``'s repository:
-    called with ``onto``, the tip of ``base``, and branch ``head`` at ``head_sha``, it judges
-    GitHub's merge of the two, reading the tracker through ``github`` (no read allowed when
-    None), and answers its exit status, its output and its error."""
-    root = code[0]
+    """The check run over the merge-queue group of pull request #600 in ``code``'s repository
+    (:func:`_histories.judging`): called with ``onto``, the tip of ``base``, and branch
+    ``head`` at ``head_sha``, it judges GitHub's merge of the two, reading the tracker through
+    ``github`` (no read allowed when None), and answers its exit status, its output and its
+    error."""
+    judged = judging(capsys, code[0])
 
     def _run(onto, head_sha, head, *, base="dev", github=None):
         """Judge pull request #600 of ``head`` into ``base`` (the fixture)."""
-        (point_dev if base == "dev" else point_main)(root, onto)
-        merge = _merge(root, onto, head_sha, f"Merge pull request #600 from {head}")
-        status = main(["merge_group", merge,
-                       f"refs/heads/gh-readonly-queue/{base}/pr-600-{onto}"],
-                      _reader(github) if github else _never, _pull(head, head_sha, base), root)
-        out = capsys.readouterr()
-        return status, out.out, out.err
+        return judged(onto, head_sha, head, base, _reader(github) if github else _never)
 
     return _run
-
-
-def _verdict(head, changes, refused, base="dev"):
-    """The check's last line for pull request #600 of branch ``head`` into ``base``."""
-    return (f"landing check: pull request #600 into {base} from {head}: {changes} ship marker "
-            f"change(s), {refused} refused")
 
 
 def test_the_nodes_are_shaped_as_github_answers_the_reader():
