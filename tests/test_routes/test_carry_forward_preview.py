@@ -24,9 +24,10 @@ These tests exercise the route layer:
   * Companion users are blocked by ``@require_owner``.
 
 The service-layer tests in
-``tests/test_services/test_carry_forward_service.py``
-(``TestPreviewCarryForward*``) cover the data correctness; this
-file focuses on HTTP-status, rendering, and security.
+``tests/test_services/test_carry_forward_service/test_the_preview.py``
+and ``test_the_preview_agrees.py`` (``TestPreviewCarryForward*``) cover
+the data correctness; this file focuses on HTTP-status, rendering, and
+security.
 """
 
 from datetime import date
