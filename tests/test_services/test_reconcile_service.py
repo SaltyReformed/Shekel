@@ -1043,6 +1043,89 @@ class TestTheSetIsGroupedByItsParent:
             )
 
 
+def _bill(seed_user, period, *, name="Electricity", amount="180.00",
+          fires_on_day=None, income=False):
+    """Create a projected NON-envelope row -- a bill, or a deposit.
+
+    The engine's own row of a priced definition (:func:`generate_row_of`,
+    plan step balance:X-cf).  A bill that names no day of the month
+    repeats every paycheck and is dated on the paycheck's own start;
+    one that names *fires_on_day* is a MONTHLY bill on that day, which
+    is how a row comes to be due on the 8th or the 14th -- the engine
+    dates it there (``compute_due_date``), and it lands in *period*
+    because that paycheck covers the day.
+
+    Args:
+        seed_user: The seeded owner bundle.
+        period: The paycheck the row is funded in.  For a monthly bill
+            it must be the one covering the day it fires on.
+        name: The definition's name.
+        amount: Its stated price.
+        fires_on_day: The day of the month a monthly bill falls due, or
+            ``None`` for an every-paycheck one.
+        income: Build a deposit rather than a bill.
+    """
+    builder = make_income_template if income else make_expense_template
+    if fires_on_day is None:
+        template = builder(
+            db.session, seed_user, amount=amount,
+            name=name, category_key="Groceries",
+        )
+    else:
+        type_id = ref_cache.txn_type_id(
+            TxnTypeEnum.INCOME if income else TxnTypeEnum.EXPENSE,
+        )
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=type_id,
+            name=name,
+            default_amount=Decimal(amount),
+            is_envelope=False,
+        )
+        db.session.add(template)
+        db.session.flush()
+        state_template_price(template)
+        make_cadence_rule(template, MONTHLY, fires_on_day=fires_on_day)
+    return generate_row_of(template, period)
+
+
+def _offered(seed_user, observed_on=_OBSERVED_ON):
+    """Return ``{offer key: offer}`` for the seed user's account (a row's id, a leg's pair)."""
+    return {
+        group.settle.key: group.settle
+        for group in reconcile_service.outstanding_set(
+            _reconciled(seed_user, observed_on=observed_on),
+        ).groups
+        if group.settle is not None
+    }
+
+
+def _settle(seed_user, ids, corrections=None,
+            observed_on=_OBSERVED_ON, transfer_ids=(),
+            transfer_corrections=None):
+    """Run the WRITE UNION against the seed user's own account.
+
+    It was ``record_settled_transactions`` until plan step X-f2-c3, which
+    made the two source-row arms one writer parameterised by an ``Arm``
+    (finding **N-225**) -- so there is no per-arm entry point left to call
+    and the union is the door.  *ids* are the rows' ticks and
+    *transfer_ids* the transfers' -- each arm's own form field since leaf
+    ``balance:X-bi-6-4c-2`` (ruling **R-BAL145**), re-scoped by that arm.
+    """
+    return reconcile_service.record_reconciliation(
+        reconcile_service.ReconcileSubmission(
+            statement=_reconciled(seed_user, observed_on=observed_on),
+            entry_ids=set(),
+            transaction_ids=set(ids),
+            corrections=corrections or {},
+            transfer_ids=set(transfer_ids),
+            transfer_corrections=transfer_corrections or {},
+        ),
+    )
+
+
 class TestTheTransactionArm:
     """Plan step **X-f2-c2**: the panel offers the source ROWS too.
 
@@ -1060,88 +1143,9 @@ class TestTheTransactionArm:
     attribution day and it is offered; 2026-01-01 is before it and it is not.
     """
 
-    @staticmethod
-    def _bill(seed_user, period, *, name="Electricity", amount="180.00",
-              fires_on_day=None, income=False):
-        """Create a projected NON-envelope row -- a bill, or a deposit.
-
-        The engine's own row of a priced definition (:func:`generate_row_of`,
-        plan step balance:X-cf).  A bill that names no day of the month
-        repeats every paycheck and is dated on the paycheck's own start;
-        one that names *fires_on_day* is a MONTHLY bill on that day, which
-        is how a row comes to be due on the 8th or the 14th -- the engine
-        dates it there (``compute_due_date``), and it lands in *period*
-        because that paycheck covers the day.
-
-        Args:
-            seed_user: The seeded owner bundle.
-            period: The paycheck the row is funded in.  For a monthly bill
-                it must be the one covering the day it fires on.
-            name: The definition's name.
-            amount: Its stated price.
-            fires_on_day: The day of the month a monthly bill falls due, or
-                ``None`` for an every-paycheck one.
-            income: Build a deposit rather than a bill.
-        """
-        builder = make_income_template if income else make_expense_template
-        if fires_on_day is None:
-            template = builder(
-                db.session, seed_user, amount=amount,
-                name=name, category_key="Groceries",
-            )
-        else:
-            type_id = ref_cache.txn_type_id(
-                TxnTypeEnum.INCOME if income else TxnTypeEnum.EXPENSE,
-            )
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=type_id,
-                name=name,
-                default_amount=Decimal(amount),
-                is_envelope=False,
-            )
-            db.session.add(template)
-            db.session.flush()
-            state_template_price(template)
-            make_cadence_rule(template, MONTHLY, fires_on_day=fires_on_day)
-        return generate_row_of(template, period)
-
-    @staticmethod
-    def _offered(seed_user, observed_on=_OBSERVED_ON):
-        """Return ``{offer key: offer}`` for the seed user's account (a row's id, a leg's pair)."""
-        return {
-            group.settle.key: group.settle
-            for group in reconcile_service.outstanding_set(
-                _reconciled(seed_user, observed_on=observed_on),
-            ).groups
-            if group.settle is not None
-        }
-
-    @staticmethod
-    def _settle(seed_user, ids, corrections=None,
-                observed_on=_OBSERVED_ON, transfer_ids=(),
-                transfer_corrections=None):
-        """Run the WRITE UNION against the seed user's own account.
-
-        It was ``record_settled_transactions`` until plan step X-f2-c3, which
-        made the two source-row arms one writer parameterised by an ``Arm``
-        (finding **N-225**) -- so there is no per-arm entry point left to call
-        and the union is the door.  *ids* are the rows' ticks and
-        *transfer_ids* the transfers' -- each arm's own form field since leaf
-        ``balance:X-bi-6-4c-2`` (ruling **R-BAL145**), re-scoped by that arm.
-        """
-        return reconcile_service.record_reconciliation(
-            reconcile_service.ReconcileSubmission(
-                statement=_reconciled(seed_user, observed_on=observed_on),
-                entry_ids=set(),
-                transaction_ids=set(ids),
-                corrections=corrections or {},
-                transfer_ids=set(transfer_ids),
-                transfer_corrections=transfer_corrections or {},
-            ),
-        )
+    _bill = staticmethod(_bill)
+    _offered = staticmethod(_offered)
+    _settle = staticmethod(_settle)
 
     def test_an_overdue_row_is_offered_and_settles_on_the_statement_day(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1715,8 +1719,8 @@ class TestTheTransferArm:
             ref_cache.status_id(StatusEnum.PROJECTED)
         )
 
-    _offered = staticmethod(TestTheTransactionArm._offered)
-    _settle = staticmethod(TestTheTransactionArm._settle)
+    _offered = staticmethod(_offered)
+    _settle = staticmethod(_settle)
 
     def test_a_tick_records_the_STATEMENT_on_this_accounts_leg_alone(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -2073,9 +2077,9 @@ class TestWhatATickBooks:
     rather than from a column here, and these grade that they agree.
     """
 
-    _bill = staticmethod(TestTheTransactionArm._bill)
-    _offered = staticmethod(TestTheTransactionArm._offered)
-    _settle = staticmethod(TestTheTransactionArm._settle)
+    _bill = staticmethod(_bill)
+    _offered = staticmethod(_offered)
+    _settle = staticmethod(_settle)
 
     def test_an_envelope_with_entries_offers_sum_entries_and_no_box(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -2291,8 +2295,8 @@ class TestTheCashFigureBesideTheBookedOne:
     envelope today, so this is latent rather than live.
     """
 
-    _bill = staticmethod(TestTheTransactionArm._bill)
-    _offered = staticmethod(TestTheTransactionArm._offered)
+    _bill = staticmethod(_bill)
+    _offered = staticmethod(_offered)
 
     def test_an_envelope_holding_a_CARD_purchase_publishes_both_figures(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -2497,8 +2501,8 @@ class TestTheCorrectionCountIsWhatAHumanTyped:
     Four shapes, and the first two are the ones the column reading got wrong.
     """
 
-    _bill = staticmethod(TestTheTransactionArm._bill)
-    _settle = staticmethod(TestTheTransactionArm._settle)
+    _bill = staticmethod(_bill)
+    _settle = staticmethod(_settle)
 
     @staticmethod
     def _corrected_count(caplog):
@@ -2613,7 +2617,7 @@ class TestTheSectionsAndTheOrder:
     and a childless block is one the template prints inline.
     """
 
-    _bill = staticmethod(TestTheTransactionArm._bill)
+    _bill = staticmethod(_bill)
 
     @staticmethod
     def _resolved(seed_user):
@@ -2792,7 +2796,7 @@ class TestThePanelHoldsONEAmountBasis:
         with app.app_context():
             # Six offerable bills, plus the seed fixture's own envelope close.
             for index in range(6):
-                TestTheTransactionArm._bill(
+                _bill(
                     seed_user, seed_periods[0],
                     name=f"Bill {index}", amount=f"{100 + index}.00",
                 )
