@@ -16,7 +16,6 @@ from GitHub's answer is graded apart (:func:`landing.pull_request`).
 from __future__ import annotations
 
 import copy
-import re
 
 import pytest
 import requests
@@ -25,13 +24,18 @@ from tools.ci.scratch import commit_files, point_dev, point_main, run
 from tools.quill import landing
 from tools.quill._git import marker
 from tools.quill._github import GitHubError
-from tools.quill._histories import MON, TUE, judging
+from tools.quill._histories import MON, PERSON, TUE, judging
+from tools.quill._histories import Lookup as _Lookup
 from tools.quill._histories import claim as _claim
+from tools.quill._histories import closed as _closed
 from tools.quill._histories import landed as _landed
 from tools.quill._histories import merge as _merge
 from tools.quill._histories import never as _never
+from tools.quill._histories import card_node as _card
 from tools.quill._histories import pull as _pull
+from tools.quill._histories import reader as _reader
 from tools.quill._histories import start as _start
+from tools.quill._histories import tracker as _tracker
 from tools.quill._histories import undone as _undone
 from tools.quill._histories import verdict as _verdict
 from tools.quill._recorded import recording
@@ -39,74 +43,6 @@ from tools.quill._tracker import CardReader, Tracker
 from tools.quill.landing import (TOKEN_VARIABLE, CannotJudge, PullRequest, main, named,
                                  pull_from_environment, pull_request, reader_from_environment)
 from tools.quill.setup_tracker import APP_LOGIN, DEPLOY_TOGETHER_LABEL, FILING, PLAN
-
-#: A person's login, whose close is a decision of theirs.
-PERSON = "SaltyReformed"
-
-
-def _card(number, kind="step", parent=None, labels=("balance",)):
-    """Open card ``number``'s node as GitHub answers the card-only reader (no board items),
-    never closed or reopened, its sub-issues left for :func:`_tracker` to fill from the
-    cards naming it their parent."""
-    return {
-        "id": f"I_{number}", "number": number, "fullDatabaseId": str(1000 + number),
-        "title": f"card {number}", "state": "OPEN", "stateReason": None,
-        "issueType": {"name": kind} if kind else None,
-        "labels": {"totalCount": len(labels), "nodes": [{"name": name} for name in labels]},
-        "parent": ({"number": parent, "repository": {"nameWithOwner": PLAN.full_name}}
-                   if parent else None),
-        "subIssues": {"totalCount": 0, "nodes": []},
-        "blockedBy": {"totalCount": 0, "nodes": []},
-        "timelineItems": {"nodes": []},
-    }
-
-
-def _closed(node, reason, closer):
-    """``node`` closed as ``reason`` (``COMPLETED``, ``NOT_PLANNED``) by the login ``closer``."""
-    return {**node, "state": "CLOSED", "stateReason": reason,
-            "timelineItems": {"nodes": [{"__typename": "ClosedEvent",
-                                         "actor": {"login": closer}}]}}
-
-
-def _tracker(*cards):
-    """The tracker holding ``cards``, by number, each card's sub-issues the cards naming it
-    their parent, as GitHub lists them."""
-    nodes = {node["number"]: copy.deepcopy(node) for node in cards}
-    for node in nodes.values():
-        if node["parent"]:
-            listed = nodes[node["parent"]["number"]]["subIssues"]
-            listed["nodes"].append({"number": node["number"], "state": node["state"],
-                                    "issueType": node["issueType"],
-                                    "repository": node["parent"]["repository"]})
-            listed["totalCount"] += 1
-    return nodes
-
-
-class _Lookup:
-    """A GitHub answering each lookup of cards by number from ``nodes``, a number it lacks
-    answered None (as GitHub answers a number nobody filed); it keeps the numbers each
-    lookup asked for.  ``fails``: what every lookup raises instead, if anything."""
-
-    def __init__(self, nodes, fails=None):
-        """Hold the tracker's nodes."""
-        self.nodes = nodes
-        self.fails = fails
-        self.asked = []
-
-    def graphql_lookup(self, query):
-        """Answer the cards ``query`` asks for by number."""
-        if self.fails is not None:
-            raise self.fails
-        numbers = [int(number) for number in re.findall(r"c(\d+): issue\(number: \1\)", query)]
-        self.asked.append(sorted(numbers))
-        return {"repository": {f"c{number}": copy.deepcopy(self.nodes.get(number))
-                               for number in numbers}}
-
-
-def _reader(github):
-    """A connection making the card-only reader of the plan's tracker through ``github``."""
-    return lambda: CardReader(github, PLAN)
-
 
 def _paths(value, prefix=""):
     """Every key path in ``value``: a dict's keys, joined by dots, a list's items as ``[]``."""

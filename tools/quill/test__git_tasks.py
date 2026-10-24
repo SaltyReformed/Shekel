@@ -101,6 +101,29 @@ def test_a_tasks_file_that_conflicts_refuses_quills_read_but_not_the_markers_rea
     assert raised.value.paths == ("plan/tasks/31",)
 
 
+def test_the_markers_walk_reads_task_files_only_where_asked(code):
+    """CI's write rule reads markers and task files in ONE walk (R-BAL386): asked for both
+    directories, ``landings`` names the merge through which dev took task 60's line in beside
+    card 8's marker's, and the walk lists both files' adds; asked nothing, as the release tool
+    and quill's own readers ask it, the markers alone."""
+    root, base = code
+    claimed = commit_files(root, base, "claim plan#8",
+                           {_git.marker(8): "claimed 2026-10-19T13:00:00Z\n"})
+    piece = commit_files(root, claimed, "task 60's piece", {"w60.txt": "work\n", **_done(60)})
+    landed = run(root, "commit-tree", run(root, "merge-tree", "--write-tree", base, piece),
+                 "-p", base, "-p", piece, "-m", "Merge card/8")
+    both = (_git.MARKERS, _git.TASKS)
+    lines = {path: run(root, "rev-parse", f"{landed}:{path}")
+             for path in (_git.marker(8), _git.task_file(60))}
+    took = (_git.Took(landed, None),)
+    assert _git.landings(root, landed, both) == {key: took for key in lines.items()}
+    assert _git.landings(root, landed) == {(_git.marker(8), lines[_git.marker(8)]): took}
+    walked = {flag: {change.entry.path for change in _git.marker_changes(
+        root, (landed, f"^{base}"), directories=flag)} for flag in (both, (_git.MARKERS,))}
+    assert walked == {both: {_git.marker(8), _git.task_file(60)},
+                      (_git.MARKERS,): {_git.marker(8)}}
+
+
 def test_a_claim_names_every_task_file_its_own_commits_wrote(code):
     """A live claim names each task whose file its own commits wrote, whatever card the
     tracker says each is under (sync keeps those under the claim's card); a stray there names

@@ -23,7 +23,8 @@ otherwise, so its tip holds every task file ``dev`` does, and none of those is i
 where only the tracker says which card a task is under, so ``quill sync`` keeps a claim's
 task file only for a task under that claim's card.  A task file is read as a marker is
 (:func:`lines_in`), and a revert of the commit that wrote it deletes it, so the task is no
-longer done.
+longer done.  Which change may write one is the markers' write rule, judged in the same walk
+(``tools/quill/landing.py``).
 
 **A claim is the branch ``card/N`` on ``origin``** (:func:`card_branch`) whose tip neither
 ``dev`` nor ``main`` holds (:func:`claims`).  ``quill claim`` makes it (:func:`claim`): a
@@ -114,7 +115,8 @@ class Entry:
 
 @dataclass(frozen=True)
 class MarkerChange:
-    """One change a commit made to an entry under :data:`MARKERS` (:func:`marker_changes`):
+    """One change a commit made to an entry under :data:`MARKERS`, or :data:`TASKS` where the
+    walk names it (:func:`marker_changes`):
     the commit's ``sha`` and ``subject``, the ``entry`` it changed, and the blob that entry
     held before the change (``was``, None where it held none), which a delete's ``entry``
     no longer names."""
@@ -534,9 +536,12 @@ def changes(root: Path, old: str, new: str, *paths: str) -> tuple[Entry, ...]:
 
 
 def marker_changes(root: Path, refs: tuple[str, ...] = TIPS, *, first_parent: bool = False,
-                   no_merges: bool = False) -> list[MarkerChange]:
+                   no_merges: bool = False,
+                   directories: tuple[str, ...] = (MARKERS,)) -> list[MarkerChange]:
     """Every change a commit of ``refs``' history (``dev``'s and ``main``'s unless named) made
-    to an entry under :data:`MARKERS`, newest first (:class:`MarkerChange`); with
+    to an entry under :data:`MARKERS`, or under each of ``directories`` when named (CI's
+    landing check names :data:`TASKS` beside it, R-BAL386), newest first
+    (:class:`MarkerChange`); with
     ``first_parent``, of each ref's OWN line alone, its first-parent history, the states the
     branch itself was in; with ``no_merges``, of each commit that is no merge alone (one
     parent, or none: a root, which only adds), whose change is the one it shows in history,
@@ -545,7 +550,8 @@ def marker_changes(root: Path, refs: tuple[str, ...] = TIPS, *, first_parent: bo
     the release tool reads it over a release's range (``<base>..<cut>``) for the commits
     there that changed each marker (``tools/release/_cards.py``), and CI's landing check
     reads its commits of one parent over what a change brings, for a delete shown in
-    history (``tools/quill/landing.py``, rule 8, ``R-BAL391``).
+    history (``tools/quill/landing.py``, rule 8, ``R-BAL391``); with :data:`TASKS` named, the
+    same walk over each task's done file, which is read as a marker is.
 
     **It lists a commit for every marker any commit of that history ever held, and for every
     blob one held.**  Such a marker (or blob) arrived through a commit holding it whose
@@ -572,7 +578,7 @@ def marker_changes(root: Path, refs: tuple[str, ...] = TIPS, *, first_parent: bo
     out = git(root, "log", "--format=%x01%H%x02%s", "--raw", "--no-abbrev", "--no-renames",
               "--full-history", "--diff-merges=first-parent",
               *(("--first-parent",) if first_parent else ()),
-              *(("--no-merges",) if no_merges else ()), *refs, "--", MARKERS)
+              *(("--no-merges",) if no_merges else ()), *refs, "--", *directories)
     found = []
     for record in filter(None, out.split("\x01")):
         head, _, lines = record.partition("\n")
@@ -607,8 +613,10 @@ def ever_marked(root: Path) -> frozenset[int]:
     return frozenset(number for number in cards if number is not None)
 
 
-def landings(root: Path, ref: str) -> dict[tuple[str, str], tuple[Took, ...]]:
-    """Each blob the branch ``ref`` itself ever held at an entry under :data:`MARKERS`, as
+def landings(root: Path, ref: str, directories: tuple[str, ...] = (MARKERS,)
+             ) -> dict[tuple[str, str], tuple[Took, ...]]:
+    """Each blob the branch ``ref`` itself ever held at an entry under :data:`MARKERS` (or
+    under each of ``directories`` when named: CI's write rule names :data:`TASKS` too), as
     ``(path, blob)``, with every commit of its OWN line (its first-parent history, the states
     the branch itself was in) through which it took that blob in, newest first, each beside
     the next commit of the line that changed that entry again (:class:`Took`), all read from
@@ -621,7 +629,7 @@ def landings(root: Path, ref: str) -> dict[tuple[str, str], tuple[Took, ...]]:
     and undid it."""
     found: dict[tuple[str, str], list[Took]] = {}
     newer: dict[str, str] = {}
-    for change in marker_changes(root, (ref,), first_parent=True):
+    for change in marker_changes(root, (ref,), first_parent=True, directories=directories):
         path, blob = change.entry.path, change.entry.blob
         if blob is not None:
             found.setdefault((path, blob), []).append(Took(change.sha, newer.get(path)))
