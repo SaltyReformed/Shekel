@@ -4996,29 +4996,36 @@ def transfer_side_figure(db_session, transfer_id, account_id):
     The side-shaped twin of ``row_valuation.settled_figure(shadow)``, which a
     test asked of the side's shadow until plan step ``balance:X-bi-6-4d-2``
     stopped keeping a shadow's status (ruling **R-BAL167** class 4): ``None``
-    while the TRANSFER is not settled, the side's record's ``amount`` once it
-    is, and ``Decimal("0.00")`` for a settled side holding no record (a
-    ``$0.00`` close, ruling **R-BAL82**).  The three answers the shadow gave
-    while its status mirrored its transfer's, so a re-pointed assertion keeps
-    its expected figure.  Independent SQL (:func:`transfer_side_record`), for
-    that helper's reason.
+    while the TRANSFER is not settled, and once it is, the figure the
+    TRANSFER stores -- its one home since that step's 4d-4 half (rulings
+    **R-BAL365**, **R-BAL366**), ``0.00`` for a ``$0.00`` close.  Until then
+    it read the side's record's ``amount`` and inferred ``0.00`` from a side
+    holding none, the inference ruling **R-BAL368** deletes.  The answers the
+    shadow gave while its status mirrored its transfer's, so a re-pointed
+    assertion keeps its expected figure.  Read off the stored column, never
+    through the producers a test grades.
 
     Args:
         db_session: The test ``db.session``.
         transfer_id: The ``budget.transfers`` id.
-        account_id: The account the side is on.
+        account_id: The account the side is on: one of the transfer's two
+            endpoints (a transfer's figure is one, so the side names which
+            account the caller is asserting about, and a wrong one fails).
 
     Returns:
-        The recorded ``Decimal``, or ``None`` when the transfer is not settled.
+        The stored ``Decimal``, or ``None`` when the transfer is not settled.
     """
     # pylint: disable=import-outside-toplevel -- same lazy-app-import
     # convention every helper in this module follows.
     from app.models.transfer import Transfer
 
-    if not db_session.get(Transfer, transfer_id).status.is_settled:
+    transfer = db_session.get(Transfer, transfer_id)
+    assert account_id in (transfer.from_account_id, transfer.to_account_id), (
+        f"account {account_id} is neither side of transfer {transfer_id}"
+    )
+    if not transfer.status.is_settled:
         return None
-    record = transfer_side_record(db_session, transfer_id, account_id)
-    return Decimal("0.00") if record is None else record.amount
+    return transfer.settled_figure
 
 
 def transfer_side_settle_day(db_session, transfer_id, account_id):

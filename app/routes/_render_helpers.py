@@ -316,8 +316,9 @@ def transfer_settlement_amounts(
     read the expense SHADOW's entries through the row producers -- a second
     walk over the same record that agreed with the cell's only while Transfer
     Invariant 3 held, which an adversarial review named.  Both leg producers
-    are built from the seam's own reads (``movement_settlement``,
-    ``honoured_figure``), the leaves the row producers read through too.
+    are built from the seam's own reads (``recorded_leg_settlement``,
+    ``honoured_figure``), and since plan step ``balance:X-bi-6-4d-2`` both
+    legs read the transfer's ONE settled figure.
 
     **The EXPENSE leg answers**, which is the leg
     ``transfer_service._settle.settle`` resolves its figures from and the leg

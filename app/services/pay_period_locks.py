@@ -377,14 +377,14 @@ def movements_held_in(periods: "list[int] | Query") -> "list[HeldMovement]":
     one ``transfer_legs`` join -- and a period the lock calls
     ``HOLDS_MOVEMENT`` is one this names.
 
-    **A transfer's payment is named ONCE**: its two legs each keep a copy
-    of it (one covering movement per side, one ``Settlement`` written onto
-    both), and the owner sees one transfer and one payment.  The copies are
-    collapsed by transfer and amount -- the sides' descriptions are their
-    legs' labels (``status_seam._side``, ``TransferLeg.name``) and differ --
-    and ONLY the copies: every other movement
-    is named, so two equal purchases are two purchases, under a row or
-    (no door writes one) under a transfer's leg.
+    **A transfer's payment is named ONCE**: each side keeps a record of it
+    (one covering movement per side) and the transfer stores its one figure
+    (plan step ``balance:X-bi-6-4d-2``), and the owner sees one transfer and
+    one payment.  The two records are collapsed by transfer -- the sides'
+    descriptions are their legs' labels (``status_seam._side``,
+    ``TransferLeg.name``) and differ, and both name the transfer's figure --
+    and a row's movements are never collapsed: two equal purchases are two
+    purchases.
 
     Args:
         periods: The pay-period ids to look in -- a list or a query of ids.
@@ -401,9 +401,9 @@ def movements_held_in(periods: "list[int] | Query") -> "list[HeldMovement]":
         ):
             item, item_name = item_of(model, item_id, name)
             if model is Transfer and covers:
-                if (item, amount) in copies_named:
+                if item in copies_named:
                     continue
-                copies_named.add((item, amount))
+                copies_named.add(item)
             held.append(HeldMovement(
                 period_id, item, item_name, covers, description, amount,
             ))
@@ -420,7 +420,9 @@ def _movement_arms(periods: "list[int] | Query") -> "tuple[tuple[type, Query], .
     on: a row's through its ``entries``, a transfer's through the one
     ``transfer_legs`` join, scoped to the transfers that pair's query
     selects.  Each yields ``(period id, item id, item name, is a payment,
-    description, amount)``.
+    description, amount)``: a row's movement states its own amount, and a
+    transfer side's record names its TRANSFER's one settled figure (plan
+    step ``balance:X-bi-6-4d-2``).
 
     Args:
         periods: As :func:`movements_held_in`.
@@ -429,19 +431,17 @@ def _movement_arms(periods: "list[int] | Query") -> "tuple[tuple[type, Query], .
         ``((Transaction, row query), (Transfer, transfer query))``, unexecuted.
     """
     rows, transfers = items_holding_a_movement(periods)
-    movement = (
-        TransactionEntry.covers_settlement, TransactionEntry.description,
-        TransactionEntry.amount,
-    )
+    movement = (TransactionEntry.covers_settlement, TransactionEntry.description)
     return (
         (Transaction, rows.join(Transaction.entries).with_entities(
             Transaction.pay_period_id, Transaction.id, Transaction.name,
-            *movement,
+            *movement, TransactionEntry.amount,
         )),
         (Transfer, transfer_legs.held_transfer_entries(
             Transfer.id.in_(transfers.with_entities(Transfer.id)),
         ).with_entities(
             Transfer.pay_period_id, Transfer.id, Transfer.name, *movement,
+            Transfer.settled_figure,
         )),
     )
 

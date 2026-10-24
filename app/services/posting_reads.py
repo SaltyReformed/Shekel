@@ -197,8 +197,9 @@ def settled_transfer_effect(account_id: int, scenario_id: int) -> Decimal:
     The balance-side expectation the Commit-6 oracle reconciles the ledger
     against: over every DATED, debit covering movement ON the account (its
     own ``account_id``, ruling **R-BAL75**) that is a leg's record of a live,
-    balance-contributing transfer in *scenario_id*, ``+amount`` on the
-    to-side (money in) and ``-amount`` on the from-side (money out) --
+    balance-contributing transfer in *scenario_id*, its transfer's settled
+    figure (its one home since plan step ``balance:X-bi-6-4d-2``), ``+`` on
+    the to-side (money in) and ``-`` on the from-side (money out) --
     exactly the debit-positive net :func:`account_posting_total`
     accumulates.  A settled leg's money IS its dated movement (rulings
     **R-BAL79** / **R-BAL80**), so "settled" here is the leg's, not the
@@ -269,8 +270,8 @@ def settled_transfer_effect(account_id: int, scenario_id: int) -> Decimal:
     ).all()
     return sum(
         (
-            movement.amount if is_income else -movement.amount
-            for movement, _transfer, is_income in rows
+            transfer.settled_figure if is_income else -transfer.settled_figure
+            for _movement, transfer, is_income in rows
         ),
         Decimal("0"),
     )

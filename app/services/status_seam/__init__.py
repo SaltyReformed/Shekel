@@ -93,7 +93,6 @@ from app.services.status_seam._record import (
     covering_movement_of,
     honoured_correction,
     honoured_figure,
-    movement_settlement,
     recorded_leg_settlement,
     recorded_settlement,
     tender_account_id_of,
@@ -120,6 +119,7 @@ from app.services.status_seam._side import (
     free_moving_side_record,
     land_moved_side_record,
     record_side_clearing,
+    release_side_figure,
     sync_side_records,
 )
 from app.services.status_seam._seam import (
@@ -141,6 +141,7 @@ __all__ = [
     "free_moving_side_record",
     "land_moved_side_record",
     "record_side_clearing",
+    "release_side_figure",
     "sync_side_records",
     "figure_for_status",
     "tender_for_status",
@@ -148,7 +149,6 @@ __all__ = [
     "covering_movement_of",
     "honoured_correction",
     "honoured_figure",
-    "movement_settlement",
     "recorded_leg_settlement",
     "recorded_settlement",
     "tender_account_id_of",

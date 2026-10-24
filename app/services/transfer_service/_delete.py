@@ -29,6 +29,7 @@ from app.services import (
     match_withdrawal,
     movement_removal,
     posting_service,
+    status_seam,
     transfer_legs,
 )
 from app.services.transfer_service._loan_posting import (
@@ -164,6 +165,12 @@ def delete_transfer(transfer_id, user_id, soft=False, *, press=None):
         # **R-BAL248**, "Plan, kept deleted"); the hard arm below removes
         # the row and has no status to set.
         return_to_plan(xfer, took_off=bool(held))
+        if held:
+            # The figure leaves with the records (the build plan's O4): a
+            # settled transfer's return to plan released it through the
+            # writer, and a Projected one holding records a revert kept is
+            # not moved by that writer, so the delete releases it here.
+            status_seam.release_side_figure(xfer)
         db.session.flush()
         log_event(
             logger, logging.INFO, EVT_TRANSFER_SOFT_DELETED, BUSINESS,

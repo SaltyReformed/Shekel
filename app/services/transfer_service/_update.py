@@ -709,11 +709,12 @@ def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
     transfer's period, category and due date (``transfer_legs``), so no copy
     of them is kept to hold equal: the twin rows that carried one went at
     plan step ``balance:X-bi-6-4d-3``, and their mirrors at its leaf 3b.  A
-    planned leg reads its PRICE off the transfer too, but a settled side's
-    figure is its record's (``$0.00`` when it holds none), and the one
-    writer puts the same figure on both sides' records, so that figure IS
-    kept twice, equal, until plan step ``balance:X-bi-6-4d-4`` gives it one
-    home.
+    planned leg reads its PRICE off the transfer too, and a settled
+    transfer's figure is the TRANSFER's own since plan step
+    ``balance:X-bi-6-4d-2``'s 4d-4 half (rulings **R-BAL365**,
+    **R-BAL366**: ``0.00`` for a close of nothing), which the one writer
+    states; each side's record still carries a copy until that half's second
+    commit empties it.
 
     **A change that moves the transfer INTO the settled band is a SETTLE**, and
     this hands that act whole to

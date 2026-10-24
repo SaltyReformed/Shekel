@@ -53,7 +53,7 @@ from app.services.status_seam import (
     apply_status_change,
     honoured_correction,
     honoured_figure,
-    movement_settlement,
+    recorded_leg_settlement,
     recorded_settlement,
     tender_account_id_of,
     tender_for_status,
@@ -176,9 +176,10 @@ def leg_retained_amounts_by_key(legs) -> "dict[tuple[int, int], Decimal | None]"
     :attr:`~app.services.transfer_legs.TransferLeg.cell_key`.  The same rule
     through the same seam: ``None`` for a leg whose parent is settled (its
     recorded figure is on screen already) and for one holding no stated
-    record; else what its retained covering movement still states
+    record; else what its transfer's retained figure still states
     (:func:`~app.services.status_seam.honoured_figure` over
-    :func:`~app.services.status_seam.movement_settlement`) -- the figure a
+    :func:`~app.services.status_seam.recorded_leg_settlement`, the transfer's
+    one figure since plan step ``balance:X-bi-6-4d-2``) -- the figure a
     person read off a statement before the transfer was reverted, which the
     transfer's re-settle honours (``transfer_service._settle``).
 
@@ -192,8 +193,8 @@ def leg_retained_amounts_by_key(legs) -> "dict[tuple[int, int], Decimal | None]"
     settled = settled_status_ids()
     return {
         leg.cell_key: (
-            None if leg.status_id in settled or leg.record is None
-            else honoured_figure(movement_settlement(leg.record))
+            None if leg.status_id in settled
+            else honoured_figure(recorded_leg_settlement(leg))
         )
         for leg in legs
     }

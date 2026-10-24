@@ -154,6 +154,19 @@ END;
 $$ LANGUAGE plpgsql
 """
 
+#: The arm each attachment belongs to, by trigger name.  An attachment is
+#: made only when a revision's arms name its arm, so an arm a later revision
+#: adds -- with attachments on columns that revision creates -- is never
+#: installed by a replay of ``e616adf7fe22``, whose literal ``(BAND_ARM,)``
+#: predates those columns (the per-arm shape of
+#: ``deleted_row_infrastructure._arms_rows``).
+_ARM_OF = {
+    "ck_side_record_band_on_insert": BAND_ARM,
+    "ck_side_record_band_on_update": BAND_ARM,
+    "ck_side_record_band_on_delete": BAND_ARM,
+    "ck_side_record_band_on_status": BAND_ARM,
+}
+
 #: Each attachment's firing clause, by trigger name: everything ``CREATE
 #: CONSTRAINT TRIGGER`` says between the name and ``EXECUTE FUNCTION``.
 _FIRING = {
@@ -225,7 +238,7 @@ def apply_side_band_infrastructure(
     executor(_CREATE_TRIGGER_FUNCTION_SQL)
     for name, table in SIDE_BAND_TRIGGERS:
         executor(f"DROP TRIGGER IF EXISTS {name} ON {table}")
-        if BAND_ARM in arms:
+        if _ARM_OF[name] in arms:
             executor(
                 f"CREATE CONSTRAINT TRIGGER {name} "
                 f"{_FIRING[name].format(table=table)} "

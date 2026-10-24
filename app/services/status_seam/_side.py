@@ -16,8 +16,14 @@ for both sides, under ONE press.
 
 **What it writes, and the row arm's rule it follows for each fact:**
 
-* the FIGURE, who wrote it and the name -- :func:`._covering.record_figure`,
-  the row arm's own figure half, with the side's leg label as the name;
+* the FIGURE and who wrote it, ONCE, on the TRANSFER (plan step
+  ``balance:X-bi-6-4d-2``, rulings **R-BAL365**, **R-BAL366**:
+  :attr:`~app.models.transfer.Transfer.settled_figure_pair`), ``0.00`` for a
+  close of nothing; kept across a revert that keeps the records (ruling
+  **R-BAL61**) and released by a revert that keeps none.  Each side's record
+  still carries a copy (:func:`._covering.record_figure`, with the side's
+  leg label as the name) until the next commit of the same step empties it:
+  a transitional second home that lives only inside the held branch;
 * the DAY and how it is known -- the side's resolved day
   (``transfer_service._side_days``) through ``settle_day.record_settle_day``,
   so the books boundary refuses a day the account's books do not reach; a
@@ -63,8 +69,10 @@ from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy.orm.attributes import flag_modified
 
+from app import ref_cache
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
+from app.models.settled_figure import SettledFigure
 from app.models.transaction_entry import TransactionEntry
 from app.services import match_withdrawal, movement_removal
 from app.services.cash_ledger import reject_movement_before_books_open
@@ -191,10 +199,67 @@ def sync_side_records(
         moved = [_withdraw_sides(legs, press)]
     else:
         moved = [_follow_day(leg.record, day) for leg, day in written]
+    _follow_figure(
+        transfer, settlement, now_settled=now_settled,
+        holds_record=any(leg.record is not None for leg in legs),
+    )
     if any(moved):
         # ``status_id`` for the row arm's reason (``_covering._record_moved``):
         # the one column every path here has loaded, re-written at its value.
         flag_modified(transfer, "status_id")
+
+
+def _follow_figure(
+    transfer, settlement: Optional[Settlement], *,
+    now_settled: bool, holds_record: bool,
+) -> None:
+    """Bring *transfer*'s ONE settled figure to the act: stated, kept or released.
+
+    * A settle, a re-settle or a correction (the act lands settled with a
+      *settlement*): the figure and who wrote it, ``0.00`` for a close of
+      nothing (ruling **R-BAL365**).
+    * Out of the band with no record on either side (*holds_record* as the
+      act found them): released -- the revert of a ``$0.00`` close, which
+      ruling R-BAL365 says clears it so a re-settle re-prices, and the
+      delete's return to plan after its removal act took the records off.
+    * Otherwise kept: a revert keeps the records and the figure they moved
+      (ruling **R-BAL61**), and an act stating no figure leaves it alone.
+    """
+    if now_settled and settlement is not None:
+        _state_figure(transfer, settlement)
+    elif not now_settled and not holds_record:
+        release_side_figure(transfer)
+
+
+def _state_figure(transfer, settlement: Settlement) -> None:
+    """Store *settlement*'s figure and who wrote it on *transfer*: its one home.
+
+    Assigned only when it differs, so an echo writes nothing and the
+    transfer's version counter moves only for a figure that netted a change.
+    """
+    stated = SettledFigure(
+        settlement.amount,
+        ref_cache.movement_figure_source_id(settlement.source),
+    )
+    if transfer.settled_figure_pair != stated:
+        transfer.settled_figure_pair = stated
+
+
+def release_side_figure(transfer) -> None:
+    """Clear *transfer*'s settled figure: no record is left to have moved it.
+
+    The figure's lifetime is its records' (the build plan's O4): kept while a
+    side holds a record, settled or reverted, and released when none is left
+    out of the band -- the revert of a ``$0.00`` close, and the delete, whose
+    removal act takes every record off (``transfer_service._delete``, which
+    asks this for a transfer its writer does not move).  A ``$0.00`` close
+    still SETTLED keeps its ``0.00``: it never held a record.
+
+    Args:
+        transfer: The :class:`~app.models.transfer.Transfer` whose figure goes.
+    """
+    if transfer.settled_figure_pair is not None:
+        transfer.settled_figure_pair = None
 
 
 def _cover_side(

@@ -5,6 +5,8 @@ of a transfer covered, its lifecycle, and a loan payment's loan-side record.
 from datetime import timedelta
 from decimal import Decimal
 
+from sqlalchemy import text
+
 from app import ref_cache
 from app.enums import (
     LedgerAccountClassEnum,
@@ -553,7 +555,7 @@ class TestATransfersMovementsFollowItsLifecycle:
 
 
 class TestALoanPaymentsLoanSideMovementIsItsRecord:
-    """The loan replay prices a payment by its RECORD, and the record is the movement.
+    """The loan replay prices a payment by its RECORD: the transfer's settled figure.
 
     A payment's income leg sits on the LOAN account and carries a covering
     movement there; every loan reader values the leg by its record
@@ -566,12 +568,18 @@ class TestALoanPaymentsLoanSideMovementIsItsRecord:
     this class pinned the movement as INERT to it ("the seam's balance and
     the posted balance read identically with and without the movement");
     that was the interval ruling R-BAL40 accepted, and the pin is inverted
-    with it: taking the movement away (a state no door writes) now reads the
-    payment as nothing moved, and moves the loan's position with it.  The
-    posted ledger's loan entry is still R-BAL45's, untouched by either.
+    with it: re-stating the payment as a close of nothing (a write no door
+    makes) now reads it as nothing moved, and moves the loan's position with
+    it.  The posted ledger's loan entry is still R-BAL45's, untouched by
+    either.  Since plan step ``balance:X-bi-6-4d-2``'s 4d-4 half the figure
+    the record states lives on the TRANSFER (rulings **R-BAL365**,
+    **R-BAL366**), so the re-statement writes it there: ``0.00``, with both
+    sides' records off, the one storable shape of a close of nothing.  Until
+    then this took the records away and the reader inferred ``$0.00`` from
+    the gap, the inference ruling **R-BAL368** deletes.
     """
 
-    def test_the_loan_side_reads_the_movement_as_the_payment(
+    def test_the_loan_side_reads_the_transfers_figure_as_the_payment(
         self, app, seed_user, seed_periods,
     ):
         with app.app_context():
@@ -599,7 +607,8 @@ class TestALoanPaymentsLoanSideMovementIsItsRecord:
             # rule-5 re-expression, developer-confirmed 2026-09-23).  The list
             # is the transfer's side list since plan step balance:X-bi-6-4d-2.
             # That step's band rule refuses COMMITTING a settled transfer that
-            # holds one side's record, so BOTH sides' records come off: the
+            # holds one side's record, so BOTH sides' records come off, and
+            # the transfer's figure becomes 0.00 (ruling R-BAL365): the
             # $0.00 close the rule admits, the storable shape of a loan side
             # holding none (ruling R-BAL167 class 2).
             for leg in _legs_of(xfer):
@@ -607,12 +616,21 @@ class TestALoanPaymentsLoanSideMovementIsItsRecord:
                 side_records = _side_records_of(leg)
                 db.session.delete(record)
                 side_records.remove(record)
+            db.session.flush()
+            db.session.execute(
+                text(
+                    "UPDATE budget.transfers SET settled_figure = 0 "
+                    "WHERE id = :t"
+                ),
+                {"t": xfer.id},
+            )
             db.session.commit()
             db.session.expire_all()
             assert xfer.status.is_settled
-            # The record IS the movement: without it the leg records $0.00
-            # (R-BAL82's close of nothing), the loan's position moves, and the
-            # posted ledger -- R-BAL45's one transfer entry -- is untouched.
+            # The record is the transfer's figure: at 0.00 the leg records
+            # $0.00 (R-BAL82's close of nothing), the loan's position moves,
+            # and the posted ledger -- R-BAL45's one transfer entry -- is
+            # untouched.
             income = _leg_again(income)
             assert row_valuation.leg_settled_contribution(income) == Decimal("0")
             without_movement = _read()

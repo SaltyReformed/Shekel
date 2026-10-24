@@ -95,7 +95,7 @@ class Settlement:
     (:func:`tender_account_id_of`: the kept record's account, else the
     row's), so a re-settle after a revert keeps where the money moved exactly
     as it keeps a stated figure (R-CC42).  A record READ off a movement
-    (:func:`movement_settlement`) leaves it ``None`` for the same reason a
+    (:func:`_movement_settlement`) leaves it ``None`` for the same reason a
     read carries no instruction: ``transfer_service`` hands a drifted
     shadow's SIBLING's record to the seam, and a sibling's account would
     book the shadow's movement on the wrong side of the pair.
@@ -270,11 +270,15 @@ class Settlement:
         )
 
 
-def _source_of(movement) -> MovementFigureSourceEnum:
-    """Return WHO wrote *movement*'s figure, decoded from its ref id.
+def _source_named(figure_source_id: int) -> MovementFigureSourceEnum:
+    """Return WHO wrote a figure, decoded from its ``ref.movement_figure_sources`` id.
+
+    The one decoding, read for a row's covering movement
+    (:func:`_movement_settlement`) and a transfer's settled figure
+    (:func:`recorded_leg_settlement`).
 
     Raises:
-        KeyError: When ``figure_source_id`` names no
+        KeyError: When *figure_source_id* names no
             :class:`~app.enums.MovementFigureSourceEnum` member.  Unreachable
             through the FK, which admits only the seeded rows; it is how a
             member ADDED without this map being extended fails loudly.
@@ -282,7 +286,7 @@ def _source_of(movement) -> MovementFigureSourceEnum:
     return {
         ref_cache.movement_figure_source_id(member): member
         for member in MovementFigureSourceEnum
-    }[movement.figure_source_id]
+    }[figure_source_id]
 
 
 def recorded_settlement(row: Transaction) -> Optional[Settlement]:
@@ -334,7 +338,7 @@ def recorded_settlement(row: Transaction) -> Optional[Settlement]:
 
     Raises:
         KeyError: When the movement's ``figure_source_id`` names no member
-            of its enum (:func:`_source_of`).
+            of its enum (:func:`_source_named`).
         ValueError: When the row holds more than one covering movement
             (:func:`covering_movement_of`).
     """
@@ -342,45 +346,60 @@ def recorded_settlement(row: Transaction) -> Optional[Settlement]:
 
 
 def recorded_leg_settlement(leg: "TransferLeg") -> Optional[Settlement]:
-    """Return the settlement a transfer *leg* already records, or ``None``.
+    """Return the settlement a transfer *leg*'s TRANSFER records, or ``None``.
 
     :func:`recorded_settlement`'s twin over a transfer leg (leaf
-    ``balance:X-bi-6-4d-1``), with the same three answers from the same body
-    (:func:`_recorded`): a leg's record is its covering movement, reached
-    through ``transfer_legs``' one join (:attr:`TransferLeg.record
-    <app.services.transfer_legs.TransferLeg.record>`), and its status is its
-    TRANSFER's.  Asked by ``transfer_service._settle.settle`` for the pair's
-    retained record, read off its expense side, and by
-    ``transfer_service._settle.settle_amount`` for the offered side's, so
-    both reads move with the join when ``X-bi-6-4d`` re-parents the movement
-    off the shadow.
+    ``balance:X-bi-6-4d-1``).  **A transfer's settled figure has ONE home,
+    the transfer** (plan step ``balance:X-bi-6-4d-2``, rulings
+    **R-BAL365**, **R-BAL366**:
+    :attr:`~app.models.transfer.Transfer.settled_figure_pair`), so both legs
+    answer the same record and the side the caller names cannot choose a
+    different one.  Two answers, total over what a transfer can store:
+
+    * a stored figure -- it and who wrote it, settled or kept across a revert
+      (ruling **R-BAL61**); ``0.00`` for a close of nothing (ruling
+      **R-BAL365**), where this answered ``Settlement(None, None)`` read off
+      the missing records until this step;
+    * none -- ``None``: the transfer records nothing a re-settle could honour
+      (never settled, or a reverted ``$0.00`` close, whose figure the revert
+      cleared).
+
+    Asked by ``transfer_service._settle.settle`` for the pair's retained
+    record and by ``transfer_service._settle.leg_settle_amount`` for the
+    offered leg's.
 
     Args:
-        leg: A :class:`~app.services.transfer_legs.TransferLeg` whose
-            ``record`` the caller loaded -- ``None`` when the side holds none.
+        leg: A :class:`~app.services.transfer_legs.TransferLeg`.
 
     Returns:
         The recorded :class:`Settlement`, or ``None``.
 
     Raises:
-        KeyError: When the movement's ``figure_source_id`` names no member
-            of its enum (:func:`_source_of`).
+        KeyError: When the stored source names no member of its enum
+            (:func:`_source_named`).
     """
-    return _recorded(leg.record, leg.status_id)
+    stored = leg.transfer.settled_figure_pair
+    if stored is None:
+        return None
+    return Settlement(
+        amount=stored.figure, source=_source_named(stored.source_id),
+    )
 
 
 def _recorded(
     movement: Optional[TransactionEntry], status_id: int,
 ) -> Optional[Settlement]:
-    """Return the record a holder of *movement* in *status_id* states.
+    """Return the record a row holding *movement* in *status_id* states.
 
-    The ONE body of :func:`recorded_settlement` and
-    :func:`recorded_leg_settlement`: the covering movement's figure and
-    source when there is one; ``Settlement(None, None)`` for a SETTLED holder
-    with none (its entries are its record, ruling **R-BAL82**); else ``None``.
+    :func:`recorded_settlement`'s body: the covering movement's figure and
+    source when there is one; ``Settlement(None, None)`` for a SETTLED row
+    with none (its entries are its record, ruling **R-BAL82**); else
+    ``None``.  A transfer's record is its own column pair
+    (:func:`recorded_leg_settlement`) since plan step
+    ``balance:X-bi-6-4d-2``.
     """
     if movement is not None:
-        return movement_settlement(movement)
+        return _movement_settlement(movement)
     if status_id in settled_status_ids():
         return Settlement(amount=None, source=None)
     return None
@@ -457,16 +476,14 @@ def tender_account_id_of(row: Transaction) -> int:
     return row.account_id if movement is None else movement.account_id
 
 
-def movement_settlement(movement) -> Settlement:
-    """Return the :class:`Settlement` a covering movement states.
+def _movement_settlement(movement) -> Settlement:
+    """Return the :class:`Settlement` a row's covering movement states.
 
-    **The leaf :func:`recorded_settlement` reads through, published for the
-    reader that holds a MOVEMENT and no row** (leaf ``X-bi-6-1``): a
-    transfer's leg on a grid carries its covering movement
-    (:attr:`app.services.transfer_legs.TransferLeg.record`) and no
-    ``Transaction`` of its own, so its retained figure is read off the
-    movement the way a row's is -- one decoding of ``figure_source_id``, one
-    meaning of ``stated``.
+    The leaf :func:`recorded_settlement` reads through.  It was published
+    from leaf ``X-bi-6-1`` for a transfer's leg, whose retained figure was
+    read off its side's record; a transfer's figure is its own since plan
+    step ``balance:X-bi-6-4d-2`` (:func:`recorded_leg_settlement`), so the
+    one reader left is the row's.
 
     Args:
         movement: A :class:`~app.models.transaction_entry.TransactionEntry`
@@ -477,9 +494,11 @@ def movement_settlement(movement) -> Settlement:
 
     Raises:
         KeyError: When the movement's ``figure_source_id`` names no member of
-            its enum (:func:`_source_of`).
+            its enum (:func:`_source_named`).
     """
-    return Settlement(amount=movement.amount, source=_source_of(movement))
+    return Settlement(
+        amount=movement.amount, source=_source_named(movement.figure_source_id),
+    )
 
 
 def honoured_correction(row: Transaction) -> Optional[Decimal]:
@@ -540,14 +559,14 @@ def honoured_figure(recorded: Optional[Settlement]) -> Optional[Decimal]:
     """Return the figure *recorded* still states, or ``None``.
 
     :func:`honoured_correction`'s rule over a record already read, so a
-    reader holding a movement rather than a row (a transfer leg's grid cell,
-    leaf ``X-bi-6-1``) applies the SAME rule to
-    :func:`movement_settlement` rather than restating it: only a STATED
+    reader holding a transfer leg rather than a row (a leg's grid cell, leaf
+    ``X-bi-6-1``) applies the SAME rule to
+    :func:`recorded_leg_settlement` rather than restating it: only a STATED
     record is honoured, for the reason the row-shaped reader gives.
 
     Args:
         recorded: What :func:`recorded_settlement` or
-            :func:`movement_settlement` answered, or ``None``.
+            :func:`recorded_leg_settlement` answered, or ``None``.
 
     Returns:
         The retained correction's figure, or ``None``.

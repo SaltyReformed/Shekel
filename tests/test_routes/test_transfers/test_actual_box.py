@@ -557,7 +557,13 @@ class TestTransferActualBox:
             # this assertion doing (2026-08-18).
             box = body[body.index('name="settled_amount"'):]
             box = box[:box.index(">")]
-            assert 'value="0"' in box, (
+            # ``0.00``: the figure the transfer STORES for a close of nothing
+            # since plan step balance:X-bi-6-4d-2's 4d-4 half (ruling
+            # R-BAL365), at the column's scale like every stored figure; the
+            # box read ``0`` while a reader inferred it from the missing
+            # records (the inference ruling R-BAL368 deletes).  The same
+            # $0.00.
+            assert 'value="0.00"' in box, (
                 "the box did not read the $0.00 record of a pair holding no "
                 "entry: " + box
             )

@@ -281,6 +281,6 @@ def _undated_payment_subject(leg: TransferLeg) -> str:
     return (
         f"The loan-side payment (movement {leg.record.id}) of transfer "
         f"{transfer.id}{named} ({transfer.from_account.name} to "
-        f"{transfer.to_account.name}, ${leg.record.amount:,.2f} in the "
+        f"{transfer.to_account.name}, ${transfer.settled_figure:,.2f} in the "
         f"paycheck of {leg.pay_period.start_date}, {due})"
     )

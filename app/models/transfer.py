@@ -12,6 +12,7 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from app.extensions import db
 from app.models._derived_flag import DerivedFlag
 from app.models.amount_ownership import from_columns
+from app.models.settled_figure import settled_figure_from_columns
 from app.models.mixins import (
     OptimisticLockMixin,
     SoftDeleteOverridableMixin,
@@ -89,6 +90,25 @@ class Transfer(
         db.CheckConstraint(
             "amount_source_id IS NULL OR transfer_template_id IS NOT NULL",
             name="ck_transfers_adhoc_owns_amount",
+        ),
+        # THE SETTLED FIGURE'S TWO STORAGE RULES (plan step
+        # ``balance:X-bi-6-4d-2``, rulings **R-BAL365** and **R-BAL366**).
+        # The figure is a MAGNITUDE -- a settle verb takes one, and each
+        # side's direction is its own -- and ``$0.00`` is storable: a close
+        # of nothing stores ``0.00`` and who typed it until plan step
+        # ``balance:X-db`` refuses a new one at every door and tightens this
+        # to ``> 0``.  The pair is stored whole or not at all, written as an
+        # equality of two NULL tests (``ck_transfers_amount_ownership``'s
+        # form); :class:`~app.models.settled_figure.SettledFigure` makes the
+        # half pair unconstructible, and this is its backstop for a writer
+        # that is not this application.
+        db.CheckConstraint(
+            "settled_figure >= 0",
+            name="ck_transfers_settled_figure_non_negative",
+        ),
+        db.CheckConstraint(
+            "(settled_figure IS NULL) = (settled_figure_source_id IS NULL)",
+            name="ck_transfers_settled_figure_source_pairing",
         ),
         # A TRANSFER OF A DEFINITION IS DATED (plan step **X-bv-2**, ruling
         # **R-BAL17**, finding **BAL-463**): the twin of
@@ -344,6 +364,43 @@ class Transfer(
     # COLUMN does not, which is what let the write seam stop dispatching on the
     # model to find out which column a table stores a figure in.
     amount_ownership = db.composite(from_columns, __amount, __amount_source_id)
+    # WHAT THIS TRANSFER'S MONEY MOVED once it settled, and who wrote the
+    # figure (plan step ``balance:X-bi-6-4d-2``, rulings **R-BAL365**,
+    # **R-BAL366**): ONE figure for the transfer, where until this step each
+    # side's payment record carried a copy.  NULLABLE: NULL is "no figure
+    # stored" -- a transfer that has never settled, or whose revert of a
+    # ``$0.00`` close cleared it.  KEPT across a revert of a close that moved
+    # money, as the records are (ruling **R-BAL61**), so a re-settle honours
+    # a figure somebody stated; released when the delete takes the records
+    # off.  Written by the status seam's Transfer arm alone
+    # (:mod:`app.services.status_seam._side`).
+    #
+    # PRIVATE and double-underscored, for the seal ``__amount`` states: read
+    # through :attr:`settled_figure`, write through
+    # :attr:`settled_figure_pair`.
+    __settled_figure = db.Column("settled_figure", db.Numeric(12, 2))
+    # WHO WROTE the settled figure: the ``ref.movement_figure_sources`` row
+    # (``resolved`` / ``typed`` / ``observed``), RESTRICT for the reason
+    # ``transaction_entries.figure_source_id`` states -- a vanishing
+    # catalogue row would leave a figure with no source.  NULL exactly when
+    # the figure is (``ck_transfers_settled_figure_source_pairing``).
+    __settled_figure_source_id = db.Column(
+        "settled_figure_source_id",
+        db.Integer,
+        db.ForeignKey(
+            "ref.movement_figure_sources.id",
+            name="fk_transfers_settled_figure_source_id",
+            ondelete="RESTRICT",
+        ),
+    )
+    # THE PAIR ABOVE, AS ONE ATTRIBUTE (the X-au-k seal
+    # :attr:`amount_ownership` uses): a writer assigns a
+    # :class:`~app.models.settled_figure.SettledFigure` or ``None``, never one
+    # column.
+    settled_figure_pair = db.composite(
+        settled_figure_from_columns,
+        __settled_figure, __settled_figure_source_id,
+    )
     # is_override and is_deleted are provided by SoftDeleteOverridableMixin.
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
@@ -468,6 +525,31 @@ class Transfer(
             its amount or has not stated its ownership yet.
         """
         return self.__amount_source_id
+
+    @hybrid_property
+    def settled_figure(self):
+        """Return what this transfer's money moved once it settled, or ``None``.
+
+        The read-only projection of :attr:`settled_figure_pair`, a hybrid for
+        the reason :attr:`amount` is one: a query selects it by the class
+        name (``pay_period_locks._movement_arms``).
+
+        Returns:
+            The stored figure (``0.00`` for a close of nothing, ruling
+            **R-BAL365**), or ``None`` when no figure is stored.
+        """
+        return self.__settled_figure
+
+    @hybrid_property
+    def settled_figure_source_id(self):
+        """Return the ``ref.movement_figure_sources`` id of who wrote the figure.
+
+        The read-only twin of :attr:`settled_figure`.
+
+        Returns:
+            The source id, or ``None`` exactly when no figure is stored.
+        """
+        return self.__settled_figure_source_id
 
     @DerivedFlag
     def recurs(self):

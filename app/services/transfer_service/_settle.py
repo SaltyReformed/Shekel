@@ -350,9 +350,11 @@ def leg_settle_amount(leg: TransferLeg, basis: AmountBasis) -> Decimal:
     booked one cannot drift:
 
     * a RETAINED correction outranks every derivation (plan step X-au-c3), read
-      off the offered side's record (``transfer_legs.transfer_side_leg``) --
-      a draft honoured it only at the WRITE, so the panel offered the plan and
-      the settle booked the human's figure;
+      off the transfer's one settled figure (plan step
+      ``balance:X-bi-6-4d-2``; until then off the offered side's record,
+      re-read through ``transfer_legs.transfer_side_leg``) -- a draft honoured
+      it only at the WRITE, so the panel offered the plan and the settle
+      booked the human's figure;
     * else what the leg is worth
       (:func:`~app.services.cash_ledger.leg_contribution_of`): ``0`` for a
       parent that does not contribute, else the parent's resolved amount.
@@ -384,9 +386,7 @@ def leg_settle_amount(leg: TransferLeg, basis: AmountBasis) -> Decimal:
             cannot price it.  A refusal is never a fallback.
     """
     _reject_unsettleable(leg.transfer)
-    held = honoured_figure(recorded_leg_settlement(
-        transfer_side_leg(leg.transfer, is_income=leg.is_income),
-    ))
+    held = honoured_figure(recorded_leg_settlement(leg))
     if held is not None:
         return held
     return leg_contribution_of(leg, basis)
