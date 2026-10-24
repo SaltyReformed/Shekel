@@ -14,6 +14,14 @@ one through which it undid it (:func:`landings`).  Every reader here takes the m
 ``dev`` and ``main`` hold as they
 are.  This module writes a marker only in :func:`claim`'s commit.
 
+**A task is done when its file ``plan/tasks/T`` is in that tree too** (ruling
+``balance:R-BAL386``; :func:`task_file`): a piece of one step or finding, a commit inside its
+card's one pull request, whose file that commit writes.  Before the card lands it is done in
+the tip of the card's live claim (:attr:`Claim.tasks`), where only the tracker says which
+card a task is under, so ``quill sync`` keeps a claim's task file only for a task under that
+claim's card.  A task file is read as a marker is (:func:`lines_in`), and a revert of the
+commit that wrote it deletes it, so the task is no longer done.
+
 **A claim is the branch ``card/N`` on ``origin``** (:func:`card_branch`) whose tip neither
 ``dev`` nor ``main`` holds (:func:`claims`).  ``quill claim`` makes it (:func:`claim`): a
 commit adding the card's marker, pushed CREATE-ONLY with a lease on the branch's absence, so
@@ -46,6 +54,8 @@ from tools.ci.trailers import DEV, MAIN, is_ancestor, tracking
 
 #: The directory holding every card's ship marker, one file per card (R-BAL359).
 MARKERS = "plan/ships"
+#: The directory holding every task's done file, one file per task (R-BAL386).
+TASKS = "plan/tasks"
 #: A claim's branch is this and the card's number (:func:`card_branch`).
 CARD_BRANCH = "card/"
 #: Where a released claim's work is kept (:func:`release`).
@@ -61,12 +71,14 @@ class Claim:
     """A card a session is building: ``sha``, the tip of the branch ``card/<card>`` on
     ``origin``; ``committed``, when that tip was committed (ISO 8601, with its offset); and
     ``claimed``, the instant the card's marker at that tip says it was claimed, None when the
-    tip holds no marker for it."""
+    tip holds no marker for it; and ``tasks``, each task whose done file that tip holds
+    (:func:`tasks_in`), whatever card the tracker says it is under."""
 
     card: int
     sha: str
     committed: str
     claimed: str | None
+    tasks: frozenset[int]
 
     @property
     def branch(self) -> str:
@@ -77,10 +89,12 @@ class Claim:
 @dataclass(frozen=True)
 class Shipped:
     """What git says shipped (:func:`shipped`): ``cards``, the card numbers whose markers the
-    merge of ``dev`` and ``main`` holds; ``history``, one line for each entry under
-    :data:`MARKERS` that is no card's marker, which no tracker write can change (R-BAL184)."""
+    merge of ``dev`` and ``main`` holds; ``tasks``, the task numbers whose done files it holds;
+    ``history``, one line for each entry under :data:`MARKERS` that is no card's marker, or
+    under :data:`TASKS` that is no task's file, which no tracker write can change (R-BAL184)."""
 
     cards: frozenset[int]
+    tasks: frozenset[int]
     history: tuple[str, ...]
 
 
@@ -136,8 +150,9 @@ class ClaimTaken(GitError):
 
 
 class MarkerConflict(GitError):
-    """Two commits merge with a conflict on a ship marker (:func:`merged_tree`), so whether
-    those cards shipped is unknown: ``paths`` names each marker that conflicts."""
+    """Two commits merge with a conflict on a ship marker (:func:`merged_tree`), or, where a
+    reader asks, a task's done file (:meth:`Merged.settled`), so whether those cards shipped
+    or those tasks are done is unknown: ``paths`` names each file that conflicts."""
 
     def __init__(self, message: str, paths: tuple[str, ...]) -> None:
         """The error, saying ``message``, over the conflicting markers ``paths``."""
@@ -155,12 +170,29 @@ def marker(number: int) -> str:
     return f"{MARKERS}/{number}"
 
 
+def task_file(number: int) -> str:
+    """``plan/tasks/<number>``: the one file recording task ``number`` done."""
+    return f"{TASKS}/{number}"
+
+
+def _numbered(path: str, directory: str) -> int | None:
+    """The number the path ``path`` names as a file directly under ``directory``
+    (``<directory>/<number>``); None for any other path, under ``directory`` or not: a name
+    that is no number, a file in a directory below it, or ``directory`` itself."""
+    name = path.removeprefix(f"{directory}/")
+    return int(name) if path.startswith(f"{directory}/") and _NUMBER.fullmatch(name) else None
+
+
 def card_of(path: str) -> int | None:
     """The card whose marker the path ``path`` names (``plan/ships/<number>``, :func:`marker`);
-    None for any other path, under :data:`MARKERS` or not: a name that is no card number, a
-    file in a directory below it, or :data:`MARKERS` itself."""
-    name = path.removeprefix(f"{MARKERS}/")
-    return int(name) if path.startswith(f"{MARKERS}/") and _NUMBER.fullmatch(name) else None
+    None for any other path (:func:`_numbered`)."""
+    return _numbered(path, MARKERS)
+
+
+def task_of(path: str) -> int | None:
+    """The task whose done file the path ``path`` names (``plan/tasks/<number>``,
+    :func:`task_file`); None for any other path (:func:`_numbered`)."""
+    return _numbered(path, TASKS)
 
 
 def claimed_card(branch: str) -> int | None:
@@ -235,37 +267,43 @@ def shown(ref: str) -> str:
 @dataclass(frozen=True)
 class Merged:
     """The merge of two commits as git's three-way merge writes it (:func:`merge`): the two
-    ``tips``, its ``tree``, and ``conflicts``, each path under :data:`MARKERS` that conflicts
-    there, sorted.  Where a marker conflicts the tree still holds a file, which is no
-    settled record: the side that kept it, for a change against a delete, or git's
-    conflict text, for two lines (measured 2026-10-23, git 2.56).  So a reader of the tree
-    reads ``conflicts`` first."""
+    ``tips``, its ``tree``, ``conflicts``, each path under :data:`MARKERS` that conflicts
+    there, and ``task_conflicts``, each under :data:`TASKS`, each sorted.  Where a marker
+    conflicts the tree still holds a file, which is no settled record: the side that kept
+    it, for a change against a delete, or git's conflict text, for two lines (measured
+    2026-10-23, git 2.56), and so does a task's file.  So a reader of the tree reads the
+    conflicts first.  Only quill's own read asks after the tasks (:func:`shipped`): CI's
+    landing check and the release tool read markers alone, and the release tool never reads
+    a task (R-BAL386)."""
 
     tips: tuple[str, str]
     tree: str
     conflicts: tuple[str, ...]
+    task_conflicts: tuple[str, ...]
 
-    def settled(self) -> str:
-        """``tree``, when no marker conflicts in it.
+    def settled(self, *, tasks: bool = False) -> str:
+        """``tree``, when no marker conflicts in it, nor, with ``tasks``, a task's file.
 
         Raises:
             MarkerConflict: When one does, naming each.
         """
-        if self.conflicts:
+        paths = (*self.conflicts, *(self.task_conflicts if tasks else ()))
+        if paths:
             one, other = self.tips
+            what = "those cards shipped" + (" or those tasks are done" if tasks else "")
             raise MarkerConflict(f"{shown(one)} and {shown(other)} merge with a conflict on "
-                                 f"{', '.join(self.conflicts)}, so whether those cards shipped "
-                                 f"is unknown: settle it in the merge of {MAIN} into {DEV} "
-                                 "first", self.conflicts)
+                                 f"{', '.join(paths)}, so whether {what} is unknown: settle it "
+                                 f"in the merge of {MAIN} into {DEV} first", paths)
         return self.tree
 
 
 def merge(root: Path, tips: tuple[str, str]) -> Merged:
-    """The merge of the two ``tips`` as git's three-way merge writes it, with each marker that
-    conflicts there (:class:`Merged`), written to the object store and to no branch: the ONE
-    merge :func:`merged_tree` settles, and the one CI's landing check reads before and after
-    a change, conflicts and all (``tools/quill/landing.py``, rule 8).  A conflict outside
-    :data:`MARKERS` is no record's, and is not named.  The merge detects no rename (``-X
+    """The merge of the two ``tips`` as git's three-way merge writes it, with each marker and
+    task file that conflicts there (:class:`Merged`), written to the object store and to no
+    branch: the ONE merge :func:`merged_tree` and :func:`shipped` settle, and the one CI's
+    landing check reads before and after a change, conflicts and all
+    (``tools/quill/landing.py``, rule 8).  A conflict outside :data:`MARKERS` and
+    :data:`TASKS` is no record's, and is not named.  The merge detects no rename (``-X
     no-renames``, which no setting can turn back on): two markers hold the same line when
     claimed in the same second, so a marker deleted beside another added reads as a rename,
     and the other side's change to the deleted one would land silently in the added one,
@@ -282,9 +320,10 @@ def merge(root: Path, tips: tuple[str, str]) -> Merged:
     if done.returncode not in (0, 1):
         raise GitError(f"git merge-tree {shown(one)} {shown(other)}: {done.stderr.strip()}")
     tree, *conflicted = [name for name in done.stdout.split("\0") if name]
-    return Merged(tips, tree, tuple(sorted({path for name in conflicted
-                                            if (path := _conflicted(name, tips)).startswith(
-                                                f"{MARKERS}/")})))
+    paths = {_conflicted(name, tips) for name in conflicted}
+    return Merged(tips, tree, *(tuple(sorted(path for path in paths
+                                             if path.startswith(f"{directory}/")))
+                                for directory in (MARKERS, TASKS)))
 
 
 def _conflicted(name: str, tips: tuple[str, str]) -> str:
@@ -311,23 +350,26 @@ def merged_tree(root: Path, tips: tuple[str, str]) -> str:
     return merge(root, tips).settled()
 
 
-def lines_in(root: Path, tree: str) -> tuple[dict[int, str], tuple[str, ...]]:
+def lines_in(root: Path, tree: str,
+             directory: str = MARKERS) -> tuple[dict[int, str], tuple[str, ...]]:
     """Each card whose marker the tree ``tree`` holds (a commit names its own tree), with
     that marker's line (its blob): every file under :data:`MARKERS` whose name is a card
     number; and the path of each other entry there -- a name that is no number, a file in a
-    directory below it, or :data:`MARKERS` itself a file.  The ONE reading of a tree's
-    markers: :func:`markers_in` names its cards, and CI's landing check compares the lines
-    two merges hold (``tools/quill/landing.py``, rule 8).
+    directory below it, or :data:`MARKERS` itself a file.  Named :data:`TASKS` as
+    ``directory``, each task whose done file it holds, and every other entry there, alike.
+    The ONE reading of a tree's markers and task files: :func:`markers_in` names its cards,
+    :func:`tasks_in` its tasks, and CI's landing check compares the lines two merges hold
+    (``tools/quill/landing.py``, rule 8).
 
     Raises:
         GitError: When git cannot read ``tree``.
     """
     lines, strays = {}, []
-    out = git(root, "ls-tree", "-r", "-z", tree, "--", MARKERS)
+    out = git(root, "ls-tree", "-r", "-z", tree, "--", directory)
     for entry in filter(None, out.split("\0")):
         meta, _, path = entry.partition("\t")
         _, kind, blob = meta.split(" ")
-        if kind == "blob" and (number := card_of(path)) is not None:
+        if kind == "blob" and (number := _numbered(path, directory)) is not None:
             lines[number] = blob
         else:
             strays.append(path)
@@ -348,20 +390,37 @@ def markers_in(root: Path, tree: str) -> tuple[frozenset[int], tuple[str, ...]]:
     return frozenset(lines), strays
 
 
-def shipped(root: Path, tips: tuple[str, str] = TIPS) -> Shipped:
-    """What git says shipped: every card whose marker the merge of the two ``tips``
-    (:func:`merged_tree`; ``dev`` and ``main`` unless named) holds (:func:`markers_in`); any other
-    entry under :data:`MARKERS` there is a HISTORY line, acted on nowhere.  CI's landing check
-    names a pull request's merge and the other branch, to read what will have shipped once
-    that change and the other branch meet.
+def tasks_in(root: Path, tree: str) -> tuple[frozenset[int], tuple[str, ...]]:
+    """The tasks whose done files the tree ``tree`` holds, and the path of each other entry
+    under :data:`TASKS` there (:func:`lines_in`, its lines aside), as :func:`markers_in`
+    reads the markers: :func:`shipped` reads the merge of ``dev`` and ``main`` with it, and
+    :func:`claims` each live claim's tip.
 
     Raises:
-        MarkerConflict: When a marker conflicts in that merge (:func:`merged_tree`).
+        GitError: When git cannot read ``tree``.
     """
-    cards, strays = markers_in(root, merged_tree(root, tips))
-    return Shipped(cards, tuple(f"{path} on {DEV} or {MAIN} is no card's marker (a marker is "
-                                f"a file {MARKERS}/<card number>): it is not acted on"
-                                for path in strays))
+    lines, strays = lines_in(root, tree, TASKS)
+    return frozenset(lines), strays
+
+
+def shipped(root: Path, tips: tuple[str, str] = TIPS) -> Shipped:
+    """What git says shipped: every card whose marker the merge of the two ``tips``
+    (:func:`merge`; ``dev`` and ``main`` unless named) holds (:func:`markers_in`), and every
+    task whose done file it holds (:func:`tasks_in`); any other entry under :data:`MARKERS`
+    or :data:`TASKS` there is a HISTORY line, acted on nowhere.
+
+    Raises:
+        MarkerConflict: When a marker or a task's file conflicts in that merge
+            (:meth:`Merged.settled`).
+    """
+    tree = merge(root, tips).settled(tasks=True)
+    cards, strays = markers_in(root, tree)
+    tasks, loose = tasks_in(root, tree)
+    return Shipped(cards, tasks, (
+        *(f"{path} on {DEV} or {MAIN} is no card's marker (a marker is a file "
+          f"{MARKERS}/<card number>): it is not acted on" for path in strays),
+        *(f"{path} on {DEV} or {MAIN} is no task's file (a task's file is a file "
+          f"{TASKS}/<task number>): it is not acted on" for path in loose)))
 
 
 def blob_at(root: Path, treeish: str, path: str) -> str | None:
@@ -400,7 +459,8 @@ def claims(root: Path, cards: Iterable[int]) -> dict[int, Claim]:
         if is_ancestor(root, tip, tracking(DEV)) or is_ancestor(root, tip, tracking(MAIN)):
             continue
         committed = git(root, "log", "-1", "--format=%cI", tip).strip()
-        found[number] = Claim(number, tip, committed, _claimed_at(root, tip, number))
+        found[number] = Claim(number, tip, committed, _claimed_at(root, tip, number),
+                              tasks_in(root, tip)[0])
     return found
 
 
