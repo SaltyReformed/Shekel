@@ -465,33 +465,6 @@ def _entries_violating_balance() -> list[tuple[int, Decimal, int]]:
 # ---------------------------------------------------------------------------
 
 
-def _opening_correction_count(account_id: int, scenario_id: int) -> int:
-    """Count an account's posted OPENING correction entries in one scenario.
-
-    Read independently of the producer (a join from the account's LINKED
-    ledger to the ``account_opening`` journal entries), so a test can assert
-    that a reconcile wrote NOTHING new rather than that it produced the right
-    number -- the difference between "the skip still works" and "the answer is
-    right", which the sibling assertions cover.
-    """
-    linked = linked_ledger_account(_db.session, account_id)
-    entry_ids = (
-        _db.session.query(Posting.journal_entry_id)
-        .filter(Posting.ledger_account_id == linked.id)
-    )
-    return (
-        _db.session.query(JournalEntry)
-        .filter(
-            JournalEntry.scenario_id == scenario_id,
-            JournalEntry.source_kind_id == ref_cache.posting_source_id(
-                PostingSourceEnum.ACCOUNT_OPENING,
-            ),
-            JournalEntry.id.in_(entry_ids),
-        )
-        .count()
-    )
-
-
 def _assert_account_anchors_reconcile(scenario_id: int) -> None:
     """Assert every non-loan LINKED ledger reconciles ABSOLUTELY in *scenario_id*.
 
