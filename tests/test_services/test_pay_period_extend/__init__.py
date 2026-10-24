@@ -19,6 +19,7 @@ Because a pay period is the spine of every financial number, the extend
 happy-path test asserts three disciplines: structural invariants
 (Discipline 1, ``assert_pay_period_invariants``), hand-computed as-of
 balances in both the retained and the new window (Discipline 2), and the
-production integrity checker passing (Discipline 3).  See
-``docs/plans/implementation_plan_pay_period_crud.md``.
+production integrity checker passing (Discipline 3).  The disciplines are
+named in ``docs/plans/historical/implementation_plan_pay_period_crud.md``, a
+historical record that governs nothing.
 """
