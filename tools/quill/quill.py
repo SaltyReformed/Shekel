@@ -616,8 +616,7 @@ def _sync_reads(tracker: Tracker, reads: _git.Reads,
     history = [f"the marker {_git.marker(number)} on {DEV} or {MAIN} names plan#{number}, "
                "which does not exist" for number in sorted(reads.shipped.cards - set(cards))]
     cards = with_closure(tracker, cards)
-    tasks = {child.number for card in cards.values() for child in card.children
-             if child.kind == TASK} - set(cards)
+    tasks = {number for card in cards.values() for number in card.task_children} - set(cards)
     return with_closure(tracker, {**cards, **tracker.cards(tasks)}), history
 
 

@@ -624,10 +624,12 @@ def done_tasks(cards: Mapping[int, BareCard], tasks: Iterable[int],
     The ONE reading of a task's state, which ``sync`` and ``show`` ask; ``quill drop`` asks
     only whether that merge holds its file (:func:`drop_takes`), as a drop abandons the
     claim.  A file naming a card that is no task, or a task under another card, makes
-    nothing done (:func:`_names_no_task`)."""
-    tasks = set(tasks)
-    return frozenset(number for number, card in cards.items() if card.kind == TASK and (
-        number in tasks or (card.parent in claims and number in claims[card.parent].tasks)))
+    nothing done (:func:`names_no_task`, which each file is read by)."""
+    done = {number for number in tasks if names_no_task(number, cards) is None}
+    for claim in claims.values():
+        done.update(number for number in claim.tasks
+                    if names_no_task(number, cards, claim.card) is None)
+    return frozenset(done)
 
 
 def drop_takes(task: BareCard, tasks: Iterable[int]) -> bool:
@@ -678,11 +680,15 @@ def _sync_shipped(card: Card, plan: SyncPlan) -> None:
     plan.close.append(card.number)
 
 
-def _names_no_task(number: int, cards: Mapping[int, Card], under: int | None = None) -> str | None:
+def names_no_task(number: int, cards: Mapping[int, BareCard],
+                  under: int | None = None) -> str | None:
     """Why the task file ``plan/tasks/<number>`` marks nothing done (:func:`done_tasks`): the
     card it names does not exist, or is no task, or -- read at the tip of card ``under``'s
     claim -- is a task under another card, or under none; None when it names a task (under
-    ``under``, when given)."""
+    ``under``, when given).  The ONE reading of which branch a task's file is done on: what
+    git says is done reads each file by it (:func:`done_tasks`), ``sync`` reports each file
+    it says marks nothing done (:func:`_task_files`), and CI's landing check refuses a change
+    from ``card/<under>`` writing such a file (``tools/quill/landing.py``, R-BAL386)."""
     card = cards.get(number)
     if card is None:
         return f"plan#{number} does not exist"
@@ -744,18 +750,18 @@ def _sync_task(card: Card, plan: SyncPlan, cards: Mapping[int, Card], shipped: s
 
 def _task_files(plan: SyncPlan, cards: Mapping[int, Card], tasks: Iterable[int],
                 claims: Mapping[int, Claim]) -> None:
-    """Each task file that marks nothing done (:func:`_names_no_task`): a HISTORY line for one
+    """Each task file that marks nothing done (:func:`names_no_task`): a HISTORY line for one
     in the merge of ``dev`` and ``main`` (``tasks``), which no tracker write can change
     (R-BAL184), and a REPORT for one a live claim's own commits wrote
     (:attr:`_git.Claim.tasks`), which a person takes off that branch: a task is done on its
     own card's branch only."""
     for number in sorted(set(tasks)):
-        if why := _names_no_task(number, cards):
+        if why := names_no_task(number, cards):
             plan.history.append(f"the task file {task_file(number)} on {DEV} or {MAIN} marks "
                                 f"nothing done ({why}): it is not acted on")
     for claim in sorted(claims.values(), key=lambda claim: claim.card):
         for number in sorted(claim.tasks):
-            if why := _names_no_task(number, cards, claim.card):
+            if why := names_no_task(number, cards, claim.card):
                 plan.reports.append(
                     f"{claim.branch}'s tip holds {task_file(number)}, but {why}, so it marks "
                     f"nothing done (a task is done on its own card's branch only): take it off "

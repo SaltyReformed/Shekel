@@ -1,7 +1,7 @@
-"""Refuse a pull request whose merge writes a ship marker it may not: CI's one write rule
-(ruling ``balance:R-BAL359``, the ship marker; step X-cx's M2), judged at the one gate
-every change into ``dev`` or ``main`` passes, since each takes a change only through its
-merge queue (``R-BAL322``).
+"""Refuse a pull request whose merge writes a ship marker, or a task's done file, it may not:
+CI's one write rule (ruling ``balance:R-BAL359``, the ship marker; step X-cx's M2; and
+``R-BAL386``, a task's done file), judged at the one gate every change into ``dev`` or
+``main`` passes, since each takes a change only through its merge queue (``R-BAL322``).
 
 **A card shipped when its marker ``plan/ships/N`` is on ``dev`` or ``main``**
 (:func:`_git.shipped`), and a release counts the money changes it carries from the markers
@@ -112,7 +112,23 @@ it leaves as it was (rule 8):**
    judge; one that conflicts in both is passed over, so an app change lands in a week the
    two disagree.
 
-**The tracker is read only when a card must be**, through the card-only reader
+**A task's done file ``plan/tasks/T`` is judged by the same rules** (``R-BAL386``): a
+task is a piece of one card, a commit inside its one pull request, done when its file is in
+the merge of ``dev`` and ``main`` (``_git.shipped``) or in its card's live claim.  Rules 1-4
+and 8 read each entry under ``plan/tasks/`` as they read a marker, in a task's words, in the
+same walk of git's history: an entry that is no task's done file is refused, a delete passes,
+a line the target held once never comes back (a task undone is done again from a fresh done
+file, ``quill task-file``, never a revert of its revert), and a line of the other branch
+comes only through the merge that took it in.  Rule 5 lets only a claim write one, and rule
+7 then reads the task: written on ``card/N``, it must be a task under N, as ``quill sync``
+reads a claim's done file (:func:`_state.names_no_task`), so the file of a task since moved
+under another card is refused on N's branch.  Rule 6 is the markers' alone: a task's file
+makes a change no records-only one.  And **a change from ``card/N`` recording card N is
+refused while a task under N that was not dropped lacks its done file in M** (:func:`_owed`):
+a task the TOOL closed counts, as its close only shows git; a person's close, or ``quill
+drop``'s, is a drop.  The release tool never reads a task.
+
+**The tracker is read only when a card or a task must be**, through the card-only reader
 (:class:`_tracker.CardReader`) and the token :data:`TOKEN_VARIABLE` holds: never quill's
 App, never the board.  In CI that token is an installation token of the read-only App
 "Shekel plan reader" (Issues read-only, installed on the tracker only; ``R-BAL289``,
@@ -127,8 +143,9 @@ needs none is judged without a read.
 **What cannot be read refuses to judge** (exit 2): a command line naming no pull request;
 the pull request, when no token or repository is set, GitHub answers an error or cannot be
 reached, or its answer lacks a field; a merge that is not the pull request's; git; a marker
-the change leaves that conflicts AFTER and not BEFORE (rule 8); when a card must be read,
-a marker that conflicts AFTER; and the tracker, as :func:`refusals` says.
+or task's done file the change leaves that conflicts AFTER and not BEFORE (rule 8); when a
+card or task must be read, a marker that conflicts AFTER; and the tracker, as
+:func:`refusals` says.
 
 Usage, at the repository root::
 
@@ -146,6 +163,7 @@ import sys
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from functools import cached_property
+from operator import attrgetter
 from pathlib import Path
 
 import requests
@@ -154,9 +172,9 @@ from tools.ci.arcs import REPO
 from tools.ci.gitcmd import FULL_ID, GitError, git
 from tools.ci.trailers import DEV, MAIN, is_ancestor, tracking
 from tools.quill import _git
-from tools.quill._command import with_closure
+from tools.quill._command import with_cards, with_closure
 from tools.quill._github import GitHub, GitHubError
-from tools.quill._state import filing_ended, filing_unfinished, no_work
+from tools.quill._state import dropped, filing_ended, filing_unfinished, names_no_task, no_work
 from tools.quill._tracker import BareCard, CardReader, TrackerError
 from tools.quill.setup_tracker import PLAN
 
@@ -175,6 +193,57 @@ _QUEUED = re.compile(r"(?:refs/heads/)?gh-readonly-queue/.+/pr-(?P<number>[1-9][
                      rf"-(?:{FULL_ID.pattern})")
 #: The verb each status of a written entry reads as.
 _VERBS = {"A": "adds", "M": "changes", "T": "changes the type of"}
+
+
+@dataclass(frozen=True)
+class _Said:
+    """How a sentence names one kind of record the rule judges: ``noun`` (``card``),
+    ``record`` (``marker``) and ``state`` (``shipped``); ``again``, making one read so again
+    with no change to its record, ``{s}`` the verb's ending and ``{it}`` what it is said of
+    (``re-ship{s} {it}``); ``redo``, how one undone is so again from a new line, and
+    ``fresh``, the command writing one, each ``{n}`` its number; and ``whether``, what a
+    conflict on such records leaves unknown (``those cards shipped``)."""
+
+    noun: str
+    record: str
+    state: str
+    again: str
+    redo: str
+    fresh: str
+    whether: str
+
+
+@dataclass(frozen=True)
+class _Kind:
+    """One kind of record the rule judges, each a file under ``directory``: ``path``, the
+    file of a number, and ``of``, the number a path names, None for any other path;
+    ``conflicts``, its paths that conflict in a merge (:class:`_git.Merged`); ``counted``,
+    whether a release counts the code one records; and ``said``, its words."""
+
+    directory: str
+    path: Callable[[int], str]
+    of: Callable[[str], int | None]
+    conflicts: Callable[[_git.Merged], tuple[str, ...]]
+    counted: bool
+    said: _Said
+
+
+#: A card's ship marker (R-BAL359), whose code a release counts (``tools/release``).
+_CARDS = _Kind(_git.MARKERS, _git.marker, _git.card_of, attrgetter("conflicts"), True, _Said(
+    "card", "marker", "shipped", "re-ship{s} {it}",
+    "a card undone ships again from a fresh claim (quill claim {n}), which writes a new line",
+    "claim card {n} again (quill claim {n}), which writes a new line", "those cards shipped"))
+#: A task's done file (R-BAL386), which no release reads.
+_TASKS = _Kind(_git.TASKS, _git.task_file, _git.task_of, attrgetter("task_conflicts"), False,
+               _Said("task", "done file", "done", "mark{s} {it} done again",
+                     "a task undone is done again from a fresh done file (quill task-file "
+                     "plan#{n}), which writes a new line",
+                     "write task {n}'s done file again (quill task-file plan#{n}), which writes "
+                     "a new line", "those tasks are done"))
+#: Each kind of record, cards first, the order the rule names them in.
+_KINDS = (_CARDS, _TASKS)
+#: Each kind's directory, which one walk of git's history reads together.
+_DIRECTORIES = tuple(kind.directory for kind in _KINDS)
 
 
 class NotSet(LookupError):
@@ -229,53 +298,58 @@ class Landing:
         return next(ref for name, ref in BRANCHES.items() if name != self.pull.base)
 
     @cached_property
-    def lines(self) -> Mapping[int, str]:
-        """Each card whose marker M's tree holds, with that marker's line, by quill's one
-        reading of a tree's markers (:func:`_git.lines_in`)."""
-        return _git.lines_in(self.root, self.merge)[0]
+    def lines(self) -> Mapping[str, Mapping[int, str]]:
+        """By directory, each card whose marker M's tree holds and each task whose done file
+        it holds, with that file's line, by quill's one reading of a tree's markers and task
+        files (:func:`_git.lines_in`)."""
+        return {directory: _git.lines_in(self.root, self.merge, directory)[0]
+                for directory in _DIRECTORIES}
 
     @cached_property
     def held(self) -> Mapping[tuple[str, str], tuple[_git.Took, ...]]:
-        """The lines the target's own line took in, read at M's first parent, with the
-        commits that took each in and undid it (:func:`_git.landings`)."""
-        return _git.landings(self.root, self.onto)
+        """The lines of markers and task files the target's own line took in, read at M's
+        first parent, with the commits that took each in and undid it
+        (:func:`_git.landings`)."""
+        return _git.landings(self.root, self.onto, _DIRECTORIES)
 
     @cached_property
     def carried(self) -> Mapping[tuple[str, str], tuple[_git.Took, ...]]:
-        """The lines the other branch's own line took in, with the commits that took each in
-        and undid it (:func:`_git.landings`)."""
-        return _git.landings(self.root, self.other)
+        """The lines of markers and task files the other branch's own line took in, with the
+        commits that took each in and undid it (:func:`_git.landings`)."""
+        return _git.landings(self.root, self.other, _DIRECTORIES)
 
     @cached_property
     def deleted(self) -> frozenset[tuple[str, str]]:
-        """Each marker's line, as ``(path, blob)``, that a commit the change brings deletes
-        there, in a change of its own: a commit M holds and neither its first parent nor the
-        other branch does, and no merge (:func:`_git.marker_changes`), so a delete it shows
-        in history (``R-BAL391``).  A merge's resolution is never one, whichever its first
-        parent: a marker it drops shows no delete.  A delete counts whether or not a later
-        commit brings that line back (the module's rule 8, its known hole)."""
+        """Each line of a marker or a task file, as ``(path, blob)``, that a commit the change
+        brings deletes there, in a change of its own: a commit M holds and neither its first
+        parent nor the other branch does, and no merge (:func:`_git.marker_changes`), so a
+        delete it shows in history (``R-BAL391``).  A merge's resolution is never one,
+        whichever its first parent: a marker it drops shows no delete.  A delete counts
+        whether or not a later commit brings that line back (the module's rule 8, its known
+        hole)."""
         brought = (self.merge, f"^{self.onto}", f"^{self.other}")
         return frozenset((change.entry.path, change.was)
-                         for change in _git.marker_changes(self.root, brought, no_merges=True)
+                         for change in _git.marker_changes(self.root, brought, no_merges=True,
+                                                           directories=_DIRECTORIES)
                          if change.entry.blob is None and change.was is not None)
 
-    def card(self, entry: _git.Entry) -> int | None:
-        """The card whose marker ``entry``, an entry M changes, is, as M's tree reads it
-        (:attr:`lines`), so rule 1 gives every reader of the markers' answer: None for a
-        delete, and for an entry that is no card's marker -- a name that is no card number
-        (:func:`_git.card_of`), or no file, a submodule's commit (a gitlink)."""
-        number = _git.card_of(entry.path)
+    def of(self, kind: _Kind, entry: _git.Entry) -> int | None:
+        """The card or task whose record of ``kind`` ``entry``, an entry M changes, is, as
+        M's tree reads it (:attr:`lines`), so rule 1 gives every reader of the records'
+        answer: None for a delete, and for an entry that is no such record -- a name that is
+        no number (``kind.of``), or no file, a submodule's commit (a gitlink)."""
+        number = kind.of(entry.path)
         if number is None or entry.blob is None:
             return None
-        return number if number in self.lines else None
+        return number if number in self.lines[kind.directory] else None
 
 
 @dataclass(frozen=True)
 class _Facts:
-    """What rule 6 reads of git for a change that writes a marker: ``records_only``, whether
-    the change is one it reads (into ``main``, every entry an added marker); and for such a
-    change, ``claimed``, the cards a claim was ever made for, and ``door``, its cards
-    neither that nor ever marked on ``dev`` or ``main``."""
+    """What rule 6 reads of git for a change that writes a marker or a task's done file:
+    ``records_only``, whether the change is one it reads (into ``main``, every entry an
+    added marker); and for such a change, ``claimed``, the cards a claim was ever made for,
+    and ``door``, its cards neither that nor ever marked on ``dev`` or ``main``."""
 
     records_only: bool
     claimed: frozenset[int]
@@ -369,19 +443,26 @@ def _landing(root: Path, merge: str, pull: PullRequest) -> Landing:
     return Landing(root, merge, parents[0], pull, _git.changes(root, parents[0], merge))
 
 
-def _under_markers(path: str) -> bool:
-    """Whether ``path`` is under :data:`_git.MARKERS`, as git's pathspec reads it there:
-    the directory's own name, or any path below it."""
-    return path == _git.MARKERS or path.startswith(f"{_git.MARKERS}/")
+def _under(path: str, directory: str) -> bool:
+    """Whether ``path`` is under ``directory``, as git's pathspec reads it there: the
+    directory's own name, or any path below it."""
+    return path == directory or path.startswith(f"{directory}/")
+
+
+def _kind_of(path: str) -> _Kind | None:
+    """The kind of record whose directory ``path`` is under (:func:`_under`); None for any
+    other path."""
+    return next((kind for kind in _KINDS if _under(path, kind.directory)), None)
 
 
 def _facts(landing: Landing) -> _Facts:
-    """What rule 6 reads of git for ``landing``'s written markers (:class:`_Facts`)."""
+    """What rule 6 reads of git for ``landing``'s written markers (:class:`_Facts`): an entry
+    that is no marker, a task's file among them, makes a change no records-only one."""
     root, entries = landing.root, landing.entries
     records_only = landing.target == tracking(MAIN) and all(
-        entry.status == "A" and landing.card(entry) is not None for entry in entries)
+        entry.status == "A" and landing.of(_CARDS, entry) is not None for entry in entries)
     claimed = _git.ever_claimed(root) if records_only else frozenset()
-    door = (frozenset(landing.card(entry) for entry in entries) - _git.ever_marked(root)
+    door = (frozenset(landing.of(_CARDS, entry) for entry in entries) - _git.ever_marked(root)
             - claimed if records_only else frozenset())
     return _Facts(records_only, claimed, door)
 
@@ -409,121 +490,158 @@ def _unclaimed(landing: Landing, facts: _Facts, entry: _git.Entry, number: int) 
             f"{_git.card_branch(number)}, may record it")
 
 
-def _stray(entry: _git.Entry) -> str:
-    """Rule 1: why ``entry``, which the change adds or changes and which is no card's
-    marker (:meth:`Landing.card`), is refused."""
-    if (number := _git.card_of(entry.path)) is None:
-        return (f"{entry.path}: no card's marker is named so (a marker is the file "
-                f"{_git.MARKERS}/<card number>), so no change may add or change it")
-    return (f"{entry.path}: a marker is a file, and what this change writes there is none (a "
-            f"submodule's commit), which no reader counts as card {number}'s marker, so no "
-            "change may add or change it")
+def _stray(kind: _Kind, entry: _git.Entry) -> str:
+    """Rule 1: why ``entry``, which the change adds or changes under ``kind``'s directory and
+    which is no record of it (:meth:`Landing.of`), is refused."""
+    said = kind.said
+    if (number := kind.of(entry.path)) is None:
+        return (f"{entry.path}: no {said.noun}'s {said.record} is named so (a {said.record} is "
+                f"the file {kind.directory}/<{said.noun} number>), so no change may add or "
+                "change it")
+    return (f"{entry.path}: a {said.record} is a file, and what this change writes there is "
+            f"none (a submodule's commit), which no reader counts as {said.noun} {number}'s "
+            f"{said.record}, so no change may add or change it")
 
 
-def _written(landing: Landing, facts: _Facts,
+def _unfiled(landing: Landing, entry: _git.Entry, number: int) -> str:
+    """Rule 5: why ``entry``, task ``number``'s done file, written by a change from no claim,
+    is refused."""
+    return (f"{entry.path}: {landing.pull.head or 'a branch of another repository'} "
+            f"{_VERBS.get(entry.status, 'writes')} it, but a task's done file is written only "
+            f"on the claim of the card the task is under (quill task-file plan#{number} writes "
+            "it there)")
+
+
+def _claimed(landing: Landing, facts: _Facts, kind: _Kind, entry: _git.Entry,
+             number: int) -> tuple[str | None, int | None]:
+    """Rules 5 and 6 over ``entry``, card or task ``number``'s file of ``kind``, which no
+    earlier rule settled: why it is refused, or None; and the card or task the tracker must
+    be read for, or None.  A marker passes from its card's own claim, or through the
+    records-only door; a task's done file from a claim, whose card the tracker must then
+    say the task is under (:func:`refusals`)."""
+    if kind is _TASKS:
+        return (None, number) if landing.claim is not None else (
+            _unfiled(landing, entry, number), None)
+    if number in (landing.claim, *facts.door):
+        return None, number
+    return _unclaimed(landing, facts, entry, number), None
+
+
+def _written(landing: Landing, facts: _Facts, kind: _Kind,
              entry: _git.Entry) -> tuple[str | None, int | None]:
-    """Rules 1 and 3-6 over ``entry``, a marker path the change adds or changes: why it is
-    refused, or None; and the card the tracker must be read for, or None."""
-    if (number := landing.card(entry)) is None:
-        return _stray(entry), None
+    """Rules 1 and 3-6 over ``entry``, a path the change adds or changes under ``kind``'s
+    directory: why it is refused, or None; and the card or task the tracker must be read
+    for, or None."""
+    if (number := landing.of(kind, entry)) is None:
+        return _stray(kind, entry), None
+    said, it = kind.said, f"{kind.said.noun} {number}"
     if (entry.path, entry.blob) in landing.held:
+        counted = ", and a release would count none of the code it brings back"
         return (f"{entry.path}: {_git.shown(landing.target)} held this very line once and undid "
-                f"it, so it would re-ship card {number} with no change to its record, and a "
-                "release would count none of the code it brings back: a card undone ships "
-                f"again from a fresh claim (quill claim {number}), which writes a new line"), None
+                f"it, so it would {said.again.format(s='', it=it)} with no change to its "
+                f"record{counted if kind.counted else ''}: {said.redo.format(n=number)}"), None
     if took := landing.carried.get((entry.path, entry.blob)):
         if _carried(landing, took):
             return None, None
         other = _git.shown(landing.other)
         return (f"{entry.path}: {other} took this very line in, but this change does not bring "
                 "the commit through which it did, or holds the one through which it undid it, "
-                f"so it would record card {number} where its code is not, or re-ship it with no "
-                f"change to its record: the line comes from {other} only through the merge that "
-                "took it in, and a card undone ships again from a fresh claim (quill claim "
-                f"{number}), which writes a new line"), None
-    if number in (landing.claim, *facts.door):
-        return None, number
-    return _unclaimed(landing, facts, entry, number), None
+                f"so it would record {it} where its code is not, or "
+                f"{said.again.format(s='', it='it')} with no change to its record: the line "
+                f"comes from {other} only through the merge that took it in, and "
+                f"{said.redo.format(n=number)}"), None
+    return _claimed(landing, facts, kind, entry, number)
 
 
-def _judged(landing: Landing) -> tuple[list[str], set[int]]:
+def _judged(landing: Landing) -> tuple[list[str], dict[str, set[int]]]:
     """One sentence for each refusal of rules 1-6 over ``landing``'s entries under
-    :data:`_git.MARKERS`, and the cards it records that the tracker must be read for."""
-    written = [entry for entry in landing.entries
-               if _under_markers(entry.path) and entry.blob is not None]
+    :data:`_git.MARKERS` and :data:`_git.TASKS`, and the cards it records and the tasks it
+    writes a done file of that the tracker must be read for, by directory."""
+    written = [(kind, entry) for entry in landing.entries
+               if entry.blob is not None and (kind := _kind_of(entry.path)) is not None]
     claim = landing.claim
     reasons = []
-    if claim is not None and not any(landing.card(entry) == claim for entry in written):
+    if claim is not None and not any(landing.of(_CARDS, entry) == claim
+                                     for _, entry in written):
         reasons.append(f"{landing.pull.head} adds or changes no {_git.marker(claim)}, so it "
                        f"records nothing, though a change from {landing.pull.head} records "
                        f"card {claim} (pushed again after its merge? later work is a card of "
                        "its own)")
-    read: set[int] = set()
+    read: dict[str, set[int]] = {directory: set() for directory in _DIRECTORIES}
     if written:
         facts = _facts(landing)
-        for entry in written:
-            why, number = _written(landing, facts, entry)
+        for kind, entry in written:
+            why, number = _written(landing, facts, kind, entry)
             if why:
                 reasons.append(why)
             if number is not None:
-                read.add(number)
+                read[kind.directory].add(number)
     return reasons, read
 
 
-def _settled(root: Path, merged: _git.Merged) -> dict[int, str]:
-    """Each card the merge ``merged`` says shipped, with its marker's line there: each whose
-    marker its tree holds (:func:`_git.lines_in`) and does not conflict there, where the tree
-    holds no settled record (:class:`_git.Merged`)."""
-    return {number: line for number, line in _git.lines_in(root, merged.tree)[0].items()
-            if _git.marker(number) not in merged.conflicts}
+def _settled(root: Path, merged: _git.Merged, kind: _Kind) -> dict[int, str]:
+    """Each card the merge ``merged`` says shipped, or task it says is done, by ``kind``,
+    with its file's line there: each whose file its tree holds (:func:`_git.lines_in`) and
+    does not conflict there, where the tree holds no settled record (:class:`_git.Merged`)."""
+    conflicts = kind.conflicts(merged)
+    return {number: line
+            for number, line in _git.lines_in(root, merged.tree, kind.directory)[0].items()
+            if kind.path(number) not in conflicts}
 
 
 def _undid(landing: Landing, line: tuple[str, str | None]) -> bool:
-    """Whether the other integration branch's own line held ``line``, a marker's ``(path,
-    blob)``, and holds it no longer (:attr:`Landing.carried`)."""
+    """Whether the other integration branch's own line held ``line``, a marker's or a task
+    file's ``(path, blob)``, and holds it no longer (:attr:`Landing.carried`)."""
     took = landing.carried.get(line)
     return bool(took) and all(each.until is not None for each in took)
 
 
-def _moved(landing: Landing, number: int, was: str | None, now: str | None) -> str:
-    """Rule 8's sentence for card ``number``, whose marker the change leaves as its first
-    parent holds it, where BEFORE settles that marker as ``was`` and AFTER as ``now``, which
-    differ: each its line, or None where the merge holds none.
+def _reads(said: _Said, number: int, was: str | None, now: str | None, meet: str) -> str:
+    """How rule 8 says what one record would read once the change and the other branch
+    ``meet``, where BEFORE settles it as ``was`` and AFTER as ``now`` (:func:`_moved`)."""
+    one = f"{said.noun} {number}"
+    if was is None:
+        return f"{one} would read {said.state} {meet}, as it does not"
+    if now is None:
+        return f"{one} would read not {said.state} {meet}, where it reads {said.state}"
+    return f"{one} would read {said.state} on another line {meet} than"
 
-    A settled merge of one marker holds one side's state of it, or a line git merged from
-    the two: so where AFTER holds M's own (the target's, which M leaves as it was, ``kept``),
+
+def _moved(landing: Landing, kind: _Kind, number: int, was: str | None, now: str | None) -> str:
+    """Rule 8's sentence for card or task ``number`` of ``kind``, whose file the change
+    leaves as its first parent holds it, where BEFORE settles that file as ``was`` and AFTER
+    as ``now``, which differ: each its line, or None where the merge holds none.
+
+    A settled merge of one file holds one side's state of it, or a line git merged from the
+    two: so where AFTER holds M's own (the target's, which M leaves as it was, ``kept``),
     the change keeps it against what git's merge of the two takes (BEFORE); and where AFTER
     holds another, what the change brings of the other branch moves their merge's answer."""
-    path, kept = _git.marker(number), landing.lines.get(number)
+    said, one = kind.said, f"{kind.said.noun} {number}"
+    path, kept = kind.path(number), landing.lines[kind.directory].get(number)
     target, other = _git.shown(landing.target), _git.shown(landing.other)
-    meet = f"once this change and {other} meet"
-    if was is None:
-        reads = f"card {number} would read shipped {meet}, as it does not"
-    elif now is None:
-        reads = f"card {number} would read not shipped {meet}, where it reads shipped"
-    else:
-        reads = f"card {number} would read shipped on another line {meet} than"
-    claim = f"claim card {number} again (quill claim {number}), which writes a new line"
+    reads = _reads(said, number, was, now, f"once this change and {other} meet")
     if now != kept and kept is None:
         why = (f"{target} deleted it, and what this change brings of {other} makes their merge "
                f"take {other}'s line instead, which {other} holds again after a commit of its "
                f"history held none, with no change to its record; revert on {other} what took "
-               "it back (a revert deletes the marker with its code), or leave out what this "
-               f"change brings of {other}")
+               f"it back (a revert deletes the {said.record} with its code), or leave out what "
+               f"this change brings of {other}")
     elif now != kept:
         why = (f"what it brings of {other} moves their merge's answer, with no change to its "
                f"record; leave out what it brings of {other}")
     elif was is None:
-        why = ("a merge keeping a marker the other side deleted re-ships a card with no change "
-               "to its record, so a release would count none of its code; take the delete "
-               f"their merge takes, or {claim}")
+        counted = ", so a release would count none of its code" if kind.counted else ""
+        why = (f"a merge keeping a {said.record} the other side deleted "
+               f"{said.again.format(s='s', it=f'a {said.noun}')} with no change to its "
+               f"record{counted}; take the delete their merge takes, or "
+               f"{said.fresh.format(n=number)}")
     elif now is None:
-        why = (f"it drops card {number}'s marker, which {other} holds, with no change to its "
+        why = (f"it drops {one}'s {said.record}, which {other} holds, with no change to its "
                "record, and no commit it brings, merges aside, deletes that very line; if this "
-               f"change keeps card {number}'s code, take {other}'s file, merging {other} itself "
-               f"if this change has not; if it drops card {number}'s code too, take {other}'s "
-               f"file, then revert card {number} in a commit that is no merge (a revert deletes "
-               "the marker with its code)")
+               f"change keeps {one}'s code, take {other}'s file, merging {other} itself if this "
+               f"change has not; if it drops {one}'s code too, take {other}'s file, then revert "
+               f"{one} in a commit that is no merge (a revert deletes the {said.record} with "
+               "its code)")
     else:
         undid = f", which {other} held once and undid," if _undid(landing, (path, now)) else ""
         why = (f"it keeps {target}'s line{undid} where their merge takes another, with no "
@@ -532,62 +650,79 @@ def _moved(landing: Landing, number: int, was: str | None, now: str | None) -> s
             f"of it: {why}")
 
 
-def _shown(landing: Landing, number: int, was: str | None, now: str | None) -> bool:
-    """Whether card ``number``'s marker, which BEFORE settles as ``was`` and AFTER as
-    ``now``, is a delete shown in history (``R-BAL391``): M holds no marker there and AFTER
-    none, and a commit the change brings deletes BEFORE's very line in a change of its own
-    (:attr:`Landing.deleted`) -- a revert made in a branch that merged the other in, or a
-    person's "not done".  Where M holds a marker the change deletes none, so whatever moves
-    AFTER's answer is what it brings of the other branch."""
-    return (was is not None and now is None and number not in landing.lines
-            and (_git.marker(number), was) in landing.deleted)
+def _shown(landing: Landing, kind: _Kind, number: int, was: str | None,
+           now: str | None) -> bool:
+    """Whether the file of card or task ``number`` of ``kind``, which BEFORE settles as
+    ``was`` and AFTER as ``now``, is a delete shown in history (``R-BAL391``): M holds no
+    such file and AFTER none, and a commit the change brings deletes BEFORE's very line in a
+    change of its own (:attr:`Landing.deleted`) -- a revert made in a branch that merged the
+    other in, or a person's "not done".  Where M holds one the change deletes none, so
+    whatever moves AFTER's answer is what it brings of the other branch."""
+    return (was is not None and now is None and number not in landing.lines[kind.directory]
+            and (kind.path(number), was) in landing.deleted)
 
 
-def _unwritten(landing: Landing, after: _git.Merged, now: Mapping[int, str]) -> list[str]:
+def _unsettled(landing: Landing, kind: _Kind, before: _git.Merged,
+               now: Mapping[int, str]) -> list[str]:
+    """Rule 8 over the files of ``kind`` (:func:`_unwritten`): one sentence for each the
+    change leaves where BEFORE (``before``) and AFTER (which settles the lines ``now``)
+    answer otherwise."""
+    target, other = _git.shown(landing.target), _git.shown(landing.other)
+    left = {entry.path for entry in landing.entries}
+    was, said = _settled(landing.root, before, kind), kind.said
+    reasons = []
+    for number in sorted(set(was) | set(now)):
+        path = kind.path(number)
+        if path in left or was.get(number) == now.get(number):
+            continue
+        if path not in kind.conflicts(before):
+            if not _shown(landing, kind, number, was.get(number), now.get(number)):
+                reasons.append(_moved(landing, kind, number, was.get(number), now.get(number)))
+        elif _undid(landing, (path, now[number])):
+            counted = ", and a release would count none of its code" if kind.counted else ""
+            reasons.append(
+                f"{path}: {target} and {other} conflict on it, and this change "
+                f"settles it on a line {other} held once and undid, though it writes no line "
+                f"of it, so it would {said.again.format(s='', it=f'{said.noun} {number}')} "
+                f"with no change to its record{counted}: {said.redo.format(n=number)}")
+    return reasons
+
+
+def _unwritten(landing: Landing, after: _git.Merged,
+               now: Mapping[str, Mapping[int, str]]) -> list[str]:
     """Rule 8 (``R-BAL385``, widened by ``R-BAL390``): one sentence for each card whose
-    marker the change leaves as its first parent holds it, where AFTER (``after``, the merge
-    of M with the other branch, which settles the lines ``now``) answers otherwise than
-    BEFORE (the merge of M's first parent with it): not shipped, or shipped on a line.
-    Refused where BEFORE settles it (:func:`_moved`), unless the change shows the delete
-    in a commit of its own (:func:`_shown`, ``R-BAL391``); and where BEFORE conflicts on it,
-    refused only when AFTER settles it on a line the other branch's own line held once and
-    undid (:func:`_undid`).  AFTER's line there is the target's own (M's, which it holds),
-    the other's (a card shipped there, which their merge reports as it is), or git's merge
-    of the two, which neither held: so only the first can re-ship what a branch undid, and
-    only the other branch can have.
+    marker, and each task whose done file, the change leaves as its first parent holds it,
+    where AFTER (``after``, the merge of M with the other branch, which settles the lines
+    ``now``, by directory) answers otherwise than BEFORE (the merge of M's first parent with
+    it): not shipped (not done), or shipped (done) on a line (:func:`_unsettled`, a kind at a
+    time).  Refused where BEFORE settles it (:func:`_moved`), unless the change shows the
+    delete in a commit of its own (:func:`_shown`, ``R-BAL391``); and where BEFORE conflicts
+    on it, refused only when AFTER settles it on a line the other branch's own line held
+    once and undid (:func:`_undid`).  AFTER's line there is the target's own (M's, which it
+    holds), the other's (a card shipped there, which their merge reports as it is), or git's
+    merge of the two, which neither held: so only the first can re-ship what a branch undid,
+    and only the other branch can have.
 
     Raises:
-        _git.MarkerConflict: When a marker the change leaves conflicts AFTER and not BEFORE.
+        _git.MarkerConflict: When a marker or a task's done file the change leaves conflicts
+            AFTER and not BEFORE.
         tools.ci.gitcmd.GitError: When git cannot merge or read either.
     """
-    root = landing.root
     target, other = _git.shown(landing.target), _git.shown(landing.other)
-    before = _git.merge(root, (landing.onto, landing.other))
+    before = _git.merge(landing.root, (landing.onto, landing.other))
     left = {entry.path for entry in landing.entries}
-    if brought := tuple(sorted(set(after.conflicts) - set(before.conflicts) - left)):
+    if brought := tuple(sorted(path for kind in _KINDS for path in set(kind.conflicts(after))
+                               - set(kind.conflicts(before)) - left)):
+        what = " or ".join(kind.said.whether for kind in _KINDS
+                           if any(_under(path, kind.directory) for path in brought))
         raise _git.MarkerConflict(
             f"{_git.shown(landing.merge)} and {other} merge with a conflict on "
             f"{', '.join(brought)}, "
             f"which {target} and {other} merge without, though this change "
-            "writes none of them, so whether those cards shipped would be unknown once it "
+            f"writes none of them, so whether {what} would be unknown once it "
             f"lands: settle it by merging {other} into this change first", brought)
-    was = _settled(root, before)
-    reasons = []
-    for number in sorted(set(was) | set(now)):
-        path = _git.marker(number)
-        if path in left or was.get(number) == now.get(number):
-            continue
-        if path not in before.conflicts:
-            if not _shown(landing, number, was.get(number), now.get(number)):
-                reasons.append(_moved(landing, number, was.get(number), now.get(number)))
-        elif _undid(landing, (path, now[number])):
-            reasons.append(
-                f"{path}: {target} and {other} conflict on it, and this change "
-                f"settles it on a line {other} held once and undid, though it writes no line "
-                f"of it, so it would re-ship card {number} with no change to its record, and a "
-                "release would count none of its code: a card undone ships again from a fresh "
-                f"claim (quill claim {number}), which writes a new line")
-    return reasons
+    return [reason for kind in _KINDS
+            for reason in _unsettled(landing, kind, before, now[kind.directory])]
 
 
 def _wrong(number: int, card: BareCard | None, cards: Mapping[int, BareCard],
@@ -611,11 +746,48 @@ def _wrong(number: int, card: BareCard | None, cards: Mapping[int, BareCard],
     return None
 
 
-def refusals(numbers: set[int], shipped: Iterable[int],
+def _owed(landing: Landing, card: BareCard, held: dict[int, BareCard],
+           reader: CardReader) -> list[str]:
+    """The open-task arm (``R-BAL386``): one sentence for each task under ``card``, which the
+    pull request's own claim records, that was not dropped (:func:`_state.dropped`: closed by
+    a person, or by ``quill drop``; a task the TOOL closed as done counts, as that close only
+    shows git) and whose done file M's tree does not hold.  Each task is read by its number,
+    as a parent's listing of it names no closer: those ``held`` lacks, which it then holds
+    (:func:`_command.with_cards`).  A task the tool closed is dropped only once ``quill sync``
+    has reopened it (``quill drop`` refuses a closed card), so its sentence says so.
+
+    Raises:
+        _tracker.TrackerError: when a task ``card`` lists does not exist.
+    """
+    numbers = card.task_children
+    with_cards(reader, held, numbers)
+    done, head, reasons = landing.lines[_git.TASKS], landing.pull.head, []
+    for number in sorted(numbers):
+        if number in done or dropped(number, held, set()):
+            continue
+        shown, drop = (("", f"drop the task (quill drop plan#{number})") if held[number].is_open
+                       else (" (quill closed it as done while a branch held that file)",
+                             f"drop the task once quill sync reopens it (quill sync, then quill "
+                             f"drop plan#{number})"))
+        reasons.append(f"{_git.task_file(number)}: {head} records card {card.number}, but holds "
+                       f"no done file for task plan#{number} under it, which is neither done "
+                       f"nor dropped{shown}: write it in the commit that finishes the task "
+                       f"(quill task-file plan#{number}), or {drop}")
+    return reasons
+
+
+def refusals(landing: Landing, read: Mapping[str, set[int]], shipped: Iterable[int],
              connect: Callable[[], CardReader]) -> list[str]:
-    """One sentence for each card of ``numbers`` a change records that the tracker refuses
-    (rule 7), by card; ``shipped`` is git's answer once the change and the other
-    integration branch meet.  The tracker is read through the reader ``connect`` makes.
+    """Rule 7 over ``landing``: one sentence for each card a change records that the tracker
+    refuses, by card, then for each task whose done file it writes that the tracker says
+    the file marks nothing done on the claim's branch (:func:`_state.names_no_task`: no
+    task, or one under another card, ``R-BAL386``), by task, then for each task the claim's
+    card owes (:func:`_owed`); ``read`` holds the cards (under :data:`_git.MARKERS`) and the
+    tasks (under :data:`_git.TASKS`), and ``shipped`` is git's answer once the change and
+    the other integration branch meet.  The tracker is read through the reader ``connect``
+    makes: the cards and the tasks the change writes in one read, then each card a decision
+    over those cards reads (:func:`_command.with_closure`), then each task under the claim's
+    card not read yet (:func:`_owed`).
 
     Raises:
         NotSet: when ``connect`` has no token to read with.
@@ -625,45 +797,59 @@ def refusals(numbers: set[int], shipped: Iterable[int],
         requests.RequestException: when the tracker cannot be reached.
     """
     reader = connect()
-    held = reader.cards(numbers)
+    numbers, tasks = read[_git.MARKERS], read[_git.TASKS]
+    held = reader.cards(numbers | tasks)
     cards = with_closure(reader, {number: held[number] for number in numbers if number in held})
     shipped = set(shipped)
-    return [f"{_git.marker(number)}: {wrong}" for number in sorted(numbers)
-            if (wrong := _wrong(number, held.get(number), cards, shipped))]
+    reasons = [f"{_git.marker(number)}: {wrong}" for number in sorted(numbers)
+               if (wrong := _wrong(number, held.get(number), cards, shipped))]
+    head = landing.pull.head
+    reasons += [f"{_git.task_file(number)}: {head} writes it, but {why}, so it marks nothing "
+                f"done (a task is done on its own card's branch only): take it off {head}"
+                for number in sorted(tasks) if (why := names_no_task(number, held,
+                                                                     landing.claim))]
+    if landing.claim in numbers and landing.claim in held:
+        reasons += _owed(landing, held[landing.claim], held, reader)
+    return reasons
 
 
 def problems(root: Path, merge: str, pull: PullRequest,
-             connect: Callable[[], CardReader]) -> tuple[int, list[str]]:
-    """How many entries under :data:`_git.MARKERS` the merge ``merge`` of ``pull`` writes or
-    deletes, and one sentence for each refusal (the module's rules); the tracker is read
-    only for a card the change records by rule 5 or 6.  The merge of ``merge`` with the
-    other branch (AFTER) is made once, and what it says shipped read once, by rules 7 and 8.
+             connect: Callable[[], CardReader]) -> tuple[dict[str, int], list[str]]:
+    """How many entries under :data:`_git.MARKERS`, and under :data:`_git.TASKS`, the merge
+    ``merge`` of ``pull`` writes or deletes, by directory, and one sentence for each refusal
+    (the module's rules); the tracker is read only when the change records a card by rule 5
+    or 6, or a claim writes a task's done file (what it reads, :func:`refusals`).  The merge
+    of ``merge`` with the other branch (AFTER) is made once, and what it says shipped read
+    once, by rules 7 and 8.
 
     Raises:
         CannotJudge: as :func:`_landing` raises it.
         tools.ci.gitcmd.GitError: when git cannot read the merge, its change or a branch's
-            line, or merge either tip with the other branch; or a marker conflicts AFTER
-            where :func:`_unwritten` says, or anywhere once a card must be read.
+            line, or merge either tip with the other branch; or a marker or a task's done
+            file conflicts AFTER where :func:`_unwritten` says, or a marker anywhere once a
+            card or task must be read.
         NotSet, _tracker.TrackerError, _github.GitHubError, requests.RequestException: as
             :func:`refusals` raises them.
     """
     landing = _landing(root, merge, pull)
     reasons, read = _judged(landing)
     after = _git.merge(root, (merge, landing.other))
-    now = _settled(root, after)
+    now = {kind.directory: _settled(root, after, kind) for kind in _KINDS}
     reasons += _unwritten(landing, after, now)
-    if read:
+    if any(read.values()):
         after.settled()  # rule 7 reads which leaves shipped, unknown where a marker conflicts
-        reasons += refusals(read, now.keys(), connect)
-    return sum(1 for entry in landing.entries if _under_markers(entry.path)), reasons
+        reasons += refusals(landing, read, now[_git.MARKERS].keys(), connect)
+    return {directory: sum(1 for entry in landing.entries if _under(entry.path, directory))
+            for directory in _DIRECTORIES}, reasons
 
 
 def _verdict(root: Path, merge: str, pull: PullRequest,
              connect: Callable[[], CardReader]) -> int:
     """Judge the merge ``merge`` of ``pull``; print each refusal and the verdict, or why
-    nothing was judged; exit as the module says."""
+    nothing was judged; exit as the module says.  The verdict counts the ship markers the
+    change writes or deletes, and its task done files where it writes or deletes any."""
     try:
-        count, reasons = problems(root, merge, pull, connect)
+        changed, reasons = problems(root, merge, pull, connect)
     except (CannotJudge, GitError) as error:
         print(f"landing check: {merge[:12]} could not be judged, so nothing was checked: "
               f"{error}", file=sys.stderr)
@@ -678,9 +864,10 @@ def _verdict(root: Path, merge: str, pull: PullRequest,
         return 2
     for reason in reasons:
         print(f"REFUSED -- {reason}")
+    tasks = f", {changed[_git.TASKS]} task done file change(s)" if changed[_git.TASKS] else ""
     print(f"landing check: pull request #{pull.number} into {pull.base} from "
-          f"{pull.head or 'a branch of another repository'}: {count} ship marker change(s), "
-          f"{len(reasons)} refused")
+          f"{pull.head or 'a branch of another repository'}: {changed[_git.MARKERS]} ship "
+          f"marker change(s){tasks}, {len(reasons)} refused")
     return 1 if reasons else 0
 
 
