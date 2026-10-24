@@ -191,11 +191,11 @@ def _dropped(number, other="origin/main", target="origin/dev"):
             "revert deletes the marker with its code)")
 
 
-def _meet(root, change, other):
-    """What dev and main hold once ``change``, landed, and ``other`` meet: each of card 8's
-    marker and its work, None where their merge holds none."""
+def _meet(root, change, other, number=8):
+    """What dev and main hold once ``change``, landed, and ``other`` meet: each of card
+    ``number``'s marker and its work, None where their merge holds none."""
     tree = _git.merge(root, (change, other)).settled()
-    return _git.blob_at(root, tree, marker(8)), _git.blob_at(root, tree, "w8.txt")
+    return _git.blob_at(root, tree, marker(number)), _git.blob_at(root, tree, f"w{number}.txt")
 
 
 def test_a_resync_dropping_the_marker_of_a_hotfix_main_holds_is_refused(check, code):
@@ -264,12 +264,13 @@ def test_a_branch_reverting_mains_hotfix_after_merging_main_in_lands(check, code
 def test_a_release_holding_a_card_back_by_a_revert_lands(check, code):
     """The review's case (b): card 9 lands on dev.  A release branch off main merges dev and
     reverts card 9 in a commit of its own, holding it back from production: into main, it
-    lands."""
+    lands, and card 9 then reads not shipped with its work gone once dev and main meet."""
     root, base = code
     run(root, "update-ref", "refs/remotes/origin/dev", dev := landed(root, base, 9))
     held_back = undone(root, merge(root, base, dev, "Merge origin/dev"), 9)
     assert check(base, held_back, "release", base="main")[:2] == (
         0, verdict("release", 0, 0, "main") + "\n")
+    assert _meet(root, merge(root, base, held_back), dev, 9) == (None, None)
 
 
 def test_a_commit_deleting_only_the_marker_after_merging_main_in_lands(check, code):

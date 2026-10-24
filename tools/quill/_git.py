@@ -456,8 +456,9 @@ def marker_changes(root: Path, refs: tuple[str, ...] = TIPS, *, first_parent: bo
     """Every change a commit of ``refs``' history (``dev``'s and ``main``'s unless named) made
     to an entry under :data:`MARKERS`, newest first (:class:`MarkerChange`); with
     ``first_parent``, of each ref's OWN line alone, its first-parent history, the states the
-    branch itself was in; with ``no_merges``, of each commit of one parent alone, whose
-    change is the one it shows in history, never a merge's resolution.  The ONE walk of the
+    branch itself was in; with ``no_merges``, of each commit that is no merge alone (one
+    parent, or none: a root, which only adds), whose change is the one it shows in history,
+    never a merge's resolution.  The ONE walk of the
     markers' history: :func:`history`, :func:`ever_marked` and :func:`landings` all read it,
     the release tool reads it over a release's range (``<base>..<cut>``) for the commits
     there that changed each marker (``tools/release/_cards.py``), and CI's landing check
@@ -494,10 +495,16 @@ def marker_changes(root: Path, refs: tuple[str, ...] = TIPS, *, first_parent: bo
     for record in filter(None, out.split("\x01")):
         head, _, lines = record.partition("\n")
         sha, _, subject = head.partition("\x02")
-        for line in filter(str.strip, lines.splitlines()):
-            meta, _, path = line.partition("\t")
-            found.append(MarkerChange(sha, subject, _entry(meta, path), _blobs(meta)[0]))
+        found.extend(_change(sha, subject, line) for line in filter(str.strip, lines.splitlines()))
     return found
+
+
+def _change(sha: str, subject: str, line: str) -> MarkerChange:
+    """The change one raw diff line of commit ``sha`` (its ``subject``) names: the line
+    before its path read once (:func:`_blobs`)."""
+    meta, _, path = line.partition("\t")
+    was, blob, status = _blobs(meta)
+    return MarkerChange(sha, subject, Entry(status, path, blob), was)
 
 
 def history(root: Path, number: int) -> list[tuple[str, str, str]]:
