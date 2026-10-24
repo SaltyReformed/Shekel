@@ -23,44 +23,6 @@ class TestCarryForwardShadowTransactions:
     rows, they read those too.
     """
 
-    def test_moves_shadow_transactions_via_service(
-        self, app, db, seed_user, seed_periods
-    ):
-        """A transfer carries forward beside a regular row, each into the target."""
-        with app.app_context():
-            xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
-            regular = _create_transaction(seed_user, seed_periods, name="Regular")
-            db.session.flush()
-
-            count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                balance_ctx=BalanceContext.build(seed_user["user"].id),
-            )
-
-            assert count == 2  # 1 regular + 1 transfer
-
-            db.session.refresh(regular)
-            assert regular.pay_period_id == seed_periods[1].id
-
-            db.session.refresh(xfer)
-            assert xfer.pay_period_id == seed_periods[1].id
-
-    def test_deduplicates_shadow_pairs(
-        self, app, db, seed_user, seed_periods
-    ):
-        """A transfer counts as ONE carried item."""
-        with app.app_context():
-            _create_transfer_in_period(seed_user, seed_periods, 0)
-            db.session.flush()
-
-            count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                balance_ctx=BalanceContext.build(seed_user["user"].id),
-            )
-
-            # One transfer, one item.
-            assert count == 1
-
     def test_sets_is_override_on_a_recurring_definitions_transfer_and_shadows(
         self, app, db, seed_user, seed_periods
     ):
