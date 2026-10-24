@@ -77,7 +77,7 @@ from tests._test_helpers import (
     transfer_side_figure,
     transfer_side_record,
 )
-from tests.test_integration.test_loan_transfer_live_amount import (
+from tests.test_integration.test_loan_transfer_live_amount._helpers import (
     _build_derived_loan_transfer,
     _side_leg,
 )

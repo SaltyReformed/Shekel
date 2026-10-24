@@ -77,7 +77,7 @@ from tests._test_helpers import (
     unseeded_replay_balance,
 )
 from app.services.row_valuation import leg_settled_contribution
-from tests.test_integration.test_loan_transfer_live_amount import _side_leg
+from tests.test_integration.test_loan_transfer_live_amount._helpers import _side_leg
 from app.models.amount_ownership import AmountOwnership
 
 
