@@ -24,10 +24,12 @@ Three names carry the three rules, so each has ONE home:
 
 :class:`SideDay` is what a door STATES ("the money moved on THIS account on
 this day, known this way"), and :func:`stated_by_side` turns the doors' account
-view into the writer's side view once, before any write.  The ONE writer is
-:func:`app.services.transfer_service._status.apply_status_to_all_three`, which
-calls :func:`resolve_pair_days`; so does the endpoint move, for a moved side's
-borrowed day (``_endpoints._moved_days``).
+view into the writer's side view once, before any write.  The writer of every
+STATED day is :func:`app.services.transfer_service._status.apply_status_to_all_three`,
+which derives both sides' days through :func:`resolve_pair_days`.  One other
+act writes a side's day, and states none: the endpoint move lands a moved
+side's ``borrowed`` day (``status_seam.land_moved_side_record``), derived
+through the same resolver (``_endpoints._moved_days``).
 
 Each side's current day is read off its payment RECORD by the writer (plan
 step ``balance:X-bi-6-4d-2``; off its twin row until then); a ``$0.00`` close

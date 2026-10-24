@@ -9,10 +9,14 @@ from decimal import Decimal
 
 import pytest
 
+from sqlalchemy.exc import IntegrityError
+
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import AmountSourceEnum, StatusEnum
+from app.models.ref import Status
 from app.models.transfer import Transfer
 from app.services import transfer_service
+from app.services.amount_ownership import derived_ownership
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
     create_loan_account,
@@ -374,9 +378,10 @@ class TestCreateTransferValidation:
                     ),
                 )
 
+    @pytest.mark.parametrize("priced_by", ["its_own_figure", "its_template"])
     @pytest.mark.parametrize("settled", [StatusEnum.DONE, StatusEnum.RECEIVED])
     def test_a_settled_status_is_refused_before_any_row_exists(
-        self, app, db, transfer_data, settled,
+        self, app, db, transfer_data, settled, priced_by,
     ):
         """A transfer is created unsettled: a settled status writes no row.
 
@@ -386,9 +391,33 @@ class TestCreateTransferValidation:
         with "create it Projected, then settle it", and refuses it before any
         row exists: the owner's transfer count is unchanged after the refusal.
         It created such a transfer, with its sides' records, until then.
+
+        **Asked of both ways a transfer is priced**: an ad-hoc transfer owning
+        its figure, and one priced by its template, which states no figure.
+        The second is the state the deleted figure-less refusal stood guard
+        over: a refusal asked only of a spec owning a figure lets it through
+        to commit Paid with neither side holding a record, the ``$0.00`` close
+        ruling **R-BAL82** names, and every other case in this package passes
+        (measured by 4d-4a's review, its mutant D).  The template-priced spec
+        carries the template link, due date and occurrence the engine's own
+        spec does (``transfer_recurrence``), so nothing but the status stands
+        between it and a row.
         """
         with app.app_context():
             td = transfer_data
+            start = td["periods"][0].start_date
+            pricing = (
+                {"amount_ownership": AmountOwnership.own(Decimal("100"))}
+                if priced_by == "its_own_figure"
+                else {
+                    "amount_ownership": derived_ownership(
+                        AmountSourceEnum.TEMPLATE,
+                    ),
+                    "transfer_template_id": td["transfer_template"].id,
+                    "due_date": start,
+                    "occurs_on": start,
+                }
+            )
             owned = db.session.query(Transfer).filter_by(user_id=td["user"].id)
             before = owned.count()
             with pytest.raises(
@@ -401,12 +430,43 @@ class TestCreateTransferValidation:
                         to_account_id=td["savings_account"].id,
                         pay_period_id=td["periods"][0].id,
                         scenario_id=td["scenario"].id,
-                        amount_ownership=AmountOwnership.own(Decimal("100")),
                         status_id=ref_cache.status_id(settled),
                         category_id=td["categories"]["Rent"].id,
+                        **pricing,
                     ),
                 )
             assert owned.count() == before
+
+    def test_a_status_no_row_carries_is_refused_by_its_foreign_key(
+        self, app, db, transfer_data,
+    ):
+        """A status id no ``ref.statuses`` row carries meets the foreign key.
+
+        The settled-status refusal reads the status row, and ``db.session.get``
+        answers ``None`` for an id no row carries; the refusal asks
+        ``is not None`` first, so such an id goes on to the transfer's foreign
+        key, which refuses it at the flush, rather than raising an
+        ``AttributeError`` off ``None`` inside the refusal.  No app door states
+        an id outside ``ref_cache``, so this is a programming error's answer,
+        and the case pins which error it is.
+        """
+        with app.app_context():
+            td = transfer_data
+            unknown = db.session.query(db.func.max(Status.id)).scalar() + 1000
+            with pytest.raises(IntegrityError):
+                transfer_service.create_transfer(
+                    transfer_service.TransferSpec(
+                        user_id=td["user"].id,
+                        from_account_id=td["account"].id,
+                        to_account_id=td["savings_account"].id,
+                        pay_period_id=td["periods"][0].id,
+                        scenario_id=td["scenario"].id,
+                        amount_ownership=AmountOwnership.own(Decimal("100")),
+                        status_id=unknown,
+                        category_id=td["categories"]["Rent"].id,
+                    ),
+                )
+            db.session.rollback()
 
     def test_invalid_amount_string_rejected(self, app, db, transfer_data):
         """Non-numeric amount raises ValidationError."""

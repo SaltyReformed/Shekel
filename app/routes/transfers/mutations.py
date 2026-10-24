@@ -281,7 +281,9 @@ def update_transfer(xfer_id):
     # **``pay_period_id`` is NOT here any more** (plan step
     # ``pay_calendar:C13-b``, developer 2026-09-03).  This loop carried it,
     # duplicating ``transfer_service._ownership._get_owned_period``, which
-    # ``update_transfer`` reaches unconditionally and whose ``NotFoundError``
+    # ``update_transfer`` reaches whenever ``pay_period_id`` is submitted (its
+    # trigger, ``_loan_posting._POSTING_RELEVANT_INSTALLMENT_FIELDS``, names
+    # the period with the due date and the to-account) and whose ``NotFoundError``
     # this route already turns into the identical ``"Not found", 404``.  The
     # duplicate was F-043's deliberate defence in depth, written when the two
     # tiers had no shared producer to point at; the service tier now asks the
@@ -481,9 +483,9 @@ def create_ad_hoc():
 
     # ``transfer_service.create_transfer`` calls ``db.session.flush()``
     # internally to obtain the transfer's primary key, which its log event
-    # names, so the
-    # ``uq_transfers_adhoc_dedupe`` IntegrityError can fire either during
-    # the service call (the flush) or at the subsequent ``db.session.commit()``.
+    # names, so the ``uq_transfers_adhoc_dedupe`` IntegrityError can fire
+    # either during the service call (the flush) or at the subsequent
+    # ``db.session.commit()``.
     # A single ``try`` spans both so the constraint hit is translated into
     # idempotent success (or a 400) from whichever statement trips it.
     # ``NotFoundError`` / ``ShekelValidationError`` originate only in the

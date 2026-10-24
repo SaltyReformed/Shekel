@@ -22,7 +22,7 @@ from app.services.transfer_service import (
     create_transfer,
     update_transfer,
 )
-from app.services import account_service
+from app.services import account_service, status_seam
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -120,24 +120,30 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
     created Projected, then settled** through the settle verb
     (``update_transfer`` with *status_enum*), because the create makes no
     settled transfer (ruling **R-BAL379**); it was created in its settled
-    status until then, and the settle stores what that create stored.
+    status until then, and the settle stores what that create stored.  A day
+    stated beside an unsettled status is refused before any row exists, by
+    the seam's own refusal, as that create refused it.
 
     Args:
         seed_user: The seed_user fixture dict.
         loan_account: The destination loan account.
         period: The PayPeriod for the transfer.
         amount: Transfer amount as Decimal.
-        status_enum: StatusEnum member the transfer ends in.
+        status_enum: StatusEnum member the transfer ends in.  The settled one
+            is Paid (``DONE``): the transfer workflow settles to Done alone,
+            so the settle refuses ``RECEIVED``, which no transfer door writes.
         settled_on: The civil day the cash moved, stated ``entered`` on both
             sides by the settle of a transfer whose *status_enum* is settled.
             ``None`` leaves the settle to stamp the user's today (a Paid
-            press); a transfer left unsettled has no day.
+            press); a day beside an unsettled status is refused.
 
     Returns:
         Transfer: the created transfer.
     """
     status_id = ref_cache.status_id(status_enum)
     settled = status_id in settled_status_ids()
+    stated = None if settled_on is None else an_entered_day(settled_on)
+    status_seam.reject_settle_day_without_settled_status(status_id, stated)
     transfer = create_transfer(
         TransferSpec(
             user_id=seed_user["user"].id,
@@ -157,10 +163,9 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
         update_transfer(
             transfer.id, seed_user["user"].id, status_id=status_id,
             side_days=(
-                () if settled_on is None
+                () if stated is None
                 else on_both_sides(
-                    seed_user["account"].id, loan_account.id,
-                    an_entered_day(settled_on),
+                    seed_user["account"].id, loan_account.id, stated,
                 )
             ),
         )

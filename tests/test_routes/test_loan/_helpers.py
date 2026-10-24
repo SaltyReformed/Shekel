@@ -394,13 +394,14 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
     no settled transfer (ruling **R-BAL379**); it was created in its settled
     status until then, and the settle stores what that create stored: the
     transfer's own figure, and an ``entered`` day at its period's start on
-    both sides (step E1a: with no day stated a settle stamps the owner's
-    today, and the real clock sits past these fixtures' frozen todays and
-    seeded 2026 periods -- the payment would be invisible to every bounded
-    read).  Period start is
-    the exact visibility these fixtures had before E1a, when a born-settled
-    create left the settle day NULL and every reader fell back to the period
-    start, so no test's arithmetic moves.
+    both sides.  The day is STATED because a settle with none dates both
+    sides on the owner's today -- this package's frozen 2026-03-20 -- rather
+    than in the payment's own period, which would move every bounded read.
+    Period start is the exact visibility these fixtures had before step E1a,
+    when a born-settled create left the settle day NULL and every reader fell
+    back to the period start, so no test's arithmetic moves.  The settled
+    status is Paid (``DONE``): the transfer workflow settles to Done alone,
+    so the settle refuses ``RECEIVED``, which no transfer door writes.
     """
     status_id = ref_cache.status_id(status_enum)
     settled = _db.session.get(Status, status_id).is_settled

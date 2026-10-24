@@ -76,13 +76,17 @@ def reject_settle_day_without_settled_status(
     store -- it is a request to record a payment that has not happened.
 
     It is a module-level function rather than an inline check inside
-    :func:`apply_status_change` because ONE caller has to ask the question
-    BEFORE the seam can: ``transfer_service.create_transfer`` validates
-    ``spec.settled_on`` against ``spec.status_id`` before any row exists, and
-    for an unsettled create it never reaches the seam at all (its settle branch
-    is gated on the status being settled), so the day would be silently
-    dropped.  Two moments, one rule -- the alternative is the same sentence
-    written twice, which is this arc's own root cause 1.
+    :func:`apply_status_change` because a transfer's sides are written by the
+    seam's Transfer arm, not by :func:`apply_status_change`, so that arm and
+    the transfer service ask it too: ``transfer_service._status
+    .reject_stated_days_without_settle`` asks it of each side's stated day, in
+    the update before its first write and in the status writer before either
+    side is written, and the arm asks it again of each side's day it is
+    handed, before its first write.  (The
+    create asked it as well, of the days a transfer created settled stated,
+    until ruling **R-BAL379** deleted that arm of the create.)  Several
+    moments, one rule -- the alternative is the same sentence written at each,
+    which is this arc's own root cause 1.
 
     Args:
         status_id: The ``ref.statuses.id`` the row is (or would be) in.

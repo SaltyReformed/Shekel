@@ -40,6 +40,7 @@ from app.models.transfer import Transfer
 from app.services.loan_loaders import _legs
 from app.utils.balance_predicates import balance_excluded_status_ids
 from app.services.loan_payment_service import get_payment_history, load_loan_context
+from app.services import status_seam
 from app.services.cash_ledger import derived_amount_basis
 from app.services.transfer_legs import TransferLeg
 from app.services.transfer_service import (
@@ -90,12 +91,20 @@ def _transfer_to_loan(
     ``Done`` and no transfer door writes ``Received``, which the
     every-status case below still needs as a member of ``ref.statuses``
     (approved inside ruling R-BAL379's question: the case builds its state
-    another way, its expected answer unchanged).  A bare status inside the
-    settled band leaves both sides' dated records as the band rule requires,
-    as ``test_routes/test_transfers/_helpers._received_transfer_of`` lays one.
+    another way, its expected answer unchanged).  It is laid over the SETTLED
+    transfer, so both sides keep their dated records, as the band rule
+    requires; the bare lay is the technique
+    ``test_routes/test_transfers/_helpers._received_transfer_of`` uses, which
+    lays Received over a Projected transfer holding none.  The lay is one more
+    write, so the transfer's version counter is the one stored fact that
+    differs from what that create wrote (measured by 4d-4a's review).  A day
+    stated beside an unsettled status is refused before any row exists, by
+    the seam's own refusal, as that create refused it.
     """
     status_id = ref_cache.status_id(status_enum)
     settled = status_id in _settled_ids()
+    stated = None if settled_on is None else an_entered_day(settled_on)
+    status_seam.reject_settle_day_without_settled_status(status_id, stated)
     transfer = create_transfer(
         TransferSpec(
             user_id=seed_user["user"].id,
@@ -116,10 +125,8 @@ def _transfer_to_loan(
     settle_transfer(
         transfer.id, seed_user["user"].id,
         side_days=(
-            () if settled_on is None
-            else on_both_sides(
-                seed_user["account"].id, loan.id, an_entered_day(settled_on),
-            )
+            () if stated is None
+            else on_both_sides(seed_user["account"].id, loan.id, stated)
         ),
     )
     if transfer.status_id != status_id:
@@ -314,6 +321,20 @@ class TestPaymentInstallments:
                 )
             db.session.commit()
             scenario_id = seed_user["scenario"].id
+            # The premise, read back after the commit: one transfer in each
+            # status.  Received is laid on bare after the settle verb (the
+            # helper says why), and a lay that stopped landing would leave a
+            # second Paid transfer where the Received one belongs: the
+            # comparison below would still pass, and so would a loader that
+            # drops Received rows from its settled half (measured by 4d-4a's
+            # review: that loader mutant fails this case only while the lay
+            # lands).
+            assert sorted(
+                transfer.status_id
+                for transfer in db.session.query(Transfer).filter(
+                    Transfer.to_account_id == loan.id,
+                )
+            ) == sorted(ref_cache.status_id(status) for status in StatusEnum)
 
             queried = sorted(
                 transfer.id

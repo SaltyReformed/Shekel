@@ -14,10 +14,14 @@ Extracted from ``transfer_service`` at plan step **X-f1b**, on the same ground
 every earlier split from that module used -- it was at the 1000-line ceiling and
 finding **N-152** recorded that the next change to it would hit the gate again.
 This is that change.  The split is by responsibility rather than by line count:
-these functions are the ONLY place a transfer's status and each side's
-record and settle day are written.  Plan step X-f2-c3 then made ``transfer_service`` a
-PACKAGE (**N-152** / **N-156**) and this module a leaf of it; the
-responsibility is unchanged and the file moved from
+these functions are the ONLY place a transfer's status is written, and each
+side's record and settle day move with it here on every status move.  Two
+acts that move no status write a side's record elsewhere: an endpoint move
+relocates it and lowers its day (``_endpoints``, through
+``status_seam.land_moved_side_record``), and a delete takes it off the books
+(``_delete``, through ``movement_removal.remove_movements``).  Plan step
+X-f2-c3 then made ``transfer_service`` a PACKAGE (**N-152** / **N-156**) and
+this module a leaf of it; the responsibility is unchanged and the file moved from
 ``app/services/_transfer_status.py``.
 
 **The two sides' DAYS part here since plan step ``balance:X-bi-6-4c-3``**
@@ -263,10 +267,12 @@ def apply_status_to_all_three(
 ) -> None:
     """Move a transfer to a status and both its sides' records with it, each on its own day.
 
-    **The ONE writer of a transfer's status and of each side's record and
-    day** (plan steps ``balance:X-bi-6-4c-3`` and ``X-bi-6-4d-2``): a settle,
-    a revert, a cancel, a figure correction and a day correction all come
-    through here.  Whenever the pair is in or entering the settled band each
+    **The ONE writer of a transfer's status, and of each side's record and
+    day on every status move** (plan steps ``balance:X-bi-6-4c-3`` and
+    ``X-bi-6-4d-2``): a settle, a revert, a cancel, a figure correction and a
+    day correction all come through here.  (An endpoint move and a delete
+    write a side's record without moving the status: the module docstring
+    names both.)  Whenever the pair is in or entering the settled band each
     side takes ITS OWN day (:func:`_resolved_days`, ruling **R-BAL142**).  A
     day correction is an identity status change carrying a stated day, and a
     Save that states nothing moves no side that holds evidence (finding

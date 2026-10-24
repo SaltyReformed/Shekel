@@ -258,9 +258,12 @@ class TestEmployerMatchCapped:
         until that ruling, whose question approved building this state
         another way with the case's expected answer unchanged; the stored
         transfer is the one that create wrote (both sides recorded at the
-        figure on the owner's today), as
-        ``test_routes/test_transfers/_helpers._received_transfer_of`` lays
-        one.
+        figure on the owner's today), but for its version counter, which the
+        lay's one more write moves (measured by 4d-4a's review).  Laid over
+        the SETTLED transfer, so both sides keep their dated records; the bare
+        lay is the technique
+        ``test_routes/test_transfers/_helpers._received_transfer_of`` uses,
+        which lays Received over a Projected transfer holding none.
         """
         from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
         from app.services import transfer_service  # pylint: disable=import-outside-toplevel
