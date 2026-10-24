@@ -78,8 +78,9 @@ no link is written onto a card in a state the migration does not expect.
 filed already, and the TRACKER'S OWN cards below them -- X-cx's own, of any kind (#2-#10,
 #26 and #27 under #1, all steps, measured read-only 2026-10-09 and again 2026-10-24; a
 finding or a ruling ``quill file`` files with #1 or a card below it as its owner, blocked
-by it and below nothing, R-BAL395, is its own too, :func:`_own`) -- and nothing else, so
-the cutover starts on a tracker holding X-cx's cards and the migration's only.  A card no
+by it and below nothing, R-BAL395, is its own too, and a task under one, :func:`_own`) --
+and nothing else, so the cutover starts on a tracker holding X-cx's cards and the
+migration's only.  A card no
 item claims is told the tracker's own by its NUMBER, which no hand edit changes, never by
 what its title, labels, body or comments still say: the migration makes every write
 inside the freeze (R-BAL242), and no card is filed natively inside it (draft 4 s.4), so
@@ -107,8 +108,9 @@ is left to call :func:`plan` once natively filed cards are allowed again.  A run
 ``migrate verify`` and that merge is inside the freeze still, and refuses every card filed
 natively (fail closed).
 What this cannot see: a card of the migration's numbered lower than every card that still
-carries an item's key (a card filed already apart), sitting below a card filed already (or,
-a finding, owned by one or by a card below one: :func:`_own`), where it reads as the
+carries an item's key (a card filed already apart), sitting below a card filed already (a
+sub-issue, or a finding owned by one or by a card below one, or a card below such a
+finding: :func:`_own`), where it reads as the
 tracker's own.  That takes every card the migration filed before it
 to have lost its key, been deleted by hand or lost its item from the registries; the first
 cards it files are closed rulings (HISTORY runs first, R-BAL242, once the executor runs it
@@ -824,14 +826,20 @@ def desired_board(items: Sequence[Item], numbers: Mapping[str, int],
 
 
 def _own(number: int, mapped: set[int], cards: Mapping[int, WholeCard]) -> bool:
-    """Whether card ``number`` sits below one of the cards filed already, ``mapped``: a
-    sub-issue at any depth (:func:`_ancestor`), or a finding or a ruling whose owner -- the
-    one card it is blocked by (:func:`_state.owner`, R-BAL395), never its parent -- is one
-    of them or a sub-issue below one."""
-    if _ancestor(number, mapped, cards) is not None:
-        return True
-    held = owner(cards[number].card)
-    return held is not None and (held in mapped or _ancestor(held, mapped, cards) is not None)
+    """Whether card ``number`` sits below one of the cards filed already, ``mapped``, at any
+    depth, read up each card's links: its parent and, for a finding or a ruling, its owner
+    -- the one card it is blocked by (:func:`_state.owner`, R-BAL395), which it sits below
+    in place of a parent -- so a task under a finding owned below one is below it too."""
+    seen, wanted = {number}, [number]
+    while wanted:
+        card = cards[wanted.pop()].card
+        for up in (card.parent, owner(card)):
+            if up in mapped:
+                return True
+            if up is not None and up not in seen and up in cards:
+                seen.add(up)
+                wanted.append(up)
+    return False
 
 
 def _ancestor(number: int, among: set[int], cards: Mapping[int, WholeCard]) -> int | None:

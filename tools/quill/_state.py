@@ -911,10 +911,10 @@ def sync_unsplits(cards: Mapping[int, Card], shipped: Iterable[int], plan: SyncP
 
 def owner(card: BareCard) -> int | None:
     """A finding's or a ruling's owner (ruling ``balance:R-BAL395``, :data:`OWNED`), the one
-    spelling: the card it is blocked by, when that is its one blocker, in the tracker or
-    outside it.  None for a card of another kind, and for one blocked by no card of the
-    tracker, by an issue outside it, or by more than one, which names no one owner.  Whether
-    that card is a step, and live, is the reader's to ask (:func:`_owner_lost`)."""
+    spelling: the card of the tracker it is blocked by, when nothing else blocks it, in the
+    tracker or outside it.  None for a card of another kind, and for one blocked by no card
+    of the tracker, by an issue outside it, or by more than one, which names no one owner.
+    Whether that card is a step, and live, is the reader's to ask (:func:`_owner_lost`)."""
     if card.kind not in OWNED or len(card.blocked_by) != 1 or any(
             link.what == "blocker" for link in card.outside):
         return None

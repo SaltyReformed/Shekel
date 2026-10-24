@@ -410,8 +410,8 @@ def test_a_withdrawn_ruling_is_refused_as_withdrawn_whatever_its_labels(code, tm
 
 def test_a_finding_closed_after_its_filing_finished_is_filed_anew(code):
     """The boundary ``_same_filing`` states (review LOW 4, P6): only a card still marked,
-    or a ruling under its owner, is looked for among closed cards; a finding dropped after
-    its filing finished is not, and the same command files another."""
+    or a ruling blocked by its owner (R-BAL395), is looked for among closed cards; a
+    finding dropped after its filing finished is not, and the same command files another."""
     args = ("file", "finding", "--arc", "balance", "--title", "Twice", "--owner", "plan#1",
             "--text", "The report counts a refund twice.")
     tracker = FakeTracker()

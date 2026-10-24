@@ -260,6 +260,22 @@ def test_a_finding_or_ruling_owned_below_a_card_filed_already_is_the_trackers_ow
         assert not found.freeze and not found.history
 
 
+def test_a_task_under_a_finding_owned_below_a_card_filed_already_is_the_trackers_own(
+        corpus, monkeypatch):
+    """R-BAL386 and R-BAL395: ``quill file task --parent`` hangs a task under a finding,
+    and the finding hangs under nothing, blocked by its owner.  A task under a finding the
+    tracker owns is its own too: the walk up takes a finding's owner where it has no parent
+    (``_migrate_plan._own``; R395's review, F2)."""
+    texts = corpus_texts(corpus)
+    tracker = _mapped_with_leaf(corpus, monkeypatch, start=10)
+    tracker.add(2, "finding", "One sentence.", on_board=False, title="Its own finding",
+                labels=("salary",), blocked_by=(1,))
+    tracker.add(3, "task", "One sentence.", on_board=False, title="Its own task",
+                labels=("salary",), parent=2)
+    found = plan(corpus_items(corpus), texts, MILESTONES, tracked(tracker))
+    assert (found.refusals, found.history, found.freeze) == ((), (), ())
+
+
 @pytest.mark.parametrize("kind, where", [
     ("step", "nowhere"), ("step", "body"), ("step", "crlf-body"), ("step", "tool-comment"),
     ("finding", "nowhere"), ("ruling", "nowhere"),

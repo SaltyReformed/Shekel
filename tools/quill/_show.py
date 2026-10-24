@@ -14,7 +14,7 @@ from pathlib import Path
 from tools.ci.trailers import DEV, MAIN
 from tools.quill import _git
 from tools.quill._command import Refused, _label, _one, _outside_parent, card_number
-from tools.quill._state import OWNED, done_tasks, filing_unfinished, holder, never_split
+from tools.quill._state import OWNED, done_tasks, filing_unfinished, holder, never_split, owner
 from tools.quill._tracker import Card, Tracker, TrackerError
 from tools.quill.check import alias_mark
 from tools.quill.setup_tracker import FILING, TASK
@@ -83,8 +83,9 @@ def _link_lines(card: Card, cards: dict[int, Card], reads: _git.Reads, listed: d
     """A line for each card ``card`` links to, with its title from ``listed``: each child --
     a step linked under it that is no leaf of it saying so (:func:`_state.never_split`, as
     ``next`` reads it, over ``cards``), a task whether git says it is done (``done``) --
-    then each blocker, a finding's or a ruling's named as its owner (R-BAL395), then each
-    finding and ruling ``listed`` says is blocked by ``card``, which it owns."""
+    then each blocker, a finding's or a ruling's owner named so (its one blocker,
+    :func:`_state.owner`, R-BAL395, as ``sync``'s report reads it), then each finding and
+    ruling ``listed`` holds whose owner is ``card``, which it owns."""
     stale = set(never_split(card, cards, reads.shipped.cards))
     lines = [f"  child: plan#{child.number} ({child.kind}, "
              f"{'open' if child.is_open else 'closed'}"
@@ -93,12 +94,12 @@ def _link_lines(card: Card, cards: dict[int, Card], reads: _git.Reads, listed: d
              + (f"; done (git): {_YES[child.number in done]}" if child.kind == TASK else "")
              + f") {listed[child.number].title}"
              for child in card.children]
-    blocked = "owner (blocked by)" if card.kind in OWNED else "blocked by"
-    lines += [f"  {blocked}: plan#{blocker} {listed[blocker].title}"
-              for blocker in card.blocked_by]
+    held_by = owner(card)
+    lines += [f"  {'owner (blocked by)' if blocker == held_by else 'blocked by'}: "
+              f"plan#{blocker} {listed[blocker].title}" for blocker in card.blocked_by]
     lines += [f"  owns: plan#{number} ({owned.kind}, {'open' if owned.is_open else 'closed'}) "
               f"{owned.title}" for number, owned in sorted(listed.items())
-              if owned.kind in OWNED and card.number in owned.blocked_by]
+              if owner(owned) == card.number]
     return lines
 
 
@@ -134,8 +135,8 @@ def _owned(tracker: Tracker, card: Card) -> set[int]:
     its owner step), found by the step's own blocking read
     (:meth:`_tracker.Tracker.blocking`), which only a step's ``show`` makes: no other kind
     owns a card.  Found only: :func:`_listed` reads each by its number, and that read
-    decides whether it is blocked by ``card``, as ``sync``'s listings find and a read by
-    number decides."""
+    decides whether ``card`` is its owner (:func:`_link_lines`), as ``sync``'s listings
+    find and a read by number decides."""
     if card.kind != "step":
         return set()
     return {child.number for child in tracker.blocking(card.number) if child.kind in OWNED}

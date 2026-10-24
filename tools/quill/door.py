@@ -43,10 +43,11 @@ Each name, and who reads it:
 - ``GitHubError``, ``TrackerError`` and ``CredentialsError``: ``tools/release.release``,
   which reports a failed read of the tracker, or App credentials it cannot use, as a
   release judged on nothing.
-- ``FakeTracker``: ``tools/release``'s tests, which drive the card reader against quill's
-  own in-memory tracker.  Its cost, accepted so quill keeps ONE door: every importer of
-  this module also loads quill's fake (``_fake``, which imports ``quill`` and
-  ``tools.ci.scratch``); nothing calls it outside the tests.
+- ``FakeTracker`` and ``OutsideLink``: ``tools/release``'s tests, which drive the card
+  reader against quill's own in-memory tracker, a card's link to an issue outside the
+  tracker built as quill's read builds one.  The fake's cost, accepted so quill keeps ONE
+  door: every importer of this module also loads quill's fake (``_fake``, which imports
+  ``quill`` and ``tools.ci.scratch``); nothing calls it outside the tests.
 """
 from __future__ import annotations
 
@@ -72,7 +73,7 @@ from tools.quill._state import (
     leaves_below,
     owner,
 )
-from tools.quill._tracker import Card, Tracker, TrackerError
+from tools.quill._tracker import Card, OutsideLink, Tracker, TrackerError
 
 __all__ = [
     "MARKERS",
@@ -83,6 +84,7 @@ __all__ = [
     "GitHubError",
     "MarkerConflict",
     "OWNED",
+    "OutsideLink",
     "Tracker",
     "TrackerError",
     "above",

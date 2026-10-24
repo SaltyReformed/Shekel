@@ -1,7 +1,7 @@
 """The ``quill show`` command (``_show``): a card's facts and the title of each card linked
 to it -- for a step, each finding and ruling it owns (ruling ``balance:R-BAL395``) -- then
 its text, its comments and the history of its ship marker, over the in-memory tracker
-(:class:`_fake.FakeTracker`) and the ``code`` fixture's real git.  Moved unchanged out of
+(:class:`_fake.FakeTracker`) and the ``code`` fixture's real git.  Split out of
 ``test_quill.py``, which they would take past the 1,000 lines ``too-many-lines`` allows.
 """
 from __future__ import annotations
@@ -125,6 +125,25 @@ def test_show_lists_the_findings_and_rulings_a_step_owns_and_names_a_findings_ow
     assert run(tracker, code, "show", "plan#6") == 0
     out = capsys.readouterr().out
     assert "\n  blocked by: plan#1 The step\n" in out and "owner" not in out
+
+
+def test_show_names_no_owner_of_a_finding_blocked_by_two_steps(code, capsys):
+    """R-BAL395: an owner is a finding's ONE blocker (``_state.owner``, which ``sync``'s
+    report reads).  Blocked by two steps it has none: its show names each as a blocker and
+    neither as its owner, and neither step's show lists it as one it owns (R395's review,
+    F5)."""
+    tracker = FakeTracker()
+    tracker.add(1, title="The step that fixes it")
+    tracker.add(2, title="A step it waits on")
+    tracker.add(3, "finding", title="A finding", blocked_by=(1, 2))
+    assert run(tracker, code, "show", "plan#3") == 0
+    out = capsys.readouterr().out
+    assert ("\n  parent: none\n  blocked by: plan#1 The step that fixes it\n"
+            "  blocked by: plan#2 A step it waits on\n\n") in out
+    assert "owner" not in out
+    for step in (1, 2):
+        assert run(tracker, code, "show", f"plan#{step}") == 0
+        assert "owns:" not in capsys.readouterr().out
 
 
 def test_a_comment_quill_posts_is_shown_after_the_text(code, tmp_path, capsys):

@@ -413,7 +413,8 @@ def test_apply_on_an_empty_board_deletes_rank_hides_status_and_no_automation():
 
 def test_an_automation_that_adds_cards_is_a_difference():
     """Only quill puts a card on the board (balance:R-BAL177): GitHub's default
-    "Auto-add sub-issues to project" would add every finding and ruling; hiding is allowed."""
+    "Auto-add sub-issues to project" would add every task and every leaf (a finding or a
+    ruling is no sub-issue since R-BAL395); hiding is allowed."""
     project = _project(views=(("Plan", "is:open", 0),))
     project["fields"]["nodes"] = [_FIELDS["F1"], _FIELDS["F2"]]
     project["views"]["nodes"][0]["fields"]["nodes"] = _visible("F1")

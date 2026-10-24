@@ -807,7 +807,8 @@ def test_a_closed_card_is_not_dropped_again(code, capsys):
 
 
 def test_dropping_a_step_that_owns_findings_drops_the_step(code):
-    """Review cp4b P15: a step owning findings (and no step) is no split step (R-BAL177)."""
+    """Review cp4b P15: a step with findings under it and no step (its sub-issues, as quill
+    filed a finding before R-BAL395 and a person may still link one) is no split step."""
     tracker = FakeTracker()
     tracker.add(1, children=(Child(2, "finding", True),))
     tracker.add(2, "finding", parent=1)
