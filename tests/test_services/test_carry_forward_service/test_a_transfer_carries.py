@@ -5,11 +5,11 @@ cancelled or soft-deleted.
 
 from decimal import Decimal
 
+from app.models.amount_ownership import AmountOwnership
 from app.models.ref import AccountType, Status
 from app.services import account_service, carry_forward_service, transfer_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import generate_transfer_of, make_transfer_template
-from app.models.amount_ownership import AmountOwnership
 
 from ._helpers import _create_transaction, _create_savings, _create_transfer_in_period
 
