@@ -85,7 +85,7 @@ case pinned the storable neighbour, a movement under a LIVE shadow, until plan
 step ``balance:X-bi-6-4d-3`` made a transfer one row (ruling **R-BAL258**) and
 that case went with the shadows (ruling **R-BAL313**).  **The double drift is
 structural now**: no shadow can be stored to hide
-(``tests/test_models/test_a_transfer_is_one_row.py``'s
+(``tests/test_models/test_a_transfer_is_one_row/test_the_upgrade.py``'s
 ``TestTheUpgrade::test_the_database_refuses_a_twin``), and a DATED record
 under a still-Projected transfer is refused at commit by the status-band rule
 (``tests/test_models/test_a_transfer_side_s_record_follows_its_status.py``'s

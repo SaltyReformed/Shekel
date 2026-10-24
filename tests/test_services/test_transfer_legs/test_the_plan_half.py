@@ -125,7 +125,7 @@ class TestTheCashFoldReadsTheParent:
         ``balance:X-bi-6-4d-3``'s vacuous-residue checkpoint: a transfer is
         one row since that step (ruling **R-BAL258**), and the database
         refuses a row naming one (``ck_transactions_names_no_transfer``,
-        pinned by ``tests/test_models/test_a_transfer_is_one_row.py``'s
+        pinned by ``tests/test_models/test_a_transfer_is_one_row/test_the_upgrade.py``'s
         ``TestTheUpgrade::test_the_database_refuses_a_twin``), so that read
         walked a list holding no such row (measured empty).  Renamed from
         ``test_the_plan_holds_a_leg_and_no_shadow_row``.

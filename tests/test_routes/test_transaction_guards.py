@@ -106,7 +106,7 @@ def _create_regular_txn(seed_user, seed_periods_today):
 # ownership doors.  No shadow can exist now: the database refuses one
 # (``ck_transactions_names_no_transfer``, ruling R-BAL258, pinned once by
 # ``TestTheUpgrade::test_the_database_refuses_a_twin`` in
-# ``tests/test_models/test_a_transfer_is_one_row.py``)
+# ``tests/test_models/test_a_transfer_is_one_row/test_the_upgrade.py``)
 # and no app code builds one, so no request reaches the fence, which goes with
 # the column at plan step X-bi-6-5.  A transfer's leg doors are the
 # transfer's own, graded in ``test_transfers/test_grid_cells.py``

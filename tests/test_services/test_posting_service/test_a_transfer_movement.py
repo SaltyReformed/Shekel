@@ -68,7 +68,7 @@ class TestTransactionShadowFamily:
         income shadow the door was handed, so it is staged as
         :func:`~tests._test_helpers.assert_a_twin_is_refused` builds it and
         that refusal asserted.  The guard the 10-09 answer kept is that CHECK
-        now, pinned by ``test_a_transfer_is_one_row.py``'s
+        now, pinned by ``test_a_transfer_is_one_row/test_the_upgrade.py``'s
         ``test_the_database_refuses_a_twin``; no row door is reached here.  The
         money read is the transfer's own teardown: Savings back on its
         ``$100.00`` opening, transit at ``0.00`` and Checking on its

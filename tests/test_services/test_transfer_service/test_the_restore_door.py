@@ -62,7 +62,7 @@ class TestRestoreTransfer:
     ``test_a_shadow_amount_CANNOT_drift_from_its_transfer`` (its amount).
     No side row can be stored since that step's create door
     (``ck_transactions_names_no_transfer``, ruling R-BAL258), so there is
-    nothing to plant; the refusal is ``test_a_transfer_is_one_row.py``'s
+    nothing to plant; the refusal is ``test_a_transfer_is_one_row/test_the_upgrade.py``'s
     ``test_the_database_refuses_a_twin`` (the expense side) and
     ``test_a_transfer_shadow_is_derived/test_the_declaration.py``'s
     ``test_the_transfer_owns_its_figure_and_neither_twin_can_be_stored``

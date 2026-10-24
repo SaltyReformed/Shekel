@@ -383,7 +383,7 @@ class TestARowCannotBeHiddenHoldingMoney:
     # database refuses one, ``ck_transactions_names_no_transfer``, ruling R-BAL258,
     # pinned once by
     # ``TestTheUpgrade::test_the_database_refuses_a_twin`` in
-    # ``tests/test_models/test_a_transfer_is_one_row.py``,
+    # ``tests/test_models/test_a_transfer_is_one_row/test_the_upgrade.py``,
     # and no app code builds one), so no row can carry the carve-out's
     # ``transfer_id``; hiding a row that holds money is
     # :meth:`test_hiding_a_row_holding_a_purchase_is_refused_at_commit`, and a

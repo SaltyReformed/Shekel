@@ -431,7 +431,7 @@ class TestResolveConflictsShadowGuard:
     The guard (``app/services/recurrence_engine/_conflicts.py``) is
     unreachable since plan step ``balance:X-bi-6-4d-3``: a transaction naming
     a transfer is refused at the INSERT (``ck_transactions_names_no_transfer``,
-    graded by ``tests/test_models/test_a_transfer_is_one_row.py``'s
+    graded by ``tests/test_models/test_a_transfer_is_one_row/test_the_upgrade.py``'s
     ``test_the_database_refuses_a_twin``), and the guard goes with the column at
     ``balance:X-bi-6-5``.  The two cases that drove it were deleted at plan
     step ``balance:X-bi-6-4d-3`` (ruling **R-BAL320**):

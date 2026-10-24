@@ -113,7 +113,7 @@ movement, not a status, decide which half counts its leg (ruling
 is structural now**: plan step ``balance:X-bi-6-4d-3`` made a transfer one
 row (ruling **R-BAL258**), so no shadow's status can part from its
 transfer's.  What pins that is the database's refusal of a shadow row
-(``tests/test_models/test_a_transfer_is_one_row.py``'s
+(``tests/test_models/test_a_transfer_is_one_row/test_the_upgrade.py``'s
 ``TestTheUpgrade::test_the_database_refuses_a_twin``), and drift A's cases
 went with the shadows (ruling **R-BAL313**).  Drift B without its shadows is
 a settled transfer whose sides hold no record, the zero close the

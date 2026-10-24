@@ -51,7 +51,7 @@ database.  The STATES they refused have homes -- a dateless settled row and an
 undated movement are ``integrity_check`` DC-11's two arms
 (``test_integrity_check/test_the_consistency_checks.py``); a shadow, broken or
 whole, is a row the database refuses since plan step ``balance:X-bi-6-4d-3``
-(``test_a_transfer_is_one_row.py::TestTheUpgrade::
+(``test_a_transfer_is_one_row/test_the_upgrade.py::TestTheUpgrade::
 test_the_database_refuses_a_twin``); a settled row recording nothing is the
 ``$0.00`` record (``test_settlement_record.py``); a movement disagreeing with
 its row is this module's second predicate; and the seam's own write per shape is

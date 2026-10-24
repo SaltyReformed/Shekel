@@ -403,7 +403,7 @@ class TestRegenerateDeletionRoutedThroughService:
         surfaced it as the event's ``orphan_count`` until plan step
         ``balance:X-bi-6-4d-3``, which deleted the twins it counted and made
         the database refuse a row naming a transfer (ruling **R-BAL258**,
-        graded by ``tests/test_models/test_a_transfer_is_one_row.py``), so no
+        graded by ``tests/test_models/test_a_transfer_is_one_row/test_the_upgrade.py``), so no
         count of such rows can fail here.  What the event still says -- one
         hard delete per retired transfer -- is asserted (ruling **R-BAL167**
         class 1).

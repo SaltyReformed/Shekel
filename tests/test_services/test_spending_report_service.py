@@ -2465,7 +2465,8 @@ class TestASettledRowWhosePlanIsDerivedIsPriced:
         shadow storing no plan of its own -- and went with it at plan step
         ``balance:X-bi-6-4d-3`` (ruling R-BAL258, class 1 with nothing
         re-expressed): no such row can be stored now
-        (``test_a_transfer_is_one_row.py::TestTheUpgrade::test_the_database_refuses_a_twin``),
+        (``test_a_transfer_is_one_row/test_the_upgrade.py::TestTheUpgrade::
+        test_the_database_refuses_a_twin``),
         and a leg has no figure field at all, its plan being the parent's
         through :func:`~app.services.spending_analysis.planned_spend`.
         """

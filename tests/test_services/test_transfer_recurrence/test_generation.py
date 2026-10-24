@@ -566,7 +566,7 @@ class TestATransferRecordsItsOccurrence:
     # ``test_the_shadows_carry_no_occurrence`` was deleted at plan step
     # ``balance:X-bi-6-4d-3`` (ruling **R-BAL320**): the twins it read are rows
     # the database refuses to store (``ck_transactions_names_no_transfer``,
-    # ``tests/test_models/test_a_transfer_is_one_row.py``'s
+    # ``tests/test_models/test_a_transfer_is_one_row/test_the_upgrade.py``'s
     # ``test_the_database_refuses_a_twin``), so it read none (measured 0), and
     # the column's one writer is graded by the case above.
 
