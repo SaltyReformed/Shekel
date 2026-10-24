@@ -129,6 +129,7 @@ from strings, with the arithmetic shown per the testing standard.
 from __future__ import annotations
 
 import ast
+import inspect
 import os
 from datetime import date
 from decimal import Decimal
@@ -190,8 +191,14 @@ from tests._test_helpers import (
 # (payment_day=1) due 02-01 / 03-01 / 04-01 -- distinct months after the anchor,
 # so the resolver's biweekly-collision redistribution never shifts a date and the
 # parallel run is exact.
-(_ORIGINATION_PRINCIPAL, _ORIGINATION_DATE, _RATE, _ANCHOR_BALANCE,
- _ANCHOR_DATE, _P1, _P2, _P3) = SPLIT_LOAN
+_ORIGINATION_PRINCIPAL = SPLIT_LOAN.origination_principal
+_ORIGINATION_DATE = SPLIT_LOAN.origination_date
+_RATE = SPLIT_LOAN.rate
+_ANCHOR_BALANCE = SPLIT_LOAN.anchor_balance
+_ANCHOR_DATE = SPLIT_LOAN.anchor_date
+_P1 = SPLIT_LOAN.p1
+_P2 = SPLIT_LOAN.p2
+_P3 = SPLIT_LOAN.p3
 # The origination a case takes when a payment is walked BEFORE its true-up: the
 # month before P1's 02-01 installment (plan step recurrence:R16-c-2, ruling
 # R-R101).  Every contractual installment from origination is charged now, so
@@ -1952,15 +1959,15 @@ def _import_closure(roots, sources=None) -> "dict[str, list[str]]":
 def _reference_call_qualifiers() -> set:
     """Return the module qualifiers :func:`_resolver_balance` calls through.
 
-    Parses THIS file and walks ``_resolver_balance``'s own body for every
-    ``<name>.<attr>(...)`` call, so "what the reference is assembled from" is
-    read off the reference rather than remembered beside it.
+    Parses ``_resolver_balance``'s own source (:func:`inspect.getsource`) and
+    walks its body for every ``<name>.<attr>(...)`` call, so "what the
+    reference is assembled from" is read off the reference rather than
+    remembered beside it.
 
     Returns:
         The bare qualifier names (``loan_loaders``, ``loan_resolver``, ...).
     """
-    with open(__file__, encoding="utf-8") as handle:
-        tree = ast.parse(handle.read())
+    tree = ast.parse(inspect.getsource(_resolver_balance))
     body = next(
         node for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef)
