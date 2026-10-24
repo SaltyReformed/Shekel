@@ -11,7 +11,8 @@ from typing import Callable
 
 from sqlalchemy import event, text
 
-from app.enums import SettledDayBasisEnum
+from app import ref_cache
+from app.enums import MovementFigureSourceEnum, SettledDayBasisEnum
 from app.extensions import db as _db
 from app.models.transaction_entry import TransactionEntry
 from app.services import entry_service
@@ -60,13 +61,22 @@ class _Outcome:
         return self.result == "committed"
 
 
-def _race_statements(app, first: Callable[[], None], second: Callable[[], None]):
+def _race_statements(
+    app, first: Callable[[], None], second: Callable[[], None],
+    *, then: Callable[[], None] | None = None,
+):
     """Run raw *first* uncommitted here, raw *second* in another session, then commit in that order.
 
-    The harness for :class:`TestTheDatabaseLocksTheRow` alone, whose clicks
-    are raw statements rather than requests.  Returns ``(first_outcome,
-    second_outcome)``; the second records whether PostgreSQL showed it WAITING
-    on a lock before the first committed (``waited``).
+    The harness for :class:`TestTheDatabaseLocksTheRow` and
+    :class:`TestTheDatabaseLocksTheTransfer`, whose clicks are raw statements
+    rather than requests.  Returns ``(first_outcome, second_outcome)``; the
+    second records whether PostgreSQL showed it WAITING on a lock before the
+    first committed (``waited``).
+
+    *then*, when given, is the rest of the FIRST click: run after the second
+    is seen waiting (or finished) and before the first commits.  A click
+    whose later statement takes a lock of its own splits there, so the wait
+    measured is on the lock *first* took and on nothing *then* takes.
     """
     first_outcome, second_outcome = _Outcome(), _Outcome()
     acted, go, done = threading.Event(), threading.Event(), threading.Event()
@@ -117,6 +127,8 @@ def _race_statements(app, first: Callable[[], None], second: Callable[[], None])
         "the second click neither waited on a lock nor finished -- the "
         "harness is not measuring the race"
     )
+    if then is not None:
+        then()
     try:
         _db.session.commit()
         first_outcome.result = "committed"
@@ -243,7 +255,7 @@ class TestTheDatabaseLocksTheTransfer:
 
     @staticmethod
     def _transfer(seed_user):
-        """A Projected $500.00 Checking -> Savings transfer: ``(id, from account, owner)``."""
+        """A Projected $500.00 Checking -> Savings transfer: ``(id, from, to, owner)`` ids."""
         savings = create_account_of_type(
             seed_user, _db.session, "Savings", "Race Savings",
         )
@@ -253,27 +265,56 @@ class TestTheDatabaseLocksTheTransfer:
             seed_user["bootstrap_period"], amount=Decimal("500.00"),
         )
         _db.session.commit()
-        return xfer.id, xfer.from_account_id, xfer.user_id
+        return xfer.id, xfer.from_account_id, xfer.to_account_id, xfer.user_id
 
     @staticmethod
-    def _raw_insert(transfer_id, account_id, owner_id):
-        """Return a click writing the from-side's kept payment record, raw.
+    def _raw_insert(transfer_id, from_account_id, to_account_id, owner_id):
+        """Return the record click's first half: both sides' kept records, raw, in one statement.
 
-        The record states no figure and no figure source: a side's record
-        holds neither since plan step ``balance:X-bi-6-4d-2``'s 4d-4 half
+        A revert's kept pair (ruling R-BAL61), whose figure the second half
+        stores (:meth:`_raw_figure`): a transfer holds a record on both sides
+        or on neither, and a figure above zero exactly when it holds both
+        (the band's figure arm, graded at COMMIT), so a save that records a
+        payment writes all three.  Each record states no figure and no
+        figure source: a side's record holds neither since plan step
+        ``balance:X-bi-6-4d-2``'s 4d-4 half
         (``ck_transaction_entries_side_record_states_no_figure``,
-        ``ck_transaction_entries_side_record_names_no_figure_source``); the
-        transfer stores them.
+        ``ck_transaction_entries_side_record_names_no_figure_source``).
         """
         def click():
             _db.session.execute(
                 text(
                     "INSERT INTO budget.transaction_entries (expense_transfer_id, "
-                    "account_id, owner_id, user_id, description, "
-                    "covers_settlement) "
-                    "VALUES (:t, :a, :o, :o, 'Race record', TRUE)"
+                    "income_transfer_id, account_id, owner_id, user_id, "
+                    "description, covers_settlement) "
+                    "VALUES (:t, NULL, :f, :o, :o, 'Race record', TRUE), "
+                    "(NULL, :t, :to, :o, :o, 'Race record', TRUE)"
                 ),
-                {"t": transfer_id, "a": account_id, "o": owner_id},
+                {
+                    "t": transfer_id, "f": from_account_id,
+                    "to": to_account_id, "o": owner_id,
+                },
+            )
+        return click
+
+    @staticmethod
+    def _raw_figure(transfer_id):
+        """Return the record click's second half: the transfer stores its pair's $500.00, raw.
+
+        An ``UPDATE`` of the transfer, so it takes the transfer's row lock
+        itself: run after the hide is seen waiting (``_race_statements``'
+        *then*), the wait it measures is on the arrival arm's lock alone.
+        """
+        def click():
+            _db.session.execute(
+                text("UPDATE budget.transfers SET settled_figure = 500.00, "
+                     "settled_figure_source_id = :s WHERE id = :t"),
+                {
+                    "t": transfer_id,
+                    "s": ref_cache.movement_figure_source_id(
+                        MovementFigureSourceEnum.RESOLVED,
+                    ),
+                },
             )
         return click
 
@@ -299,12 +340,20 @@ class TestTheDatabaseLocksTheTransfer:
         ).one())
 
     def test_hide_first_the_insert_waits_and_is_refused(self, app, db, seed_user):
-        """Hide open, record arrives: it waits for the hide, then the arm refuses it."""
+        """Hide open, records arrive: the first waits for the hide, then the arm refuses it.
+
+        The record click races with its first half alone (:meth:`_raw_insert`):
+        the arm refuses that ``INSERT``, so the half storing the figure never
+        runs.  Raced whole, its figure ``UPDATE`` would wait on the hide's own
+        row lock, and ``waited`` would no longer single out the arrival arm's
+        (measured: with the arm's lock removed, the whole click waited there
+        and COMMITTED).
+        """
         with app.app_context():
-            transfer_id, account_id, owner_id = self._transfer(seed_user)
+            transfer_id, from_id, to_id, owner_id = self._transfer(seed_user)
             hide, insert = _race_statements(
                 app, self._raw_hide(transfer_id),
-                self._raw_insert(transfer_id, account_id, owner_id),
+                self._raw_insert(transfer_id, from_id, to_id, owner_id),
             )
             assert hide.committed
             assert insert.waited, "the arrival did not wait for the open hide"
@@ -314,17 +363,28 @@ class TestTheDatabaseLocksTheTransfer:
             assert self._state(transfer_id) == (True, 0)
 
     def test_insert_first_the_hide_waits_and_is_refused(self, app, db, seed_user):
-        """Record open, hide arrives: it waits for the record, then the hiding arm refuses it."""
+        """Records open, hide arrives: it waits for the records, then the hiding arm refuses it.
+
+        The record click inserts both sides' records, and stores the
+        transfer's figure only once the hide is seen waiting: an ``UPDATE``
+        of the transfer before then would hold the transfer's row lock
+        itself, and the hide would wait on that lock rather than on the one
+        the arrival arm takes (ruling R-CC96).  The click's two halves commit
+        together, so the transfer ends holding both records and its figure
+        (developer 2026-10-24, "Yes, 1 becomes 2": one record alone is
+        unstorable since plan step ``balance:X-bi-6-4d-2``'s 4d-4 half).
+        """
         with app.app_context():
-            transfer_id, account_id, owner_id = self._transfer(seed_user)
+            transfer_id, from_id, to_id, owner_id = self._transfer(seed_user)
             insert, hide = _race_statements(
-                app, self._raw_insert(transfer_id, account_id, owner_id),
+                app, self._raw_insert(transfer_id, from_id, to_id, owner_id),
                 self._raw_hide(transfer_id),
+                then=self._raw_figure(transfer_id),
             )
             assert insert.committed
             assert hide.waited
             assert "while it still holds a recorded payment" in str(hide.result)
-            assert self._state(transfer_id) == (False, 1)
+            assert self._state(transfer_id) == (False, 2)
 
 
 class TestTheOwnersLockComesFirst:

@@ -478,18 +478,26 @@ class TestTheDeletedRowTransferArm:
         Per side since plan step ``balance:X-bi-6-4d-3``'s vacuous-residue
         checkpoint, beside the refusal it controls; until then it moved the
         from-side link alone.
+
+        Planted as the refusal is (the kept pair, committed) and graded where
+        the refusal is: at the ``UPDATE`` itself, which the arrival arm, a
+        ``BEFORE`` trigger, lets through.  It is rolled back rather than
+        committed: the move leaves each transfer holding one side's record,
+        which the band's figure arm refuses at COMMIT (plan step
+        ``balance:X-bi-6-4d-2``'s 4d-4 half), and that rule is not the one
+        this control grades.
         """
         del app
         accounts = _accounts(seed_user)
         first = _transfer(seed_user, accounts[0], accounts[1])
-        _record(first, income=income)
+        _kept_pair(first)
         second = _sharing_the_side(seed_user, accounts, income)
         _re_point(income, first.id, second.id)
-        _db.session.commit()
         assert _db.session.execute(text(
             "SELECT count(*) FROM budget.transaction_entries "
             f"WHERE {_side_link(income)} = :s"
         ), {"s": second.id}).scalar_one() == 1
+        _db.session.rollback()
 
     @pytest.mark.parametrize("income", [False, True], ids=["from-side", "to-side"])
     def test_hiding_a_transfer_that_holds_a_record_is_refused_at_commit(
@@ -503,13 +511,29 @@ class TestTheDeletedRowTransferArm:
         vacuous-residue checkpoint, where an arm asking the from-side link
         only failed no test in the suite (measured there); each side's record
         is planted with the bare ORM, as every record in this module is.
+
+        One side's record alone is a state the band's figure arm refuses at
+        COMMIT too (plan step ``balance:X-bi-6-4d-2``'s 4d-4 half), so it is
+        reached inside the save: the kept pair and its figure are committed,
+        then ONE save hides the transfer FIRST and takes the OTHER side's
+        record off.  PostgreSQL asks the deferred checks at COMMIT in the
+        order their events were queued, so the hiding arm is asked before
+        the figure arm and its refusal is the one COMMIT raises (measured:
+        the two statements the other way round raise the figure arm's).  A
+        hiding arm that misread a link would leave the figure arm's refusal
+        to fire instead, so the refusal TEXT is what this case grades.
         """
         del app
         checking, savings, _van = _accounts(seed_user)
         xfer = _transfer(seed_user, checking, savings)
-        _record(xfer, income=income)
+        _kept_pair(xfer)
         _db.session.commit()
         _hide_transfer(xfer.id)
+        _db.session.execute(
+            text("DELETE FROM budget.transaction_entries "
+                 f"WHERE {_side_link(not income)} = :t"),
+            {"t": xfer.id},
+        )
         with refused_by_database_rule(_HIDING_REFUSED):
             _db.session.commit()
         _db.session.rollback()
