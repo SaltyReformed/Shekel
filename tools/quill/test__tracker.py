@@ -30,12 +30,14 @@ from tools.quill._recorded import (
     REDACTED,
     SCRATCH,
     Replay,
+    Scratch,
     recording,
 )
 from tools.quill._state import filing_unfinished
 from tools.quill._tracker import (
     BOARD_WAIT_SECONDS,
     Board,
+    Child,
     Comment,
     OutsideLink,
     Tracker,
@@ -758,3 +760,23 @@ def test_a_render_asks_githubs_markdown_api_in_gfm_mode_in_the_trackers_context(
     assert tracker.render("see #2") == '<p dir="auto">rendered</p>'
     assert github.sent == [("POST", "/markdown", {"text": "see #2", "mode": "gfm",
                                                   "context": TRACKER})]
+
+
+def test_a_steps_blocking_read_lists_the_findings_and_rulings_it_owns():
+    """R-BAL395, recorded on the throwaway plan-views-demo (``recorded/blocking.json``): an
+    open finding and a ruling closed after its link, each blocked by a step.  Each is read
+    with that step as its one blocker and no parent, and the step with no sub-issue; the
+    step's own read lists both, each with its type and state, the newest link first, the
+    closed one too."""
+    replay = Replay("blocking")
+    place = Scratch.from_json(recording("blocking")["scratch"]).place
+    github = GitHub("token", replay)
+    tracker = Tracker(github, Board(github, place, "none"), APP)
+    cards = tracker.cards([220, 221, 222])
+    step, finding, ruling = cards[220], cards[221], cards[222]
+    assert (step.kind, step.children, step.blocked_by) == ("step", (), ())
+    assert [(card.kind, card.is_open, card.parent, card.blocked_by)
+            for card in (finding, ruling)] == [("finding", True, None, (220,)),
+                                               ("ruling", False, None, (220,))]
+    assert tracker.blocking(220) == (Child(222, "ruling", False), Child(221, "finding", True))
+    assert replay.unused() == 0

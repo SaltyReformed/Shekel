@@ -81,21 +81,22 @@ def test_a_title_written_is_a_short_name_of_at_most_100_characters():
 
 
 @pytest.mark.parametrize(("owner", "said"), [
-    (None, "its parent is none"),
-    (Owner("finding", True), "its parent is finding"),
-    (Owner("step", False), "its parent is a step that is done"),
+    (None, "its owner is none"),
+    (Owner("finding", True), "its owner is finding"),
+    (Owner("step", False), "its owner is a step that is done"),
 ])
 def test_a_finding_set_under_an_owner_needs_a_live_step(owner, said):
-    """R-BAL177: the owner is the parent; a finding names a LIVE owner."""
+    """R-BAL395: the owner is the step it is blocked by, never its parent; a finding names a
+    LIVE owner."""
     (problem,) = violations(_finding(owner=owner), {OWNER})
-    assert problem.endswith(said) and "LIVE step" in problem
+    assert problem.endswith(said) and "blocked by a LIVE step, its owner (R-BAL395)" in problem
 
 
 def test_a_ruling_set_under_an_owner_needs_a_step_done_or_not():
     """A ruling outlives the step that asked it, so its owner may be done."""
     assert not violations(_ruling(owner=Owner("step", False)), {OWNER})
     (problem,) = violations(_ruling(owner=None), {OWNER})
-    assert problem.endswith("its parent is none")
+    assert problem == "a ruling is blocked by a step, its owner (R-BAL395); its owner is none"
 
 
 def test_the_owner_is_graded_only_when_the_change_sets_it():
@@ -248,7 +249,7 @@ def test_a_card_under_a_parent_with_no_type_is_refused_never_read_as_having_none
         "a step's parent is the step it splits; its parent is a card with no type"]
     for draft in (_finding(owner=untyped), _ruling(owner=untyped)):
         (problem,) = violations(draft, {OWNER})
-        assert problem.endswith("its parent is a card with no type")
+        assert problem.endswith("its owner is a card with no type")
     assert not violations(Draft("step", "top", "", ("balance",)))
 
 

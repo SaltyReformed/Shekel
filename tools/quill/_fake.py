@@ -193,6 +193,14 @@ class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-
             return NumberState.ISSUE
         return NumberState.DELETED if number in self.gone else NumberState.NOT_FOUND
 
+    def blocking(self, number):
+        """The cards ``number`` blocks: each whose blocked-by edges name it, with its kind and
+        state as they stand, in card order (GitHub lists the newest link first, which no
+        command reads)."""
+        return tuple(Child(n, card.kind, card.is_open)
+                     for n, card in sorted(self.cards_by_number.items())
+                     if number in card.blocked_by)
+
     def body(self, number):
         """A card's body."""
         return self.bodies[number]
