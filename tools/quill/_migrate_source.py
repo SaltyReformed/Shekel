@@ -18,10 +18,11 @@ readers, through its read-only door (``tools/plan_gate/registries.py``, ruling
 Nothing here parses a registry table or an arc document's grammar a second time.
 
 **What moves** (draft 4 s.1): every step not SHIPPED (R-BAL236: a shipped step moves
-nowhere, so neither does an edge to one); every ``ledger.md`` row, as a FINDING under
-the first step its owner cell names (R-BAL239) or, naming none, as a QUESTION; and
-every ``rulings.md`` row as a closed ruling with no parent (R-BAL236).  A card's KEY is
-its arc and its ALIAS, the old id its title carries in brackets (``[X-bk-2] ...``).
+nowhere, so neither does an edge to one); every ``ledger.md`` row, as a FINDING blocked
+by the first step its owner cell names, its owner, and no sub-issue of it (R-BAL239,
+R-BAL395), or, naming none, as a QUESTION; and every ``rulings.md`` row as a closed
+ruling with no parent (R-BAL236).  A card's KEY is its arc and its ALIAS, the old id its
+title carries in brackets (``[X-bk-2] ...``).
 One open step is a card already (:data:`MAPPED`), so nothing is filed for it.
 
 **What it refuses, never chooses** (each a line of :attr:`Source.refusals`): an arc
@@ -92,7 +93,7 @@ DEPLOY_TOGETHER = frozenset({"balance:X-bi-6-4d"})
 #: its key, kind, labels and links.  A key here that names no open step is refused.
 MAPPED = {"balance:X-cx": 1}
 #: Findings that ALSO get a question card (R-BAL239: N-391 names a step and the
-#: developer, so it is a finding under its step and his question too).  Its question
+#: developer, so it is a finding its step owns and his question too).  Its question
 #: card's alias is the row's id and :data:`QUESTION_SUFFIX`, so ``quill show N-391``
 #: still names the finding.
 ALSO_A_QUESTION = frozenset({"salary:N-391"})
@@ -154,9 +155,9 @@ def source_hash(text: str) -> str:
 
 @dataclass(frozen=True)
 class Links:
-    """Where a card sits: its parent's key, its OPEN blockers' keys, and its place on the
-    board (``(tier, position)``, :data:`STEPS_TIER` or :data:`QUESTIONS_TIER`), None off
-    it."""
+    """Where a card sits: its parent's key, its OPEN blockers' keys -- a finding's one
+    blocker is its owner step (R-BAL395) -- and its place on the board (``(tier,
+    position)``, :data:`STEPS_TIER` or :data:`QUESTIONS_TIER`), None off it."""
 
     parent: str | None = None
     blockers: tuple[str, ...] = ()
@@ -563,8 +564,9 @@ def _together_refusals(by_key: Mapping[str, StepRow], reports: list[str]) -> lis
 
 def _findings(registries: Registries, moving: set[str], refusals: list[str],
               reports: list[str]) -> list[Item]:
-    """A finding under its first step owner for each ledger row naming one; a question for
-    each naming none, and for each of :data:`ALSO_A_QUESTION` too (R-BAL239)."""
+    """A finding for each ledger row naming a step owner, blocked by the first, its owner,
+    and no sub-issue of it, which its progress would count (R-BAL395); a question for each
+    naming none, and for each of :data:`ALSO_A_QUESTION` too (R-BAL239)."""
     items, asked = [], set()
     for position, row in enumerate(registries.findings):
         owners = [OWNER_RX.match(part.strip()) for part in split_owners(row.owner.strip())]
@@ -578,11 +580,12 @@ def _findings(registries: Registries, moving: set[str], refusals: list[str],
         if not steps:
             items.append(question)
             continue
-        parent = f"{row.arc}:{steps[0]}"
-        if parent not in moving:
-            refusals.append(f"{row.key}'s first owner {parent} does not move (shipped, or no "
+        owner = f"{row.arc}:{steps[0]}"
+        if owner not in moving:
+            refusals.append(f"{row.key}'s first owner {owner} does not move (shipped, or no "
                             "step): re-point the row before the migration")
-        items.append(Item(row.arc, row.bare_ident, "finding", row, (row.arc,), Links(parent)))
+        items.append(Item(row.arc, row.bare_ident, "finding", row, (row.arc,),
+                          Links(blockers=(owner,))))
         if row.key in ALSO_A_QUESTION:
             asked.add(row.key)
             items.append(Item(row.arc, row.bare_ident + QUESTION_SUFFIX, "question", row,

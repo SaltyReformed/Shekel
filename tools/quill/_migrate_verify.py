@@ -56,11 +56,12 @@ such fact:
   ruling closed as completed is a record whoever closed it (R-BAL206);
 - a card's author, the App by ``create``, which no registry names and the read does not
   fetch;
-- the ORDER of a card's sub-issues (a container's steps, a step's findings), the order
-  ``add_child`` filed them in: a by-product (the same ruling).  The order the registries
-  set is the board's (R-BAL238: the steps by rank, then the questions by the ledger's
-  order), graded above; which cards are a card's sub-issues is graded as each one's
-  parent;
+- the ORDER of a card's sub-issues (a container's steps), the order ``add_child`` filed
+  them in, and of the cards a step blocks (the findings it owns, each blocked by it,
+  R-BAL395), which the read does not fetch: a by-product (the same ruling).  The order the
+  registries set is the board's (R-BAL238: the steps by rank, then the questions by the
+  ledger's order), graded above; which cards are a card's sub-issues is graded as each
+  one's parent, and which a step owns as each finding's blockers;
 - a milestone's state, which ``create_milestone`` leaves open, and its due date: the input
   file gives a milestone its title and description alone;
 - a comment's hidden (minimized) state, which the read does not fetch: a hidden As filed

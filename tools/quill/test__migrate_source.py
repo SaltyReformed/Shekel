@@ -22,9 +22,9 @@ def _items(source):
 
 def test_each_registry_row_becomes_the_card_draft_4_names(corpus):
     """Open steps under their nearest container, OPEN blockers only, the arc and marker
-    labels, the outcome on its scope step; findings under their FIRST step owner; a
-    question for each row naming no step and for N-391 too; every ruling, closed later
-    and parentless now; the shipped step nowhere."""
+    labels, the outcome on its scope step; findings blocked by their FIRST step owner and
+    under no card (R-BAL395); a question for each row naming no step and for N-391 too;
+    every ruling, closed later and parentless now; the shipped step nowhere."""
     source = read_source(corpus)
     assert (source.refusals, source.reports) == ((), ())
     items = _items(source)
@@ -37,11 +37,11 @@ def test_each_registry_row_becomes_the_card_draft_4_names(corpus):
         "balance:A-3": ("step", Links(None, ("balance:A-2a",), (0, 3)), ("balance",),
                         "O1 the first"),
         "salary:S-1": ("step", Links(None, (), (0, 4)), ("salary",), None),
-        "balance:F-1": ("finding", Links("balance:A-2a"), ("balance",), None),
-        "balance:F-2": ("finding", Links("balance:A-3"), ("balance",), None),
+        "balance:F-1": ("finding", Links(blockers=("balance:A-2a",)), ("balance",), None),
+        "balance:F-2": ("finding", Links(blockers=("balance:A-3",)), ("balance",), None),
         "balance:Q-1": ("question", Links(place=(1, 2)), ("balance",), None),
         "balance:Q-2": ("question", Links(place=(1, 3)), ("balance",), None),
-        "salary:N-391": ("finding", Links("salary:S-1"), ("salary",), None),
+        "salary:N-391": ("finding", Links(blockers=("salary:S-1",)), ("salary",), None),
         "salary:N-391 question": ("question", Links(place=(1, 4)), ("salary",), None),
         "balance:R-A": ("ruling", Links(), ("balance",), None),
         "salary:R-SAL1": ("ruling", Links(), ("salary",), None),
@@ -158,16 +158,20 @@ def test_a_step_with_no_single_checkbox_is_refused_once_its_arc_is_read(corpus):
 
 def test_githubs_sub_issue_caps_are_refusals_at_one_past_the_cap(corpus, monkeypatch):
     """GitHub holds 100 sub-issues a parent and nests eight deep; the corpus's A-2 holds
-    two and A-2a's finding sits three deep, so caps of one and two refuse them, and caps
-    of exactly two and three refuse nothing."""
+    two and its leaf A-2a sits two deep, so caps of one refuse them, and caps of exactly
+    two refuse nothing.  A finding is blocked by its owner and is no sub-issue of it
+    (R-BAL395), so A-2a's finding F-1 sits one deep and is in no step's count: no cap
+    refuses it."""
     monkeypatch.setattr(_migrate_source, "SUB_ISSUE_CAP", 1)
-    monkeypatch.setattr(_migrate_source, "NESTING_CAP", 2)
+    monkeypatch.setattr(_migrate_source, "NESTING_CAP", 1)
     refusals = read_source(corpus).refusals
     assert "balance:A-2 would hold 2 sub-issues; GitHub holds 1" in refusals
-    assert "balance:F-1 would sit more than 2 cards deep; GitHub nests 2" in refusals
-    assert not [line for line in refusals if line.startswith("balance:A-2a would sit")]
+    assert "balance:A-2a would sit more than 1 cards deep; GitHub nests 1" in refusals
+    assert not [line for line in refusals
+                if line.startswith(("balance:A-2 would sit", "balance:A-2a would hold",
+                                    "balance:F-1"))]
     monkeypatch.setattr(_migrate_source, "SUB_ISSUE_CAP", 2)
-    monkeypatch.setattr(_migrate_source, "NESTING_CAP", 3)
+    monkeypatch.setattr(_migrate_source, "NESTING_CAP", 2)
     assert not read_source(corpus).refusals
 
 
