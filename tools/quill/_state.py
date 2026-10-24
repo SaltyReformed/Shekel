@@ -67,6 +67,11 @@ split step it leaves with no leaf back on the board (:func:`unsplit`).
 until someone removes it, and a step blocked by an outside issue waits, as
 does every leaf under it.
 
+**A finding or a ruling names its owner step by GitHub's "blocked by" link to it**
+(ruling ``balance:R-BAL395``, :data:`OWNED`), never as its sub-issue, so a step's
+progress counts only its pieces: its one blocker is its owner, and an open finding whose
+owner is not one live step is reported (:func:`_owner_lost`).
+
 **A task is a piece of one step or finding** (ruling ``balance:R-BAL386``): a sub-issue
 of type ``task`` under that card, a commit inside its one pull request, never offered,
 claimed or on the board.  It is DONE when git says so (:func:`done_tasks`): its file
@@ -105,13 +110,17 @@ STALE_CLAIM = timedelta(days=3)
 #: The kinds of card a change ships; a ruling is a record and a question the
 #: developer's, so ``sync`` never opens or closes either.
 SHIPPABLE = ("step", "finding")
+#: The kinds that name their owner step by GitHub's "blocked by" link to it, never as its
+#: sub-issue, which its progress would count (ruling ``balance:R-BAL395``): the step is
+#: the one card each is blocked by.
+OWNED = ("finding", "ruling")
 
 
 def leaves(card: BareCard, cards: Mapping[int, BareCard],
            shipped: Iterable[int]) -> tuple[int, ...]:
     """The steps ``card`` splits into, the one spelling: each step linked under it
-    (:attr:`_tracker.Card.step_children`; the findings and rulings it owns decide
-    nothing, R-BAL177) but one dropped before its filing finished -- CLOSED while still
+    (:attr:`_tracker.Card.step_children`; the findings and rulings it owns are no
+    sub-issues of it, R-BAL395) but one dropped before its filing finished -- CLOSED while still
     marked, and :func:`dropped` (not shipped by git's answer).
 
     Such a card was never part of the split: R-BAL205's reason ("It was never part of
@@ -287,8 +296,8 @@ def dropped_above(card: Card, cards: Mapping[int, Card], shipped: Iterable[int])
 def is_live(number: int, cards: Mapping[int, Card], shipped: Iterable[int]) -> bool:
     """Whether a card is still work to do: not resolved, and no step above it dropped.
 
-    The owner a finding needs (``conventions.md`` rule 1, R-BAL177), and the
-    step a new leaf may split.
+    The owner a finding needs (``conventions.md`` rule 1; the one step it is blocked
+    by, R-BAL395), and the step a new leaf may split.
     """
     return (not resolved(number, cards, shipped)
             and dropped_above(cards[number], cards, shipped) is None)
@@ -863,8 +872,8 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int],
             )
         if card.kind == "finding" and card.is_open and card.number not in shipped and (
                 lost := _owner_lost(card, cards, shipped)):
-            plan.reports.append(f"finding plan#{card.number}'s owner {lost}: give it an open "
-                                "step as its owner (R-BAL177)")
+            plan.reports.append(f"finding plan#{card.number}'s owner {lost}: give it one open "
+                                "step as its owner, the one card it is blocked by (R-BAL395)")
     return plan
 
 
@@ -900,10 +909,32 @@ def sync_unsplits(cards: Mapping[int, Card], shipped: Iterable[int], plan: SyncP
     return undos
 
 
+def owner(card: BareCard) -> int | None:
+    """A finding's or a ruling's owner (ruling ``balance:R-BAL395``, :data:`OWNED`), the one
+    spelling: the card of the tracker it is blocked by, when nothing else blocks it, in the
+    tracker or outside it.  None for a card of another kind, and for one blocked by no card
+    of the tracker, by an issue outside it, or by more than one, which names no one owner.
+    Whether that card is a step, and live, is the reader's to ask (:func:`_owner_lost`)."""
+    if card.kind not in OWNED or len(card.blocked_by) != 1 or any(
+            link.what == "blocker" for link in card.outside):
+        return None
+    return card.blocked_by[0]
+
+
 def _owner_lost(card: Card, cards: Mapping[int, Card], shipped: set[int]) -> str | None:
-    """How an open finding lost its live owner; None while it has one -- or an owner
-    outside the tracker, which the outside link's own report names (R-BAL188)."""
-    if card.parent is not None:
-        return (None if is_live(card.parent, cards, shipped) else
-                f"plan#{card.parent} is no longer live (done, or under a dropped step)")
-    return None if any(link.what == "parent" for link in card.outside) else "is missing"
+    """How an open finding lost its live owner (:func:`owner`), the one step it is blocked
+    by (R-BAL395); None while it has one -- or an owner outside the tracker, which the
+    outside link's own report names (R-BAL188).  Blocked by two cards or more, it names no
+    one owner."""
+    number = owner(card)
+    if number is None:
+        outside = [link.issue for link in card.outside if link.what == "blocker"]
+        if len(card.blocked_by) + len(outside) > 1:
+            named = ", ".join([f"plan#{held}" for held in card.blocked_by] + outside)
+            return f"is not one step: it is blocked by {named}"
+        return None if outside else "is missing"
+    held = cards[number]
+    if held.kind != "step":
+        return f"plan#{held.number} is {_kind_named(held)}, no step"
+    return (None if is_live(held.number, cards, shipped) else
+            f"plan#{held.number} is no longer live (done, or under a dropped step)")

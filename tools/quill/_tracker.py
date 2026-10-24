@@ -738,6 +738,24 @@ class Tracker(CardReader):  # pylint: disable=too-many-public-methods
         return self.github.rest_text("POST", "/markdown", {
             "text": text, "mode": "gfm", "context": self.place.full_name})
 
+    def blocking(self, number: int) -> tuple[Child, ...]:
+        """The cards of this tracker that card ``number`` blocks, each with its type and state
+        as they stand (:func:`_queries.blocking`): a step's are the findings and rulings it
+        owns (ruling ``balance:R-BAL395``), beside any card waiting on it.  An issue outside
+        the tracker is no card, and is passed over.
+
+        Raises:
+            TrackerError: When GitHub answers the card as null, or cut the list short.
+        """
+        issue = self.github.graphql(_queries.blocking(self.place),
+                                    number=number)["repository"]["issue"]
+        if issue is None:
+            raise TrackerError(f"plan#{number} could not be read: GitHub answered it as null")
+        return tuple(
+            Child(node["number"], (node["issueType"] or {}).get("name"), node["state"] == "OPEN")
+            for node in _counted(issue["blocking"], "cards it blocks", number)
+            if _is_tracker_issue(node, self.place))
+
     def edits(self, number: int) -> tuple[str, list[Edit]]:
         """A card's body as it stands and every saved version of it, oldest first.
 

@@ -38,10 +38,12 @@ Done -- a third way to close a card, beside git and the developer's own hand.
 **Nor may an automation put a card on the board** (ruling ``balance:R-BAL177``):
 the board holds steps and questions only, and quill places each one
 itself, a new leaf where the step it splits sat.  "Auto-add sub-issues to
-project" would put every finding and ruling, each a sub-issue of its owner
-step, at the bottom of the ordered list (measured 2026-10-04: within ten
-seconds).  The board may keep only an automation that hides a card it already
-holds (:data:`ALLOWED_WORKFLOWS`).
+project" would put every sub-issue -- a task under its card (``R-BAL386``), a
+leaf under the step it splits -- at the bottom of the ordered list (measured
+2026-10-04, when findings and rulings were their owner's sub-issues: within ten
+seconds; since ``R-BAL395`` each is blocked by its owner instead).  The board
+may keep only an automation that hides a card it already holds
+(:data:`ALLOWED_WORKFLOWS`).
 
 Usage, from the repository root::
 

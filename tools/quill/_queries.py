@@ -114,6 +114,20 @@ def edits(place: Place) -> str:
     )
 
 
+def blocking(place: Place) -> str:
+    """The read of the cards one card blocks, each with its state and type (ruling
+    ``balance:R-BAL395``: a step's are the findings and rulings it owns, beside any card
+    waiting on it).  Its own read, never a field of every card's: only ``quill show`` and a
+    ruling's filing run again ask it."""
+    return (
+        """query($number: Int!) { repository(owner: "%s", name: "%s") {
+  issue(number: $number) { number
+    blocking(first: 100) { totalCount nodes {
+      number state issueType { name } repository { nameWithOwner } } } } } }"""
+        % (place.owner, place.name)
+    )
+
+
 def comments(place: Place, fields: str = COMMENT_FIELDS) -> str:
     """The read of one card's comments, a page at a time, each read as ``fields``:
     :data:`COMMENT_FIELDS`, or the backup's :data:`EXPORT_COMMENT_FIELDS`."""

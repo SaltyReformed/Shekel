@@ -1,13 +1,17 @@
 """What every ``quill`` command shares: its refusal, its reads of the tracker, and how it
-names a card.  What a command reads of git is :func:`_git.read`, once.
+names a card, on its command line (:func:`card_number`) and in what it prints
+(:func:`_label`).  What a command reads of git is :func:`_git.read`, once.
 
 Split out of the command module at X-cx L2's leaf C, whose change would otherwise take
 that module past the 1,000 lines ``too-many-lines`` allows (it has been ``quill.py``
-since the tool's rename), so that ``_filing`` (the ``file`` command) and ``quill``
-(every other command, and the command line) read these from one place.
+since the tool's rename), so that ``_filing`` (the ``file`` command), ``_show`` (the
+``show`` command) and ``quill`` (every other command, and the command line) read these
+from one place.
 """
 from __future__ import annotations
 
+import argparse
+import re
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Protocol
@@ -19,10 +23,19 @@ from tools.quill._tracker import BareCard, Card, Tracker, TrackerError
 
 #: The kinds of card the board holds, in the developer's order (R-BAL177).
 ON_BOARD = ("step", "question")
+_CARD_REF = re.compile(r"(?:plan#|#)?([1-9][0-9]*)")
 
 
 class Refused(Exception):
     """A command that will not run as asked; its message says why."""
+
+
+def card_number(text: str) -> int:
+    """``plan#7``, ``#7`` or ``7`` -> 7."""
+    found = _CARD_REF.fullmatch(text.strip())
+    if not found:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a card: write plan#<number>")
+    return int(found.group(1))
 
 
 class _ReadsCards[CardT: BareCard](Protocol):  # pylint: disable=too-few-public-methods
