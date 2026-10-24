@@ -60,7 +60,7 @@ The developer ruled to ship that so, money correct (**R-BAL156**), so the
 twelve cases stay deleted and no answer replaces theirs; plan step
 ``balance:X-dc`` makes each save one transaction.  That the second click
 waits on the owner's lock is graded by
-``tests/test_services/test_cc5_4a4_row_lock_races.py``.*
+``tests/test_services/test_cc5_4a4_row_lock_races/test_door_pairs.py``.*
 Finding **CC-376** -- a refused purchase removal was a 500 -- is
 :class:`TestARefusedRemovalIsTheListsBanner`.
 
