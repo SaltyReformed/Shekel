@@ -9,7 +9,6 @@ from datetime import date
 from app.routes._period_population import populate_new_periods
 from app.services import pay_period_admin
 from tests._test_helpers import record_paydays_across_a_hole, rhythm_of
-from tests.oracles.recurrence_baseline import EVERY_PERIOD
 
 
 # Pinned "today".  The rebuilt schedules in this package's parts start

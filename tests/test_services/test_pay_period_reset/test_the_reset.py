@@ -24,6 +24,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.services import (
+    cash_ledger,
     match_withdrawal,
     movement_removal,
     pay_period_admin,
@@ -45,7 +46,6 @@ from tests._test_helpers import (
     seam_cash_balance_at,
 )
 from tests.oracles.recurrence_baseline import EVERY_N_PERIODS
-from app.services import cash_ledger
 
 from ._helpers import _NEW_START, _seed_old_schedule, _reset_and_populate
 
@@ -83,7 +83,7 @@ def _make_every_n_template(db_session, seed_user, start_period, interval_n=2):
     db_session.add(template)
     db_session.flush()
     # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_cadence_rule(
+    make_cadence_rule(
         template,
         EVERY_N_PERIODS,
         starts_on=start_period.start_date,
@@ -452,7 +452,7 @@ class TestResetHappyPath:
             )
             db.session.commit()
 
-            new_periods = pay_period_admin.reset_pay_periods(
+            pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=4,
                 rhythm=rhythm_of(14),
             )
