@@ -1,7 +1,7 @@
 """The edit door's FIGURE correction on a settled transfer, the service tier of the Actual box:
-recorded on both sides' records and on neither parent, refused untouched on an unsettled
-transfer, an echo leaving the resolved source standing, and a settle owning a figure that
-arrives with it.
+recorded once on the transfer, beside both sides' dated records, refused untouched on an
+unsettled transfer, an echo leaving the resolved source standing, and a settle owning a figure
+that arrives with it.
 """
 
 from decimal import Decimal
@@ -64,6 +64,9 @@ class TestTheFigureCorrectionDoorOnAPair:
         What each side RECORDS since plan step ``balance:X-bi-6-4d-2``, read by
         independent SQL over the side links (ruling R-BAL167 class 4, plan
         step balance:X-bi-6-4d-2); its two shadow rows held it until then.
+        Each holds its side's day; the figure and who wrote it are the
+        TRANSFER's since that step's 4d-4 half (rulings **R-BAL365**,
+        **R-BAL366**), where each record carried a copy until then.
         """
         return tuple(
             transfer_side_record(db.session, xfer.id, account_id)
@@ -75,15 +78,17 @@ class TestTheFigureCorrectionDoorOnAPair:
     ):
         """Transfer Invariant 3 for the settlement record.
 
-        A transfer's money moves on its two sides, so each records its own and
-        the two are equal -- exactly as their settle day is.  The PARENT carries
-        no such column: each side's record hangs off it by a side link.  Read
-        off the sides' records since plan step ``balance:X-bi-6-4d-2``, where
-        the shadows held them until then (ruling R-BAL167 class 1, plan step
-        balance:X-bi-6-4d-2).  The status is read off the row re-read from
-        the database since plan step ``balance:X-bi-6-4d-3``'s checkpoint
-        2e-2b-1b-2, where it read the object in the session (ruling R-BAL290
-        part 1).
+        A transfer's money moves on its two sides, and the figure it moved is
+        ONE: the TRANSFER stores it and who wrote it, its one home since plan
+        step ``balance:X-bi-6-4d-2``'s 4d-4 half (rulings **R-BAL365**,
+        **R-BAL366**), where each side's record carried an equal copy until
+        then.  Each side's day is its record's, which hangs off the transfer by
+        a side link, read off the sides' records since plan step
+        ``balance:X-bi-6-4d-2``, where the shadows held them until then
+        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  The status
+        is read off the row re-read from the database since plan step
+        ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-2, where it read the
+        object in the session (ruling R-BAL290 part 1).
         """
         with app.app_context():
             td = transfer_data
@@ -99,10 +104,10 @@ class TestTheFigureCorrectionDoorOnAPair:
             )
 
             row = _reread(xfer.id)
+            assert (row.settled_figure, row.settled_figure_source_id) == (
+                Decimal("263.11"), typed_id,
+            )
             for record in self._records(row):
-                assert (record.amount, record.figure_source_id) == (
-                    Decimal("263.11"), typed_id,
-                )
                 assert record.settled_on == day, (
                     "a figure correction moved the pair's day"
                 )
@@ -191,11 +196,13 @@ class TestTheFigureCorrectionDoorOnAPair:
     ):
         """Re-posting the prefilled figure must not manufacture a correction.
 
-        The movement's source is the only stored signal that a human read a
+        The figure's source is the only stored signal that a human read a
         number off a statement, and this form submits every input it renders
-        on every save.  The movement is each side's payment record, read off
-        the transfer's side links since plan step ``balance:X-bi-6-4d-2``
-        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+        on every save.  It is the TRANSFER's, its one home since plan step
+        ``balance:X-bi-6-4d-2``'s 4d-4 half (ruling **R-BAL366**), where each
+        side's payment record, read off the transfer's side links since that
+        step (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2), carried
+        a copy until then.
         """
         with app.app_context():
             td = transfer_data
@@ -203,18 +210,16 @@ class TestTheFigureCorrectionDoorOnAPair:
             resolved = ref_cache.movement_figure_source_id(
                 MovementFigureSourceEnum.RESOLVED,
             )
-            assert all(
-                record.figure_source_id == resolved
-                for record in self._records(xfer)
-            )
+            assert None not in self._records(xfer)
+            assert xfer.settled_figure_source_id == resolved
 
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, figure=typed(Decimal("250.00")),
             )
             db.session.flush()
 
-            for record in self._records(xfer):
-                assert record.figure_source_id == resolved
+            assert None not in self._records(xfer)
+            assert xfer.settled_figure_source_id == resolved
 
     def test_a_settle_still_owns_a_figure_arriving_with_it(
         self, app, db, transfer_data,
@@ -228,7 +233,10 @@ class TestTheFigureCorrectionDoorOnAPair:
         and the freeze would be resolved after the status flip, where it always
         answers ``None``.  The record is each side's, read off the transfer's
         side links since plan step ``balance:X-bi-6-4d-2`` (ruling R-BAL167
-        class 1, plan step balance:X-bi-6-4d-2).
+        class 1, plan step balance:X-bi-6-4d-2), and holds the side's day;
+        the figure and who wrote it are the TRANSFER's since that step's 4d-4
+        half (rulings **R-BAL365**, **R-BAL366**), where each record carried
+        a copy until then.
         """
         with app.app_context():
             td = transfer_data
@@ -267,8 +275,8 @@ class TestTheFigureCorrectionDoorOnAPair:
             typed_id = ref_cache.movement_figure_source_id(
                 MovementFigureSourceEnum.TYPED,
             )
+            assert (xfer.settled_figure, xfer.settled_figure_source_id) == (
+                Decimal("241.00"), typed_id,
+            ), "a figure that differs from the plan IS a correction"
             for record in self._records(xfer):
-                assert (record.amount, record.figure_source_id) == (
-                    Decimal("241.00"), typed_id,
-                ), "a figure that differs from the plan IS a correction"
                 assert record.settled_on is not None

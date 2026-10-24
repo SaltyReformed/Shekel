@@ -421,11 +421,14 @@ class TestOneTimeTransfer:
         inconsistency the step removed, re-created in the opposite direction.
 
         The record is the one ``status_seam`` keeps when the owner reverts in
-        order to edit: a figure read off the OLD destination's statement, which
-        re-pointing the pair would re-file against an account nobody asserted it
-        on.  Each side's kept record hangs off the transfer since plan step
-        ``balance:X-bi-6-4d-2`` and is read there, not off the twins (ruling
-        R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  It also counted
+        order to edit, beside the figure the TRANSFER keeps (its one home since
+        plan step ``balance:X-bi-6-4d-2``'s 4d-4 half, ruling **R-BAL366**;
+        each record carried a copy until then): a figure read off the OLD
+        destination's statement, which re-pointing the pair would re-file
+        against an account nobody asserted it on.  Each side's kept record
+        hangs off the transfer since plan step ``balance:X-bi-6-4d-2`` and is
+        read there, not off the twins (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-2).  It also counted
         the twins on the old destination until plan step
         ``balance:X-bi-6-4d-3``, which births none; the transfer's own
         destination column, re-read, says where the side is (ruling R-BAL167
@@ -479,10 +482,12 @@ class TestOneTimeTransfer:
                 "the row carrying a recorded figure was re-filed anyway"
             )
             assert all(
-                transfer_side_record(db.session, xfer_id, account_id).amount
-                == Decimal("412.90")
+                transfer_side_record(db.session, xfer_id, account_id) is not None
                 for account_id in (held.from_account_id, held.to_account_id)
             ), "the retained record on the reverted pair"
+            assert held.settled_figure == Decimal("412.90"), (
+                "the retained figure on the reverted pair"
+            )
 
     def test_changing_accounts_is_allowed_with_no_live_transfer(
         self, app, auth_client, seed_user, seed_periods_today,

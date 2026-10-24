@@ -276,9 +276,12 @@ class TestTransferActualBox:
         Savings.  The correction re-books $214.37, so the net posted magnitude
         for this transfer is $214.37, not $200.00 + $14.37 twice-counted.
 
-        Each leg's record is its side's payment record, read off the transfer
-        rather than its twin: its figure, who wrote it, and its day (ruling
-        R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+        The figure and who wrote it are the TRANSFER's, their one home since
+        plan step ``balance:X-bi-6-4d-2``'s 4d-4 half (rulings **R-BAL365**,
+        **R-BAL366**), where each leg's payment record carried a copy until
+        then; each leg's day is its side's payment record's, read off the
+        transfer rather than its twin (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-2).
         """
         with app.app_context():
             day = _THREE_DAYS_AGO()
@@ -298,13 +301,14 @@ class TestTransferActualBox:
 
             assert response.status_code == 200, response.get_data(as_text=True)
             db.session.expire_all()
+            held = db.session.get(Transfer, xfer.id)
+            assert (held.settled_figure, held.settled_figure_source_id) == (
+                Decimal("214.37"), typed_id,
+            ), (
+                f"transfer {xfer.id} did not record the correction as a "
+                "person's"
+            )
             for record in self._side_records(xfer.id):
-                assert (record.amount, record.figure_source_id) == (
-                    Decimal("214.37"), typed_id,
-                ), (
-                    f"the side on account {record.account_id} did not record "
-                    "the correction as a person's"
-                )
                 assert record.settled_on == day, (
                     "a figure correction moved the settle day"
                 )
@@ -325,9 +329,12 @@ class TestTransferActualBox:
         made of.
 
         Shown to FIRE: deleting ``correction_record``'s equality test leaves
-        both legs stamped ``corrected``.  Who wrote each leg's figure is read
-        off its side's payment record, not its twin (ruling R-BAL167 class 1,
-        plan step balance:X-bi-6-4d-2).
+        the pair's figure stamped ``corrected``.  Who wrote it is read
+        off the TRANSFER, its one home since plan step
+        ``balance:X-bi-6-4d-2``'s 4d-4 half (rulings **R-BAL365**,
+        **R-BAL366**), where each side's payment record carried a copy until
+        then, and off no twin (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-2).
         """
         with app.app_context():
             xfer = self._settled_transfer(
@@ -336,9 +343,9 @@ class TestTransferActualBox:
             resolved_id = ref_cache.movement_figure_source_id(
                 MovementFigureSourceEnum.RESOLVED,
             )
-            assert all(
-                record.figure_source_id == resolved_id
-                for record in self._side_records(xfer.id)
+            assert None not in self._side_records(xfer.id)
+            assert db.session.get(Transfer, xfer.id).settled_figure_source_id == (
+                resolved_id
             ), "fixture precondition: a plain settle records a RESOLVED figure"
             version = db.session.get(Transfer, xfer.id).version_id
 
@@ -349,10 +356,10 @@ class TestTransferActualBox:
 
             assert response.status_code == 200
             db.session.expire_all()
-            for record in self._side_records(xfer.id):
-                assert record.figure_source_id == resolved_id, (
-                    "an echoed prefill was recorded as a human's correction"
-                )
+            assert None not in self._side_records(xfer.id)
+            assert db.session.get(Transfer, xfer.id).settled_figure_source_id == (
+                resolved_id
+            ), "an echoed prefill was recorded as a human's correction"
 
     def test_a_REVERT_carrying_the_box_drops_it_and_still_reverts(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -368,9 +375,12 @@ class TestTransferActualBox:
         refused (see the service tests).
 
         What moved is RETAINED, because a revert releases the ASSERTION and
-        keeps the fact -- the two have different lifetimes.  Both are read
-        off each side's payment record, kept un-dated across the revert,
-        not off the twins (ruling R-BAL167 class 1, plan step
+        keeps the fact -- the two have different lifetimes.  The assertion is
+        read off each side's payment record, kept un-dated across the revert,
+        and what moved off the TRANSFER, its one home since plan step
+        ``balance:X-bi-6-4d-2``'s 4d-4 half (rulings **R-BAL365**,
+        **R-BAL366**), where each record carried a copy until then; neither
+        off the twins (ruling R-BAL167 class 1, plan step
         balance:X-bi-6-4d-2).
         """
         with app.app_context():
@@ -395,9 +405,9 @@ class TestTransferActualBox:
             ), "the unlock path was broken by the echoed figure"
             for record in self._side_records(xfer.id):
                 assert record.settled_on is None, "a revert keeps the assertion"
-                assert record.amount == Decimal("200.00"), (
-                    "a revert destroyed what moved"
-                )
+            assert db.session.get(Transfer, xfer.id).settled_figure == (
+                Decimal("200.00")
+            ), "a revert destroyed what moved"
 
     def test_a_figure_on_a_PROJECTED_transfer_is_REFUSED(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -623,7 +633,12 @@ class TestTransferActualBox:
                 assert transfer_side_figure(
                     db.session, xfer.id, account_id,
                 ) == Decimal("200.00")
-                assert record.figure_source_id == typed_id
+            # Who wrote the figure is the TRANSFER's, its one home since plan
+            # step balance:X-bi-6-4d-2's 4d-4 half (ruling R-BAL366), where
+            # each side's record carried a copy until then.
+            assert db.session.get(Transfer, xfer.id).settled_figure_source_id == (
+                typed_id
+            )
 
     def test_the_rebook_notice_shows_what_a_re_settle_will_book(
         self, app, auth_client, seed_user, seed_periods_today,

@@ -228,8 +228,11 @@ class TestATransferIsCoveredOnBothLegs:
             for leg in (expense, income):
                 assert leg.status.is_settled
                 movement = _only_movement(leg)
-                assert movement.amount == Decimal("500.00")
-                assert movement.figure_source_id == _source(
+                # What moved and who wrote it are the TRANSFER's, their one
+                # home since plan step balance:X-bi-6-4d-2's 4d-4 half; the
+                # side's record states neither.
+                assert leg.transfer.settled_figure == Decimal("500.00")
+                assert leg.transfer.settled_figure_source_id == _source(
                     MovementFigureSourceEnum.RESOLVED,
                 )
                 assert movement.description == leg.name
@@ -370,14 +373,16 @@ class TestATransferIsCoveredOnBothLegs:
             )
             db.session.flush()
             # The transfer says Projected and each side's record is kept
-            # un-dated (R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+            # un-dated (R-BAL167 class 1, plan step balance:X-bi-6-4d-2); the
+            # figure the records moved is kept on the TRANSFER, its one home
+            # since that step's 4d-4 half.
             for leg, movement_id in zip(_legs_of(xfer), movement_ids):
                 assert not leg.status.is_settled
                 survivor = _only_movement(leg)
                 assert survivor.id == movement_id
                 assert survivor.settled_on is None
                 assert survivor.reconciled_by_id is None
-                assert survivor.amount == Decimal("500.00")
+                assert leg.transfer.settled_figure == Decimal("500.00")
             assert {
                 account_id: posting_service.account_posting_total(account_id, scenario_id)
                 for account_id in account_ids

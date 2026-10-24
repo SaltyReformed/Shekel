@@ -11,7 +11,8 @@ from datetime import timedelta
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import MovementFigureSourceEnum, StatusEnum
+from app.models.settled_figure import SettledFigure
 from app.models.transfer import Transfer
 from app.services.balance_at._asset_contributions import _recorded_contributions
 from app.services.balance_at._cash_fold import assembled_fold
@@ -415,7 +416,11 @@ class TestAStatusDriftIsCountedOnce:
     ):  # pylint: disable=unused-argument
         """Settled with no record on either side, the $250.00 transfer moves nothing.
 
-        The parent's status is written Done directly.  The fold's plan holds
+        The parent's status is written Done directly, beside the figure a
+        ``$0.00`` close stores, ``0.00`` and typed (ruling **R-BAL365**):
+        since plan step ``balance:X-bi-6-4d-2``'s 4d-4b-2 leaf the band
+        trigger's figure arm refuses a settled transfer storing no figure.
+        The fold's plan holds
         no leg of it on either account (the parent is not Projected), and the
         fold folds no settled fact (neither side holds a record), so each
         account reads on the transfer's day what it read before the transfer
@@ -450,8 +455,13 @@ class TestAStatusDriftIsCountedOnce:
                 amount=_AMOUNT,
             )
             db.session.commit()
-            db.session.get(Transfer, transfer.id).status_id = (
-                ref_cache.status_id(StatusEnum.DONE)
+            parent = db.session.get(Transfer, transfer.id)
+            parent.status_id = ref_cache.status_id(StatusEnum.DONE)
+            parent.settled_figure_pair = SettledFigure(
+                Decimal("0.00"),
+                ref_cache.movement_figure_source_id(
+                    MovementFigureSourceEnum.TYPED,
+                ),
             )
             db.session.commit()
             db.session.expire_all()

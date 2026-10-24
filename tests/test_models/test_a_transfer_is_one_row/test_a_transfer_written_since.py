@@ -9,8 +9,11 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import text
 
+from app import ref_cache
+from app.enums import MovementFigureSourceEnum
 from app.extensions import db as _db
 from app.models.amount_ownership import AmountOwnership
+from app.models.settled_figure import SettledFigure
 from app.services import transfer_service
 from tests._test_helpers import create_account_of_type, create_transfer, restate_account_opening
 
@@ -46,15 +49,18 @@ def _plant_zero_close(xfer, day):
     A ``$0.00`` close holds no record, so its day lived only on its twins below
     this revision.  The band rule admits a settled transfer with no record on
     either side, and no door below this revision states a close's day apart
-    from the seam the twins no longer carry, so it is planted.  Run at the
-    downgraded state.
+    from the seam the twins no longer carry, so it is planted.  The transfer
+    states the close's figure, ``0.00`` and who typed it, as the band's figure
+    arm requires of a settled transfer.  Run at the downgraded state.
     """
     paid = _status_id("Paid")
     entered = _db.session.execute(text(
         "SELECT id FROM ref.settled_day_bases WHERE name = 'entered'"
     )).scalar_one()
     _db.session.execute(text(
-        "UPDATE budget.transfers SET status_id = :p WHERE id = :t"
+        "UPDATE budget.transfers SET status_id = :p, settled_figure = 0.00, "
+        "settled_figure_source_id = (SELECT id FROM "
+        "ref.movement_figure_sources WHERE name = 'typed') WHERE id = :t"
     ), {"p": paid, "t": xfer.id})
     _db.session.execute(text(
         "UPDATE budget.transactions SET status_id = :p, "
@@ -313,9 +319,20 @@ class TestATransferWrittenSince:
             _downgrade()
             paid, _entered = _plant_zero_close(xfer, seed_periods[0].start_date)
             _upgrade()
-            for status in (_status_id("Projected"), paid):
+            # The revert of a ``$0.00`` close clears its figure; the close
+            # again states ``0.00`` and who typed it.
+            for status, figure in (
+                (_status_id("Projected"), None),
+                (paid, SettledFigure(
+                    Decimal("0.00"),
+                    ref_cache.movement_figure_source_id(
+                        MovementFigureSourceEnum.TYPED,
+                    ),
+                )),
+            ):
                 row = db.session.get(type(xfer), xfer.id)
                 row.status_id = status
+                row.settled_figure_pair = figure
                 db.session.commit()
             # The kept day would no longer fit either; a written transfer's
             # twins take none of their kept values, so none counts as unfit.

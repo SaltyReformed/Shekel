@@ -69,6 +69,14 @@ _M = load_migration_module(
 #: the hidden-leg case below needs.
 _TWINS_DELETED = load_migration_module("82f7b7ed4332_a_transfer_is_one_row.py")
 
+#: Plan step ``balance:X-bi-6-4d-2``'s head revision, which empties a side's
+#: record of the figure its transfer holds; its downgrade, run before
+#: :data:`_TWINS_DELETED`'s, copies the figure back onto the records and
+#: withdraws the band's figure arm, the shape every revision below holds.
+_SIDE_RECORD_FIGURE = load_migration_module(
+    "b7d2e4f19a63_a_side_record_holds_no_figure.py",
+)
+
 #: The three keys this step flips, as ``pg_get_constraintdef`` prints them at
 #: head -- no ``ON DELETE`` clause is NO ACTION.
 _AT_HEAD = {
@@ -387,7 +395,9 @@ class TestTheMigration:
         the shape this revision ran against.  No transfer has a shadow since
         plan step ``balance:X-bi-6-4d-3`` (``82f7b7ed4332`` deletes them and
         refuses a new one), so the case runs that revision's downgrade, which
-        builds both, each settled like its transfer.  Since plan step
+        builds both, each settled like its transfer, after head's own
+        (``b7d2e4f19a63``), which puts the transfer's figure back on each
+        side's record.  Since plan step
         ``balance:X-bi-6-4d-2`` each side's record hangs off the TRANSFER
         (ruling **R-BAL88**), and the downgrade leaves it there, so both
         records are then re-parented under their shadows in one statement,
@@ -405,6 +415,7 @@ class TestTheMigration:
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
             )
             db.session.commit()
+            _run(_SIDE_RECORD_FIGURE.downgrade, db.session)
             _run(_TWINS_DELETED.downgrade, db.session)
             db.session.execute(
                 text("UPDATE budget.transaction_entries e "

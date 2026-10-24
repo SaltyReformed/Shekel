@@ -164,7 +164,13 @@ class TestASettleWritesOneRecordPerSide:
     """Design D3: the arm files each side's payment under the transfer, not a twin."""
 
     def test_a_paid_press_records_both_sides_on_their_endpoints(self, app, seed_user):
-        """One record per side, side-linked, on its endpoint, at the figure, borrowed today."""
+        """One record per side, side-linked, on its endpoint, borrowed today; no figure on it.
+
+        The figure and who wrote it are the TRANSFER's, their one home since
+        plan step ``balance:X-bi-6-4d-2``'s 4d-4 half (rulings **R-BAL365**,
+        **R-BAL366**), where each record carried a copy until then; a side
+        record holds neither since that half's 4d-4b-2 leaf.
+        """
         with app.app_context():
             xfer = _transfer(seed_user)
             transfer_service.settle_transfer(xfer.id, _owner(seed_user))
@@ -175,6 +181,10 @@ class TestASettleWritesOneRecordPerSide:
             resolved = ref_cache.movement_figure_source_id(
                 MovementFigureSourceEnum.RESOLVED,
             )
+            held = db.session.get(Transfer, xfer.id)
+            assert (held.settled_figure, held.settled_figure_source_id) == (
+                _AMOUNT, resolved,
+            )
             for record, account_id, label in (
                 (expense, xfer.from_account_id, "Transfer to Arm Savings"),
                 (income, xfer.to_account_id, "Transfer from Checking"),
@@ -182,8 +192,7 @@ class TestASettleWritesOneRecordPerSide:
                 assert record is not None
                 assert record.transaction_id is None
                 assert record.account_id == account_id
-                assert record.amount == _AMOUNT
-                assert record.figure_source_id == resolved
+                assert (record.amount, record.figure_source_id) == (None, None)
                 assert record.description == label
                 assert record.covers_settlement is True
                 assert recorded_settle_day(record) == today
@@ -233,7 +242,10 @@ class TestARevertKeepsTheRecords:
                 assert record.settled_on is None
                 assert record.settled_day_basis_id is None
                 assert record.reconciled_by_id is None
-                assert record.amount == _AMOUNT
+            # What moved is kept on the TRANSFER, its one home since plan step
+            # balance:X-bi-6-4d-2's 4d-4 half (ruling R-BAL366), where each
+            # record carried a copy until then.
+            assert db.session.get(Transfer, xfer.id).settled_figure == _AMOUNT
 
             transfer_service.settle_transfer(xfer.id, owner)
             db.session.commit()
@@ -296,7 +308,10 @@ class TestACorrectedZeroCloseIsDatedByItsDueDate:
             assert [recorded_settle_day(r) for r in _records(xfer.id)] == [
                 guess, guess,
             ]
-            assert all(r.amount == _AMOUNT for r in _records(xfer.id))
+            # The figure is the TRANSFER's since plan step
+            # balance:X-bi-6-4d-2's 4d-4 half (ruling R-BAL366), where each
+            # record carried a copy until then.
+            assert db.session.get(Transfer, xfer.id).settled_figure == _AMOUNT
 
     def test_with_no_due_date_both_sides_take_today(self, app, seed_user):
         """The fallback's fallback: a transfer with no due date borrows today."""
@@ -337,9 +352,13 @@ class TestTheTransfersCounterMovesWithItsSides:
             db.session.commit()
             corrected = _version(xfer.id)
             assert corrected > before
-            assert [r.amount for r in _records(xfer.id)] == [
-                Decimal("214.37"), Decimal("214.37"),
-            ]
+            # Both sides still hold their record, and the figure is the
+            # TRANSFER's since plan step balance:X-bi-6-4d-2's 4d-4 half
+            # (ruling R-BAL366), where each record carried a copy until then.
+            assert None not in _records(xfer.id)
+            assert db.session.get(Transfer, xfer.id).settled_figure == (
+                Decimal("214.37")
+            )
 
             transfer_service.update_transfer(
                 xfer.id, owner, figure=typed(Decimal("214.37")),

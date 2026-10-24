@@ -19,9 +19,14 @@ twins for every transfer by its one build rule, each saying its transfer's
 status and its side's record's day, basis and link.  This revision's
 downgrade then files every record under its side's twin, which is the
 pre-step shape its upgrade meets.  Between the two the ORM's models name
-columns the table does not have, so that window is raw SQL only.  Every case
-whose last act is an upgrade runs both upgrades and so ends at head; a case
-that ends in a refusal ends where the refusal left it, on a database the
+columns the table does not have, so that window is raw SQL only.  A case whose
+downgrade of this revision re-files a record under its twin, or that plants a
+record as the revisions below hold it, first runs head's revision's downgrade
+(:data:`_SIDE_RECORD_FIGURE`): at head a side's record holds no figure, its
+transfer does, and that downgrade copies the transfer's figure back onto its
+records, the shape every revision below holds.  Every case whose last act is
+an upgrade runs one for each revision it downgraded and so ends at head; a
+case that ends in a refusal ends where the refusal left it, on a database the
 ``db`` fixture clones for that case alone.
 
 **A case whose premise is a settle or a ``$0.00`` close the app made AT this
@@ -63,6 +68,15 @@ _MIGRATION = load_migration_module(
 #: Plan step ``balance:X-bi-6-4d-3``'s revision, the one above, whose downgrade
 #: builds the twins this revision's downgrade re-attaches records under.
 _STEP_ABOVE = load_migration_module("82f7b7ed4332_a_transfer_is_one_row.py")
+
+#: Plan step ``balance:X-bi-6-4d-2``'s head revision, which empties every side
+#: record's figure and source onto its transfer's.  Its downgrade, run FIRST
+#: where the module docstring says, copies each transfer's figure back onto its
+#: records, the shape every revision below it holds; its upgrade runs LAST on
+#: the way back.
+_SIDE_RECORD_FIGURE = load_migration_module(
+    "b7d2e4f19a63_a_side_record_holds_no_figure.py",
+)
 
 #: A twin row's columns less its key and its soft-delete flag, so a raw
 #: statement can copy one the way a writer nobody enumerated would.
@@ -205,12 +219,15 @@ def _twins_built():
 def _below_this_revision(seed_user):
     """A settled pair at the revision below this one, every record under its twin.
 
-    At head no twin exists, so the step above's downgrade builds them
-    (:func:`_twins_built`), and this revision's downgrade then files each
-    record back under its side's twin: the shape this revision's upgrade
-    meets on production.  Committed; returns the pair.
+    At head no twin exists, so head's revision first copies each transfer's
+    figure back onto its records (:data:`_SIDE_RECORD_FIGURE`), the step
+    above's downgrade builds the twins (:func:`_twins_built`), and this
+    revision's downgrade then files each record back under its side's twin:
+    the shape this revision's upgrade meets on production.  Committed;
+    returns the pair.
     """
     first, second = _settled_pair(seed_user)
+    run_migration_callable(_SIDE_RECORD_FIGURE.downgrade, _db.session)
     _twins_built()
     run_migration_callable(_MIGRATION.downgrade, _db.session)
     assert not _has_side_links()
@@ -218,10 +235,11 @@ def _below_this_revision(seed_user):
 
 
 def _up_to_head():
-    """Run this revision's upgrade, then the step above's: head again."""
+    """Run this revision's upgrade, the step above's, then head's: head again."""
     run_migration_callable(_MIGRATION.upgrade, _db.session)
     assert _has_side_links()
     run_migration_callable(_STEP_ABOVE.upgrade, _db.session)
+    run_migration_callable(_SIDE_RECORD_FIGURE.upgrade, _db.session)
 
 
 class TestTheRevision:
@@ -354,6 +372,7 @@ class TestTheRoundTrip:
         """
         del app
         ids = tuple(xfer.id for xfer in _settled_pair(seed_user))
+        run_migration_callable(_SIDE_RECORD_FIGURE.downgrade, _db.session)
         entry_ids = _record_ids(ids)
         before = _records(entry_ids)
         assert len(before) == 4
@@ -642,6 +661,7 @@ class TestTheUpgradeRefusesADriftedTwin:
         assert _has_side_links()
         assert _rule_triggers() == sorted(_RULE_TRIGGERS)
         run_migration_callable(_STEP_ABOVE.upgrade, _db.session)
+        run_migration_callable(_SIDE_RECORD_FIGURE.upgrade, _db.session)
 
 
 class TestTheDowngradeRefuses:
@@ -686,6 +706,7 @@ class TestTheDowngradeRefuses:
             seed_user["bootstrap_period"], amount=Decimal("75.00"),
         )
         _db.session.commit()
+        run_migration_callable(_SIDE_RECORD_FIGURE.downgrade, _db.session)
         _twins_built()
         assert _db.session.execute(text(
             "DELETE FROM budget.transactions WHERE transfer_id = :t"
@@ -773,15 +794,22 @@ class TestTheDowngradeRefusesADriftedTwin:
             seed_user["bootstrap_period"], amount=Decimal("80.00"),
         )
         _db.session.commit()
+        run_migration_callable(_SIDE_RECORD_FIGURE.downgrade, _db.session)
         _twins_built()
         closed_on = _db.session.execute(text(
             "SELECT settled_on FROM budget.transaction_entries "
             "WHERE expense_transfer_id = :t"
         ), {"t": first.id}).scalar_one()
         zero_closes = [live.id, hidden.id]
+        # A close of nothing stores ``0.00`` and its typed source on the
+        # transfer: head's columns, which no downgrade here drops, and which
+        # head's upgrade grades on the way back.
         _db.session.execute(text(
             "UPDATE budget.transfers SET status_id = (SELECT id FROM "
-            "ref.statuses WHERE name = 'Paid') WHERE id = ANY(:ids)"
+            "ref.statuses WHERE name = 'Paid'), settled_figure = 0.00, "
+            "settled_figure_source_id = (SELECT id FROM "
+            "ref.movement_figure_sources WHERE name = 'typed') "
+            "WHERE id = ANY(:ids)"
         ), {"ids": zero_closes})
         _db.session.execute(text(
             "UPDATE budget.transactions SET status_id = (SELECT id FROM "

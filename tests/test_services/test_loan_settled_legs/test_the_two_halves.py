@@ -6,8 +6,9 @@ transfer through its lineage.
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import MovementFigureSourceEnum, StatusEnum
 from app.extensions import db
+from app.models.settled_figure import SettledFigure
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import loan_loaders, transfer_service
@@ -21,7 +22,6 @@ from tests._test_helpers import (
     create_savings_account,
     create_settled_transfer,
     create_transfer,
-    figure_source_columns,
     refused_by_database_rule,
     settle_day_columns,
     transfer_side_record,
@@ -43,28 +43,33 @@ _UNSETTLED_DATED = r"is not settled but 1 of its payment records are dated"
 
 
 def _stage_a_dated_side_record(transfer, account, day, amount):
-    """STAGE a DATED record of *amount* on *transfer*'s side on *account*, uncommitted.
+    """STAGE a DATED record on *transfer*'s side on *account*, of *amount*, uncommitted.
 
     The side's money moved on *day* while the transfer stays Projected --
     ruling **R-BAL140**'s "counted once by its money" drift as it is spelled
     since plan step ``balance:X-bi-6-4d-2``, where a side's record hangs off
     the TRANSFER (ruling **R-BAL88**) and no longer off its twin.  The
-    status-band rule refuses it at COMMIT, so it exists only inside this
-    save; the caller commits and expects the refusal.  The to-side is the
-    side on *account* in every caller here.
+    *amount* that moved is the TRANSFER's settled figure, its one home since
+    that step's 4d-4 half (the record carried it until then and states no
+    figure now), stated here as a person typed it.  The status-band rule
+    refuses the dated record at COMMIT, so it exists only inside this save;
+    the caller commits and expects the refusal.  The to-side is the side on
+    *account* in every caller here.
     """
     db.session.add(TransactionEntry(
         income_transfer_id=transfer.id,
         account_id=account.id,
         owner_id=transfer.user_id,
         user_id=transfer.user_id,
-        amount=amount,
         description="Drift record",
         purchased_on=day,
         covers_settlement=True,
         **settle_day_columns(day),
-        **figure_source_columns(),
     ))
+    db.session.get(Transfer, transfer.id).settled_figure_pair = SettledFigure(
+        amount,
+        ref_cache.movement_figure_source_id(MovementFigureSourceEnum.TYPED),
+    )
     db.session.flush()
 
 

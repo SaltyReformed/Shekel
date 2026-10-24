@@ -21,7 +21,10 @@ ID enumeration in the production source.
 from decimal import Decimal
 from pathlib import Path
 
+from app import ref_cache
+from app.enums import MovementFigureSourceEnum
 from app.models.ref import Status
+from app.models.settled_figure import SettledFigure
 from app.services import transfer_service
 from app.utils.archive_helpers import (
     template_has_paid_history,
@@ -287,7 +290,12 @@ class TestTransferTemplateHasPaidHistorySemanticIsSettled:
         on a transfer (an income status on a pair that is always one expense
         and one income), so this is a row no door writes, and the case is a
         defence-in-depth grade of the predicate over the ``is_settled``
-        column rather than over a state the application produces.
+        column rather than over a state the application produces.  Laid
+        bare, the transfer holds no side record, the shape of a ``$0.00``
+        close, so it stores the figure that close stores, ``0.00`` and typed
+        (ruling **R-BAL365**): since plan step ``balance:X-bi-6-4d-2``'s
+        4d-4b-2 leaf the band trigger's figure arm refuses a settled transfer
+        storing no figure.
         """
         with app.app_context():
             xfer_template, xfer = _make_transfer_template_with_status(
@@ -295,6 +303,12 @@ class TestTransferTemplateHasPaidHistorySemanticIsSettled:
             )
             xfer.status_id = (
                 db.session.query(Status).filter_by(name="Received").one().id
+            )
+            xfer.settled_figure_pair = SettledFigure(
+                Decimal("0.00"),
+                ref_cache.movement_figure_source_id(
+                    MovementFigureSourceEnum.TYPED,
+                ),
             )
             db.session.commit()
             assert transfer_template_has_paid_history(xfer_template.id) is True

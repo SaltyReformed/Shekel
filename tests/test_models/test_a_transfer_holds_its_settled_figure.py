@@ -5,9 +5,12 @@ Plan step ``balance:X-bi-6-4d-2``'s 4d-4 half (rulings **R-BAL365**,
 **R-BAL366**).  The revision gives a settled transfer's figure and who wrote it
 ONE home on ``budget.transfers``, copied off its side records, and refuses
 while the records do not state one figure.  Each case downgrades a head
-database through the revision (the columns go; the records' copy is the only
-one again), stages a state, and drives the upgrade or the downgrade, graded on
-what the database holds after.
+database through head's revision ``b7d2e4f19a63`` (:data:`_SIDE_RECORD_FIGURE`,
+which copies each transfer's figure back onto its records) and then through
+this one (the columns go; the records' copy is the only one again), stages a
+state, and drives the upgrade or the downgrade, graded on what the database
+holds after.  This revision's downgrade never runs from head: there a side's
+record states no figure, and the band's figure arm reads the columns it drops.
 """
 
 from decimal import Decimal
@@ -30,6 +33,13 @@ from tests._test_helpers import (
 
 _MIGRATION = load_migration_module(
     "993eae6ade80_a_transfer_holds_its_settled_figure.py",
+)
+
+#: The revision above, head: a side's record holds no figure.  Its downgrade
+#: runs before this revision's; where a case returns to head, its upgrade runs
+#: after this revision's.
+_SIDE_RECORD_FIGURE = load_migration_module(
+    "b7d2e4f19a63_a_side_record_holds_no_figure.py",
 )
 
 
@@ -108,6 +118,7 @@ class TestTheUpgradeCopiesEachFigure:
             )).id
             db.session.commit()
 
+            run_migration_callable(_SIDE_RECORD_FIGURE.downgrade, db.session)
             run_migration_callable(_MIGRATION.downgrade, db.session)
             assert not _figure_columns()
             run_migration_callable(_MIGRATION.upgrade, db.session)
@@ -121,6 +132,7 @@ class TestTheUpgradeCopiesEachFigure:
             assert _stored(settled) == (Decimal("120.00"), resolved)
             assert _stored(kept) == (Decimal("75.00"), resolved)
             assert _stored(planned) == (None, None)
+            run_migration_callable(_SIDE_RECORD_FIGURE.upgrade, db.session)
 
 
 class TestTheUpgradeRefuses:
@@ -147,6 +159,7 @@ class TestTheUpgradeRefuses:
                 xfer_id, seed_user["user"].id, figure=typed(Decimal("0")),
             )
             db.session.commit()
+            run_migration_callable(_SIDE_RECORD_FIGURE.downgrade, db.session)
             run_migration_callable(_MIGRATION.downgrade, db.session)
             self._refused(
                 r"(?s)settled holding no record.*revert each to Projected in the "
@@ -159,6 +172,7 @@ class TestTheUpgradeRefuses:
         """Two records whose figures differ state no ONE figure: refused."""
         with app.app_context():
             xfer_id = _settled(seed_user, seed_periods, "60.00")
+            run_migration_callable(_SIDE_RECORD_FIGURE.downgrade, db.session)
             run_migration_callable(_MIGRATION.downgrade, db.session)
             db.session.execute(
                 text(
@@ -175,6 +189,7 @@ class TestTheUpgradeRefuses:
         with app.app_context():
             xfer_id = _settled(seed_user, seed_periods, "60.00")
             _set_status(xfer_id, seed_user["user"].id, StatusEnum.PROJECTED)
+            run_migration_callable(_SIDE_RECORD_FIGURE.downgrade, db.session)
             run_migration_callable(_MIGRATION.downgrade, db.session)
             db.session.execute(
                 text(
@@ -201,6 +216,7 @@ class TestTheDowngrade:
             )
             db.session.commit()
             assert _stored(xfer_id)[0] == Decimal("0.00")
+            run_migration_callable(_SIDE_RECORD_FIGURE.downgrade, db.session)
             run_migration_callable(_MIGRATION.downgrade, db.session)
             assert not _figure_columns()
 
@@ -210,6 +226,9 @@ class TestTheDowngrade:
         """Dropping a figure the records contradict would lose what the app read: refused."""
         with app.app_context():
             xfer_id = _settled(seed_user, seed_periods, "60.00")
+            # Tampered BELOW head, once the records state the figure again:
+            # at head the downgrade above would copy the tamper onto them.
+            run_migration_callable(_SIDE_RECORD_FIGURE.downgrade, db.session)
             db.session.execute(
                 text(
                     "UPDATE budget.transfers SET settled_figure = 999.00 "

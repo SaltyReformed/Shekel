@@ -576,18 +576,18 @@ def _record_onto(
 def record_figure(
     movement: TransactionEntry, settlement: Settlement, name: str,
 ) -> bool:
-    """Write a settle's FIGURE onto *movement*: the amount, who wrote it, and its name.
+    """Write a settle's FIGURE onto a row's covering *movement*: amount, source and name.
 
-    The figure half of what a settle records, stated once for both arms of
-    the seam -- :func:`_record_onto` for a row's covering movement and
-    ``_side`` for a transfer side's record (plan step
-    ``balance:X-bi-6-4d-2``).  The day is each arm's own.
+    The figure half of what a settle records, for the ROW arm alone
+    (:func:`_record_onto`).  A transfer side's record states no figure --
+    the transfer holds it once (``_side._state_figure``; plan step
+    ``balance:X-bi-6-4d-2``, ruling **R-BAL366**) -- so ``_side`` writes only
+    the side's name and day.
 
     Args:
-        movement: The covering movement or side record being written.
+        movement: The row's covering movement being written.
         settlement: The record, carrying a figure and its source.
-        name: What the payment is called -- the plan row's name, or the
-            transfer side's leg label.
+        name: What the payment is called: the plan row's name.
 
     Returns:
         Whether the figure, its source or the name netted a change against

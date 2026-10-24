@@ -29,7 +29,8 @@ day a case checks changed.  Until that step the service wrote these states.
 **And no transfer has a twin at head** since plan step
 ``balance:X-bi-6-4d-3``, whose revision (:data:`_TWINS_DELETED`) deletes
 them and refuses a new one.  So each case runs that revision's downgrade
-ONCE, once its transfers exist and before any plant (:func:`_twins_built`):
+ONCE, after head's own (:data:`_SIDE_RECORD_FIGURE`), once its transfers
+exist and before any plant (:func:`_twins_built`):
 it builds each transfer's two twins, saying its transfer's status and, its
 sides holding no record, no day -- the Projected, undated pair the create
 door below that step wrote, which the plants then settle -- on the schema
@@ -76,6 +77,13 @@ _MIGRATION = load_migration_module(
 #: whose downgrade builds them back (the module docstring).
 _TWINS_DELETED = load_migration_module("82f7b7ed4332_a_transfer_is_one_row.py")
 
+#: Plan step ``balance:X-bi-6-4d-2``'s head revision, which moves a side's
+#: figure onto its transfer and installs the band's figure arm; its downgrade
+#: runs first on the way down (the module docstring).
+_SIDE_RECORD_FIGURE = load_migration_module(
+    "b7d2e4f19a63_a_side_record_holds_no_figure.py",
+)
+
 
 class TestTheRevision:
     """Where the revision sits in the chain."""
@@ -107,10 +115,13 @@ def _transfer(seed_user, period, name):
 def _twins_built():
     """Run :data:`_TWINS_DELETED`'s downgrade: two twins for every transfer (the module docstring).
 
-    Once per case, after its transfers exist: a transfer made after it gets
-    no twin, and a second run fails, since the refusal it drops is gone.
-    Committed, as every migration call is.
+    Head's revision's downgrade (:data:`_SIDE_RECORD_FIGURE`) runs first,
+    as the way down does: it withdraws the band's figure arm, which no
+    revision below holds.  Once per case, after its transfers exist: a
+    transfer made after it gets no twin, and a second run fails, since the
+    refusal it drops is gone.  Committed, as every migration call is.
     """
+    run_migration_callable(_SIDE_RECORD_FIGURE.downgrade, db.session)
     run_migration_callable(_TWINS_DELETED.downgrade, db.session)
 
 

@@ -94,10 +94,11 @@ class TestTheTransferArm:
         """Return ``{account id: payment record}`` for each side that holds one.
 
         What a tick records on each side since plan step
-        ``balance:X-bi-6-4d-2`` -- the day, the figure, its source and the
-        statement link -- hung off the TRANSFER by a side link, read by
-        independent SQL (ruling R-BAL167 class 4, plan step
-        balance:X-bi-6-4d-2); the shadows carried it until then.
+        ``balance:X-bi-6-4d-2`` -- the day and the statement link -- hung off
+        the TRANSFER by a side link, read by independent SQL (ruling R-BAL167
+        class 4, plan step balance:X-bi-6-4d-2); the shadows carried it until
+        then.  The figure and its source each record carried beside them are
+        stored once on the transfer since that step's 4d-4 half.
         """
         records = {}
         for account_id in (transfer.from_account_id, transfer.to_account_id):
@@ -429,8 +430,9 @@ class TestTheTransferArm:
 
         The panel prefills every correctable row, so a five-row submit posts
         five figures.  Recording an echo as a correction would destroy the only
-        signal that says a human read one off a statement: each side record's
-        figure SOURCE, as the read below says (it was the shadows'
+        signal that says a human read one off a statement: the transfer's
+        figure SOURCE, as the read below says (each side record's until plan
+        step balance:X-bi-6-4d-2's 4d-4 half; it was the shadows'
         ``actual_amount``, NULL on all 17 settled transfer shadows in
         production when measured on 2026-08-12).
         Each leg's record is its
@@ -451,12 +453,16 @@ class TestTheTransferArm:
             db.session.expire_all()
             # Both legs RECORD what the settle booked, on the ``resolved``
             # source -- an echoed prefill is not a correction, and since plan
-            # step X-au-c3 "not a correction" is the record's SOURCE rather
-            # than a NULL figure.
+            # step X-au-c3 "not a correction" is the figure's SOURCE rather
+            # than a NULL figure, stored on each record's TRANSFER since plan
+            # step balance:X-bi-6-4d-2's 4d-4 half.
             records = self._side_records(transfer)
             assert len(records) == 2
             assert {
-                record.figure_source_id for record in records.values()
+                (
+                    record.expense_transfer or record.income_transfer
+                ).settled_figure_source_id
+                for record in records.values()
             } == {
                 ref_cache.movement_figure_source_id(
                     MovementFigureSourceEnum.RESOLVED,

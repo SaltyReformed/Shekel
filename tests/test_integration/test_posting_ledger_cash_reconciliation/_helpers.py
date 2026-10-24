@@ -134,24 +134,28 @@ def _independent_transfer_shadow_effect(
 
     The transfer half of the balance-side truth: over the RECORDS on the
     account filed under a side of a settled (``status.is_settled``),
-    non-deleted transfer in *scenario_id*, add ``+amount`` for a to-side
-    record (``income_transfer_id``, money in) and ``-amount`` for a from-side
-    record (``expense_transfer_id``, money out).  A settled transfer holding
-    no record is a ``$0.00`` close and adds nothing (R-BAL82).  The same shape
-    as the Step-2 oracle's transfer reconciliation, read from the row tables.
-    It summed the settled transfer SHADOWS' figures by each shadow's status
-    and type until plan step ``balance:X-bi-6-4d-2`` stopped keeping a
-    shadow's status and moved the record onto the transfer; it reads the
-    transfer's status and the side links by its own SQL now, never through
-    ``transfer_legs``, the producer ``settled_transfer_effect`` joins (ruling
-    R-BAL167 class 4, plan step balance:X-bi-6-4d-2).  The name is kept.
+    non-deleted transfer in *scenario_id*, add the TRANSFER's settled figure
+    (``budget.transfers.settled_figure``) as ``+figure`` for a to-side record
+    (``income_transfer_id``, money in) and ``-figure`` for a from-side record
+    (``expense_transfer_id``, money out).  The figure is stored once on the
+    transfer since plan step ``balance:X-bi-6-4d-2`` (its 4d-4 half); each
+    side's record carried it until then and states no figure now.  A settled
+    transfer holding no record is a ``$0.00`` close and adds nothing
+    (R-BAL82).  The same shape as the Step-2 oracle's transfer
+    reconciliation, read from the row tables.  It summed the settled transfer
+    SHADOWS' figures by each shadow's status and type until plan step
+    ``balance:X-bi-6-4d-2`` stopped keeping a shadow's status and moved the
+    record onto the transfer; it reads the transfer's status, figure and the
+    side links by its own SQL now, never through ``transfer_legs``, the
+    producer ``settled_transfer_effect`` joins (ruling R-BAL167 class 4, plan
+    step balance:X-bi-6-4d-2).  The name is kept.
     """
     signed = case(
         (
             TransactionEntry.income_transfer_id.isnot(None),
-            TransactionEntry.amount,
+            Transfer.settled_figure,
         ),
-        else_=-TransactionEntry.amount,
+        else_=-Transfer.settled_figure,
     )
     return (
         _db.session.query(
@@ -535,16 +539,19 @@ def _checked_side_counter_net(counter, record_id: int, net: Decimal) -> Decimal:
 
     The transfer-side arm of :func:`_assert_counter_accounts_reconcile`: a
     side's net on the counter is the negation of its record's signed cash
-    effect -- ``+amount`` on transit for a from-side record (money left the
-    account), ``-amount`` for a to-side record -- or zero for a record the
-    ledger holds no money for (an un-dated record, kept across a revert whose
-    settle and reversal cancel).  Routing: a side's leg lands on the transit
-    row and nowhere else -- a transfer between the owner's own accounts is
-    neither income nor expense, so a category counter here is the very
-    mis-post ruling R-BAL45 rejected.  Read off the record's own columns, the
-    side links, not through ``transfer_legs``; it checked the side's SHADOW
-    here until plan step ``balance:X-bi-6-4d-2`` moved the record onto the
-    transfer (ruling R-BAL167 class 4).
+    effect -- the transfer's settled figure ``+figure`` on transit for a
+    from-side record (money left the account), ``-figure`` for a to-side
+    record -- or zero for a record the ledger holds no money for (an
+    un-dated record, kept across a revert whose settle and reversal cancel).
+    Routing: a side's leg lands on the transit row and nowhere else -- a
+    transfer between the owner's own accounts is neither income nor expense,
+    so a category counter here is the very mis-post ruling R-BAL45 rejected.
+    Read off the record's own columns, the side links, and the figure off the
+    TRANSFER's ``settled_figure`` column (its one home since plan step
+    ``balance:X-bi-6-4d-2``'s 4d-4 half; the record carried it until then),
+    not through ``transfer_legs``; it checked the side's SHADOW here until
+    plan step ``balance:X-bi-6-4d-2`` moved the record onto the transfer
+    (ruling R-BAL167 class 4).
 
     Args:
         counter: The counter :class:`LedgerAccount` the legs sit on.
@@ -562,9 +569,14 @@ def _checked_side_counter_net(counter, record_id: int, net: Decimal) -> Decimal:
         f"counter {counter.id}: transfer side record {record_id} is un-dated "
         f"but holds a non-zero net {net} -- a revert failed to reverse"
     )
+    figure = _db.session.get(
+        Transfer,
+        record.income_transfer_id if record.income_transfer_id is not None
+        else record.expense_transfer_id,
+    ).settled_figure
     expected_counter = (
-        -record.amount if record.income_transfer_id is not None
-        else record.amount
+        -figure if record.income_transfer_id is not None
+        else figure
     )
     assert net == expected_counter, (
         f"counter {counter.id}: transfer side record {record_id} net {net} "

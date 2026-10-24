@@ -87,13 +87,21 @@ class TestDeleteTransfer:
 
     @staticmethod
     def _sides(td, xfer_id):
-        """Each side's record ``(amount, settled_on)``, or ``None``, from Checking then Savings."""
+        """Each side's ``(figure, settled_on)``, or ``None``, from Checking then Savings.
+
+        ``None`` for a side holding no record.  A side holding one pairs the
+        figure the TRANSFER stores, the figure's one home since plan step
+        ``balance:X-bi-6-4d-2``'s 4d-4 half (rulings **R-BAL365**,
+        **R-BAL366**), where each record carried a copy until then, with the
+        day its record holds.
+        """
         db.session.expire_all()
+        figure = db.session.get(Transfer, xfer_id).settled_figure
         sides = []
         for account in (td["account"], td["savings_account"]):
             record = transfer_side_record(db.session, xfer_id, account.id)
             sides.append(
-                None if record is None else (record.amount, record.settled_on),
+                None if record is None else (figure, record.settled_on),
             )
         return tuple(sides)
 
@@ -230,10 +238,10 @@ class TestDeleteTransfer:
     ):
         """Only a SETTLED transfer is set back: a Cancelled one keeps its status.
 
-        Paid, reverted (each side keeps its $250.00 record un-dated, ruling
-        R-BAL61), then cancelled: the delete takes both records off, and the
-        transfer it hides is still Cancelled.  The case a set-back keyed on
-        the records alone would move to Projected.
+        Paid, reverted (each side keeps its record un-dated and the transfer
+        its $250.00 figure, ruling R-BAL61), then cancelled: the delete takes
+        both records off, and the transfer it hides is still Cancelled.  The
+        case a set-back keyed on the records alone would move to Projected.
         """
         with app.app_context():
             td = transfer_data

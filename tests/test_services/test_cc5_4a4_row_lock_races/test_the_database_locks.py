@@ -257,15 +257,21 @@ class TestTheDatabaseLocksTheTransfer:
 
     @staticmethod
     def _raw_insert(transfer_id, account_id, owner_id):
-        """Return a click writing the from-side's kept payment record, raw."""
+        """Return a click writing the from-side's kept payment record, raw.
+
+        The record states no figure and no figure source: a side's record
+        holds neither since plan step ``balance:X-bi-6-4d-2``'s 4d-4 half
+        (``ck_transaction_entries_side_record_states_no_figure``,
+        ``ck_transaction_entries_side_record_names_no_figure_source``); the
+        transfer stores them.
+        """
         def click():
             _db.session.execute(
                 text(
                     "INSERT INTO budget.transaction_entries (expense_transfer_id, "
-                    "account_id, owner_id, user_id, amount, description, "
-                    "covers_settlement, figure_source_id) "
-                    "SELECT :t, :a, :o, :o, 500.00, 'Race record', TRUE, id "
-                    "FROM ref.movement_figure_sources WHERE name = 'resolved'"
+                    "account_id, owner_id, user_id, description, "
+                    "covers_settlement) "
+                    "VALUES (:t, :a, :o, :o, 'Race record', TRUE)"
                 ),
                 {"t": transfer_id, "a": account_id, "o": owner_id},
             )

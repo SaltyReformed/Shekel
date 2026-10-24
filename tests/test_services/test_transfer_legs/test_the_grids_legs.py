@@ -99,7 +99,12 @@ class TestALegsRecordIsItsCoveringMovement:
     def test_a_settled_transfers_legs_carry_their_movements(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Each side's record is the covering movement on ITS account, dated."""
+        """Each side's record is the covering movement on ITS account, dated.
+
+        What the records moved is their transfer's settled figure, stored
+        once on the transfer since plan step ``balance:X-bi-6-4d-2``'s 4d-4
+        half; each record carried it until then and states none now.
+        """
         with app.app_context():
             checking = seed_user["account"]
             savings = _savings(seed_user)
@@ -123,7 +128,9 @@ class TestALegsRecordIsItsCoveringMovement:
                 movement = records[(settled.id, account.id)]
                 assert movement.account_id == account.id
                 assert movement.covers_settlement is True
-                assert movement.amount == Decimal("240.00")
+                assert (
+                    movement.expense_transfer or movement.income_transfer
+                ).settled_figure == Decimal("240.00")
                 assert movement.settled_on == date(2026, 2, 3)
             assert covering_movements_by_leg([]) == {}
 

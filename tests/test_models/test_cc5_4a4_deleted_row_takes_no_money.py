@@ -432,6 +432,16 @@ class TestWhatIsNeitherPasses:
                      "OR income_transfer_id = :t"),
                 {"t": transfer_id},
             )
+            # A settled transfer holding no record is a close of nothing,
+            # which states ``0.00`` and who typed it on the transfer (the
+            # band's figure arm, checked at the same commit).
+            db.session.execute(
+                text("UPDATE budget.transfers SET settled_figure = 0.00, "
+                     "settled_figure_source_id = (SELECT id FROM "
+                     "ref.movement_figure_sources WHERE name = 'typed') "
+                     "WHERE id = :t"),
+                {"t": transfer_id},
+            )
             db.session.commit()
             assert _held_by_transfer(transfer_id) == 0
 

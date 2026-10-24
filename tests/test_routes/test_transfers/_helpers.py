@@ -5,8 +5,11 @@
 from datetime import timedelta
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import MovementFigureSourceEnum
 from app.extensions import db
 from app.models.journal_entry import JournalEntry
+from app.models.settled_figure import SettledFigure
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
 from app.models.user import User, UserSettings
@@ -140,9 +143,12 @@ def _received_transfer_of(template, period, seed_user, figure):
     because the one door that settles refuses this status.  The PARENT's
     status is the one status since plan step ``balance:X-bi-6-4d-2``, and
     laid bare it leaves both sides holding no payment record (the shape of a
-    ``$0.00`` close, which the band rule stores).  It gave both twins the
-    status too until plan step ``balance:X-bi-6-4d-3``, which births none:
-    that loop ran over nothing (ruling R-BAL167 class 4, plan step
+    ``$0.00`` close, which the band rule stores).  So the figure a ``$0.00``
+    close stores is laid beside it, ``0.00`` and typed (ruling **R-BAL365**):
+    since that step's 4d-4b-2 leaf the band trigger's figure arm refuses a
+    settled transfer storing no figure.  It gave both twins the status too
+    until plan step ``balance:X-bi-6-4d-3``, which births none: that loop
+    ran over nothing (ruling R-BAL167 class 4, plan step
     balance:X-bi-6-4d-3).
     """
     xfer = transfer_repriced_by_the_owner(
@@ -150,6 +156,10 @@ def _received_transfer_of(template, period, seed_user, figure):
     )
     received = db.session.query(Status).filter_by(name="Received").one()
     xfer.status_id = received.id
+    xfer.settled_figure_pair = SettledFigure(
+        Decimal("0.00"),
+        ref_cache.movement_figure_source_id(MovementFigureSourceEnum.TYPED),
+    )
     db.session.flush()
     return xfer
 

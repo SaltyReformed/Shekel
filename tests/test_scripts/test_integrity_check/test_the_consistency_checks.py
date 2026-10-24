@@ -144,6 +144,10 @@ class TestDataConsistency:
             assert dc02.details[0]["from_account_id"] == account.id
             assert dc02.details[0]["to_account_id"] == account.id
         finally:
+            # The INSERT's deferred figure-arm event would block the ALTER.
+            db.session.execute(db.text(
+                "SET CONSTRAINTS budget.ck_side_record_figure_on_insert IMMEDIATE"
+            ))
             # Restore the CHECK constraint.
             db.session.execute(db.text(
                 "ALTER TABLE budget.transfers "

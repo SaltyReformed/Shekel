@@ -16,8 +16,9 @@ this is that case.
 
 Which side each read takes is graded directly too
 (:class:`TestEachSideReadsItsOwnRecord`): on every door-written state both
-sides carry one figure and one source, so the settle and the update cannot
-tell the sides apart, and the leaf's delta review measured a mutant reading
+sides share one figure and one source (the transfer's, since plan step
+``balance:X-bi-6-4d-2``'s 4d-4 half; each side's record carried a copy until
+then), so the settle and the update cannot tell the sides apart, and the leaf's delta review measured a mutant reading
 the INCOME side for both passing the full suite.
 """
 
@@ -78,8 +79,11 @@ class TestAMoveAndSettleHonoursTheRetainedCorrection:
 
         Both sides' record lists are loaded before the update, so no lazy
         load in the move autoflushes the re-pointed account.  The settle must
-        still find the expense side's kept record and honour its typed
-        $214.37 on both legs, the source side now booked on the new account.
+        still find the expense side's kept record and honour the typed
+        $214.37 kept beside it on both legs, the source side now booked on the
+        new account.  The figure is the TRANSFER's, its one home since plan
+        step balance:X-bi-6-4d-2's 4d-4 half; each side's record carried it
+        until then and states none now.
         The records hang off the TRANSFER by their side links since plan step
         balance:X-bi-6-4d-2, so the lists loaded are the transfer's
         (``expense_movements`` / ``income_movements``) and each side's record
@@ -134,5 +138,7 @@ class TestAMoveAndSettleHonoursTheRetainedCorrection:
             assert set(records) == {other.id, savings.id}
             assert records[other.id].expense_transfer_id == transfer.id
             for record in records.values():
-                assert record.amount == Decimal("214.37")
+                assert (
+                    record.expense_transfer or record.income_transfer
+                ).settled_figure == Decimal("214.37")
                 assert record.settled_on is not None

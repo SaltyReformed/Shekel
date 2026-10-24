@@ -231,7 +231,10 @@ class TestADayTypedOnAZeroCloseIsRefused:
             db.session.rollback()
 
             assert [record.id for record in _records(xfer.id)] == kept
-            assert all(record.amount == _AMOUNT for record in _records(xfer.id))
+            # The figure is the TRANSFER's since plan step
+            # balance:X-bi-6-4d-2's 4d-4 half (ruling R-BAL366), where each
+            # record carried a copy until then.
+            assert db.session.get(Transfer, xfer.id).settled_figure == _AMOUNT
             assert _stored(xfer.id) == before
 
     def test_a_zero_settle_from_projected_beside_a_day_is_refused(
@@ -274,7 +277,10 @@ class TestADayTypedOnAZeroCloseIsRefused:
             expense, income = _records(xfer.id)
             assert recorded_settle_day(expense) == an_entered_day(day)
             assert recorded_settle_day(income) == SettleDay(day=day, basis=BORROWED)
-            assert expense.amount == income.amount == _AMOUNT
+            # The figure is the TRANSFER's since plan step
+            # balance:X-bi-6-4d-2's 4d-4 half (ruling R-BAL366), where each
+            # record carried a copy until then.
+            assert db.session.get(Transfer, xfer.id).settled_figure == _AMOUNT
 
 
 class TestACorrectedZeroCloseIsNeverDatedAfterToday:

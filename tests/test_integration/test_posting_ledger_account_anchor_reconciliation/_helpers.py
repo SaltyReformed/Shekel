@@ -155,10 +155,11 @@ def _independent_source_effect(txn) -> Decimal:
     for income / ``-`` for an expense.  ``effective`` is the model property
     (``actual`` over ``estimated``).  Independent of the posting builder (it
     never imports ``_signed_cash_leg``); the linked leg for *txn* equals this.
-    A transfer side's effect is its record's, read by
-    :func:`_independent_transfer_side_effects` (it was its shadow's settled
-    figure here until plan step ``balance:X-bi-6-4d-2``; ruling R-BAL167
-    class 4).
+    A transfer side's effect is its transfer's settled figure on its
+    record's day, read by :func:`_independent_transfer_side_effects` (it was
+    its shadow's settled figure here until plan step
+    ``balance:X-bi-6-4d-2``, and its record's until that step's 4d-4 half;
+    ruling R-BAL167 class 4).
     """
     credit_sum = sum(
         (entry.amount for entry in txn.entries if entry.is_credit),
@@ -175,10 +176,14 @@ def _independent_transfer_side_effects(
 
     Over the RECORDS on *account_id* filed under a side of a settled
     (``status.is_settled``), non-deleted transfer in *scenario_id*: the
-    record's stored ``settled_on`` and ``+amount`` for a to-side record
-    (``income_transfer_id``, money in) or ``-amount`` for a from-side record
-    (``expense_transfer_id``, money out).  A settled transfer holding no
-    record is a ``$0.00`` close and moves nothing (R-BAL82).  A settled side's
+    record's stored ``settled_on`` and the TRANSFER's settled figure
+    (``budget.transfers.settled_figure``) as ``+figure`` for a to-side record
+    (``income_transfer_id``, money in) or ``-figure`` for a from-side record
+    (``expense_transfer_id``, money out).  The figure is stored once on the
+    transfer since plan step ``balance:X-bi-6-4d-2`` (its 4d-4 half); each
+    side's record carried it until then and states no figure now.  A settled
+    transfer holding no record is a ``$0.00`` close and moves nothing
+    (R-BAL82).  A settled side's
     record carries its day, and an undated one under a settled transfer is a
     state the database refuses, so a missing day is REFUSED here as
     :func:`_source_settled_day` refuses one.  The transfer's status and the
@@ -192,7 +197,7 @@ def _independent_transfer_side_effects(
         _db.session.query(
             TransactionEntry.id,
             TransactionEntry.settled_on,
-            TransactionEntry.amount,
+            Transfer.settled_figure,
             TransactionEntry.income_transfer_id,
         )
         .select_from(Transfer)
@@ -212,14 +217,14 @@ def _independent_transfer_side_effects(
         .all()
     )
     effects = []
-    for record_id, settled_on, amount, income_transfer_id in rows:
+    for record_id, settled_on, figure, income_transfer_id in rows:
         assert settled_on is not None, (
             f"record {record_id} is a settled transfer side's but carries no "
             "settled_on -- the database refuses this state, so a fixture "
             "that produced it is broken"
         )
         effects.append(
-            (settled_on, amount if income_transfer_id is not None else -amount)
+            (settled_on, figure if income_transfer_id is not None else -figure)
         )
     return effects
 

@@ -524,11 +524,12 @@ class TestTheTransferArmThroughItsROUTE:
                     f"the tick recorded no payment on account {account_id}"
                 )
                 assert record.settled_on == display_today()
-                # Nobody typed a figure, so the record's source is
-                # ``resolved`` -- which is where "did a human correct this"
-                # lives since plan step X-au-c3 (on the covering movement since
-                # X-bi-4b-2), rather than in the figure's NULL-ness.
-                assert record.figure_source_id == resolved
+            # Nobody typed a figure, so the transfer's figure source is
+            # ``resolved`` -- which is where "did a human correct this" lives
+            # since plan step X-au-c3 (on the covering movement since X-bi-4b-2,
+            # and on the transfer, the figure's one home, since X-bi-6-4d-2's
+            # 4d-4 half), rather than in the figure's NULL-ness.
+            assert parent.settled_figure_source_id == resolved
 
     def test_a_correction_typed_on_a_transfer_lands_on_BOTH_legs(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -578,8 +579,10 @@ class TestTheTransferArmThroughItsROUTE:
         the figure the row would book anyway.  Without this case the
         correction test is satisfied by a verb that writes whatever it is
         handed, which would record every settled transfer's figure as typed
-        and destroy the signal that says a human typed one: each side record's
-        figure source, read below.  Each
+        and destroy the signal that says a human typed one: the transfer's
+        figure source, read below, its one home since plan step
+        ``balance:X-bi-6-4d-2``'s 4d-4 half (ruling **R-BAL366**), where each
+        side record carried a copy until then.  Each
         leg is its side's payment RECORD since plan step
         ``balance:X-bi-6-4d-2``; the shadows held it until then (ruling
         R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
@@ -605,16 +608,16 @@ class TestTheTransferArmThroughItsROUTE:
             resolved = ref_cache.movement_figure_source_id(
                 MovementFigureSourceEnum.RESOLVED,
             )
+            # An ECHOED prefill is not a correction: the transfer says
+            # ``resolved`` and states the figure the settle booked.
+            assert parent.settled_figure_source_id == resolved
             for account_id in (parent.from_account_id, parent.to_account_id):
-                # An ECHOED prefill is not a correction: the record says
-                # ``resolved`` and states the figure the settle booked.
                 record = transfer_side_record(
                     db.session, transfer_id, account_id,
                 )
                 assert record is not None, (
                     f"the tick recorded no payment on account {account_id}"
                 )
-                assert record.figure_source_id == resolved
                 assert transfer_side_figure(
                     db.session, transfer_id, account_id,
                 ) == Decimal("75.00")

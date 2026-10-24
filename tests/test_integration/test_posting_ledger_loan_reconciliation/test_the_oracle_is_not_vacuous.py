@@ -44,10 +44,11 @@ class TestOracleIsNotVacuous:
 
         A reconciled $1,000 payment has linked net +500, income cash +1,000, and
         non-principal corrections +500, so ``linked == income - non_principal``
-        holds.  Forcing the loan side's RECORD -- the movement filed under the
-        transfer's to-side, whose figure is the cash (ruling R-BAL167 class 4,
-        plan step balance:X-bi-6-4d-2; the income shadow held it until then)
-        -- to 9,999 via raw SQL (no re-sync) pushes the income cash to
+        holds.  Forcing the TRANSFER's settled figure -- the cash its loan
+        side's record moved, stored once on the transfer since plan step
+        balance:X-bi-6-4d-2 (its 4d-4 half; the record carried it before, and
+        the income shadow before that, ruling R-BAL167 class 4) -- to 9,999
+        via raw SQL (no re-sync) pushes the income cash to
         +9,999 while the posted ledger is
         unchanged -- so ``income - non_principal`` becomes 9,499, no longer the
         +500 linked net.  The superseding invariant the sweep relies on now FAILS,
@@ -67,18 +68,19 @@ class TestOracleIsNotVacuous:
             # Reconciled before tampering.
             assert linked == income - non_principal
 
-            # Tamper the RECORDED cash (entries carry no balance trigger, so
-            # this commits); the posted ledger is left untouched.  It is the
-            # record and not the plan since plan step X-au-c3: a settled row's
-            # cash is what it recorded as having moved, on its covering
-            # movement (plan step balance:X-bi-4b-2).  The loan side's record
-            # hangs off the TRANSFER by its to-side link, not off the income
-            # shadow (ruling R-BAL167 class 4, plan step balance:X-bi-6-4d-2).
+            # Tamper the RECORDED cash (a settled transfer holding two dated
+            # records and a figure above zero is a state the commit grade
+            # admits, so this commits); the posted ledger is left untouched.
+            # It is the recorded figure and not the plan since plan step
+            # X-au-c3: a settled row's cash is what it recorded as having
+            # moved.  The loan side's record hangs off the TRANSFER by its
+            # to-side link, not off the income shadow (ruling R-BAL167 class
+            # 4, plan step balance:X-bi-6-4d-2), and the figure it moved is
+            # stored once on the transfer since that step's 4d-4 half.
             db.session.execute(_db.text(
-                "UPDATE budget.transaction_entries SET amount = 9999 "
-                "WHERE income_transfer_id = :t AND account_id = :a "
-                "AND covers_settlement"
-            ), {"t": xfer.id, "a": loan.id})
+                "UPDATE budget.transfers SET settled_figure = 9999 "
+                "WHERE id = :t"
+            ), {"t": xfer.id})
             db.session.commit()
 
             tampered_income = _independent_settled_income_cash(

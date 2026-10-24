@@ -20,6 +20,7 @@ from tests._test_helpers import (
 )
 
 from ._helpers import (
+    _ABOVE,
     _BELOW,
     _downgrade,
     _upgrade,
@@ -83,6 +84,16 @@ def _transfer_drift(field, request, seed_user, seed_periods, van):
         "is_deleted": lambda: ("is_deleted", True),
     }[field]()
     return {column: value}
+
+
+#: A ``$0.00`` close of transfer ``:t`` at status ``:p``, by SQL: the close
+#: states its figure on the transfer, ``0.00`` and who typed it, as the band's
+#: figure arm requires of a settled transfer.
+_ZERO_CLOSE_SQL = (
+    "UPDATE budget.transfers SET status_id = :p, settled_figure = 0.00, "
+    "settled_figure_source_id = (SELECT id FROM ref.movement_figure_sources "
+    "WHERE name = 'typed') WHERE id = :t"
+)
 
 
 def _side_value(parent, field, *, income):
@@ -365,9 +376,7 @@ class TestTheDowngrade:
             )).scalar_one()
             _downgrade()
             day = seed_periods[0].start_date
-            db.session.execute(text(
-                "UPDATE budget.transfers SET status_id = :p WHERE id = :t"
-            ), {"p": paid, "t": early.id})
+            db.session.execute(text(_ZERO_CLOSE_SQL), {"p": paid, "t": early.id})
             db.session.execute(text(
                 "UPDATE budget.transactions SET status_id = :p, "
                 "settled_on = :d, settled_day_basis_id = :b "
@@ -375,9 +384,7 @@ class TestTheDowngrade:
             ), {"p": paid, "d": day, "b": entered, "t": early.id})
             db.session.commit()
             _upgrade()
-            db.session.execute(text(
-                "UPDATE budget.transfers SET status_id = :p WHERE id = :t"
-            ), {"p": paid, "t": late.id})
+            db.session.execute(text(_ZERO_CLOSE_SQL), {"p": paid, "t": late.id})
             db.session.commit()
             _downgrade()
 
@@ -696,7 +703,7 @@ class TestTheCensusBelowStillRefuses:
 def test_the_revision_below_takes_what_this_downgrade_writes(
     app, seed_user, seed_periods,
 ):
-    """82f7 down, e616 down, e616 up, 82f7 up, over every post-upgrade shape.
+    """b7d2 down, 82f7 down, e616 down, e616 up, 82f7 up, b7d2 up, over every post-upgrade shape.
 
     ``e616adf7fe22``'s downgrade, which runs next in a chain, requires every
     twin to say its transfer's status and its side's record's day, basis and
@@ -747,9 +754,9 @@ def test_the_revision_below_takes_what_this_downgrade_writes(
     _db.session.commit()
     transfer_service.delete_transfer(ids["gone"], user_id)
     _db.session.commit()
-    _db.session.execute(text(
-        "UPDATE budget.transfers SET status_id = :p WHERE id = :t"
-    ), {"p": _status_id("Paid"), "t": ids["zero"]})
+    _db.session.execute(
+        text(_ZERO_CLOSE_SQL), {"p": _status_id("Paid"), "t": ids["zero"]},
+    )
     _db.session.commit()
     born = create_settled_transfer(
         seed_user, _db.session, savings, van, seed_periods[3],
@@ -765,6 +772,7 @@ def test_the_revision_below_takes_what_this_downgrade_writes(
         "OR income_transfer_id IS NOT NULL GROUP BY 1"
     )).all())
 
+    run_migration_callable(_ABOVE.downgrade, _db.session)
     _downgrade()
     run_migration_callable(_BELOW.downgrade, _db.session)
     records = dict(_db.session.execute(text(
@@ -774,6 +782,7 @@ def test_the_revision_below_takes_what_this_downgrade_writes(
     )).all())
     run_migration_callable(_BELOW.upgrade, _db.session)
     _upgrade()
+    run_migration_callable(_ABOVE.upgrade, _db.session)
 
     # Every record a side held is back on its side's twin, the moved and the
     # born-since transfers' both sides among them.
@@ -799,6 +808,9 @@ def test_a_database_the_app_wrote_below_takes_that_revisions_way_down(
     app, seed_user, seed_periods, born_settled, status,
 ):
     """A status act at ``e616adf7fe22``: up through this revision, then down through both.
+
+    Head's revision (:data:`_ABOVE`) goes down before this one's second
+    downgrade and up after its last upgrade, as the chain does.
 
     From ``e616adf7fe22`` the app writes a settle, revert or cancel on the
     transfer and its sides' records and never on a twin, so afterwards the
@@ -839,6 +851,7 @@ def test_a_database_the_app_wrote_below_takes_that_revisions_way_down(
     )
 
     _upgrade()
+    run_migration_callable(_ABOVE.downgrade, _db.session)
     counts = _downgrade_counts()
 
     assert counts == {
@@ -852,6 +865,7 @@ def test_a_database_the_app_wrote_below_takes_that_revisions_way_down(
     run_migration_callable(_BELOW.downgrade, _db.session)
     run_migration_callable(_BELOW.upgrade, _db.session)
     _upgrade()
+    run_migration_callable(_ABOVE.upgrade, _db.session)
 
     assert _twin_rows([xfer_id]) == []
     assert {

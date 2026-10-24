@@ -27,6 +27,13 @@ _BELOW = load_migration_module(
 )
 
 
+#: Head's revision, which empties a side's record of the figure its transfer
+#: holds.  A chain down to :data:`_BELOW` runs its downgrade first, which
+#: copies each transfer's figure back onto its records (the shape every
+#: revision below holds), and its upgrade last.
+_ABOVE = load_migration_module("b7d2e4f19a63_a_side_record_holds_no_figure.py")
+
+
 #: Every column of a twin row, read back as one tuple per twin.
 _TWIN_ROWS_SQL = (
     "SELECT t.* FROM budget.transactions t "

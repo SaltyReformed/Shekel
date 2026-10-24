@@ -358,11 +358,14 @@ class TestUpdateTransfer:
         TELLS the user to revert in order to edit, so the app's own instruction
         deleted a figure they had read off a statement.
 
-        Both sides' payment records keep it, which is Transfer Invariant 3 over
-        the record as well as over the amount, and neither is worth it while
-        unsettled -- a side's figure asks the TRANSFER's status, so it answers
-        ``None`` for a reverted side whatever its record still carries.  Each
-        side is its RECORD, hung off the transfer, since plan step
+        The TRANSFER keeps it, the figure's one home since plan step
+        ``balance:X-bi-6-4d-2``'s 4d-4 half (rulings **R-BAL365**,
+        **R-BAL366**), where both sides' payment records kept an equal copy
+        until then (Transfer Invariant 3 over the record as well as over the
+        amount), and neither side is worth it while unsettled -- a side's
+        figure asks the TRANSFER's status, so it answers ``None`` for a
+        reverted side whatever the transfer still stores.  Each side is its
+        RECORD, hung off the transfer, since plan step
         ``balance:X-bi-6-4d-2``; the shadows held it until then (ruling
         R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
@@ -395,8 +398,9 @@ class TestUpdateTransfer:
                 # The ASSERTION is withdrawn ...
                 assert record.settled_on is None
                 assert record.reconciled_by_id is None
-                # ... and WHAT MOVED is kept, on BOTH sides (Invariant 3).
-                assert (record.amount, record.figure_source_id) == (
+                # ... and WHAT MOVED is kept, for BOTH sides, on the transfer
+                # they share (Invariant 3).
+                assert (xfer.settled_figure, xfer.settled_figure_source_id) == (
                     Decimal("100"), typed_id,
                 )
                 # Kept, but not counted: the status is what decides.
@@ -532,14 +536,18 @@ class TestUpdateTransfer:
     def test_a_combined_edit_writes_every_field_it_names(
         self, app, db, transfer_data,
     ):
-        """An amount, Paid and a period in ONE edit land on the row; both records hold the amount.
+        """An amount, Paid and a period in ONE edit land on the row; the settle stores the amount.
 
         The settle runs after the amount is written (``_update`` applies a
         stated amount before its settle dispatch; the period this edit also
-        moves is written after the settle), so each side records the $999.99
-        the same edit wrote, dated, where the $250.00 the transfer was
-        created at would be a settle that ran first.  The row is re-read from
-        the database and each side's record read by its own SQL
+        moves is written after the settle), so the transfer stores the
+        $999.99 the same edit wrote as its settled figure, with each side's
+        record dated, where the $250.00 the transfer was created at would be
+        a settle that ran first.  The figure is the TRANSFER's, its one home
+        since plan step ``balance:X-bi-6-4d-2``'s 4d-4 half (rulings
+        **R-BAL365**, **R-BAL366**), where each side's record carried a copy
+        until then.  The row is re-read from the database and each side's
+        record read by its own SQL
         (:func:`tests._test_helpers.transfer_side_record`).  Moved here from
         the invariant group as ``test_multiple_updates_maintain_invariants``
         at plan step ``balance:X-bi-6-4d-3``'s checkpoint 2e-2b-1b-1 (ruling
@@ -575,6 +583,6 @@ class TestUpdateTransfer:
             )
             for account_id in sides:
                 record = transfer_side_record(db.session, xfer_id, account_id)
-                assert (record.amount, record.settled_on is not None) == (
+                assert (row.settled_figure, record.settled_on is not None) == (
                     Decimal("999.99"), True,
                 )

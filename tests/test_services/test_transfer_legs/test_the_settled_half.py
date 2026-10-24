@@ -30,7 +30,12 @@ class TestTheSettledHalfReadsTheLegOffItsTransfer:
     def test_recorded_legs_carry_their_transfer_side_and_movement(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """One leg per covering movement: the side is the link's, the account its endpoint."""
+        """One leg per covering movement: the side is the link's, the account its endpoint.
+
+        What a leg moved is its transfer's settled figure, stored once on the
+        transfer since plan step ``balance:X-bi-6-4d-2``'s 4d-4 half; the
+        leg's record carried it until then and states none now.
+        """
         with app.app_context():
             checking = seed_user["account"]
             savings = _savings(seed_user)
@@ -49,7 +54,8 @@ class TestTheSettledHalfReadsTheLegOffItsTransfer:
 
             assert [
                 (leg.transfer.id, leg.account_id, leg.is_income,
-                 leg.record.account_id, leg.record.amount, leg.record.settled_on)
+                 leg.record.account_id, leg.transfer.settled_figure,
+                 leg.record.settled_on)
                 for leg in legs
             ] == [
                 (settled.id, checking.id, False, checking.id,

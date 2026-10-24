@@ -395,7 +395,12 @@ class TestAcceptingALeg:
     def test_the_transfer_settles_on_the_banks_day_and_the_member_is_this_sides_movement(
         self, app, db, seed_user,
     ):
-        """Both sides move through the transfer's door; the act names Checking's movement."""
+        """Both sides move through the transfer's door; the act names Checking's movement.
+
+        What each side's record moved is the transfer's settled figure, its
+        one home since plan step ``balance:X-bi-6-4d-2``'s 4d-4 half; each
+        record carried it until then and states none now.
+        """
         savings = _savings(seed_user)
         transfer = _a_transfer(seed_user, savings)
         bank_day = seed_user["bootstrap_period"].start_date
@@ -416,7 +421,12 @@ class TestAcceptingALeg:
         into = _side_records(transfer, savings.id)[0]
         assert out.settled_on == bank_day
         assert into.settled_on == bank_day
-        assert out.amount == _AMOUNT and into.amount == _AMOUNT
+        assert (
+            (out.expense_transfer or out.income_transfer).settled_figure
+            == _AMOUNT
+            and (into.expense_transfer or into.income_transfer).settled_figure
+            == _AMOUNT
+        )
         assert matched_subjects(seed_user["account"].id).entries == {out.id}
 
     def test_one_of_several_legs_is_accepted_alone(self, app, db, seed_user):

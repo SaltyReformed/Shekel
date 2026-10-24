@@ -15,7 +15,11 @@ Each case writes the state with raw SQL or the bare ORM, the way a writer
 nobody enumerated would, against the database the suite runs on, and each
 refusal sits beside the control that lands.  The records planted are KEPT
 un-dated ones (a revert's, ruling R-BAL61) under a Projected transfer, the one
-side-record state no settle verb is needed to reach.
+side-record state no settle verb is needed to reach.  A side's record states
+no figure: its transfer holds the one the records moved, and holds a record
+on both sides or on neither (the band's figure arm, graded at COMMIT), so a
+case that commits records plants the revert's kept PAIR and its transfer's
+figure (:func:`_kept_pair`).
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from sqlalchemy import text
 from app import ref_cache
 from app.enums import MovementFigureSourceEnum
 from app.extensions import db as _db
+from app.models.settled_figure import SettledFigure
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from tests._test_helpers import (
@@ -71,6 +76,9 @@ def _transfer(seed_user, from_account, to_account):
 def _record(xfer, *, income=False, account_id=None, covers=True, row_id=None):
     """Stage one side's kept, un-dated payment record of *xfer*; returns it unflushed.
 
+    It states no figure and no source: its transfer holds both
+    (:func:`_kept_pair`).
+
     Args:
         xfer: The transfer.
         income: ``True`` for the to-side link, ``False`` for the from-side.
@@ -87,15 +95,26 @@ def _record(xfer, *, income=False, account_id=None, covers=True, row_id=None):
         account_id=account_id,
         owner_id=xfer.user_id,
         user_id=xfer.user_id,
-        amount=Decimal("500.00"),
         description="Side record",
         covers_settlement=covers,
-        figure_source_id=ref_cache.movement_figure_source_id(
-            MovementFigureSourceEnum.RESOLVED,
-        ),
     )
     _db.session.add(entry)
     return entry
+
+
+def _kept_pair(xfer):
+    """Stage both sides' kept records of *xfer* and the figure they moved; returns them.
+
+    A revert keeps both records and the figure, ``500.00`` resolved, on the
+    transfer (ruling R-BAL61); one record alone is a state the band's figure
+    arm refuses at COMMIT.  Returns ``(from-side record, to-side record)``,
+    unflushed.
+    """
+    xfer.settled_figure_pair = SettledFigure(
+        Decimal("500.00"),
+        ref_cache.movement_figure_source_id(MovementFigureSourceEnum.RESOLVED),
+    )
+    return _record(xfer), _record(xfer, income=True)
 
 
 def _refused_by(constraint):
@@ -114,8 +133,7 @@ class TestTheSideKeys:
         del app
         checking, savings, _van = _accounts(seed_user)
         xfer = _transfer(seed_user, checking, savings)
-        _record(xfer)
-        _record(xfer, income=True)
+        _kept_pair(xfer)
         _db.session.commit()
 
         stored = _db.session.execute(text(
@@ -157,7 +175,7 @@ class TestTheSideKeys:
         del app
         checking, savings, _van = _accounts(seed_user)
         xfer = _transfer(seed_user, checking, savings)
-        _record(xfer)
+        _kept_pair(xfer)
         _db.session.commit()
         _record(xfer)
         _refused_by("uq_transaction_entries_one_expense_side_record")
@@ -258,8 +276,7 @@ class TestTheSideKeysCarryAndKeep:
         del app
         checking, savings, van = _accounts(seed_user)
         xfer = _transfer(seed_user, checking, savings)
-        expense = _record(xfer)
-        income = _record(xfer, income=True)
+        expense, income = _kept_pair(xfer)
         _db.session.commit()
         expense_id, income_id = expense.id, income.id
 
@@ -276,12 +293,17 @@ class TestTheSideKeysCarryAndKeep:
         assert accounts == {expense_id: van.id, income_id: savings.id}
 
     def test_deleting_a_transfer_holding_a_record_is_refused(self, app, seed_user):
-        """A transfer holding a payment is history; only the removal act takes it off."""
+        """A transfer holding a payment is history; only the removal act takes it off.
+
+        The one from-side record is staged inside the save, flushed and never
+        committed: one record alone is a state the band's figure arm refuses
+        at COMMIT, and the side key refuses the DELETE at its own statement.
+        """
         del app
         checking, savings, _van = _accounts(seed_user)
         xfer = _transfer(seed_user, checking, savings)
         _record(xfer)
-        _db.session.commit()
+        _db.session.flush()
         with pytest.raises(sa_exc.IntegrityError) as excinfo:
             _db.session.execute(
                 text("DELETE FROM budget.transfers WHERE id = :t"),
@@ -314,14 +336,14 @@ class TestTheSideKeysCarryAndKeep:
         PostgreSQL's cascade re-writes the record's account through an UPDATE
         that names the link column too, so the arrival trigger fires -- and
         must not read the move as the record ARRIVING under the hidden
-        transfer.  The record comes off before COMMIT, so the hiding arm has
-        nothing to refuse; without the early return the endpoint UPDATE itself
-        is refused.
+        transfer.  Both records come off before COMMIT, and the figure they
+        moved with them, so the hiding arm has nothing to refuse; without the
+        early return the endpoint UPDATE itself is refused.
         """
         del app
         checking, savings, van = _accounts(seed_user)
         xfer = _transfer(seed_user, checking, savings)
-        record = _record(xfer)
+        record, _income = _kept_pair(xfer)
         _db.session.commit()
         record_id = record.id
         _hide_transfer(xfer.id)
@@ -332,10 +354,7 @@ class TestTheSideKeysCarryAndKeep:
         assert _db.session.execute(text(
             "SELECT account_id FROM budget.transaction_entries WHERE id = :e"
         ), {"e": record_id}).scalar_one() == van.id
-        _db.session.execute(
-            text("DELETE FROM budget.transaction_entries WHERE id = :e"),
-            {"e": record_id},
-        )
+        _take_the_pair_off(xfer.id)
         _db.session.commit()
 
 
@@ -343,6 +362,25 @@ def _hide_transfer(xfer_id):
     """Stage ``UPDATE ... SET is_deleted`` on transfer *xfer_id*; the caller commits."""
     _db.session.execute(
         text("UPDATE budget.transfers SET is_deleted = TRUE WHERE id = :t"),
+        {"t": xfer_id},
+    )
+
+
+def _take_the_pair_off(xfer_id):
+    """Stage both sides' records of *xfer_id* off, and the figure they moved; the caller commits.
+
+    The delete door's removal at head: every record either side holds, and
+    the transfer's figure released with them (a transfer holding no record
+    states no figure above zero).
+    """
+    _db.session.execute(
+        text("DELETE FROM budget.transaction_entries "
+             "WHERE expense_transfer_id = :t OR income_transfer_id = :t"),
+        {"t": xfer_id},
+    )
+    _db.session.execute(
+        text("UPDATE budget.transfers SET settled_figure = NULL, "
+             "settled_figure_source_id = NULL WHERE id = :t"),
         {"t": xfer_id},
     )
 
@@ -425,7 +463,7 @@ class TestTheDeletedRowTransferArm:
         del app
         accounts = _accounts(seed_user)
         live = _transfer(seed_user, accounts[0], accounts[1])
-        _record(live, income=income)
+        _kept_pair(live)
         hidden = _sharing_the_side(seed_user, accounts, income)
         _hide_transfer(hidden.id)
         _db.session.commit()
@@ -483,14 +521,10 @@ class TestTheDeletedRowTransferArm:
         del app
         checking, savings, _van = _accounts(seed_user)
         xfer = _transfer(seed_user, checking, savings)
-        _record(xfer)
+        _kept_pair(xfer)
         _db.session.commit()
         _hide_transfer(xfer.id)
-        _db.session.execute(
-            text("DELETE FROM budget.transaction_entries "
-                 "WHERE expense_transfer_id = :t"),
-            {"t": xfer.id},
-        )
+        _take_the_pair_off(xfer.id)
         _db.session.commit()
         assert _db.session.get(Transfer, xfer.id).is_deleted
 

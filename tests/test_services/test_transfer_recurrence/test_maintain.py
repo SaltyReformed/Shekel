@@ -118,9 +118,12 @@ class TestTransferMaintain:
         The state ruling X-au-c3 creates deliberately: ``status_seam`` releases
         the ASSERTION on the way out of the settled band (``settled_on``,
         ``reconciled_by_id``) and KEEPS what moved (each side's covering
-        movement, un-dated), because the full-edit popover instructs the owner
-        to revert in order to edit.  So the row is the rule's own again -- and
-        it carries a figure read off a bank statement.
+        movement, un-dated, and the figure the TRANSFER stores, its one home
+        since plan step ``balance:X-bi-6-4d-2``'s 4d-4 half, ruling
+        **R-BAL366**, where each movement carried a copy until then), because
+        the full-edit popover instructs the owner to revert in order to
+        edit.  So the row is the rule's own again -- and it carries a figure
+        read off a bank statement.
 
         Args:
             xfer: The transfer to settle and revert.
@@ -136,7 +139,11 @@ class TestTransferMaintain:
         )
         db.session.flush()
         records = self._side_records(xfer)
-        assert [record.amount for record in records] == [figure, figure], (
+        # The figure is the transfer's, read once per side holding a record.
+        assert [
+            None if record is None else xfer.settled_figure
+            for record in records
+        ] == [figure, figure], (
             "setup: both sides must retain the figure through the revert"
         )
         assert all(record.settled_on is None for record in records), (
@@ -358,9 +365,12 @@ class TestTransferMaintain:
             survivor = db.session.get(Transfer, recorded.id)
             assert survivor is not None
             # Each SIDE's record since plan step balance:X-bi-6-4d-2, where
-            # each leg's was read (ruling R-BAL167 class 1).
+            # each leg's was read (ruling R-BAL167 class 1), and the figure
+            # the TRANSFER stores since that step's 4d-4 half (ruling
+            # R-BAL366), read once per side holding a record.
             assert [
-                record.amount for record in self._side_records(survivor)
+                None if record is None else survivor.settled_figure
+                for record in self._side_records(survivor)
             ] == [
                 Decimal("321.45"), Decimal("321.45"),
             ]
@@ -587,9 +597,12 @@ class TestTransferMaintain:
             # The record it kept is untouched by the re-price: what MOVED and
             # what is PLANNED are different facts (plan step X-au-c3).  Each
             # SIDE's record since plan step balance:X-bi-6-4d-2, where each
-            # leg's was read (ruling R-BAL167 class 1).
+            # leg's was read (ruling R-BAL167 class 1), and the figure the
+            # TRANSFER stores since that step's 4d-4 half (ruling R-BAL366),
+            # read once per side holding a record.
             assert [
-                record.amount for record in self._side_records(held)
+                None if record is None else held.settled_figure
+                for record in self._side_records(held)
             ] == [
                 Decimal("58.00"), Decimal("58.00"),
             ]

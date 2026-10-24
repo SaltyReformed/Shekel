@@ -96,6 +96,13 @@ _M = load_migration_module("45f10b870c8b_the_record_is_its_movements.py")
 #: round trip's transfer pair needs.
 _TWINS_DELETED = load_migration_module("82f7b7ed4332_a_transfer_is_one_row.py")
 
+#: Plan step ``balance:X-bi-6-4d-2``'s head revision, which empties a side's
+#: record of the figure its transfer holds; its downgrade copies the figure
+#: back onto the records, the shape every revision below holds.
+_SIDE_RECORD_FIGURE = load_migration_module(
+    "b7d2e4f19a63_a_side_record_holds_no_figure.py",
+)
+
 _THE_CHECKS = (
     "ck_transactions_settled_amount",
     "ck_transactions_settled_amount_needs_basis",
@@ -252,6 +259,8 @@ class TestTheRoundTrip:
         twin and refuses a new one -- so no door writes the shape this
         revision reads any more (each twin settled, holding its covering
         movement).  The pair is settled through the door, then
+        ``b7d2e4f19a63``'s downgrade copies its transfer's figure back onto
+        both records (at head a side's record holds none), then
         ``82f7b7ed4332``'s downgrade builds its two twins, each with the
         transfer's status and its side record's day and basis, and both
         records are re-parented under their twins in one statement (the shape
@@ -289,6 +298,7 @@ class TestTheRoundTrip:
             amount=Decimal("200.00"),
         )
         db.session.commit()
+        _run(_SIDE_RECORD_FIGURE.downgrade, db.session)
         _run(_TWINS_DELETED.downgrade, db.session)
         _exec(
             "UPDATE budget.transaction_entries e SET transaction_id = t.id, "

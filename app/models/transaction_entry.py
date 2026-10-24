@@ -91,6 +91,9 @@ class TransactionEntry(
                            as income (ruling **bank_import:R-II**).  See the
                            constraint below for why the bound is non-zero
                            rather than positive, and where positivity went.
+                           NULL on a transfer side's record, and only there:
+                           a transfer's figure lives once, on the transfer
+                           (ruling **R-BAL366**).
         description     -- Short description of the purchase (e.g. "Kroger").
         purchased_on    -- The day the purchase was MADE (defaults to today).
                            Never after the user's today -- ruling R-M, refused
@@ -142,8 +145,10 @@ class TransactionEntry(
         figure_source_id -- WHO WROTE ``amount``: the settle priced it from the
                            plan (``resolved``), a person stated it (``typed``)
                            or the bank's own line stated it (``observed``).
-                           NOT NULL, no default: both writers of a movement
-                           state it.  Plan step **X-bi-3a**, ruling
+                           No default: both writers of a movement state it,
+                           and it is NULL exactly where ``amount`` is (a
+                           transfer side's record, ruling **R-BAL366**).
+                           Plan step **X-bi-3a**, ruling
                            **R-BAL39**, :class:`app.enums.MovementFigureSourceEnum`.
 
     **A row of this table is a MOVEMENT, and since plan step X-bi-3a a settle
@@ -153,7 +158,9 @@ class TransactionEntry(
     transfer leg's money the way a purchase records an envelope's, in the
     parent's direction (``cash_ledger.movement_cash_leg``, ruling
     **R-BAL35**).  It is an ordinary row here -- its ``amount`` is the figure
-    the settle booked, its ``purchased_on`` the settle day (the only day a
+    the settle booked (a transfer side's record excepted: it states none,
+    and its transfer's ``settled_figure`` is what moved, ruling
+    **R-BAL366**), its ``purchased_on`` the settle day (the only day a
     bill's payment has, so
     ``ck_transaction_entries_settled_not_before_purchase`` holds as
     equality), its ``description`` the plan's name as it read at the settle,
@@ -390,6 +397,26 @@ class TransactionEntry(
             "OR covers_settlement",
             name="ck_transaction_entries_side_link_is_a_record",
         ),
+        # **A TRANSFER SIDE'S RECORD STATES NO FIGURE, AND EVERY OTHER
+        # MOVEMENT STATES ONE** (plan step ``balance:X-bi-6-4d-2``'s 4d-4
+        # half, ruling **R-BAL366**): a transfer's money is ONE figure, and
+        # its home is the transfer (``budget.transfers.settled_figure`` /
+        # ``settled_figure_source_id``, ruling **R-BAL365**).  A side record
+        # carried a copy of it until migration ``b7d2e4f19a63``; these make
+        # that copy unstorable, and ``amount`` / ``figure_source_id``'s NOT
+        # NULL for every other movement their right half.  Written as an
+        # equality of IS NULL tests, the ``ck_transfers_amount_ownership``
+        # shape, so neither half can be dropped alone.
+        db.CheckConstraint(
+            "(expense_transfer_id IS NULL AND income_transfer_id IS NULL) "
+            "= (amount IS NOT NULL)",
+            name="ck_transaction_entries_side_record_states_no_figure",
+        ),
+        db.CheckConstraint(
+            "(expense_transfer_id IS NULL AND income_transfer_id IS NULL) "
+            "= (figure_source_id IS NOT NULL)",
+            name="ck_transaction_entries_side_record_names_no_figure_source",
+        ),
         # **THE SIDE KEYS** (ruling **R-BAL88**): the movement's account IS the
         # side's endpoint, so a from-side payment on any account but the
         # transfer's from-account is unstorable.  The transfer's accounts are
@@ -527,7 +554,10 @@ class TransactionEntry(
     # was: a line that cannot be silently wrong, only absent, and absent is a
     # NOT NULL violation.
     owner_id = db.Column(db.Integer, nullable=False)
-    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    # NULL exactly on a transfer side's record, whose figure is its
+    # transfer's (``ck_transaction_entries_side_record_states_no_figure``,
+    # ruling **R-BAL366**); stated on every other movement.
+    amount = db.Column(db.Numeric(12, 2), nullable=True)
     description = db.Column(db.String(200), nullable=False)
     purchased_on = db.Column(
         db.Date, nullable=False, server_default=db.text("CURRENT_DATE"),
@@ -564,8 +594,12 @@ class TransactionEntry(
         db.Boolean, nullable=False, default=False, server_default="false",
     )
     # WHO WROTE ``amount`` (plan step **X-bi-3a**, ruling **R-BAL39**).
+    # NULL exactly where ``amount`` is -- a transfer side's record, whose
+    # figure's source is its transfer's ``settled_figure_source_id``
+    # (``ck_transaction_entries_side_record_names_no_figure_source``, ruling
+    # **R-BAL366**).
     # RESTRICT rather than SET NULL: a vanishing catalogue row would leave a
-    # figure with no source, which the NOT NULL exists to forbid.  No default,
+    # figure with no source, which that CHECK exists to forbid.  No default,
     # server-side or ORM-side: the two writers of a movement (the purchase
     # doors and the status seam) each state it, and a default would answer for
     # a writer that forgot -- the stored guess ruling **R-IY** deletes.  No
@@ -580,7 +614,7 @@ class TransactionEntry(
             name="fk_transaction_entries_figure_source_id",
             ondelete="RESTRICT",
         ),
-        nullable=False,
+        nullable=True,
     )
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 

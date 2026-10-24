@@ -235,10 +235,12 @@ class TestTransferSourceRidesOnTop:
 
         The seeded Checking ($1000.00 opening) transfers $150.00 into a Savings
         anchored $200.00, settled at server-now (after both origination
-        assertions, so it rides on top of each).  The transfer's to-side record
-        lands +150.00 on Savings and its from-side record -150.00 on Checking
-        (the records hang off the transfer, not its shadows, since plan step
-        balance:X-bi-6-4d-2; ruling R-BAL167 class 4):
+        assertions, so it rides on top of each).  The transfer's settled
+        figure, 150.00, lands +150.00 on Savings by its to-side record and
+        -150.00 on Checking by its from-side record (the records hang off the
+        transfer, not its shadows, since plan step balance:X-bi-6-4d-2, and
+        the figure is stored once on the transfer since its 4d-4 half; ruling
+        R-BAL167 class 4):
 
           Savings  = 200 (opening) + 150 = 350.00 = anchor 200 + post (+150.00)
           Checking = 1000 (opening) - 150 = 850.00 = anchor 1000 + post (-150.00)

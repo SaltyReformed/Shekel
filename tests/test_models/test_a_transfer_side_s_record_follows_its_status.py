@@ -8,7 +8,9 @@ un-dated, ruling **R-BAL61**).  The two drifts the balance arc's specification
 says are "made unrepresentable here" -- a dated record under an unsettled
 transfer (ruling **R-BAL79**'s "counted once" case) and an un-dated one under
 a settled transfer (ruling **R-BAL147**'s ``UndatedSettleError``) -- are
-refused by the database.
+refused by the database.  So is a transfer whose ONE settled figure the
+records do not match (the figure arm, rulings **R-BAL365**, **R-BAL366**): a
+figure above zero is recorded on both sides, none or ``0.00`` on neither.
 
 Each case plants its state the way a writer nobody enumerated would -- the
 bare ORM and raw SQL, around every door -- and COMMITS, because the rule is
@@ -18,6 +20,7 @@ refusal sits beside the control that commits.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import timedelta
 from decimal import Decimal
 
@@ -30,6 +33,8 @@ from app.extensions import db as _db
 from app.models.transaction_entry import TransactionEntry
 from app.services.settle_day import SettleDay
 from app.side_band_infrastructure import (
+    BAND_ARM,
+    FIGURE_ARM,
     SIDE_BAND_TRIGGERS,
     apply_side_band_infrastructure,
 )
@@ -77,8 +82,34 @@ def _set_status(xfer, status):
     )
 
 
+def _set_figure(xfer, figure):
+    """Write *xfer*'s settled figure (and a source for it) in raw SQL, around the seam.
+
+    The figure is the transfer's one home (ruling **R-BAL366**), so a state
+    planted with records states it here; the band's figure arm grades it
+    beside the band at commit.
+    """
+    _db.session.execute(
+        text(
+            "UPDATE budget.transfers SET settled_figure = :figure, "
+            "settled_figure_source_id = :source WHERE id = :id"
+        ),
+        {
+            "figure": figure,
+            "source": ref_cache.movement_figure_source_id(
+                MovementFigureSourceEnum.RESOLVED,
+            ),
+            "id": xfer.id,
+        },
+    )
+
+
 def _record(xfer, seed_user, *, income=False, dated=True):
-    """Stage one side's payment record of *xfer*, dated on :func:`_day` or not."""
+    """Stage one side's payment record of *xfer*, dated on :func:`_day` or not.
+
+    It states no figure: a side's record never does (ruling **R-BAL366**);
+    :func:`_set_figure` plants the transfer's.
+    """
     day = _day(seed_user)
     entry = TransactionEntry(
         expense_transfer_id=None if income else xfer.id,
@@ -86,13 +117,9 @@ def _record(xfer, seed_user, *, income=False, dated=True):
         account_id=xfer.to_account_id if income else xfer.from_account_id,
         owner_id=xfer.user_id,
         user_id=xfer.user_id,
-        amount=Decimal("500.00"),
         description="Band record",
         purchased_on=day,
         covers_settlement=True,
-        figure_source_id=ref_cache.movement_figure_source_id(
-            MovementFigureSourceEnum.RESOLVED,
-        ),
     )
     if dated:
         entry.settled_on = day
@@ -130,6 +157,7 @@ class TestAnUnsettledTransfersRecordsAreUnDated:
         xfer = _transfer(seed_user)
         _record(xfer, seed_user, dated=False)
         _record(xfer, seed_user, income=True, dated=False)
+        _set_figure(xfer, Decimal("500.00"))
         _db.session.commit()
 
     def test_reverting_a_transfer_whose_records_stay_dated_is_refused(
@@ -141,6 +169,7 @@ class TestAnUnsettledTransfersRecordsAreUnDated:
         _set_status(xfer, StatusEnum.DONE)
         _record(xfer, seed_user)
         _record(xfer, seed_user, income=True)
+        _set_figure(xfer, Decimal("500.00"))
         _db.session.commit()
 
         _set_status(xfer, StatusEnum.PROJECTED)
@@ -155,6 +184,7 @@ class TestAnUnsettledTransfersRecordsAreUnDated:
         _set_status(xfer, StatusEnum.DONE)
         expense = _record(xfer, seed_user)
         income = _record(xfer, seed_user, income=True)
+        _set_figure(xfer, Decimal("500.00"))
         _db.session.commit()
 
         _set_status(xfer, StatusEnum.PROJECTED)
@@ -176,6 +206,7 @@ class TestASettledTransferRecordsBothSidesOrNeither:
         _set_status(xfer, StatusEnum.DONE)
         _record(xfer, seed_user)
         _record(xfer, seed_user, income=True, dated=False)
+        _set_figure(xfer, Decimal("500.00"))
         _commit_refused(_SETTLED_REFUSED)
 
     def test_a_record_on_one_side_only_is_refused(self, app, seed_user):
@@ -203,6 +234,7 @@ class TestASettledTransferRecordsBothSidesOrNeither:
         _record(xfer, seed_user, dated=False)
         if sides == 2:
             _record(xfer, seed_user, income=True, dated=False)
+            _set_figure(xfer, Decimal("500.00"))
         _commit_refused(
             rf"transfer \d+ is settled but its sides hold 0 dated and {sides} un-dated",
         )
@@ -220,6 +252,7 @@ class TestASettledTransferRecordsBothSidesOrNeither:
         xfer = _transfer(seed_user)
         _record(xfer, seed_user, dated=False)
         _record(xfer, seed_user, income=True, dated=False)
+        _set_figure(xfer, Decimal("500.00"))
         _db.session.commit()
 
         _set_status(xfer, StatusEnum.DONE)
@@ -228,10 +261,11 @@ class TestASettledTransferRecordsBothSidesOrNeither:
         )
 
     def test_a_paid_transfer_with_no_records_commits(self, app, seed_user):
-        """CONTROL: the $0.00 close stores no record on either side."""
+        """CONTROL: the $0.00 close stores no record on either side, and its figure 0.00."""
         del app
         xfer = _transfer(seed_user)
         _set_status(xfer, StatusEnum.DONE)
+        _set_figure(xfer, Decimal("0.00"))
         _db.session.commit()
 
     def test_a_paid_transfer_with_both_sides_dated_commits(self, app, seed_user):
@@ -241,14 +275,95 @@ class TestASettledTransferRecordsBothSidesOrNeither:
         _set_status(xfer, StatusEnum.DONE)
         _record(xfer, seed_user)
         _record(xfer, seed_user, income=True)
+        _set_figure(xfer, Decimal("500.00"))
         _db.session.commit()
+
+
+class TestTheFigureAgreesWithTheRecords:
+    """The figure arm: a figure above zero is recorded on both sides, none or 0.00 on neither.
+
+    Rulings **R-BAL365** and **R-BAL366**.  Each state passes the band (no
+    dated record off a settled transfer, no un-dated one on it), so the
+    figure arm's own words are what refuses it; the band's controls above
+    are this arm's controls too (both sides dated at ``500.00``, both kept
+    at ``500.00``, a ``$0.00`` close storing ``0.00``).
+    """
+
+    def test_a_settled_transfer_storing_no_figure_is_refused(self, app, seed_user):
+        """A close of nothing that does not say it moved nothing: settled, no figure."""
+        del app
+        xfer = _transfer(seed_user)
+        _set_status(xfer, StatusEnum.DONE)
+        _commit_refused(r"transfer \d+ is settled but stores no settled figure")
+
+    def test_a_transfer_not_settled_storing_zero_is_refused(self, app, seed_user):
+        """R-BAL365: the revert of a $0.00 close clears its figure, so a re-settle re-prices."""
+        del app
+        xfer = _transfer(seed_user)
+        _set_figure(xfer, Decimal("0.00"))
+        _commit_refused(
+            r"transfer \d+ is not settled but stores a settled figure of 0\.00",
+        )
+
+    @pytest.mark.parametrize(
+        ("status", "figure", "records", "words"),
+        [
+            (StatusEnum.PROJECTED, "500.00", 0, r"of 500\.00 but holds 0"),
+            (StatusEnum.PROJECTED, "500.00", 1, r"of 500\.00 but holds 1"),
+            (StatusEnum.PROJECTED, None, 2, r"of none but holds 2"),
+            (StatusEnum.DONE, "0.00", 2, r"of 0\.00 but holds 2"),
+        ],
+        ids=["a-figure-no-record", "a-figure-one-record",
+             "two-records-no-figure", "zero-two-records"],
+    )
+    def test_a_figure_its_records_do_not_match_is_refused(
+        self, app, seed_user, status, figure, records, words,
+    ):
+        """Records and figure out of step: refused whichever way, by the record count."""
+        del app
+        xfer = _transfer(seed_user)
+        dated = status == StatusEnum.DONE
+        _set_status(xfer, status)
+        if figure is not None:
+            _set_figure(xfer, Decimal(figure))
+        for income in (False, True)[:records]:
+            _record(xfer, seed_user, income=income, dated=dated)
+        _commit_refused(rf"transfer \d+ stores a settled figure {words}")
+
+    def test_a_transfer_inserted_settled_storing_no_figure_is_refused(
+        self, app, seed_user,
+    ):
+        """The transfers INSERT attachment: no status write follows to ask the rule.
+
+        A copy of a committed Projected transfer, inserted Paid in raw SQL
+        (its plan amount moved off the original's so the ad-hoc de-dupe
+        index takes it).
+        """
+        del app
+        xfer = _transfer(seed_user)
+        _db.session.execute(
+            text(
+                "INSERT INTO budget.transfers "
+                "SELECT (jsonb_populate_record(NULL::budget.transfers, "
+                "to_jsonb(x) || jsonb_build_object("
+                "'id', nextval(pg_get_serial_sequence('budget.transfers', 'id')), "
+                "'status_id', :status, 'amount', 777.00))).* "
+                "FROM budget.transfers x WHERE x.id = :id"
+            ),
+            {"status": ref_cache.status_id(StatusEnum.DONE), "id": xfer.id},
+        )
+        _commit_refused(r"transfer \d+ is settled but stores no settled figure")
 
 
 class TestTheRulesAttachments:
     """The attachments the database carries are the ones the module names."""
 
-    def test_the_constant_names_every_attachment_and_each_has_a_when(self, app):
-        """pg_trigger agrees with SIDE_BAND_TRIGGERS; each is deferred and guarded by WHEN."""
+    def test_the_constant_names_every_attachment_and_all_but_one_have_a_when(self, app):
+        """pg_trigger agrees with SIDE_BAND_TRIGGERS; each is deferred, and all but one guarded.
+
+        The one without a ``WHEN`` is the figure arm's transfer INSERT: a
+        ``WHEN`` cannot read whether a status settles (the module docstring).
+        """
         del app
         found = _db.session.execute(text(
             "SELECT t.tgname, c.relnamespace::regnamespace::text || '.' "
@@ -259,12 +374,40 @@ class TestTheRulesAttachments:
             "ORDER BY t.tgname"
         ), {"names": [name for name, _table in SIDE_BAND_TRIGGERS]}).all()
         assert [(row[0], row[1]) for row in found] == sorted(SIDE_BAND_TRIGGERS)
-        assert all(row[2] and row[3] and row[4] for row in found), found
+        assert all(row[3] and row[4] for row in found), found
+        assert [row[0] for row in found if not row[2]] == [
+            "ck_side_record_figure_on_insert",
+        ], found
 
     def test_an_unknown_arm_is_refused(self):
         """A revision cannot name an arm the module does not build."""
         with pytest.raises(ValueError, match="unknown arm"):
             apply_side_band_infrastructure(lambda _sql: None, arms=("nope",))
+
+    def test_the_figure_arm_alone_is_refused(self):
+        """The figure arm reads the band's record counts: an arm set without the band is refused."""
+        with pytest.raises(ValueError, match="omits 'band'"):
+            apply_side_band_infrastructure(lambda _sql: None, arms=(FIGURE_ARM,))
+
+    def test_the_bands_revision_installs_its_own_text(self):
+        """A replay of ``e616adf7fe22``'s ``(BAND_ARM,)`` installs the band's function byte for byte.
+
+        The sha256 is of the check function's text as ``b361dd9e8`` shipped
+        it with that revision, and as it stood at ``ba1551508`` -- measured on
+        both.  The figure arm composes onto it, never edits it.
+        """
+        installed = []
+        apply_side_band_infrastructure(installed.append, arms=(BAND_ARM,))
+        assert hashlib.sha256(installed[0].encode()).hexdigest() == (
+            "a0c1f8604d577e066ee75d68bb1b134e1c16d4ca5f84cb2d5e02bc6de1c88652"
+        )
+        created = [
+            sql.split()[3] for sql in installed
+            if sql.startswith("CREATE CONSTRAINT TRIGGER")
+        ]
+        assert created == [
+            name for name, _table in SIDE_BAND_TRIGGERS if "_band_" in name
+        ], installed
 
 
 class TestTheRevisionsCensus:
@@ -287,5 +430,6 @@ class TestTheRevisionsCensus:
         _set_status(settled, StatusEnum.DONE)
         _record(settled, seed_user)
         _record(settled, seed_user, income=True)
+        _set_figure(settled, Decimal("500.00"))
         _db.session.commit()
         _MIGRATION.refuse_off_band_transfers(_db.session.connection())

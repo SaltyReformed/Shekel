@@ -189,8 +189,8 @@ def _settle(
 # opinion: the ledger side reads ``account_postings`` with an independently
 # written join shape (keyed off the REAL loan account / the per-loan discriminator
 # rather than resolving the ledger account first, as ``account_posting_total``
-# does), and the source side reads ``transfers`` and their side records in
-# ``transaction_entries``.  ``_trial_balance`` /
+# does), and the source side reads ``transfers`` (status and settled figure)
+# and their side records in ``transaction_entries``.  ``_trial_balance`` /
 # ``_entries_violating_balance`` mirror the Step-2 / Step-3 oracles; the
 # duplication is DELIBERATE -- each oracle keeps its OWN independent queries so it
 # stays a self-contained second opinion.
@@ -252,16 +252,19 @@ def _independent_settled_income_cash(
     """Sum a loan's settled payments' loan-side cash (independent query).
 
     The independent restatement of ``settled_transfer_effect`` for a loan: over
-    the settled, non-deleted transfers INTO the loan in *scenario_id*, sum the
-    amount of each one's loan-side RECORD -- the movement filed under the
-    transfer's to-side (``income_transfer_id``) on the loan.  A settled
-    transfer with no record is a ``$0.00`` close and adds nothing (R-BAL82).
-    Every term is ``+amount`` -- the cash that flowed in.  It summed the
-    loan-side income SHADOWS' settled figures by the shadow's status until plan
-    step ``balance:X-bi-6-4d-2`` stopped keeping a shadow's status and moved
-    the record onto the transfer; it reads the transfer's status and the side
-    link by its own SQL now, never through ``transfer_legs``, the producer the
-    reader under test joins (ruling R-BAL167 class 4, plan step
+    the settled, non-deleted transfers INTO the loan in *scenario_id* that
+    hold a loan-side RECORD -- the movement filed under the transfer's to-side
+    (``income_transfer_id``) on the loan -- sum each TRANSFER's settled
+    figure (``budget.transfers.settled_figure``), the figure's one home since
+    plan step ``balance:X-bi-6-4d-2`` (its 4d-4 half; the side's record
+    carried it until then and states no figure now).  A settled transfer with
+    no record is a ``$0.00`` close and adds nothing (R-BAL82).  Every term is
+    ``+figure`` -- the cash that flowed in.  It summed the loan-side income
+    SHADOWS' settled figures by the shadow's status until plan step
+    ``balance:X-bi-6-4d-2`` stopped keeping a shadow's status and moved the
+    record onto the transfer; it reads the transfer's status, figure and the
+    side link by its own SQL now, never through ``transfer_legs``, the
+    producer the reader under test joins (ruling R-BAL167 class 4, plan step
     balance:X-bi-6-4d-2).  Reads the row tables, different tables than the
     ledger queries above, so asserting the ledger reconciles against this ties
     the postings to the transaction source of truth.
@@ -269,7 +272,7 @@ def _independent_settled_income_cash(
     return (
         _db.session.query(
             _db.func.coalesce(
-                _db.func.sum(TransactionEntry.amount), Decimal("0"),
+                _db.func.sum(Transfer.settled_figure), Decimal("0"),
             )
         )
         .select_from(Transfer)

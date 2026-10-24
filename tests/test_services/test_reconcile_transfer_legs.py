@@ -37,7 +37,7 @@ from decimal import Decimal
 from sqlalchemy import text
 
 from app import ref_cache
-from app.enums import SettledDayBasisEnum, StatusEnum
+from app.enums import MovementFigureSourceEnum, SettledDayBasisEnum, StatusEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -54,7 +54,6 @@ from app.services.pay_calendar import calendar_for
 from app.services.settle_day import SettleDay, recorded_settle_day
 from tests._test_helpers import (
     create_transfer,
-    figure_source_columns,
     generate_row_of,
     make_expense_template,
     open_books_before_the_first_assertion,
@@ -293,7 +292,11 @@ class TestTheOfferableLegLoader:
         """A Paid transfer offers no leg: the PARENT's status decides.
 
         Set Paid around the service with neither side holding a record, the
-        shape the status-band rule stores as a ``$0.00`` close.  Until plan
+        shape the status-band rule stores as a ``$0.00`` close, beside the
+        figure that close stores, ``0.00`` and typed (ruling **R-BAL365**):
+        since plan step ``balance:X-bi-6-4d-2``'s 4d-4b-2 leaf the band
+        trigger's figure arm refuses a settled transfer storing no figure.
+        Until plan
         step ``balance:X-bi-6-4d-3`` its shadows stayed Projected under it,
         and this case read one as the drift's control (ruling **R-BAL167**
         class 1); the shadow scope leaf ``X-bi-6-4c-2`` replaced offered that
@@ -308,8 +311,18 @@ class TestTheOfferableLegLoader:
             )
             db.session.commit()
             db.session.execute(
-                text("UPDATE budget.transfers SET status_id = :s WHERE id = :t"),
-                {"s": ref_cache.status_id(StatusEnum.DONE), "t": transfer.id},
+                text(
+                    "UPDATE budget.transfers SET status_id = :s, "
+                    "settled_figure = 0.00, settled_figure_source_id = :f "
+                    "WHERE id = :t"
+                ),
+                {
+                    "s": ref_cache.status_id(StatusEnum.DONE),
+                    "f": ref_cache.movement_figure_source_id(
+                        MovementFigureSourceEnum.TYPED,
+                    ),
+                    "t": transfer.id,
+                },
             )
             db.session.commit()
             db.session.expire_all()
@@ -330,10 +343,11 @@ class TestTheOfferableLegLoader:
         the movement hung off the Checking shadow, which no reader reads
         since, and the side's own DATED record under a Projected transfer
         (ruling **R-BAL88**) is what the status-band rule refuses -- so the
-        record is staged on the Checking side and the commit asserted
-        refused.  The loader's answers on it (Checking's side withheld,
-        savings' offered) are not asserted: no commit can leave the state
-        they were asked of.
+        record is staged on the Checking side, stating no figure (a side's
+        record states none since that step's 4d-4 half; the transfer stores
+        it), and the commit asserted refused.  The loader's answers on it
+        (Checking's side withheld, savings' offered) are not asserted: no
+        commit can leave the state they were asked of.
         """
         with app.app_context():
             savings = _savings(seed_user)
@@ -349,12 +363,10 @@ class TestTheOfferableLegLoader:
                 account_id=seed_user["account"].id,
                 owner_id=transfer.user_id,
                 user_id=transfer.user_id,
-                amount=Decimal("75.00"),
                 description="Drift record",
                 purchased_on=day,
                 covers_settlement=True,
                 **settle_day_columns(day),
-                **figure_source_columns(),
             ))
             db.session.flush()
 

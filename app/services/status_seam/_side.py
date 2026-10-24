@@ -20,10 +20,12 @@ for both sides, under ONE press.
   ``balance:X-bi-6-4d-2``, rulings **R-BAL365**, **R-BAL366**:
   :attr:`~app.models.transfer.Transfer.settled_figure_pair`), ``0.00`` for a
   close of nothing; kept across a revert that keeps the records (ruling
-  **R-BAL61**) and released by a revert that keeps none.  Each side's record
-  still carries a copy (:func:`._covering.record_figure`, with the side's
-  leg label as the name) until the next commit of the same step empties it:
-  a transitional second home that lives only inside the held branch;
+  **R-BAL61**) and released by a revert that keeps none.  A side's record
+  states NO figure (ruling **R-BAL366**,
+  ``ck_transaction_entries_side_record_states_no_figure``): it carries the
+  side's leg label as its name, and the band's figure arm
+  (``app.side_band_infrastructure.FIGURE_ARM``) holds the figure to the
+  records at commit;
 * the DAY and how it is known -- the side's resolved day
   (``transfer_service._side_days``) through ``settle_day.record_settle_day``,
   so the books boundary refuses a day the account's books do not reach; a
@@ -43,16 +45,18 @@ for both sides, under ONE press.
   derivation and a matched line is freed only where the page named it
   (rulings **R-CC127**, **R-CC135**).
 
-**The transfer's optimistic-lock counter moves whenever a side's record or
-day nets a change** (developer ruling 2026-08-18, the ``$214.37`` two-tab lost
-update).  A record is a row of another table, so a figure or day correction
-writes nothing of the transfer and its counter would stand still; both
-popovers pin the transfer's ``version_id``.  ``flag_modified`` forces the
-transfer into the flush, exactly as the row arm's ``_record_moved`` does for a
-row.  Until this step the transfer service compared the twins' counters before
-and after the act (``_update._bump_parent_version_if_a_leg_moved``), which saw
-a day move only because the twin's own day column moved -- a side record's day
-is its own now, and the arm that writes it is the one that knows.
+**The transfer's optimistic-lock counter moves whenever its figure, or a
+side's record or day, nets a change** (developer ruling 2026-08-18, the
+``$214.37`` two-tab lost update); both popovers pin the transfer's
+``version_id``.  A figure correction writes the transfer's own column, so the
+counter moves with it.  A record is a row of another table, so a day
+correction writes nothing of the transfer and its counter would stand still:
+``flag_modified`` forces the transfer into the flush, exactly as the row
+arm's ``_record_moved`` does for a row.  Until this step the transfer
+service compared the twins' counters before and after the act
+(``_update._bump_parent_version_if_a_leg_moved``), which saw a day move only
+because the twin's own day column moved -- a side record's day is its own
+now, and the arm that writes it is the one that knows.
 
 **The tender is the side's endpoint**: a record's account is held to its
 side's endpoint by the side key, so a transfer settle names no tender and a
@@ -82,7 +86,7 @@ from app.services.settle_day import (
     record_settle_day,
     recorded_settle_day,
 )
-from app.services.status_seam._covering import raises_basis, record_figure
+from app.services.status_seam._covering import raises_basis
 from app.services.status_seam._record import Settlement
 from app.services.status_seam._refusals import (
     reject_future_settle_day,
@@ -114,9 +118,9 @@ def sync_side_records(
     * **neither before nor after in the settled band** -- a cancel of a
       Projected transfer: nothing moves;
     * **in the band with a record** -- a settle, a re-settle after a revert or
-      a figure correction: each side's record carries
-      the figure and its own day (a new record when the side holds none), or,
-      for a ``$0.00`` figure, neither side keeps one;
+      a figure correction: the transfer carries the figure and each side's
+      record its own day (a new record when the side holds none), or, for a
+      ``$0.00`` figure, neither side keeps one;
     * **otherwise each side's record follows its day** -- a revert un-dates
       it, a day correction re-dates it, an identity re-submit moves nothing.
 
@@ -194,7 +198,7 @@ def sync_side_records(
         if day is not None and _writes_day(leg.record, day):
             reject_movement_before_books_open(_endpoint(leg).id, day.day)
     if covers:
-        moved = [_cover_side(leg, day, settlement) for leg, day in written]
+        moved = [_cover_side(leg, day) for leg, day in written]
     elif withdraws:
         moved = [_withdraw_sides(legs, press)]
     else:
@@ -262,25 +266,27 @@ def release_side_figure(transfer) -> None:
         transfer.settled_figure_pair = None
 
 
-def _cover_side(
-    leg: "TransferLeg", day: SettleDay, settlement: Settlement,
-) -> bool:
-    """Ensure *leg*'s side holds one record carrying *settlement* on *day*.
+def _cover_side(leg: "TransferLeg", day: SettleDay) -> bool:
+    """Ensure *leg*'s side holds one record, named for the side, on *day*.
 
-    A side holding a record -- kept un-dated across a revert, or dated -- has
-    the figure written onto it and is (re-)dated, so its id survives and a
-    match or a log line naming it still names it.  A side holding none gets a
-    new record, filed under the transfer by its side link, on the side's
-    endpoint (:func:`_endpoint`), owned and authored by the transfer's owner,
-    marked ``covers_settlement``.
+    The record states no figure: the act's figure is the transfer's
+    (:func:`_state_figure`, ruling **R-BAL366**).  A side holding a record --
+    kept un-dated across a revert, or dated -- takes the side's leg label
+    as its name and is (re-)dated, so its id survives and a match or a log
+    line naming it still names it.  A side holding none gets a new record,
+    filed under the transfer by its side link, on the side's endpoint
+    (:func:`_endpoint`), owned and authored by the transfer's owner, marked
+    ``covers_settlement``.
 
     Returns:
-        Whether the side's record or day netted a change.
+        Whether the side's record -- its name, day or link -- netted a
+        change.
     """
     record = leg.record
     if record is not None:
-        changed = record_figure(record, settlement, leg.name)
-        return _follow_day(record, day) or changed
+        renamed = record.description != leg.name
+        record.description = leg.name
+        return _follow_day(record, day) or renamed
     transfer = leg.transfer
     endpoint = _endpoint(leg)
     record = TransactionEntry(
@@ -295,8 +301,8 @@ def _cover_side(
         user_id=transfer.user_id,
         is_credit=False,
         covers_settlement=True,
+        description=leg.name,
     )
-    record_figure(record, settlement, leg.name)
     _follow_day(record, day)
     # Appended to the side's collection, the list the posting writer's pair
     # door and the one removal act read (``transfer_legs.parent_entries``).
@@ -372,10 +378,10 @@ def _endpoint(leg: "TransferLeg") -> Account:
 def _withdraw_sides(legs: "tuple[TransferLeg, TransferLeg]", press: Press | None) -> bool:
     """Take every record the two sides hold off the books: a close that moved nothing.
 
-    ``ck_transaction_entries_positive_amount`` lets no record carry
-    ``$0.00``, so a ``$0.00`` close keeps none (rulings **R-BAL82**,
-    **R-BAL141**: no day and no link either).  Both sides in ONE call of the
-    one removal act, under the save's press.
+    A ``$0.00`` close keeps no record (rulings **R-BAL82**, **R-BAL141**: no
+    day and no link either), and the band's figure arm ties a stored
+    ``0.00`` to no record on either side at commit (ruling **R-BAL365**).
+    Both sides in ONE call of the one removal act, under the save's press.
 
     Returns:
         Whether any record was taken off.

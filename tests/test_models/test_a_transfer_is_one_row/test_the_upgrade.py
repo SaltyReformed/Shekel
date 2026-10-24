@@ -322,6 +322,13 @@ class TestTheUpgrade:
             ), {"t": paid.id}).mappings().one())
             movement.pop("id")
             movement.update(expense_transfer_id=None, transaction_id=twin["id"])
+            # A side's record states no figure; its transfer holds it, and a
+            # movement under a twin states one.
+            movement.update(db.session.execute(text(
+                "SELECT settled_figure AS amount, "
+                "settled_figure_source_id AS figure_source_id "
+                "FROM budget.transfers WHERE id = :t"
+            ), {"t": paid.id}).mappings().one())
             columns = list(movement)
             planted = db.session.execute(text(
                 f"INSERT INTO budget.transaction_entries ({', '.join(columns)}) "

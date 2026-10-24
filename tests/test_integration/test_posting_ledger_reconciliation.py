@@ -8,12 +8,13 @@ below are exactly plan Section 6:
 
   1. **Per-account reconciliation** (asset AND liability legs): for each real
      account A, the net of A's posting legs equals the net effect of A's
-     sides of settled, non-deleted transfers -- ``+amount`` for a to-side
-     record (money in -> a debit), ``-amount`` for a from-side record (money
-     out -> a credit), the record being the side's covering movement.  It
-     hung off the side's shadow until plan step ``balance:X-bi-6-4d-2`` and
-     hangs off the transfer since; the oracle keeps the name "settled-shadow
-     effect" (ruling R-BAL167 class 4).
+     sides of settled, non-deleted transfers -- the transfer's settled figure
+     ``+figure`` for a to-side record (money in -> a debit), ``-figure`` for
+     a from-side record (money out -> a credit), the record being the side's
+     covering movement.  It hung off the side's shadow until plan step
+     ``balance:X-bi-6-4d-2`` and hangs off the transfer since, and the figure
+     is stored once on the transfer since that step's 4d-4 half; the oracle
+     keeps the name "settled-shadow effect" (ruling R-BAL167 class 4).
   2. **Per-entry balance**: every journal entry's legs ``SUM(amount) = 0`` and
      ``COUNT(*) >= 2`` (also DB-enforced by ``ck_account_postings_balanced``).
   3. **Trial balance**: ``SUM(account_postings.amount) = 0`` across the whole
@@ -171,25 +172,29 @@ def _independent_txn_effect(account_id: int, scenario_id: int) -> Decimal:
 
     The balance-side truth the ledger must equal: over the RECORDS on the
     account filed under a side of a settled (``status.is_settled``),
-    non-deleted transfer in *scenario_id*, add ``+amount`` for a to-side
-    record (``income_transfer_id``, money in) and ``-amount`` for a from-side
-    record (``expense_transfer_id``, money out).  A settled transfer holding
-    no record is a ``$0.00`` close and adds nothing (R-BAL82).  It summed the
-    settled transfer SHADOWS' figures by each shadow's status and type until
-    plan step ``balance:X-bi-6-4d-2`` stopped keeping a shadow's status and
-    moved the record onto the transfer; it reads the transfer's status and the
-    side links by its own SQL now, never through ``transfer_legs``, the
-    producer ``settled_transfer_effect`` joins (ruling R-BAL167 class 4, plan
-    step balance:X-bi-6-4d-2).  Reads the row tables -- different tables than
+    non-deleted transfer in *scenario_id*, add the TRANSFER's settled figure
+    (``budget.transfers.settled_figure``) as ``+figure`` for a to-side record
+    (``income_transfer_id``, money in) and ``-figure`` for a from-side record
+    (``expense_transfer_id``, money out).  The figure is stored once on the
+    transfer since plan step ``balance:X-bi-6-4d-2`` (its 4d-4 half); each
+    side's record carried it until then and states no figure now.  A settled
+    transfer holding no record is a ``$0.00`` close and adds nothing
+    (R-BAL82).  It summed the settled transfer SHADOWS' figures by each
+    shadow's status and type until plan step ``balance:X-bi-6-4d-2`` stopped
+    keeping a shadow's status and moved the record onto the transfer; it
+    reads the transfer's status, figure and the side links by its own SQL
+    now, never through ``transfer_legs``, the producer
+    ``settled_transfer_effect`` joins (ruling R-BAL167 class 4, plan step
+    balance:X-bi-6-4d-2).  Reads the row tables -- different tables than
     :func:`_independent_ledger_sum` -- so asserting the two equal reconciles
     what the producers wrote against the transaction source of truth.
     """
     signed = case(
         (
             TransactionEntry.income_transfer_id.isnot(None),
-            TransactionEntry.amount,
+            Transfer.settled_figure,
         ),
-        else_=-TransactionEntry.amount,
+        else_=-Transfer.settled_figure,
     )
     return (
         _db.session.query(
@@ -513,9 +518,11 @@ class TestPerAccountReconciliation:
         stay green even against a producer that wrongly posted the estimate.
 
         Arithmetic: a $100 nominal Checking -> Savings transfer settles with an
-        actual of $97.50, so each side's record is 97.50 (on the transfer's
-        side, not its shadow, since plan step balance:X-bi-6-4d-2; ruling
-        R-BAL167 class 4).  The posting MUST be -97.50 / +97.50,
+        actual of $97.50, so the transfer's settled figure is 97.50 (stored
+        once on the transfer since plan step balance:X-bi-6-4d-2's 4d-4 half;
+        each side's record carried it until then, and the side's shadow
+        before that; ruling R-BAL167 class 4).  The posting MUST be
+        -97.50 / +97.50,
         NOT -100 / +100 -- on the ledger side riding each opening (Savings
         100 + 97.50 = 197.50, Checking 1000 - 97.50 = 902.50).  A producer
         that posted the $100 estimate would leave Savings' ledger at +200
@@ -846,11 +853,11 @@ class TestOracleIsNotVacuous:
         """Tampering a settled shadow makes ledger != settled-shadow effect.
 
         A reconciled $100 Checking -> Savings settle has ledger +100 and
-        settled-shadow effect +100 on Savings.  Forcing the Savings side's
-        RECORD -- the movement filed under the transfer's to-side, whose figure
-        is the side's cash (ruling R-BAL167 class 4, plan step
-        balance:X-bi-6-4d-2; the income shadow held it until then) -- to 999
-        by raw SQL leaves
+        settled-shadow effect +100 on Savings.  Forcing the TRANSFER's settled
+        figure -- the cash the Savings side's record moved, stored once on the
+        transfer since plan step balance:X-bi-6-4d-2 (its 4d-4 half; the
+        record carried it before, and the income shadow before that, ruling
+        R-BAL167 class 4) -- to 999 by raw SQL leaves
         the ledger at +100 but pushes the settled-shadow effect to +999 -- so
         the per-account reconciliation, which the oracle relies on, now
         FAILS.  This proves the check is a real comparison, not one that
@@ -880,12 +887,16 @@ class TestOracleIsNotVacuous:
             # is the side's covering movement (plan step balance:X-bi-4b-2),
             # filed under the transfer's to-side on Savings rather than under
             # the income shadow (ruling R-BAL167 class 4, plan step
-            # balance:X-bi-6-4d-2).  Entries carry no balance trigger, so the
-            # tamper commits.
+            # balance:X-bi-6-4d-2), and the figure it moved is stored once on
+            # the TRANSFER since that step's 4d-4 half.  A settled transfer
+            # holding two dated records and a figure above zero is a state the
+            # commit grade admits, so the tamper commits.
             _db.session.execute(_db.text(
-                "UPDATE budget.transaction_entries SET amount = 999 "
-                "WHERE income_transfer_id IS NOT NULL AND covers_settlement "
-                "  AND account_id = :a"
+                "UPDATE budget.transfers SET settled_figure = 999 "
+                "WHERE id IN ("
+                "  SELECT income_transfer_id FROM budget.transaction_entries "
+                "  WHERE income_transfer_id IS NOT NULL AND covers_settlement "
+                "    AND account_id = :a)"
             ), {"a": savings.id})
             _db.session.commit()
 

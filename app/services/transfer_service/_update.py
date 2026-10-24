@@ -346,10 +346,14 @@ def _apply_remaining_fields(
     # own due date as the occurrence it answers, the twin of
     # ``one_off.state_due_date``).  This arm is the ONE writer of a transfer's
     # date -- every door that moves one calls ``update_transfer`` (Transfer
-    # Invariant 4) -- so writing ``occurs_on`` beside it here is what makes
-    # the two columns unable to part, whichever door moved the date and
+    # Invariant 4) -- so writing ``occurs_on`` beside it here is what leaves
+    # a MOVED transfer's two columns equal, whichever door moved the date and
     # whether it typed the day or the period move re-placed it
-    # (``._placed.re_place_and_grade_the_day``).  **Only when the date MOVES**, which
+    # (``._placed.re_place_and_grade_the_day``).  Two placed shapes hold them
+    # apart until their date first moves: a cleared cadence's survivor
+    # answers the occurrence its cadence named (below), and a one-time
+    # transfer born before X-ci-1 answers none until ``X-ci-3`` backfills
+    # it.  **Only when the date MOVES**, which
     # is the twin's guard (``_field_updates._place_the_date``: ``if due ==
     # txn.due_date: return``) and X-ci-1's adversarial review found it
     # missing: the full-edit form posts ``due_date`` on EVERY save, so a
