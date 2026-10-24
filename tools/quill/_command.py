@@ -49,16 +49,28 @@ class _ReadsCards[CardT: BareCard](Protocol):  # pylint: disable=too-few-public-
         """The cards numbered ``numbers`` that exist."""
 
 
+def with_cards[CardT: BareCard](tracker: _ReadsCards[CardT], cards: dict[int, CardT],
+                                wanted: Iterable[int]) -> dict[int, CardT]:
+    """``cards`` plus each card numbered in ``wanted`` that it lacks, read by its number, of
+    the type ``tracker`` reads; no read when it lacks none.
+
+    Raises:
+        TrackerError: when one of those does not exist.
+    """
+    if lacked := set(wanted) - set(cards):
+        found = tracker.cards(lacked)
+        if absent := lacked - set(found):
+            raise TrackerError(f"cards {sorted(absent)} are named by others but do not exist")
+        cards.update(found)
+    return cards
+
+
 def with_closure[CardT: BareCard](tracker: _ReadsCards[CardT],
                                   cards: dict[int, CardT]) -> dict[int, CardT]:
     """``cards`` plus every card a decision over them reads (blockers, parents, children),
-    each of the type ``tracker`` reads."""
+    each of the type ``tracker`` reads (:func:`with_cards`)."""
     while wanted := missing(cards):
-        found = tracker.cards(wanted)
-        absent = wanted - set(found)
-        if absent:
-            raise TrackerError(f"cards {sorted(absent)} are named by others but do not exist")
-        cards.update(found)
+        with_cards(tracker, cards, wanted)
     return cards
 
 

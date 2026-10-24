@@ -84,6 +84,7 @@ from tools.quill._github import (
 from tools.quill.setup_tracker import (
     APP_LOGIN,
     FILING,
+    TASK,
     Place,
     another_app,
     find_board,
@@ -184,6 +185,12 @@ class BareCard:  # pylint: disable=too-many-instance-attributes
         """The steps linked under this card, as GitHub lists them: each a leaf of it unless
         the plan says otherwise (``_state.leaves``, the one spelling of a leaf)."""
         return tuple(child.number for child in self.children if child.kind == "step")
+
+    @property
+    def task_children(self) -> tuple[int, ...]:
+        """The tasks linked under this card, as GitHub lists them (R-BAL386): each a piece of
+        its work, done by its own file (``_state.done_tasks``), never a leaf."""
+        return tuple(child.number for child in self.children if child.kind == TASK)
 
 
 @dataclass(frozen=True)

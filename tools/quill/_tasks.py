@@ -68,7 +68,7 @@ def taken_by_drop(tracker: Tracker, card: Card, tasks: Iterable[int]) -> list[Ca
     each read by its number: a parent's read lists a sub-issue's state, never who closed it
     or why.  Each task whose file is in the merge of ``dev`` and ``main`` (``tasks``) is
     named as left; no read is made for a card with no task under it."""
-    numbers = [child.number for child in card.children if child.kind == TASK]
+    numbers = card.task_children
     if not numbers:
         return []
     landed, taken = set(tasks), []
