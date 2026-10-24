@@ -186,9 +186,10 @@ def _dropped(number, other="origin/main", target="origin/dev"):
             f"change and {other} meet, where it reads shipped once {target} and {other} do, "
             f"though this change writes no line of it: it drops card {number}'s marker, which "
             f"{other} holds, with no change to its record, and no commit it brings, merges "
-            f"aside, deletes that very line; take {other}'s file, as their merge does, then, if "
-            f"this change reverts card {number}, revert it in a commit that is no merge (a "
-            "revert deletes the marker with its code)")
+            f"aside, deletes that very line; if this change keeps card {number}'s code, take "
+            f"{other}'s file, merging {other} itself if this change has not; if it drops card "
+            f"{number}'s code too, take {other}'s file, then revert card {number} in a commit "
+            "that is no merge (a revert deletes the marker with its code)")
 
 
 def _meet(root, change, other, number=8):
@@ -223,12 +224,12 @@ def test_a_merge_dropping_the_marker_with_main_as_its_first_parent_is_refused(ch
 
 
 def test_each_way_out_of_a_dropped_marker_lands_as_it_says(check, code):
-    """The refusal's ways out, applied to the two histories that reach it.  A resync built by
-    hand dropping hotfix 8's marker and keeping its work takes main's file: it lands, and
-    card 8 reads shipped with its work.  A branch whose merge of main dropped both, a revert
-    done by hand inside the merge, takes main's file and then reverts card 8 in a commit of
-    its own: it lands, and card 8 reads not shipped with its work gone.  Record and code
-    agree either way."""
+    """The refusal's ways out, each applied to a history of the kind it names.  A resync built
+    by hand dropping hotfix 8's marker and keeping its work, which merged main itself, takes
+    main's file: it lands, and card 8 reads shipped with its work.  A branch whose merge of
+    main dropped both, keeping only the branch's side (as ``git merge -s ours`` writes it),
+    takes main's file and then reverts card 8 in a commit of its own: it lands, and card 8
+    reads not shipped with its work gone.  Record and code agree either way."""
     root, base = code
     point_main(root, hotfix := landed(root, base, 8))
     line = {marker(8): f"claimed {MON}\n"}
@@ -244,6 +245,28 @@ def test_each_way_out_of_a_dropped_marker_lands_as_it_says(check, code):
                             "Revert plan#8", {marker(8): None})
     assert check(base, reverted, "revert-8")[:2] == (0, verdict("revert-8", 0, 0) + "\n")
     assert _meet(root, merge(root, base, reverted), hotfix) == (None, None)
+
+
+def test_keeping_the_code_takes_mains_file_through_main_itself(check, code):
+    """R-BAL391's review, its M2: hotfix 8 lands on main by the merge of card/8.  A branch
+    merging card/8's tip itself, not main, by hand, drops the marker and keeps the work:
+    refused.  main's file taken alone is a copy of a line main took in, which rule 4 refuses;
+    taken with a merge of main itself, as the refusal says, it lands, and card 8 reads
+    shipped with its work."""
+    root, base = code
+    tip = claim(root, base, 8)[1]
+    point_main(root, hotfix := merge(root, base, tip, "Merge card/8"))
+    dropped = _resolved(root, commit_files(root, tip, "drop the marker", {marker(8): None}),
+                        base, tip, "Merge card/8 by hand, dropping its marker")
+    status, out, _ = check(base, dropped, "feat/x")
+    assert (status, out.splitlines()) == (1, [_dropped(8), verdict("feat/x", 0, 1)])
+    taken = commit_files(root, dropped, "take main's file", {marker(8): f"claimed {MON}\n"})
+    status, out, _ = check(base, taken, "feat/x")
+    assert (status, out.splitlines()[-1]) == (1, verdict("feat/x", 1, 1))
+    assert "origin/main took this very line in" in out
+    through = merge(root, taken, hotfix, "Merge origin/main")
+    assert check(base, through, "feat/x")[:2] == (0, verdict("feat/x", 1, 0) + "\n")
+    assert None not in _meet(root, merge(root, base, through), hotfix)
 
 
 # ------------------------------------------- a marker's delete shown in history (R-BAL391)

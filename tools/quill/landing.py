@@ -92,8 +92,15 @@ it leaves as it was (rule 8):**
    parent's nor the other branch's -- deletes that very line in a change of its own, no
    merge (:func:`_shown`), as a delete on the target's own line passes by rule 2: a revert
    made in a branch that merged the other in, or a person's "not done".  A merge's
-   resolution shows no delete, whichever its first parent, so a marker one drops stays
-   refused, and so does a delete of an older line.  At such a marker the two merges differ only
+   resolution shows no delete, whichever its first parent, so a marker one drops is refused
+   where no such commit deletes that very line, and so is a delete of an older line.  **A
+   known hole** (R-BAL391's review, its M1; left open when the developer rescinded
+   ``R-BAL393``, for step ``balance:X-ex``): the pass asks whether such a commit ever
+   deleted that very line, never whether its delete stands at M, so a merge whose result is
+   edited by hand to drop a marker, which git's own merge of its two parents keeps, lands
+   where the branch deleted that line before and took it back (a revert, then a revert of
+   that revert), or wrote a copy of it and deleted the copy; the card then reads not shipped
+   while its code runs (measured 2026-10-23).  At such a marker the two merges differ only
    when their merge bases do, and those differ only when M brings a commit of the other
    branch its first parent lacks -- a resync, a release, a branch that merged the other in
    -- so a change bringing none can never trip it.  A marker that conflicts BEFORE is
@@ -245,7 +252,8 @@ class Landing:
         there, in a change of its own: a commit M holds and neither its first parent nor the
         other branch does, and no merge (:func:`_git.marker_changes`), so a delete it shows
         in history (``R-BAL391``).  A merge's resolution is never one, whichever its first
-        parent: a marker it drops shows no delete."""
+        parent: a marker it drops shows no delete.  A delete counts whether or not a later
+        commit brings that line back (the module's rule 8, its known hole)."""
         brought = (self.merge, f"^{self.onto}", f"^{self.other}")
         return frozenset((change.entry.path, change.was)
                          for change in _git.marker_changes(self.root, brought, no_merges=True)
@@ -511,10 +519,11 @@ def _moved(landing: Landing, number: int, was: str | None, now: str | None) -> s
                f"their merge takes, or {claim}")
     elif now is None:
         why = (f"it drops card {number}'s marker, which {other} holds, with no change to its "
-               "record, and no commit it brings, merges aside, deletes that very line; take "
-               f"{other}'s file, as their merge does, then, if this change reverts card "
-               f"{number}, revert it in a commit that is no merge (a revert deletes the marker "
-               "with its code)")
+               "record, and no commit it brings, merges aside, deletes that very line; if this "
+               f"change keeps card {number}'s code, take {other}'s file, merging {other} itself "
+               f"if this change has not; if it drops card {number}'s code too, take {other}'s "
+               f"file, then revert card {number} in a commit that is no merge (a revert deletes "
+               "the marker with its code)")
     else:
         undid = f", which {other} held once and undid," if _undid(landing, (path, now)) else ""
         why = (f"it keeps {target}'s line{undid} where their merge takes another, with no "
