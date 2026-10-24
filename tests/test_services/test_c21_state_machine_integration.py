@@ -44,7 +44,7 @@ UNIQUE_INDEX_NAME = "uq_transactions_transfer_type_active"
 
 
 @pytest.fixture()
-def transfer_data(app, seed_full_user_data):
+def transfer_data(seed_full_user_data):
     """Provide everything the transfer service needs for these tests.
 
     Adds the default Transfers: Incoming and Transfers: Outgoing
@@ -241,8 +241,9 @@ class TestTransferServiceIllegalTransitions:
 
 
 class TestPartialUniqueIndexShape:
-    """The partial unique index is present in the live schema with
-    exactly the predicate the application code relies on."""
+    """The partial unique index is still present in the live schema with
+    the predicate it was declared with; the module docstring says why
+    nothing relies on it since plan step ``balance:X-bi-6-4d-2``."""
 
     def test_index_exists_in_pg_catalog(self, app):
         """``pg_indexes`` carries the index with the expected definition."""

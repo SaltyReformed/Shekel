@@ -98,9 +98,8 @@ def _loaded_ids(cash_flow, scenario_id):
 class TestResolveCashFlowSet:
     """The set is the primary plus the owner's active cards; the balance line is one member."""
 
-    def test_an_owner_with_no_card_has_a_set_of_one(
-        self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
+    @pytest.mark.usefixtures("seed_periods_today")
+    def test_an_owner_with_no_card_has_a_set_of_one(self, app, seed_user):
         """The pre-card shape: the primary alone, and it is the balance line.
 
         Every owner before the credit-card arc's release, and the whole of
@@ -114,9 +113,10 @@ class TestResolveCashFlowSet:
             assert cash_flow.member_ids == (checking.id,)
             assert cash_flow.others == ()
 
+    @pytest.mark.usefixtures("seed_periods_today")
     def test_active_cards_join_the_set_after_the_primary_in_picker_order(
-        self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
+        self, app, db, seed_user,
+    ):
         """Two cards, ordered by ``(sort_order, id)``; an inactive one and a loan stay out."""
         with app.app_context():
             checking = seed_user["account"]
@@ -138,9 +138,10 @@ class TestResolveCashFlowSet:
             assert cash_flow.member_ids == (checking.id, first.id, second.id)
             assert [a.id for a in cash_flow.others] == [first.id, second.id]
 
+    @pytest.mark.usefixtures("seed_periods_today", "bare_periods")
     def test_another_owners_card_is_not_a_member(
-        self, app, db, seed_user, seed_periods_today, bare_user, bare_periods,
-    ):  # pylint: disable=unused-argument
+        self, app, db, seed_user, bare_user,
+    ):
         """The set is owner-scoped: a card the other user holds never joins it."""
         with app.app_context():
             other = dict(seed_user)
@@ -157,9 +158,10 @@ class TestResolveCashFlowSet:
             assert mine.id in cash_flow.member_ids
             assert theirs.id not in cash_flow.member_ids
 
+    @pytest.mark.usefixtures("seed_periods_today")
     def test_the_primary_is_the_grid_resolvers_no_override_answer(
-        self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
+        self, app, db, seed_user,
+    ):
         """``default_grid_account_id`` names the primary, as it names the grid account.
 
         ONE definition of the primary for every reader: the set's first
@@ -182,9 +184,10 @@ class TestResolveCashFlowSet:
             ).id
             assert cash_flow.member_ids == (savings.id, card.id)
 
+    @pytest.mark.usefixtures("seed_periods_today")
     def test_an_override_naming_a_member_moves_the_balance_line_only(
-        self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
+        self, app, db, seed_user,
+    ):
         """``?account_id=<card>``: the card's balance, the same paycheck's rows."""
         with app.app_context():
             checking = seed_user["account"]
@@ -199,9 +202,10 @@ class TestResolveCashFlowSet:
             assert cash_flow.member_ids == (checking.id, card.id)
             assert [a.id for a in cash_flow.others] == [checking.id]
 
+    @pytest.mark.usefixtures("seed_periods_today")
     def test_an_override_outside_the_set_is_that_accounts_single_account_view(
-        self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
+        self, app, db, seed_user,
+    ):
         """``?account_id=<savings>`` keeps the savings grid exactly as it was.
 
         The set collapses to that one account: no card row on the savings
@@ -221,10 +225,15 @@ class TestResolveCashFlowSet:
             assert cash_flow.balance.id == savings.id
             assert cash_flow.member_ids == (savings.id,)
 
+    @pytest.mark.usefixtures("seed_periods_today", "bare_periods")
     def test_a_refused_override_falls_through_to_the_primary(
-        self, app, db, seed_user, seed_periods_today, bare_user, bare_periods,
-    ):  # pylint: disable=unused-argument
-        """Another owner's account, an archived one, a loan: the primary's set, as the grid always did."""
+        self, app, db, seed_user, bare_user,
+    ):
+        """Another owner's account, a loan, an id no account holds: the primary's set.
+
+        Each refused override falls through to the set the grid always
+        resolved with no override.
+        """
         with app.app_context():
             checking = seed_user["account"]
             card = _card(seed_user)
@@ -248,9 +257,10 @@ class TestResolveCashFlowSet:
                 assert cash_flow.balance.id == checking.id, refused
                 assert cash_flow.member_ids == (checking.id, card.id), refused
 
+    @pytest.mark.usefixtures("bare_periods")
     def test_an_owner_whose_only_account_is_a_card_gets_a_set_of_that_card(
-        self, app, db, bare_user, bare_periods,
-    ):  # pylint: disable=unused-argument
+        self, app, db, bare_user,
+    ):
         """The primary can itself be revolving (the resolver's step 4); it is not listed twice."""
         with app.app_context():
             card = create_account_of_type(
@@ -264,7 +274,7 @@ class TestResolveCashFlowSet:
             assert cash_flow.balance.id == card.id
             assert cash_flow.member_ids == (card.id,)
 
-    def test_no_eligible_account_answers_none(self, app, db, bare_user):
+    def test_no_eligible_account_answers_none(self, app, bare_user):
         """The zero-accounts owner: ``None``, the state the grid renders empty for."""
         with app.app_context():
             assert resolve_cash_flow_set(bare_user["user"].id) is None
@@ -296,7 +306,7 @@ class TestOwnRowsClause:
 
     def test_every_members_rows_load_and_an_outsiders_do_not(
         self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
+    ):
         """A card bill is a paycheck row; a savings row is not."""
         with app.app_context():
             checking = seed_user["account"]
@@ -320,12 +330,26 @@ class TestOwnRowsClause:
 
     def test_a_one_member_set_is_the_old_single_account_filter(
         self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
-        """No card: exactly ``account_id == checking`` over the own rows."""
+    ):
+        """No card: exactly ``account_id == checking`` over the own rows.
+
+        A savings row sits beside the checking one, so a clause that dropped
+        its member filter would load a row the single-account filter does
+        not; with no row off checking in the scenario, the equality held
+        whatever the clause filtered on.  The filter it is compared with
+        also read ``transfer_id IS NULL`` until plan step
+        ``balance:X-bi-6-4d-2``: no row may name a transfer
+        (``ck_transactions_names_no_transfer``, ruling **R-BAL258**), so
+        that term held on every row and is gone.
+        """
         with app.app_context():
             checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("5000.00"),
+            )
             period = seed_periods_today[3]
             grocery = _expense_row(seed_user, period, checking, "Grocery", "500.00")
+            _expense_row(seed_user, period, savings, "Goal", "20.00")
             db.session.commit()
             cash_flow = resolve_cash_flow_set(seed_user["user"].id)
             assert cash_flow.member_ids == (checking.id,)
@@ -345,7 +369,7 @@ class TestOwnRowsClause:
 
     def test_no_shadow_is_a_row_on_either_side(
         self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
+    ):
         """No twin of a transfer can be a row on either member; the card bill beside them is.
 
         Both projected and settled.  It read the two shadows the create door
@@ -386,11 +410,14 @@ class TestOwnRowsClause:
 
 
 class TestFarLegsOf:
-    """The seam's reading of the same rule: by transfer id, no shadow read, none for a set of one."""
+    """The seam's reading of the same rule.
+
+    By transfer id, with no shadow read, and none for a set of one.
+    """
 
     def test_answers_every_intra_set_transfer_and_the_paid_leg_names_it(
         self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
+    ):
         """Both halves of a far leg are excluded by the TRANSFER's id.
 
         Leaf ``balance:X-bi-6-4a`` (ruling **R-BAL106**): the planned half is
@@ -438,7 +465,7 @@ class TestFarLegsOf:
 
     def test_reads_no_shadow_row(
         self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
+    ):
         """Invariant 5 by statement census, structurally: ONE read, of transfers.
 
         Since leaf ``balance:X-bi-6-4a`` the settled half needs no shadow
@@ -466,9 +493,9 @@ class TestFarLegsOf:
             assert "budget.transfers" in text, text
             assert "budget.transactions" not in text, text
 
-    def test_a_set_of_one_issues_no_query(
-        self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
+    @pytest.mark.usefixtures("seed_periods_today")
+    def test_a_set_of_one_issues_no_query(self, app, seed_user):
+        """A set of one has no far leg: ``FarLegs.none()``, and no statement issued."""
         with app.app_context():
             cash_flow = resolve_cash_flow_set(seed_user["user"].id)
             assert cash_flow.others == ()
@@ -482,9 +509,14 @@ class TestFarLegsOf:
 class TestRevolvingFilter:
     """``active_accounts_query``'s orthogonal ``revolving`` value (design 3.8)."""
 
+    @pytest.mark.usefixtures("seed_periods_today")
     def test_true_false_and_none_partition_the_active_accounts(
-        self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
+        self, app, db, seed_user,
+    ):
+        """``True`` is the active card, ``False`` the checking account, ``None`` both.
+
+        ``None`` is the default, and the inactive card is in none of the three.
+        """
         with app.app_context():
             user_id = seed_user["user"].id
             checking = seed_user["account"]

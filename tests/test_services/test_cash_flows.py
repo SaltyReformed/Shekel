@@ -46,8 +46,9 @@ in a basis one screen away.
 from datetime import date
 from decimal import Decimal
 
+from app import ref_cache
 from app.enums import StatusEnum
-from app.services import transaction_service
+from app.services import status_seam, transaction_service
 from app.services.cash_ledger import in_flight_movements, sum_projected
 from app.services.transfer_legs import planned_transfer_legs
 from tests._test_helpers import (
@@ -83,18 +84,16 @@ def _unreconciled(*rows):
 
 
 def _set_status(txn, status_enum):
-    """Move *txn* to *status_enum*, resolving the id through ``ref_cache``.
+    """Move *txn* to *status_enum* through the status seam, as every door does.
 
     Written against the enum rather than a ``Status`` row queried by NAME,
     which is the project's reference-table rule: ids drive logic, name strings
     are display only.  The suites this moved from queried
-    ``Status.filter_by(name=...)`` directly.
+    ``Status.filter_by(name=...)`` directly, and this assigned ``status_id``
+    past the seam; :func:`~app.services.status_seam.apply_status_change`
+    reaches both statuses the cases below need.
     """
-    # pylint: disable=import-outside-toplevel  -- ref_cache needs an app
-    # context, which only exists inside each test.
-    from app import ref_cache
-
-    txn.status_id = ref_cache.status_id(status_enum)
+    status_seam.apply_status_change(txn, ref_cache.status_id(status_enum))
 
 
 def _envelope(db_session, seed_user, period, name, estimated, entries=()):
