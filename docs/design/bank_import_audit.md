@@ -561,9 +561,11 @@ The hero drops to two columns. Both themes through the tokens; the mockup was sh
 
 ## Loop B plan
 
-The build is `bank_import:X-gj`, decomposed in the tracker, which is where its leaves, their ORDER
-and what blocks what are stated. What belongs here is only what each leaf IS, so that the locked
-direction and the cards cannot describe different work:
+The build was `bank_import:X-gj`, now shipped (its as-built records are
+`docs/plans/historical/bank_import_x_gj_as_built_2026-09-04.md` and
+`docs/plans/historical/bank_import_x_gj_1_as_built_2026-09-02.md`); the plan stated its leaves,
+their ORDER and what blocked what. What belongs here is only what each leaf IS, so that the locked
+direction and the plan could not describe different work:
 
 - **The page** (`X-gj-1`) is itself decomposed three ways, on the two boundaries the package already
   draws: `X-gj-1a` is the view model in the service; `X-gj-1b` is the page and the three tabs whose

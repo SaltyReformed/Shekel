@@ -1,6 +1,6 @@
 """What an account's books cannot explain, and what has CHECKED those days.
 
-Plan step **balance:X-f3c-3** (``docs/audits/balance_architecture/README.md``).
+Plan step **balance:X-f3c-3** (shipped at ``a7dbfdca``).
 Two facts that only mean anything together, resolved in ONE call:
 
 * the OUTSTANDING DIFFERENCE -- the owner's latest declared balance less what

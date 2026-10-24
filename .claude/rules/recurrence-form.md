@@ -5,6 +5,8 @@ paths:
   - "app/schemas/validation/_recurrence.py"
   - "app/routes/_recurrence_form_helpers.py"
   - "app/routes/_recurrence_preview.py"
+  - "app/services/recurrence/_picker.py"
+  - "app/static/js/app.js"
   - "app/templates/templates/form.html"
   - "app/templates/transfers/form.html"
   - "app/routes/transfers/templates.py"

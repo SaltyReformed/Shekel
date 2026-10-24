@@ -1,6 +1,6 @@
 """How often an owner is paid, and the unit conversions that rest on it.
 
-Plan step **R7a-2a** (``docs/plans/implementation_plan_recurrence_redesign.md``).
+Plan step **R7a-2a** (shipped at ``003e3657``).
 ``app.utils.money.PAY_PERIODS_PER_YEAR = Decimal("26")`` was a
 module constant while the owner's cadence (``budget.pay_schedule.cadence_days``
 then; an era's on ``budget.pay_eras`` since ``pay_calendar:C17-a``) is

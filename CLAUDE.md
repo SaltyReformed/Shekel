@@ -95,7 +95,9 @@ the developer should never have to re-request them.
   the workaround silently.
 - **The goal state of every arc is that its fences are structurally unnecessary.** A checker, an
   allowlist, or an invariant a reconciler enforces is scaffolding around a defect. The work is to
-  make the defect unrepresentable, then delete the fence.
+  make the defect unrepresentable, then delete the fence. The fences ruled KEEP are
+  `docs/audits/fence_census_2026-10-11.md`, and a step that would delete one asks the developer
+  first (R-BAL268).
 - **On a design fork, map the FULL option space, then give a firm recommendation.** Lead with the
   most-correct from-scratch design; sequencing manages risk, the design does not compromise for it.
   A financial fork gets a worked numeric example per option BEFORE the question is asked.
@@ -159,12 +161,14 @@ root; never silence it with a bare disable.
 - **The landing check** (`tools/quill/landing.py`, CI's `landing` job) holds the ONE write rule for
   the plan's records in git, judged on the merge that lands: a card's done file `plan/ships/N` is
   added or changed only from its own branch `card/N`, and a task's file `plan/tasks/T` only from its
-  card's branch (R-BAL386); a change that writes no line of a done file may not change what `dev`
-  and `main` together say of that card (R-BAL385, R-BAL390); a pull request from `card/N` is refused
-  while a task under N that was not dropped lacks its file; and a change to any path the production
-  image holds must add, delete or change a done file (R-BAL362), the image's paths read from
-  `.dockerignore`, which lists exactly what production runs (R-BAL364). Its module docstring states
-  every rule.
+  card's branch (R-BAL386), but for a line carried from the other integration branch (a release or a
+  resync) and, while it lives, the records-only door into `main` for a card never claimed
+  (R-BAL363); a change that writes no line of a done file may not change what `dev` and `main`
+  together say of that card (R-BAL385, R-BAL390); a pull request from `card/N` is refused while a
+  task under N that was not dropped lacks its file; and a change to any path the production image
+  holds must add, delete or change a done file unless it is a release or a resync (R-BAL362), the
+  image's paths read from `.dockerignore`, which lists exactly what production runs (R-BAL364). Its
+  module docstring states every rule.
 - **Archived documents** (`tools/ci/archive.py`): every document under an `archive/` or
   `historical/` directory opens with the `> **ARCHIVED.` banner, and CI refuses one that does not.
 - **Judgment the linters cannot mechanize** (float-on-money boundaries, IDOR, transfer invariants,
@@ -339,14 +343,15 @@ Workflow). Whether a card SHIPPED is git's answer, never the card's state: its d
 `plan/ships/N` in the merge of `dev` and `main` (R-BAL359), from which `quill sync` writes each
 card's state.
 
-Every card carries its arc. Each arc's argument, the reasoning behind its steps, stays in its own
-document: `docs/audits/balance_architecture/README.md` (balance), and `implementation_plan_*.md` in
-`docs/plans/` for recurrence, pay_calendar, credit_card, bank_import and salary. A ruling made
-before the tracker is a closed card titled by its old id, and so is every step, finding and question
-open when the tracker took over, so an old id in a document or comment names its card
-(`python -m tools.quill.quill show balance:R-BAL38` finds it). Beside the arc documents,
-`docs/plans/verification.md` is what "done" means for a step in any arc, and `docs/plans/lessons.md`
-is what this project has already paid to learn.
+Every card but a task carries its arc (a task's is its card's). Each arc's argument, the reasoning
+behind its steps, stays in its own document: `docs/audits/balance_architecture/README.md` (balance),
+and `implementation_plan_*.md` in `docs/plans/` for recurrence, pay_calendar, credit_card,
+bank_import and salary. A ruling made before the tracker is a closed card titled by its old id, and
+every step, finding and question open when the tracker took over is a card titled by its id, so
+`python -m tools.quill.quill show balance:R-BAL38` finds one. A shipped step's or a closed finding's
+id names no card: its record is the commit that shipped or closed it, and the archives. Beside the
+arc documents, `docs/plans/verification.md` is what "done" means for a step in any arc, and
+`docs/plans/lessons.md` is what this project has already paid to learn.
 
 **Anything under an `archive/` or `historical/` directory is a HISTORICAL RECORD and governs
 nothing** -- every such file says so on its first line. Cite one for how a decision came to be,
@@ -379,9 +384,10 @@ active, PR and merge timing is the coordinator session's call -- see Multi-sessi
 **Work for card N is on its branch `card/N`**, which `quill claim N` makes from `dev` with the
 card's done file `plan/ships/N` as its first commit: one branch records one card, merging it ships
 the card, and a revert of that merge removes the file and reopens the card.
-**A card that moves money owns its pull request**: nothing else rides in it. A `recurrence` or
-`pay_calendar` step is a leaf boundary: one commit, its own tests green, independently revertible; a
-`recurrence` step states its behaviour change by measurement, not a hedge.
+**A `credit_card` card that moves money owns its pull request**: nothing else rides in it. A
+`recurrence` or `pay_calendar` step is a leaf boundary: one card and its one pull request, its own
+tests green, independently revertible by reverting its merge; a `recurrence` step states its
+behaviour change by measurement, not a hedge.
 
 **A piece of work inside a card's one pull request is a TASK** (R-BAL386), a sub-issue of the card:
 filed under it when the piece is planned (`quill file task`), its file `plan/tasks/T` written in the

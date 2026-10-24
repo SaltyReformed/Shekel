@@ -82,7 +82,7 @@ ceded; it is named here so that decision is made rather than discovered.
 
 Reads the account's rows; no writes, no commit.
 
-Plan step **X-a** (``docs/audits/balance_architecture/README.md``).
+Plan step **X-a** (shipped at ``929b3a72``).
 """
 
 from __future__ import annotations

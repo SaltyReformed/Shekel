@@ -1,6 +1,6 @@
 """The pay periods a row may be MOVED into, answered once for both forms.
 
-Plan step **C2-f** (``docs/plans/implementation_plan_pay_calendar.md``).
+Plan step **C2-f** (shipped at ``4f134bf4``).
 It replaces ``pay_period_service.get_current_and_future_periods``,
 whose three call sites -- the transaction full-edit popover, the transfer
 full-edit popover, and the transfer branch inside the transaction one -- each

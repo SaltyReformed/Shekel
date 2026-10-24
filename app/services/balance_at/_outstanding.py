@@ -1,6 +1,6 @@
 """Balance-at-T seam -- what an account's own BOOKS cannot explain.
 
-Plan step **X-f3c-3** (``docs/audits/balance_architecture/README.md``),
+Plan step **X-f3c-3** (shipped at ``a7dbfdca``),
 and it moves no money: it is the INSTRUMENT plan step X-f3c-4's acceptance
 act needs, built one step ahead of it so the figure is on screen before
 anything offers to book it.

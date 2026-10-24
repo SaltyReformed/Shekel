@@ -6,10 +6,10 @@ arcs had none at all, which is how the two arcs at the front of the queue came t
 written down. That is the same denormalization `lessons.md` exists to remove.
 
 **This is the ORACLE discipline, not the release checklist.** What every commit owes -- full suite,
-`pylint app/` with the full `--fail-on` set, migrations tested in both directions, the test template
-rebuilt after one -- is `CLAUDE.md`'s Definition of Done, and restating it here would be a second
-copy beside no reconciler. This document answers the question the Definition of Done does not: how
-do you know the number is RIGHT.
+`pylint app/` with the full `--fail-on` set, migrations tested in both directions -- is
+`CLAUDE.md`'s Definition of Done, and restating it here would be a second copy beside no reconciler.
+This document answers the question the Definition of Done does not: how do you know the number is
+RIGHT.
 
 ## The standard
 
