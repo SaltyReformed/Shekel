@@ -38,7 +38,7 @@ def test_a_groups_links_read_down_and_up_give_the_same_steps(repo):
     replan(tracker, 51, (511, 512))
     replan(tracker, 511, (5111, 5112))
     tracker.add(55, kind="finding")
-    tracker.add_child(511, tracker.cards_by_number[55])
+    tracker.block(55, tracker.cards_by_number[511])
     cards = tracker.cards_by_number
     up = sorted(number for number, card in cards.items() if card.kind == "step"
                 and 50 in [step.number for step in above(card, cards)])
@@ -47,13 +47,13 @@ def test_a_groups_links_read_down_and_up_give_the_same_steps(repo):
 
 
 def test_a_finding_linked_under_the_group_card_itself_is_no_member(repo):
-    """#57, a finding linked directly under the group's own card, ships: it touches the
-    group and is no step of it, so the group #51 and #52 make is whole."""
+    """#57, a finding the group's own card owns (blocked by it, R-BAL395), ships: it
+    touches the group and is no step of it, so the group #51 and #52 make is whole."""
     base, cut = release_after(repo, (ship(51), ship(52)), (ship(57),))
     tracker = FakeTracker()
     deploy_group(tracker)
     tracker.add(57, kind="finding")
-    tracker.add_child(50, tracker.cards_by_number[57])
+    tracker.block(57, tracker.cards_by_number[50])
     verdict = judge(repo, base, cut, tracker).verdict
     assert verdict.status == CLEAN
     (group,) = verdict.carried.groups
@@ -197,13 +197,13 @@ def test_a_split_step_whose_type_a_person_changed_judges_nothing(repo, capsys):
 
 
 def test_a_ruling_under_a_group_named_by_a_marker_is_no_work_not_a_torn_read(repo):
-    """#58, a ruling under #51, named by a mistyped marker: it is refused as no work, and
+    """#58, a ruling #51 owns, named by a mistyped marker: it is refused as no work, and
     no walk counts it as a step of the group."""
     base, cut = release_after(repo, (ship(51), ship(52)), (ship(58),))
     tracker = FakeTracker()
     deploy_group(tracker)
     tracker.add(58, kind="ruling")
-    tracker.add_child(51, tracker.cards_by_number[58])
+    tracker.block(58, tracker.cards_by_number[51])
     (refusal,) = judge(repo, base, cut, tracker).verdict.refusals
     assert refusal.startswith("plan#58 (its marker changed at ")
     assert refusal.endswith(") is a ruling, which no commit ships, so it names no work whose "

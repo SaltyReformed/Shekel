@@ -56,7 +56,10 @@ throughout), and a finding is never one: a fix the group cannot ship without is 
 quill's leaf rule reads, so a group's leaves are always among its steps.  Which groups a
 release TOUCHES reads the same links UP (:func:`tools.quill.door.above`, quill's one
 walk up the steps a card splits): each group a card it names is under, the card itself
-or a step above it.  **Under every read this reader judges, the two walks give a group
+or a step above it -- for a finding, its owner, the one step it is blocked by and never a
+parent (ruling ``R-BAL395``, :func:`tools.quill.door.owner`), or a step above that, so a
+finding is under the groups its owner is under, and one with no owner is under none
+(:func:`_line_up`).  **Under every read this reader judges, the two walks give a group
 the same steps, and no step hangs below it unread**: the read takes every card below
 each group, of any kind, and judges nothing when a step hangs under a card that is no
 step (:func:`_none_hung`: only a person's link or retype puts one there, since quill
@@ -172,7 +175,9 @@ from pathlib import Path
 from tools.ci import trailers
 from tools.quill.door import (
     MARKERS,
+    OWNED,
     SHIPPABLE,
+    Card,
     MarkerConflict,
     Tracker,
     above,
@@ -184,6 +189,7 @@ from tools.quill.door import (
     marker_changes,
     markers_in,
     merged_tree,
+    owner,
     with_closure,
 )
 from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, MOVES_MONEY_LABEL
@@ -201,7 +207,8 @@ from tools.release._model import (
 class Cards:
     """What the release's cut knows of the cards its window names, read from the tracker
     once: whether each one that is work moves money; each one's line up (itself, the step
-    it splits, that step's, ...); each deploy-together group the read holds that has a
+    it splits or, for a finding, its owner, that step's, ...); each deploy-together group
+    the read holds that has a
     step below it, with every such step (those that can be its members, :func:`_member`),
     in card order; each such group's leaves by quill's rule, in any state; which of those
     steps and named cards will never ship (dropped, or under a step that was); and what each
@@ -312,8 +319,7 @@ def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
     closure = with_closure(tracker, dict(held))
     shipped = set(window.after)
     work = {number for number, card in held.items() if card.kind in SHIPPABLE}
-    up = {number: tuple(step.number for step in above(card, closure))
-          for number, card in closure.items()}
+    up = {number: _line_up(card, closure) for number, card in closure.items()}
 
     def never_ships(number: int) -> bool:
         return (dropped(number, closure, shipped)
@@ -345,6 +351,19 @@ def read(root: Path, base: str, cut: str, tracker: Tracker) -> Cards:
                                                  for step in steps)}
                   if never_ships(number)),
         {number: _what(card.kind) for number, card in held.items() if number not in work})
+
+
+def _line_up(card: Card, cards: Mapping[int, Card]) -> tuple[int, ...]:
+    """The steps above ``card``, nearest first, by quill's one walk up
+    (:func:`tools.quill.door.above`): for a finding or a ruling, from its owner, the one
+    step it is blocked by, never from a parent (ruling ``R-BAL395``,
+    :func:`tools.quill.door.owner`), so one with no owner is under no step.  ``cards``
+    holds every card the walk reads (quill's closure holds each blocker and parent)."""
+    if card.kind not in OWNED:
+        return tuple(step.number for step in above(card, cards))
+    held_by = owner(card)
+    return () if held_by is None else (
+        held_by, *(step.number for step in above(cards[held_by], cards)))
 
 
 def _one_walk(groups: Mapping[int, Collection[int]], lines: Mapping[int, tuple[int, ...]],

@@ -510,13 +510,16 @@ def _unclaimed(keys: set[str], tracked: Tracked,
                           "card a person unlinked from a card filed already, or one of the "
                           "migration's first cards with its title or arc label changed by hand "
                           "or its item gone from the registries; re-link one a person unlinked "
-                          "under its card filed already, and delete any other on the web, "
-                          "before the run"))
+                          "under its card filed already (a finding or a ruling: block it by its "
+                          "owner again, R-BAL395), and delete any other on the web, before the "
+                          "run"))
         else:
             found.append((number, f"{label} is no item's card, numbered lower than every card "
                           "an item's key names (a card filed already apart) and under no card "
                           "filed already: a card filed outside X-cx before the migration, an "
-                          "X-cx leaf unlinked from a card filed already by hand, or one of the "
+                          "X-cx leaf unlinked from a card filed already by hand (a finding or a "
+                          "ruling: its owner link removed; block it by its owner again, "
+                          "R-BAL395), or one of the "
                           "migration's first cards with its title or arc label changed by hand "
                           "or its item gone from the registries; settle it before the run"))
     return found
