@@ -10,7 +10,10 @@ that keeps the marker ``main``'s hotfix deleted, which writes nothing on ``dev``
 passed every rule that reads what a change writes.  R-BAL390 widened it to L1's review's two
 near-misses (``plan-tracker-2026-10-23/l1_review_probes/p3.py`` and ``p4.py``): a resync built
 by hand keeping a line ``main`` undid where ``main`` shipped the card again, and one dropping
-the marker of a hotfix ``main`` holds.  Every history is built and judged by the builders
+the marker of a hotfix ``main`` holds.  R-BAL391 re-heard the second: a delete passes where a
+commit the change brings shows it in a change of its own, no merge (the widening's review,
+``plan-tracker-2026-10-23/l1_widening_review_probes/p_revert_in_branch.py``: a revert made in a
+branch that merged the other in).  Every history is built and judged by the builders
 ``test_landing.py`` shares (:mod:`tools.quill._histories`); no test here reads the tracker.
 """
 from __future__ import annotations
@@ -176,6 +179,25 @@ def test_a_resync_keeping_devs_line_where_main_holds_another_is_refused(check, c
                                                                + "\n")
 
 
+def _dropped(number, other="origin/main", target="origin/dev"):
+    """Rule 8's refusal of card ``number``, whose marker ``other`` holds, dropped by a change
+    into ``target`` that shows no delete of it (R-BAL391)."""
+    return (f"REFUSED -- plan/ships/{number}: card {number} would read not shipped once this "
+            f"change and {other} meet, where it reads shipped once {target} and {other} do, "
+            f"though this change writes no line of it: it drops card {number}'s marker, which "
+            f"{other} holds, with no change to its record, and no commit it brings, merges "
+            f"aside, deletes that very line; take {other}'s file, as their merge does, then, if "
+            f"this change reverts card {number}, revert it in a commit that is no merge (a "
+            "revert deletes the marker with its code)")
+
+
+def _meet(root, change, other):
+    """What dev and main hold once ``change``, landed, and ``other`` meet: each of card 8's
+    marker and its work, None where their merge holds none."""
+    tree = _git.merge(root, (change, other)).settled()
+    return _git.blob_at(root, tree, marker(8)), _git.blob_at(root, tree, "w8.txt")
+
+
 def test_a_resync_dropping_the_marker_of_a_hotfix_main_holds_is_refused(check, code):
     """L1's review's ``p4.py``: hotfix 8 lands on main.  A resync built by hand takes its
     code but drops its marker: it writes nothing on dev's line, yet card 8 would read not
@@ -185,11 +207,150 @@ def test_a_resync_dropping_the_marker_of_a_hotfix_main_holds_is_refused(check, c
     point_main(root, hotfix := landed(root, base, 8))
     dropped = commit_files(root, hotfix, "drop the marker, keep the code", {marker(8): None})
     status, out, _ = check(base, _resolved(root, dropped, base, hotfix, "resync"), "resync")
-    assert (status, out.splitlines()) == (1, [_moved(
-        8, "not shipped once this change and origin/main meet, where it reads shipped",
-        "it drops card 8's marker, which origin/main holds, with no change to its record; take "
-        "origin/main's file, as their merge does"), verdict("resync", 0, 1)])
+    assert (status, out.splitlines()) == (1, [_dropped(8), verdict("resync", 0, 1)])
     assert check(base, merge(root, base, hotfix, "resync"), "resync")[0] == 0
+
+
+def test_a_merge_dropping_the_marker_with_main_as_its_first_parent_is_refused(check, code):
+    """The same resync built by hand with main as its merge's first parent, whose change
+    against that parent deletes card 8's marker: a merge's resolution shows no delete,
+    whichever parent it names first (R-BAL391), so refused."""
+    root, base = code
+    point_main(root, hotfix := landed(root, base, 8))
+    dropped = commit_files(root, hotfix, "drop the marker, keep the code", {marker(8): None})
+    status, out, _ = check(base, _resolved(root, dropped, hotfix, base, "resync"), "resync")
+    assert (status, out.splitlines()) == (1, [_dropped(8), verdict("resync", 0, 1)])
+
+
+def test_each_way_out_of_a_dropped_marker_lands_as_it_says(check, code):
+    """The refusal's ways out, applied to the two histories that reach it.  A resync built by
+    hand dropping hotfix 8's marker and keeping its work takes main's file: it lands, and
+    card 8 reads shipped with its work.  A branch whose merge of main dropped both, a revert
+    done by hand inside the merge, takes main's file and then reverts card 8 in a commit of
+    its own: it lands, and card 8 reads not shipped with its work gone.  Record and code
+    agree either way."""
+    root, base = code
+    point_main(root, hotfix := landed(root, base, 8))
+    line = {marker(8): f"claimed {MON}\n"}
+    kept = _resolved(root, commit_files(root, hotfix, "drop the marker", {marker(8): None}),
+                     base, hotfix, "resync")
+    assert check(base, kept, "resync")[0] == 1
+    taken = commit_files(root, kept, "take main's file", line)
+    assert check(base, taken, "resync")[:2] == (0, verdict("resync", 1, 0) + "\n")
+    assert None not in _meet(root, merge(root, base, taken), hotfix)
+    dropped = _resolved(root, base, base, hotfix, "Merge origin/main, dropping card 8")
+    assert check(base, dropped, "revert-8")[0] == 1
+    reverted = commit_files(root, commit_files(root, dropped, "take main's file", line),
+                            "Revert plan#8", {marker(8): None})
+    assert check(base, reverted, "revert-8")[:2] == (0, verdict("revert-8", 0, 0) + "\n")
+    assert _meet(root, merge(root, base, reverted), hotfix) == (None, None)
+
+
+# ------------------------------------------- a marker's delete shown in history (R-BAL391)
+
+
+def test_a_branch_reverting_mains_hotfix_after_merging_main_in_lands(check, code):
+    """The widening's review, its HIGH (``p_revert_in_branch.py`` (a)): hotfix 8 lands on
+    main.  A branch off dev runs git's own merge of main, then reverts hotfix 8 in a commit
+    of its own, marker and work: the delete shows in history, so it lands, and card 8 then
+    reads not shipped with its work gone once dev and main meet."""
+    root, base = code
+    point_main(root, hotfix := landed(root, base, 8))
+    reverted = undone(root, merge(root, base, hotfix, "Merge origin/main"), 8)
+    assert check(base, reverted, "revert-8")[:2] == (0, verdict("revert-8", 0, 0) + "\n")
+    assert _meet(root, merge(root, base, reverted), hotfix) == (None, None)
+
+
+def test_a_release_holding_a_card_back_by_a_revert_lands(check, code):
+    """The review's case (b): card 9 lands on dev.  A release branch off main merges dev and
+    reverts card 9 in a commit of its own, holding it back from production: into main, it
+    lands."""
+    root, base = code
+    run(root, "update-ref", "refs/remotes/origin/dev", dev := landed(root, base, 9))
+    held_back = undone(root, merge(root, base, dev, "Merge origin/dev"), 9)
+    assert check(base, held_back, "release", base="main")[:2] == (
+        0, verdict("release", 0, 0, "main") + "\n")
+
+
+def test_a_commit_deleting_only_the_marker_after_merging_main_in_lands(check, code):
+    """R-BAL391's "still allowed, exactly as on dev's own line": a branch that merged main's
+    hotfix 8 in deletes card 8's marker alone, keeping its code, in a commit of its own -- a
+    person's visible "not done", as rule 2 passes on dev's own line."""
+    root, base = code
+    point_main(root, hotfix := landed(root, base, 8))
+    brought = merge(root, base, hotfix, "Merge origin/main")
+    not_done = commit_files(root, brought, "card 8 is not done", {marker(8): None})
+    assert check(base, not_done, "feat/x")[:2] == (0, verdict("feat/x", 0, 0) + "\n")
+
+
+def test_a_delete_of_an_older_line_shows_no_delete_of_the_one_main_holds(check, code):
+    """Hotfix 8 lands on main (line V), is undone there, and ships again (line W).  A branch
+    that merged main's first landing in reverts it in a commit of its own, deleting V, then
+    merges main by hand, dropping W: no commit it brings deletes W, so refused."""
+    root, base = code
+    first = landed(root, base, 8)
+    point_main(root, main_tip := landed(root, undone(root, first, 8), 8, WED))
+    reverted = undone(root, merge(root, base, first, "Merge origin/main"), 8)
+    dropped = _resolved(root, reverted, reverted, main_tip, "Merge origin/main, dropping W")
+    status, out, _ = check(base, dropped, "feat/x")
+    assert (status, out.splitlines()) == (1, [_dropped(8), verdict("feat/x", 0, 1)])
+
+
+def test_a_line_changed_and_then_deleted_shows_no_delete_of_it(check, code):
+    """A branch that merged main's hotfix 8 in changes card 8's line by hand (a write rule 4
+    refuses where it lands) and then reverts card 8 in a commit of its own: that commit
+    deletes the line it wrote, never main's, so no delete of main's line shows: refused."""
+    root, base = code
+    point_main(root, hotfix := landed(root, base, 8))
+    changed = commit_files(root, merge(root, base, hotfix, "Merge origin/main"),
+                           "another line", {marker(8): f"claimed {TUE}\n"})
+    status, out, _ = check(base, undone(root, changed, 8), "feat/x")
+    assert (status, out.splitlines()) == (1, [_dropped(8), verdict("feat/x", 0, 1)])
+
+
+def test_a_delete_on_mains_own_line_is_none_the_change_brings(check, code):
+    """Hotfix 8 lands on main, which reverts it and then reverts the revert (a history main's
+    own rule 3 refuses, built here by hand), so main holds card 8's line.  A branch merging
+    main by hand, dropping the marker and its work, brings no delete of its own: main's
+    revert is main's, so refused."""
+    root, base = code
+    hotfix = landed(root, base, 8)
+    point_main(root, back := commit_files(root, undone(root, hotfix, 8), 'Revert "Revert plan#8"',
+                                          {marker(8): f"claimed {MON}\n", "w8.txt": "work\n"}))
+    dropped = _resolved(root, base, base, back, "Merge origin/main, dropping card 8")
+    status, out, _ = check(base, dropped, "feat/x")
+    assert (status, out.splitlines()) == (1, [_dropped(8), verdict("feat/x", 0, 1)])
+
+
+def test_a_delete_on_devs_own_line_is_none_the_change_brings(check, code):
+    """dev took card 8's line in by a copy and deleted it (built here by hand), while hotfix 8
+    lands on main with that very line.  A branch merging main by hand, dropping the marker,
+    brings no delete of its own: dev's delete is dev's, so refused."""
+    root, base = code
+    copy = commit_files(root, base, "a copy", {marker(8): f"claimed {MON}\n"})
+    dev = commit_files(root, copy, "Revert the copy", {marker(8): None})
+    point_main(root, hotfix := landed(root, base, 8))
+    dropped = _resolved(root, dev, dev, hotfix, "Merge origin/main, dropping card 8")
+    status, out, _ = check(dev, dropped, "feat/x")
+    assert (status, out.splitlines()) == (1, [_dropped(8), verdict("feat/x", 0, 1)])
+
+
+def test_a_delete_the_branch_took_back_shows_none_where_dev_holds_the_marker(check, code):
+    """The copy history above (main took a copy of dev's card 7 line and deleted it) with a
+    branch that deletes card 7's marker in a commit of its own and writes it back, then
+    merges main's copy in: dev's line still holds the marker, so the change deletes none,
+    and what moves their merge's answer is what it brings of main: refused."""
+    root, base = code
+    dev = commit_files(root, base, "claim plan#7", {marker(7): f"claimed {MON}\n"})
+    copy = commit_files(root, base, "a copy", {marker(7): f"claimed {MON}\n"})
+    point_main(root, commit_files(root, copy, "Revert plan#7", {marker(7): None}))
+    gone = commit_files(root, dev, "not done", {marker(7): None})
+    back = commit_files(root, gone, "done again", {marker(7): f"claimed {MON}\n"})
+    status, out, _ = check(dev, merge(root, back, copy, "merge main's copy in"), "feat/x")
+    assert (status, out.splitlines()) == (1, [_moved(
+        7, "not shipped once this change and origin/main meet, where it reads shipped",
+        "what it brings of origin/main moves their merge's answer, with no change to its "
+        "record; leave out what it brings of origin/main"), verdict("feat/x", 0, 1)])
 
 
 def test_a_branch_bringing_mains_delete_is_refused_where_main_took_the_line_back(check, code):

@@ -299,6 +299,27 @@ def test_landings_names_the_commit_on_the_branch_line_that_took_each_line_in(rep
     assert not _git.landings(repo, base)
 
 
+def test_the_walk_names_each_blob_before_and_passes_over_merges_when_asked(repo):
+    """Each change the walk lists names the blob its entry held before it (``was``): none
+    for an add, the line for a delete.  Asked for commits of one parent alone, it passes over
+    a merge, even one whose resolution alone deleted a marker, and lists a plain delete
+    (CI's landing check, R-BAL391)."""
+    base = _origin(repo)
+    claimed = _files(repo, base, "claim plan#5 and plan#6", {**_marker(5), **_marker(6)})
+    five, six = (_git.marker(number) for number in (5, 6))
+    lines = {path: _run(repo, "rev-parse", f"{claimed}:{path}") for path in (five, six)}
+    dropped = _merge(repo, _files(repo, claimed, "drop 5", {five: None}), claimed, base,
+                     message="a merge dropping plan#5")
+    plain = _files(repo, dropped, "Revert plan#6", {six: None})
+    found = {flag: [(change.sha, change.entry.status, change.entry.path, change.was)
+                    for change in _git.marker_changes(repo, (plain, f"^{base}"), no_merges=flag)]
+             for flag in (False, True)}
+    added = [(claimed, "A", five, None), (claimed, "A", six, None)]
+    assert found[False] == [(plain, "D", six, lines[six]), (dropped, "D", five, lines[five]),
+                            *added]
+    assert found[True] == [(plain, "D", six, lines[six]), *added]
+
+
 def test_changes_names_every_entry_at_any_path_with_its_blob_and_no_rename(repo):
     """The change between two commits, at every path: a marker deleted beside an identical
     one added reads as both (a rename read would name one entry), a changed file names its

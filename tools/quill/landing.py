@@ -86,7 +86,14 @@ it leaves as it was (rule 8):**
    branch) says of each card -- not shipped, shipped on a line, or a conflict -- is
    compared with what AFTER (the merge of M with it) says, each git's one merge that says
    what shipped (:func:`_git.merge`), and a card they answer differently, at a marker M
-   leaves, is refused (:func:`_unwritten`).  At such a marker the two merges differ only
+   leaves, is refused (:func:`_unwritten`), **unless the change shows the delete**
+   (``R-BAL391``): where M holds no marker and AFTER settles none, a card BEFORE says
+   shipped on a line passes when a commit the change brings -- M's, and neither its first
+   parent's nor the other branch's -- deletes that very line in a change of its own, no
+   merge (:func:`_shown`), as a delete on the target's own line passes by rule 2: a revert
+   made in a branch that merged the other in, or a person's "not done".  A merge's
+   resolution shows no delete, whichever its first parent, so a marker one drops stays
+   refused, and so does a delete of an older line.  At such a marker the two merges differ only
    when their merge bases do, and those differ only when M brings a commit of the other
    branch its first parent lacks -- a resync, a release, a branch that merged the other in
    -- so a change bringing none can never trip it.  A marker that conflicts BEFORE is
@@ -231,6 +238,18 @@ class Landing:
         """The lines the other branch's own line took in, with the commits that took each in
         and undid it (:func:`_git.landings`)."""
         return _git.landings(self.root, self.other)
+
+    @cached_property
+    def deleted(self) -> frozenset[tuple[str, str]]:
+        """Each marker's line, as ``(path, blob)``, that a commit the change brings deletes
+        there, in a change of its own: a commit M holds and neither its first parent nor the
+        other branch does, and no merge (:func:`_git.marker_changes`), so a delete it shows
+        in history (``R-BAL391``).  A merge's resolution is never one, whichever its first
+        parent: a marker it drops shows no delete."""
+        brought = (self.merge, f"^{self.onto}", f"^{self.other}")
+        return frozenset((change.entry.path, change.was)
+                         for change in _git.marker_changes(self.root, brought, no_merges=True)
+                         if change.entry.blob is None and change.was is not None)
 
     def card(self, entry: _git.Entry) -> int | None:
         """The card whose marker ``entry``, an entry M changes, is, as M's tree reads it
@@ -492,7 +511,10 @@ def _moved(landing: Landing, number: int, was: str | None, now: str | None) -> s
                f"their merge takes, or {claim}")
     elif now is None:
         why = (f"it drops card {number}'s marker, which {other} holds, with no change to its "
-               f"record; take {other}'s file, as their merge does")
+               "record, and no commit it brings, merges aside, deletes that very line; take "
+               f"{other}'s file, as their merge does, then, if this change reverts card "
+               f"{number}, revert it in a commit that is no merge (a revert deletes the marker "
+               "with its code)")
     else:
         undid = f", which {other} held once and undid," if _undid(landing, (path, now)) else ""
         why = (f"it keeps {target}'s line{undid} where their merge takes another, with no "
@@ -501,12 +523,24 @@ def _moved(landing: Landing, number: int, was: str | None, now: str | None) -> s
             f"of it: {why}")
 
 
+def _shown(landing: Landing, number: int, was: str | None, now: str | None) -> bool:
+    """Whether card ``number``'s marker, which BEFORE settles as ``was`` and AFTER as
+    ``now``, is a delete shown in history (``R-BAL391``): M holds no marker there and AFTER
+    none, and a commit the change brings deletes BEFORE's very line in a change of its own
+    (:attr:`Landing.deleted`) -- a revert made in a branch that merged the other in, or a
+    person's "not done".  Where M holds a marker the change deletes none, so whatever moves
+    AFTER's answer is what it brings of the other branch."""
+    return (was is not None and now is None and number not in landing.lines
+            and (_git.marker(number), was) in landing.deleted)
+
+
 def _unwritten(landing: Landing, after: _git.Merged, now: Mapping[int, str]) -> list[str]:
     """Rule 8 (``R-BAL385``, widened by ``R-BAL390``): one sentence for each card whose
     marker the change leaves as its first parent holds it, where AFTER (``after``, the merge
     of M with the other branch, which settles the lines ``now``) answers otherwise than
     BEFORE (the merge of M's first parent with it): not shipped, or shipped on a line.
-    Refused where BEFORE settles it (:func:`_moved`); and where BEFORE conflicts on it,
+    Refused where BEFORE settles it (:func:`_moved`), unless the change shows the delete
+    in a commit of its own (:func:`_shown`, ``R-BAL391``); and where BEFORE conflicts on it,
     refused only when AFTER settles it on a line the other branch's own line held once and
     undid (:func:`_undid`).  AFTER's line there is the target's own (M's, which it holds),
     the other's (a card shipped there, which their merge reports as it is), or git's merge
@@ -535,7 +569,8 @@ def _unwritten(landing: Landing, after: _git.Merged, now: Mapping[int, str]) -> 
         if path in left or was.get(number) == now.get(number):
             continue
         if path not in before.conflicts:
-            reasons.append(_moved(landing, number, was.get(number), now.get(number)))
+            if not _shown(landing, number, was.get(number), now.get(number)):
+                reasons.append(_moved(landing, number, was.get(number), now.get(number)))
         elif _undid(landing, (path, now[number])):
             reasons.append(
                 f"{path}: {target} and {other} conflict on it, and this change "

@@ -98,11 +98,14 @@ class Entry:
 @dataclass(frozen=True)
 class MarkerChange:
     """One change a commit made to an entry under :data:`MARKERS` (:func:`marker_changes`):
-    the commit's ``sha`` and ``subject``, and the ``entry`` it changed."""
+    the commit's ``sha`` and ``subject``, the ``entry`` it changed, and the blob that entry
+    held before the change (``was``, None where it held none), which a delete's ``entry``
+    no longer names."""
 
     sha: str
     subject: str
     entry: Entry
+    was: str | None
 
 
 @dataclass(frozen=True)
@@ -414,12 +417,22 @@ def read(root: Path) -> Reads:
     return Reads(shipped(root), found, merged)
 
 
-def _entry(meta: str, path: str) -> Entry:
-    """The entry at ``path`` a raw diff line names: ``meta`` is the line before its path,
+def _blobs(meta: str) -> tuple[str | None, str | None, str]:
+    """What a raw diff line says of its entry: ``meta`` is the line before its path,
     ``:<mode> <mode> <blob before> <blob after> <status>``, each blob in full (``--raw
-    --no-abbrev``), the blob after all zeros once deleted."""
-    _, _, _, after, status = meta.split(" ")
-    return Entry(status[0], path, None if set(after) == {"0"} else after)
+    --no-abbrev``) and all zeros where the entry holds none (before it is added, once it is
+    deleted).  The blob before and the blob after, each None where all zeros, and the status
+    letter."""
+    _, _, before, after, status = meta.split(" ")
+    return (None if set(before) == {"0"} else before,
+            None if set(after) == {"0"} else after, status[0])
+
+
+def _entry(meta: str, path: str) -> Entry:
+    """The entry at ``path`` a raw diff line names, ``meta`` the line before its path
+    (:func:`_blobs`)."""
+    _, after, status = _blobs(meta)
+    return Entry(status, path, after)
 
 
 def changes(root: Path, old: str, new: str, *paths: str) -> tuple[Entry, ...]:
@@ -438,15 +451,18 @@ def changes(root: Path, old: str, new: str, *paths: str) -> tuple[Entry, ...]:
                  for meta, path in zip(fields[0:-1:2], fields[1::2], strict=True))
 
 
-def marker_changes(root: Path, refs: tuple[str, ...] = TIPS, *,
-                   first_parent: bool = False) -> list[MarkerChange]:
+def marker_changes(root: Path, refs: tuple[str, ...] = TIPS, *, first_parent: bool = False,
+                   no_merges: bool = False) -> list[MarkerChange]:
     """Every change a commit of ``refs``' history (``dev``'s and ``main``'s unless named) made
     to an entry under :data:`MARKERS`, newest first (:class:`MarkerChange`); with
     ``first_parent``, of each ref's OWN line alone, its first-parent history, the states the
-    branch itself was in.  The ONE walk of the markers' history: :func:`history`,
-    :func:`ever_marked` and :func:`landings` all read it, and the release tool reads it over
-    a release's range (``<base>..<cut>``) for the commits there that changed each marker
-    (``tools/release/_cards.py``).
+    branch itself was in; with ``no_merges``, of each commit of one parent alone, whose
+    change is the one it shows in history, never a merge's resolution.  The ONE walk of the
+    markers' history: :func:`history`, :func:`ever_marked` and :func:`landings` all read it,
+    the release tool reads it over a release's range (``<base>..<cut>``) for the commits
+    there that changed each marker (``tools/release/_cards.py``), and CI's landing check
+    reads its commits of one parent over what a change brings, for a delete shown in
+    history (``tools/quill/landing.py``, rule 8, ``R-BAL391``).
 
     **It lists a commit for every marker any commit of that history ever held, and for every
     blob one held.**  Such a marker (or blob) arrived through a commit holding it whose
@@ -465,19 +481,22 @@ def marker_changes(root: Path, refs: tuple[str, ...] = TIPS, *,
     whose first parent does not lists it as the blob after its change.  On one line alone
     (``--first-parent``) every state is its first parent's plus that commit's change against
     it, so the walk lists every commit of the line through which the line took a marker or
-    blob in.  Read with no rename detection, which git turns on by default, so a marker
+    blob in.  With ``no_merges`` the walk keeps no such promise, by design: a marker a
+    merge's resolution alone added or deleted is not listed, since no commit shows that
+    change on its own.  Read with no rename detection, which git turns on by default, so a marker
     moved to another name reads as deleted and added, never ``R``; and each blob in full
     (``--raw --no-abbrev``)."""
     out = git(root, "log", "--format=%x01%H%x02%s", "--raw", "--no-abbrev", "--no-renames",
               "--full-history", "--diff-merges=first-parent",
-              *(("--first-parent",) if first_parent else ()), *refs, "--", MARKERS)
+              *(("--first-parent",) if first_parent else ()),
+              *(("--no-merges",) if no_merges else ()), *refs, "--", MARKERS)
     found = []
     for record in filter(None, out.split("\x01")):
         head, _, lines = record.partition("\n")
         sha, _, subject = head.partition("\x02")
         for line in filter(str.strip, lines.splitlines()):
             meta, _, path = line.partition("\t")
-            found.append(MarkerChange(sha, subject, _entry(meta, path)))
+            found.append(MarkerChange(sha, subject, _entry(meta, path), _blobs(meta)[0]))
     return found
 
 
