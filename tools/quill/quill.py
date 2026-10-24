@@ -743,12 +743,12 @@ def _sync_reads(tracker: Tracker, reads: _git.Reads,
     listing finds (it is closed, and carries no mark); the
     claimed ones so that a claim on a split step is reported whatever that step's
     state (:func:`_state.sync_plan`) -- and then every card a decision over them reads
-    (:func:`with_closure`).  Every card a task file on ``dev`` or ``main`` or at a claim's
-    tip names is read by its number too, and then every task linked under a card read
-    (R-BAL386): a task the tool closed as done is found through the card it is under, so it
-    is reopened once git no longer says it is done.  (Not found: one under a card a PERSON
-    closed while it was claimed, never shipped nor marked, whose claim was released since;
-    it stays shown done under that dropped card.)
+    (:func:`with_closure`).  Every card a task file on ``dev`` or ``main``, or one a
+    claim's own commits wrote, names is read by its number too, and then every task linked
+    under a card read (R-BAL386): a task the tool closed as done is found through the card it
+    is under, so it is reopened once git no longer says it is done.  (Not found: one under a
+    card a PERSON closed while it was claimed, never shipped nor marked, whose claim was
+    released since; it stays shown done under that dropped card.)
     """
     listed = {**tracker.open_cards(), **tracker.marked()}
     named = set(reads.shipped.tasks).union(*(claim.tasks for claim in reads.claims.values()))

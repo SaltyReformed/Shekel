@@ -2,9 +2,10 @@
 throwaway repositories under pytest's tmp_path.
 
 A task is done when its file ``plan/tasks/T`` is in the merge of ``dev`` and ``main``, or in
-the tip of its card's live claim, read as a marker is read (:func:`_git.lines_in`).  Which card
-a task is under only the tracker says, so git's answer for a claim names every task file its
-tip holds; ``quill sync`` keeps those of tasks under that claim's card.  The tracking refs are
+the tip of its card's live claim when the claim's own commits wrote it, read as a marker is
+read (:func:`_git.lines_in`).  Which card a task is under only the tracker says, so git's answer
+for a claim names every task file its own commits wrote; ``quill sync`` keeps those of tasks
+under that claim's card.  The tracking refs are
 pointed directly (:func:`scratch.point_dev`, :func:`scratch.point_main`), as the readers here
 take them as they are and fetch nothing.
 """
@@ -100,10 +101,10 @@ def test_a_tasks_file_that_conflicts_refuses_quills_read_but_not_the_markers_rea
     assert raised.value.paths == ("plan/tasks/31",)
 
 
-def test_a_claims_tip_names_every_task_file_it_holds(code):
-    """A live claim's tip names each task whose file it holds, whatever card the tracker says
-    each is under (sync keeps those under the claim's card); a stray there names none; a
-    claim with no task file names none."""
+def test_a_claim_names_every_task_file_its_own_commits_wrote(code):
+    """A live claim names each task whose file its own commits wrote, whatever card the
+    tracker says each is under (sync keeps those under the claim's card); a stray there names
+    none; a claim with no task file names none."""
     root, base = code
     claimed = commit_files(root, base, "claim plan#8",
                            {_git.marker(8): "claimed 2026-10-19T13:00:00Z\n"})
@@ -116,3 +117,26 @@ def test_a_claims_tip_names_every_task_file_it_holds(code):
     found = _git.claims(root, [8, 9])
     assert {number: claim.tasks for number, claim in found.items()} == {
         8: {40, 41}, 9: frozenset()}
+
+
+def test_a_claim_names_no_task_file_it_took_in_from_dev_or_main(code):
+    """T1's review, its H1: ``quill claim`` cuts ``card/N`` from dev, so its tip holds every task
+    file dev holds, and a merge of dev or main into it brings more; none of those is the
+    claim's.  Cut from dev after card 7 landed tasks 49 and 50 there, then merging main, where
+    a hotfix wrote task 51 (main behind dev, as before a release), claim 8 names only task 52,
+    whose file its own piece wrote, and task 50, whose line its own commit changed."""
+    root, base = code
+    landed = commit_files(root, base, "card 7 lands with tasks 49 and 50",
+                          {_git.marker(7): "claimed 2026-10-19T13:00:00Z\n", **_done(49),
+                           **_done(50)})
+    point_dev(root, landed)
+    point_main(root, hotfix := commit_files(root, base, "a hotfix's task 51", _done(51)))
+    claimed = commit_files(root, landed, "claim plan#8",
+                           {_git.marker(8): "claimed 2026-10-24T08:00:00Z\n"})
+    own = commit_files(root, claimed, "task 52's piece, and task 50's line rewritten",
+                       {**_done(52), **_done(50, "2026-10-24T09:00:00Z")})
+    tip = run(root, "commit-tree", run(root, "merge-tree", "--write-tree", own, hotfix),
+              "-p", own, "-p", hotfix, "-m", "Merge origin/main into card/8")
+    run(root, "update-ref", f"refs/remotes/origin/{_git.card_branch(8)}", tip)
+    assert _git.tasks_in(root, tip)[0] == {49, 50, 51, 52}
+    assert _git.claims(root, [8])[8].tasks == {50, 52}

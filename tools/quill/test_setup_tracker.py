@@ -234,7 +234,7 @@ def test_the_organization_as_the_developer_set_it_for_tasks_matches():
                                                 *disabled]) == ["issue type 'task' is missing"]
 
 
-def test_the_four_kinds_enabled_and_the_defaults_disabled_match():
+def test_the_declared_types_enabled_and_the_defaults_disabled_match():
     """A disabled type is not a kind of card anyone can choose."""
     actual = [{"name": n, "is_enabled": True} for n in ISSUE_TYPES]
     actual += [{"name": n, "is_enabled": False} for n in ("Task", "Bug", "Feature")]

@@ -70,8 +70,8 @@ does every leaf under it.
 **A task is a piece of one step or finding** (ruling ``balance:R-BAL386``): a sub-issue
 of type ``task`` under that card, a commit inside its one pull request, never offered,
 claimed or on the board.  It is DONE when git says so (:func:`done_tasks`): its file
-``plan/tasks/N`` is in the merge of ``dev`` and ``main``, or in the tip of the live claim
-of the card it is under.  Its open or closed state is the tool's display of that, which
+``plan/tasks/N`` is in the merge of ``dev`` and ``main``, or the live claim of the card it
+is under wrote it.  Its open or closed state is the tool's display of that, which
 ``sync`` keeps in step both ways, as it does a step's: closed as completed once done,
 reopened once a revert (or a claim released, or a branch rewritten) takes its file away
 while the tool's close stands.  A person's close is a drop, and ``quill drop`` of a card
@@ -610,11 +610,12 @@ def holder(claim: Claim) -> str:
 def done_tasks(cards: Mapping[int, BareCard], tasks: Iterable[int],
                claims: Mapping[int, Claim]) -> frozenset[int]:
     """Each task among ``cards`` that git says is done (R-BAL386): its file is in the merge of
-    ``dev`` and ``main`` (``tasks``, :attr:`_git.Shipped.tasks`), or in the tip of the live
-    claim (``claims``) of the card the tracker says it is under (:attr:`_git.Claim.tasks`).
-    The ONE reading of a task's state, which ``sync``, ``drop`` and ``show`` all ask.  A file
-    naming a card that is no task, or a task under another card, makes nothing done
-    (:func:`_names_no_task`)."""
+    ``dev`` and ``main`` (``tasks``, :attr:`_git.Shipped.tasks`), or the live claim
+    (``claims``) of the card the tracker says it is under wrote it (:attr:`_git.Claim.tasks`).
+    The ONE reading of a task's state, which ``sync`` and ``show`` ask; ``quill drop`` asks
+    only whether that merge holds its file (:func:`drop_takes`), as a drop abandons the
+    claim.  A file naming a card that is no task, or a task under another card, makes
+    nothing done (:func:`_names_no_task`)."""
     tasks = set(tasks)
     return frozenset(number for number, card in cards.items() if card.kind == TASK and (
         number in tasks or (card.parent in claims and number in claims[card.parent].tasks)))
@@ -736,8 +737,9 @@ def _task_files(plan: SyncPlan, cards: Mapping[int, Card], tasks: Iterable[int],
                 claims: Mapping[int, Claim]) -> None:
     """Each task file that marks nothing done (:func:`_names_no_task`): a HISTORY line for one
     in the merge of ``dev`` and ``main`` (``tasks``), which no tracker write can change
-    (R-BAL184), and a REPORT for one at a live claim's tip, which a person takes off that
-    branch: a task is done on its own card's branch only."""
+    (R-BAL184), and a REPORT for one a live claim's own commits wrote
+    (:attr:`_git.Claim.tasks`), which a person takes off that branch: a task is done on its
+    own card's branch only."""
     for number in sorted(set(tasks)):
         if why := _names_no_task(number, cards):
             plan.history.append(f"the task file {task_file(number)} on {DEV} or {MAIN} marks "
@@ -814,7 +816,7 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int],
 
     ``tasks``: each task whose file the merge of ``dev`` and ``main`` holds
     (:attr:`_git.Shipped.tasks`; none unless named).  ``cards`` holds every card a task
-    file there or at a claim's tip names, and every task under a card it holds, so each
+    file there or one a claim wrote names, and every task under a card it holds, so each
     task's state is written from :func:`done_tasks` (:func:`_sync_task`) and each file that
     marks nothing done is named (:func:`_task_files`).
 

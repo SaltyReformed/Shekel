@@ -194,6 +194,24 @@ def test_a_task_file_on_another_cards_branch_marks_nothing_done(code, capsys):
             "plan#3, so it marks nothing done") in capsys.readouterr().out
 
 
+def test_a_claim_cut_after_a_task_landed_on_dev_takes_no_task_file_for_its_own(code, capsys):
+    """T1's review, its H1: ``quill claim`` cuts ``card/N`` from dev, so its tip holds every
+    task file dev holds; none is the claim's own, so sync names none of them as on the wrong
+    branch (whose remedy, taking the file off, would land as a delete of a done task's file)
+    and leaves the task done."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    tracker.add_task(2, 1)
+    tracker.add(3)
+    ship(code, 1)
+    finish(code, 2)
+    assert run(tracker, code, "sync") == 0
+    claim(code, 3)
+    capsys.readouterr()
+    assert run(tracker, code, "sync") == 0
+    assert "REPORT" not in capsys.readouterr().out
+    assert tracker.writes == [("close", 1, "completed"), ("close", 2, "completed")]
+
 def test_sync_prints_a_task_file_on_dev_naming_no_task_as_history(code, capsys):
     """A file on dev naming a step, or a number nobody filed, is history (R-BAL184): it never
     fails sync, and the step is not closed by it."""
@@ -244,6 +262,17 @@ def test_a_task_is_dropped_alone_unless_dev_or_main_holds_its_file(code, capsys)
     assert run(tracker, code, "drop", "plan#2", "--why", "not needed") == 0
     assert tracker.writes == [("comment", 2, "Dropped: not needed"), ("close", 2, "not_planned")]
 
+
+def test_sync_leaves_a_task_the_tool_dropped(code):
+    """A task ``quill drop`` closed as not planned is a decision, not the tool's display of git:
+    sync, reading it under its open card, never reopens it, though git says it is not done."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    tracker.add_task(2, 1)
+    assert run(tracker, code, "drop", "plan#2", "--why", "not needed") == 0
+    writes = list(tracker.writes)
+    assert run(tracker, code, "sync") == 0
+    assert tracker.writes == writes
 
 # -- show, next, claim, edit ----------------------------------------------------------------
 

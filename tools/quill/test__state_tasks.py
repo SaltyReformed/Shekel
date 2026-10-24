@@ -2,8 +2,8 @@
 ``sync`` writes and reports, what a card's drop takes -- over hand-built cards and claims.
 
 A task is a sub-issue of type ``task`` under a step or finding, done when its file
-``plan/tasks/N`` is in the merge of ``dev`` and ``main`` or in the tip of the live claim of
-the card it is under; its open or closed state is the tool's display of that.
+``plan/tasks/N`` is in the merge of ``dev`` and ``main`` or the live claim of the card it is
+under wrote it; its open or closed state is the tool's display of that.
 """
 from __future__ import annotations
 
@@ -42,13 +42,14 @@ def _with(parent, *tasks):
 
 
 def _claim(number, *tasks):
-    """The live claim ``card/<number>``, its tip holding the file of each of ``tasks``."""
+    """The live claim ``card/<number>``, its own commits having written the file of each of
+    ``tasks``."""
     return Claim(number, f"sha{number}", "2026-10-24T08:00:00+00:00", "2026-10-24T07:00:00Z",
                  frozenset(tasks))
 
 
 def test_a_task_is_done_by_its_file_on_dev_and_main_or_on_its_own_cards_claim():
-    """R-BAL386: its file in the merge of dev and main, or at its card's live claim's tip.  A
+    """R-BAL386: its file in the merge of dev and main, or written by its card's live claim.  A
     file on another card's claim, and one naming a card that is no task, make nothing done."""
     cards = {**_with(_card(1), _task(11, 1), _task(12, 1), _task(13, 1)),
              **_with(_card(2), _task(21, 2)), 3: _card(3)}
@@ -112,7 +113,7 @@ def test_an_open_task_its_card_can_never_take_is_reported_never_closed():
 
 def test_a_task_file_that_marks_nothing_done_is_named():
     """On dev and main, a file naming a card that does not exist or is no task is HISTORY,
-    which no tracker write changes (R-BAL184); at a live claim's tip, one naming no task, or
+    which no tracker write changes (R-BAL184); written by a live claim, one naming no task, or
     a task under another card or none, is a REPORT: a person takes it off that branch."""
     cards = {**_with(_card(1), _task(11, 1)), **_with(_card(2), _task(21, 2)), 3: _card(3),
              9: _task(9, None)}

@@ -17,10 +17,13 @@ are.  This module writes a marker only in :func:`claim`'s commit.
 **A task is done when its file ``plan/tasks/T`` is in that tree too** (ruling
 ``balance:R-BAL386``; :func:`task_file`): a piece of one step or finding, a commit inside its
 card's one pull request, whose file that commit writes.  Before the card lands it is done in
-the tip of the card's live claim (:attr:`Claim.tasks`), where only the tracker says which
-card a task is under, so ``quill sync`` keeps a claim's task file only for a task under that
-claim's card.  A task file is read as a marker is (:func:`lines_in`), and a revert of the
-commit that wrote it deletes it, so the task is no longer done.
+the tip of the card's live claim when the claim's own commits wrote that file
+(:attr:`Claim.tasks`, :func:`own_tasks`: ``quill claim`` cuts a claim from ``dev`` unless told
+otherwise, so its tip holds every task file ``dev`` does, and none of those is its own),
+where only the tracker says which card a task is under, so ``quill sync`` keeps a claim's
+task file only for a task under that claim's card.  A task file is read as a marker is
+(:func:`lines_in`), and a revert of the commit that wrote it deletes it, so the task is no
+longer done.
 
 **A claim is the branch ``card/N`` on ``origin``** (:func:`card_branch`) whose tip neither
 ``dev`` nor ``main`` holds (:func:`claims`).  ``quill claim`` makes it (:func:`claim`): a
@@ -71,8 +74,8 @@ class Claim:
     """A card a session is building: ``sha``, the tip of the branch ``card/<card>`` on
     ``origin``; ``committed``, when that tip was committed (ISO 8601, with its offset); and
     ``claimed``, the instant the card's marker at that tip says it was claimed, None when the
-    tip holds no marker for it; and ``tasks``, each task whose done file that tip holds
-    (:func:`tasks_in`), whatever card the tracker says it is under."""
+    tip holds no marker for it; and ``tasks``, each task whose done file the claim's own
+    commits wrote (:func:`own_tasks`), whatever card the tracker says it is under."""
 
     card: int
     sha: str
@@ -393,8 +396,7 @@ def markers_in(root: Path, tree: str) -> tuple[frozenset[int], tuple[str, ...]]:
 def tasks_in(root: Path, tree: str) -> tuple[frozenset[int], tuple[str, ...]]:
     """The tasks whose done files the tree ``tree`` holds, and the path of each other entry
     under :data:`TASKS` there (:func:`lines_in`, its lines aside), as :func:`markers_in`
-    reads the markers: :func:`shipped` reads the merge of ``dev`` and ``main`` with it, and
-    :func:`claims` each live claim's tip.
+    reads the markers: :func:`shipped` reads the merge of ``dev`` and ``main`` with it.
 
     Raises:
         GitError: When git cannot read ``tree``.
@@ -449,6 +451,26 @@ def _claimed_at(root: Path, sha: str, number: int) -> str | None:
     return line.removeprefix(_CLAIMED) if line.startswith(_CLAIMED) else line
 
 
+def own_tasks(root: Path, tip: str) -> frozenset[int]:
+    """Each task whose done file the claim at ``tip`` wrote itself: one the tip holds
+    (:func:`lines_in`) with a line no commit its own commits grew from holds there.  Its own
+    commits are those neither ``dev`` nor ``main`` holds, and the commits they grew from are
+    that set's boundary, each a commit one of them holds: where the claim was cut, and each
+    tip of either a merge brought in.  So a file it took in unchanged from either is not its
+    own -- ``quill claim`` cuts from ``dev`` by default, whose every task file a claim would
+    otherwise name as its own (T1's review, its H1) -- and a file its own commits added or
+    changed is.
+
+    Raises:
+        GitError: When git cannot read ``tip`` or a commit it grew from.
+    """
+    lines = lines_in(root, tip, TASKS)[0]
+    out = git(root, "rev-list", "--boundary", tip, "--not", *TIPS)
+    grew_from = [lines_in(root, line[1:], TASKS)[0] for line in out.split() if line[0] == "-"]
+    return frozenset(number for number, blob in lines.items()
+                     if all(held.get(number) != blob for held in grew_from))
+
+
 def claims(root: Path, cards: Iterable[int]) -> dict[int, Claim]:
     """The claims among the ``card/N`` branches :func:`fetch` just brought for ``cards``: each
     whose tip neither ``dev`` nor ``main`` holds.  One whose tip they hold is merged work
@@ -460,7 +482,7 @@ def claims(root: Path, cards: Iterable[int]) -> dict[int, Claim]:
             continue
         committed = git(root, "log", "-1", "--format=%cI", tip).strip()
         found[number] = Claim(number, tip, committed, _claimed_at(root, tip, number),
-                              tasks_in(root, tip)[0])
+                              own_tasks(root, tip))
     return found
 
 
