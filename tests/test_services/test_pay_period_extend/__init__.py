@@ -11,12 +11,12 @@ pass the generation resolves in, and the populate had to open its own.  A test
 here therefore grades ONE of two contracts and says which: the door's own (what
 it appends, what cadence it continues, what it refuses) calls
 ``extend_pay_periods`` alone, and any assertion about recurring ROWS runs
-``_extend_and_populate``, which is what the route runs.  ``POST
-/pay-periods/extend`` itself is graded in
-``tests/test_routes/test_pay_period_admin.py``.
+``_extend_andpopulate_in_a_fresh_pass``, which is what the route runs.
+``POST /pay-periods/extend`` itself is graded in the
+``tests/test_routes/test_pay_period_admin/`` package.
 
 Because a pay period is the spine of every financial number, the extend
-happy-path test asserts all four disciplines: structural invariants
+happy-path test asserts three disciplines: structural invariants
 (Discipline 1, ``assert_pay_period_invariants``), hand-computed as-of
 balances in both the retained and the new window (Discipline 2), and the
 production integrity checker passing (Discipline 3).  See

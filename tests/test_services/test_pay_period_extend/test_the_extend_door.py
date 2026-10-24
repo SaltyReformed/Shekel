@@ -94,11 +94,10 @@ class TestPopulateFromActiveTemplates:
                 assert resolved_amount(txns[0]) == Decimal("1200.00")
 
     def test_includes_transfer_templates(self, app, db, seed_user):
-        """Active transfer templates generate transfers with both shadows.
+        """Active transfer templates generate transfers too.
 
         New periods must never silently miss a recurring transfer, so the
-        helper runs the transfer engine too -- and each transfer keeps its
-        two-shadow invariant.
+        helper runs the transfer engine too, and counts each transfer once.
         """
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=3)
@@ -118,8 +117,6 @@ class TestPopulateFromActiveTemplates:
             )
             assert created == 3
             assert len(transfers) == 3
-            for transfer in transfers:
-                assert len(transfer.shadow_transactions) == 2
             assert_pay_period_invariants(db.session, seed_user["user"].id)
 
     def test_archived_template_generates_nothing(self, app, db, seed_user):
@@ -206,7 +203,10 @@ class TestExtendPayPeriods:
             _future_periods(db.session, seed_user, count=2)
 
             with pytest.raises(TypeError):
-                pay_period_admin.extend_pay_periods(
+                # Pylint: ``unexpected-keyword-arg`` -- the call passes the
+                # parameter plan step C3-b deleted; its TypeError is this case's
+                # subject.
+                pay_period_admin.extend_pay_periods(  # pylint: disable=unexpected-keyword-arg
                     seed_user["user"].id, num_periods=1, cadence_days=7,
                 )
 

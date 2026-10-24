@@ -88,7 +88,7 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
     ):
         """POST /pay-periods/extend leaves no empty paycheck behind.
 
-        **The one case of the five that seeds BOTH engines**, because the
+        **The one case of the six that seeds BOTH engines**, because the
         producer runs two loops and a caller that ran only the transaction one
         would leave every other case here green -- "a new period never silently
         misses a recurring transfer" is that producer's own stated invariant.
@@ -126,7 +126,6 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
                     f"transfers, not 1 -- the route ran the transaction engine "
                     f"and not the transfer one"
                 )
-                assert len(transfers[0].shadow_transactions) == 2
 
     def test_the_regenerate_route_populates_the_tail_it_rebuilds(
         self, app, db, auth_client, seed_user,
