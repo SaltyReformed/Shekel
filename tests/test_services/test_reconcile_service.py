@@ -1043,8 +1043,8 @@ class TestTheSetIsGroupedByItsParent:
             )
 
 
-def _bill(seed_user, period, *, name="Electricity", amount="180.00",
-          fires_on_day=None, income=False):
+def _transaction_arm_bill(seed_user, period, *, name="Electricity", amount="180.00",
+                          fires_on_day=None, income=False):
     """Create a projected NON-envelope row -- a bill, or a deposit.
 
     The engine's own row of a priced definition (:func:`generate_row_of`,
@@ -1091,7 +1091,7 @@ def _bill(seed_user, period, *, name="Electricity", amount="180.00",
     return generate_row_of(template, period)
 
 
-def _offered(seed_user, observed_on=_OBSERVED_ON):
+def _transaction_arm_offered(seed_user, observed_on=_OBSERVED_ON):
     """Return ``{offer key: offer}`` for the seed user's account (a row's id, a leg's pair)."""
     return {
         group.settle.key: group.settle
@@ -1102,9 +1102,9 @@ def _offered(seed_user, observed_on=_OBSERVED_ON):
     }
 
 
-def _settle(seed_user, ids, corrections=None,
-            observed_on=_OBSERVED_ON, transfer_ids=(),
-            transfer_corrections=None):
+def _transaction_arm_settle(seed_user, ids, corrections=None,
+                            observed_on=_OBSERVED_ON, transfer_ids=(),
+                            transfer_corrections=None):
     """Run the WRITE UNION against the seed user's own account.
 
     It was ``record_settled_transactions`` until plan step X-f2-c3, which
@@ -1143,9 +1143,9 @@ class TestTheTransactionArm:
     attribution day and it is offered; 2026-01-01 is before it and it is not.
     """
 
-    _bill = staticmethod(_bill)
-    _offered = staticmethod(_offered)
-    _settle = staticmethod(_settle)
+    _bill = staticmethod(_transaction_arm_bill)
+    _offered = staticmethod(_transaction_arm_offered)
+    _settle = staticmethod(_transaction_arm_settle)
 
     def test_an_overdue_row_is_offered_and_settles_on_the_statement_day(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1719,8 +1719,8 @@ class TestTheTransferArm:
             ref_cache.status_id(StatusEnum.PROJECTED)
         )
 
-    _offered = staticmethod(_offered)
-    _settle = staticmethod(_settle)
+    _offered = staticmethod(_transaction_arm_offered)
+    _settle = staticmethod(_transaction_arm_settle)
 
     def test_a_tick_records_the_STATEMENT_on_this_accounts_leg_alone(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -2077,9 +2077,9 @@ class TestWhatATickBooks:
     rather than from a column here, and these grade that they agree.
     """
 
-    _bill = staticmethod(_bill)
-    _offered = staticmethod(_offered)
-    _settle = staticmethod(_settle)
+    _bill = staticmethod(_transaction_arm_bill)
+    _offered = staticmethod(_transaction_arm_offered)
+    _settle = staticmethod(_transaction_arm_settle)
 
     def test_an_envelope_with_entries_offers_sum_entries_and_no_box(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -2295,8 +2295,8 @@ class TestTheCashFigureBesideTheBookedOne:
     envelope today, so this is latent rather than live.
     """
 
-    _bill = staticmethod(_bill)
-    _offered = staticmethod(_offered)
+    _bill = staticmethod(_transaction_arm_bill)
+    _offered = staticmethod(_transaction_arm_offered)
 
     def test_an_envelope_holding_a_CARD_purchase_publishes_both_figures(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -2501,8 +2501,8 @@ class TestTheCorrectionCountIsWhatAHumanTyped:
     Four shapes, and the first two are the ones the column reading got wrong.
     """
 
-    _bill = staticmethod(_bill)
-    _settle = staticmethod(_settle)
+    _bill = staticmethod(_transaction_arm_bill)
+    _settle = staticmethod(_transaction_arm_settle)
 
     @staticmethod
     def _corrected_count(caplog):
@@ -2617,7 +2617,7 @@ class TestTheSectionsAndTheOrder:
     and a childless block is one the template prints inline.
     """
 
-    _bill = staticmethod(_bill)
+    _bill = staticmethod(_transaction_arm_bill)
 
     @staticmethod
     def _resolved(seed_user):
@@ -2796,7 +2796,7 @@ class TestThePanelHoldsONEAmountBasis:
         with app.app_context():
             # Six offerable bills, plus the seed fixture's own envelope close.
             for index in range(6):
-                _bill(
+                _transaction_arm_bill(
                     seed_user, seed_periods[0],
                     name=f"Bill {index}", amount=f"{100 + index}.00",
                 )
